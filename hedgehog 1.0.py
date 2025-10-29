@@ -51,8 +51,7 @@ def fetch_raw_data(start, end):
     
     try:
         # Crea una sesión con simulación de navegador para evitar problemas de yfinance
-        session = requests.Session()
-        
+              
         # 1. Descarga del S&P 500 (^GSPC). ESTE SERÁ EL DATAFRAME BASE.
         st.info(f"Descargando datos del ^GSPC desde {start} hasta {end}...")
         spx_data = yf.download(
