@@ -12,11 +12,13 @@ st.title("📊 HEDGEHOG 1.0")
 @st.cache_data(ttl=86400)
 def fetch_data():
     start = "2010-01-01"
-    end = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")  # hoy excluido
+    end = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")  # excluye hoy
 
+    # Descarga SPX y VIX
     spx = yf.download("^GSPC", start=start, end=end, auto_adjust=False, multi_level_index=False)
     vix = yf.download("^VIX", start=start, end=end, auto_adjust=False, multi_level_index=False)
 
+    # Convertir índices a datetime
     spx.index = pd.to_datetime(spx.index)
     vix_series = vix['Close'].rename('VIX')
     vix_series.index = pd.to_datetime(vix_series.index)
@@ -40,22 +42,27 @@ max_date = df.index.max().date()
 default_end = max_date
 default_start = (pd.Timestamp(default_end) - pd.DateOffset(months=3)).date()
 
-start_plot = st.sidebar.date_input("Fecha inicio", min_value=min_date, max_value=default_end, value=default_start)
+# Selector de fechas
+start_plot = st.sidebar.date_input("Fecha inicio", min_value=min_date, max_value=max_date, value=default_start)
 end_plot = st.sidebar.date_input("Fecha fin", min_value=start_plot, max_value=max_date, value=default_end)
 
 # --- Filtrar DataFrame según rango ---
 df_plot = df.loc[(df.index.date >= start_plot) & (df.index.date <= end_plot)]
 
-# --- Gráfico SPX con velas japonesas ---
+# --- Gráfico SPX con velas japonesas (sin huecos de fines de semana) ---
 st.header(f"Gráfico de velas japonesas del S&P 500 ({start_plot} a {end_plot})")
 
 if not df_plot.empty:
+    # Convertir índice a string para eje categórico
+    df_plot_plotly = df_plot.copy()
+    df_plot_plotly['Fecha_str'] = df_plot_plotly.index.strftime('%Y-%m-%d')
+
     fig = go.Figure(data=[go.Candlestick(
-        x=df_plot.index,
-        open=df_plot['Open'],
-        high=df_plot['High'],
-        low=df_plot['Low'],
-        close=df_plot['Close'],
+        x=df_plot_plotly['Fecha_str'],
+        open=df_plot_plotly['Open'],
+        high=df_plot_plotly['High'],
+        low=df_plot_plotly['Low'],
+        close=df_plot_plotly['Close'],
         increasing_line_color='green',
         decreasing_line_color='red'
     )])
@@ -64,6 +71,7 @@ if not df_plot.empty:
         xaxis_title="Fecha",
         yaxis_title="Precio",
         xaxis_rangeslider_visible=False,
+        xaxis_type='category',  # elimina huecos de fines de semana
         template="plotly_white"
     )
 
