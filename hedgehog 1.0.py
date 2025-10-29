@@ -1,28 +1,25 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import plotly.graph_objects as go
 
 # --- Configuración de la app ---
-st.set_page_config(page_title="SPX y VIX Simplificado", layout="wide")
-st.title("📊 SPX y VIX Simplificado")
+st.set_page_config(page_title="HEDGEHOG", layout="wide")
+st.title("📊 HEDGEHOG 1.0")
 
 # --- Descarga de datos históricos ---
-@st.cache_data(ttl=86400)  # caché de 1 día
+@st.cache_data(ttl=86400)
 def fetch_data():
     start = "2010-01-01"
-    end = datetime.now().strftime("%Y-%m-%d")
+    end = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")  # hoy excluido
 
-    # Descarga SPX y VIX
     spx = yf.download("^GSPC", start=start, end=end, auto_adjust=False, multi_level_index=False)
     vix = yf.download("^VIX", start=start, end=end, auto_adjust=False, multi_level_index=False)
 
-    # Procesamiento
     spx.index = pd.to_datetime(spx.index)
     vix_series = vix['Close'].rename('VIX')
     vix_series.index = pd.to_datetime(vix_series.index)
-    vix_series = vix_series.asfreq('B').ffill()  # rellenar días hábiles faltantes
 
     # Fusionar SPX con VIX
     df_merged = spx.merge(vix_series, how='left', left_index=True, right_index=True)
@@ -32,15 +29,19 @@ def fetch_data():
 
 # Cargar datos
 df = fetch_data()
-st.success(f"✅ Datos cargados desde {df.index.min().date()} hasta {df.index.max().date()}")
+st.success(f"✅ Descarga datos SPX - VIX desde {df.index.min().date()} hasta {df.index.max().date()}")
 
 # --- Selección de rango para graficar SPX ---
 st.sidebar.header("Selecciona rango para graficar SPX")
 min_date = df.index.min().date()
 max_date = df.index.max().date()
 
-start_plot = st.sidebar.date_input("Fecha inicio", min_value=min_date, max_value=max_date, value=min_date)
-end_plot = st.sidebar.date_input("Fecha fin", min_value=start_plot, max_value=max_date, value=max_date)
+# Valores por defecto: últimos 3 meses
+default_end = max_date
+default_start = (pd.Timestamp(default_end) - pd.DateOffset(months=3)).date()
+
+start_plot = st.sidebar.date_input("Fecha inicio", min_value=min_date, max_value=default_end, value=default_start)
+end_plot = st.sidebar.date_input("Fecha fin", min_value=start_plot, max_value=max_date, value=default_end)
 
 # --- Filtrar DataFrame según rango ---
 df_plot = df.loc[(df.index.date >= start_plot) & (df.index.date <= end_plot)]
