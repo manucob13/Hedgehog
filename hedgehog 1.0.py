@@ -60,7 +60,6 @@ def fetch_raw_data(start, end):
             end=end, 
             auto_adjust=False, 
             multi_level_index=False, 
-            session=session
         )
         spx_data.index = pd.to_datetime(spx_data.index) # Asegurar índice de fecha y hora
         
@@ -72,7 +71,6 @@ def fetch_raw_data(start, end):
             end=end, 
             auto_adjust=False, 
             multi_level_index=False, 
-            session=session
         )
         
         # 3. Procesamiento y renombrado del VIX (se mantiene como una Serie separada)
