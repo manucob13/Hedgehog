@@ -17,7 +17,7 @@ st.set_page_config(page_title="HEDGEHOG 1.1 - Comparación K=2 vs K=3", layout="
 st.title("🔬 HEDGEHOG 1.1 ")
 st.markdown("""
 Modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
-del S&P 500. Comparativa Markov K=2 y K=3 ( fx varianza consolidado) """)
+del S&P 500. Comparativa Markov K=2 y K=3 ( fx varianza consolidado ) """)
 
 # ==============================================================================
 # 1. FUNCIONES DE LÓGICA PURA (CARGA Y PREPARACIÓN)
