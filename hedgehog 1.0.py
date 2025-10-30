@@ -26,9 +26,6 @@ def fetch_data():
 
     return df_merged
 
-# --- Las funciones 'calculate_indicators' y 'markov_calculation' han sido eliminadas temporalmente
-# --- para enfocarnos en la descarga de datos.
-
 # --- EJECUCIÓN DE PRUEBA (SOLO DESCARGA) ---
 
 print("--- INICIANDO PRUEBA DE MÓDULO DE ANÁLISIS (PASO 1: DESCARGA) ---", flush=True)
