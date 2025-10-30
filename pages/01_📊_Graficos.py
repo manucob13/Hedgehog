@@ -159,18 +159,9 @@ fig_combined.add_trace(go.Candlestick(
     showlegend=False
 ), row=1, col=1)
 
-# Configuraciones de la Fila 1 (SPX) - APLICAR BORDES
-fig_combined.update_yaxes(
-    title_text='Precio', 
-    row=1, col=1,
-    showline=True, linewidth=1, linecolor='black', # Borde izquierdo
-    mirror=True # Dibuja la línea en el lado derecho también
-)
-fig_combined.update_xaxes(
-    showticklabels=False, 
-    row=1, col=1,
-    showline=True, linewidth=1, linecolor='black' # Borde superior e inferior
-)
+# Configuraciones de la Fila 1
+fig_combined.update_yaxes(title_text='Precio', row=1, col=1)
+fig_combined.update_xaxes(showticklabels=False, row=1, col=1) # Ocultar etiquetas X en el gráfico superior
 
 # ----------------------------------------------------
 # 2. GRÁFICO DE VOLATILIDAD REALIZADA (RV_5d) (Fila 2)
@@ -234,14 +225,8 @@ fig_combined.add_annotation(
     row=2, col=1
 )
 
-# Configuraciones de la Fila 2 (RV) - APLICAR BORDES
-fig_combined.update_yaxes(
-    title_text='RV (%)', 
-    row=2, col=1, 
-    tickformat=".2f",
-    showline=True, linewidth=1, linecolor='black', # Borde izquierdo
-    mirror=True # Dibuja la línea en el lado derecho también
-)
+# Configuraciones de la Fila 2
+fig_combined.update_yaxes(title_text='RV (%)', row=2, col=1, tickformat=".2f")
 
 
 # --- CONFIGURACIÓN FINAL DEL GRÁFICO COMBINADO ---
@@ -251,19 +236,15 @@ fig_combined.update_layout(
     height=800, # Aumento la altura para los dos gráficos
     xaxis_rangeslider_visible=False,
     hovermode='x unified',
-    # Configuración global para asegurar que los bordes son visibles
-    plot_bgcolor='white', 
-    paper_bgcolor='white'
 )
 
-# Configurar el eje X compartido (solo las etiquetas inferiores) - APLICAR BORDES
+# Configurar el eje X compartido (solo las etiquetas inferiores)
 fig_combined.update_xaxes(
     tickmode='array',
     tickvals=list(range(len(spx_filtered))),
     ticktext=date_labels,
     tickangle=-45,
-    row=2, col=1,
-    showline=True, linewidth=1, linecolor='black' # Borde inferior
+    row=2, col=1
 )
 
 st.plotly_chart(fig_combined, use_container_width=True)
