@@ -202,9 +202,9 @@ with st.spinner("Calculando indicadores de volatilidad (RV, ATR, NR, VIX Change)
     spx = calculate_indicators(df_raw)
 st.success("✅ Indicadores calculados.")
 
-# Muestra de las últimas filas del DataFrame (Corregido: NO es st.spx)
-st.subheader("Últimas 5 Filas del DataFrame de Indicadores (spx)")
-st.dataframe(spx.tail(5)) # <-- Corrección del error 'AttributeError: st.spx...'
+# Muestra de las últimas filas del DataFrame 
+st.subheader("Últimas 3 Filas del DataFrame de Indicadores (spx)")
+st.dataframe(spx.tail(3)) 
 
 # 3. Análisis de Régimen de Volatilidad
 st.header("2. Análisis de Régimen de Volatilidad (Modelo Markov)")
@@ -227,13 +227,13 @@ elif markov_results:
         st.markdown(f"🔥 **UMBRAL RV_5d (P{markov_results['P_USADO']:.0f} más cercano a 0.10):** `{markov_results['UMBRAL_RV5D_P_OBJETIVO']:.4f}`")
 
     with col2:
+        # Esta línea muestra la última fecha de datos usada para el entrenamiento:
         st.markdown(f"**Fecha de Entrenamiento:** `{markov_results['ultima_fecha']}`")
         st.markdown(f"**🚀 Probabilidad HOY (Baja Volatilidad):** **`{markov_results['prob_baja_vol']:.4f}`**")
         st.markdown(f"## {markov_results['conclusion']}")
 
     with st.expander("Ver Resumen Estadístico Completo del Modelo"):
         st.code(markov_results['summary'])
-    
-    # markov_plot(markov_results) # Gráfico excluido a petición del usuario
+
 else:
     st.error("El cálculo del modelo Markov no devolvió resultados.")
