@@ -4,6 +4,11 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
+import warnings
+import matplotlib.pyplot as plt
+from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
+from sklearn.preprocessing import StandardScaler
+from matplotlib.dates import DateFormatter
 
 # --- Configuración de la app ---
 st.set_page_config(page_title="HEDGEHOG", layout="wide")
