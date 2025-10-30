@@ -337,17 +337,21 @@ def main_comparison():
     st.markdown("---")
     
     st.header("3. Modelos de Markov")
-    st.subheader("Modelo K=2 (Original, Objetivo RV=0.10)")
+    
+    # Definir columnas para los títulos y la ejecución de los modelos (K=2 y K=3 en paralelo)
     col_k2, col_k3 = st.columns(2)
     results_k2, results_k3 = None, None
 
     # --- 2. Ejecutar Modelo K=2 ---
     with col_k2:
+        # Título K=2 (Ahora a la izquierda, paralelo al K=3)
+        st.subheader("Modelo K=2 (Original, Objetivo RV=0.10)") 
         with st.spinner("Ajustando Modelo K=2..."):
             results_k2 = markov_calculation_k2(endog_final, exog_tvtp_final)
 
     # --- 3. Ejecutar Modelo K=3 ---
     with col_k3:
+        # Título K=3 (Ahora a la derecha, paralelo al K=2)
         st.subheader("Modelo K=3 (Propuesto, Varianza Objetiva)")
         with st.spinner("Ajustando Modelo K=3..."):
             results_k3 = markov_calculation_k3(endog_final, exog_tvtp_final)
@@ -361,7 +365,8 @@ def main_comparison():
         st.error(f"❌ Error K=3: {results_k3['error']}")
         return
     
-    st.header("Resultados Numéricos Clave y Comparación Markov")
+    # El texto de resultados numérico ahora usa st.subheader para ser más pequeño
+    st.subheader("Resultados Numéricos Clave y Comparación Markov") 
     st.markdown(f"**Fecha del Último Cálculo:** {endog_final.index[-1].strftime('%Y-%m-%d')}")
     st.markdown("---")
 
