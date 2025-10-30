@@ -324,6 +324,7 @@ fig_combined.add_trace(go.Scatter(
     mode='lines', 
     name='RV (Sube)', 
     line=dict(color='#00B06B', width=2),
+    connectgaps=True,  # IMPORTANTE: Conecta los huecos
     hoverinfo='text',
     text=[f"RV: {y:.2f}% ({'Sube' if u else 'Baja'})" for y, u in zip(spx_filtered['RV_5d_pct'], is_up)],
     showlegend=True 
@@ -336,6 +337,7 @@ fig_combined.add_trace(go.Scatter(
     mode='lines', 
     name='RV (Baja)', 
     line=dict(color='#F13A50', width=2),
+    connectgaps=True,  # IMPORTANTE: Conecta los huecos
     hoverinfo='text',
     text=[f"RV: {y:.2f}% ({'Sube' if u else 'Baja'})" for y, u in zip(spx_filtered['RV_5d_pct'], is_up)],
     showlegend=False 
