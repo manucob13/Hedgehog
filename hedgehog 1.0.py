@@ -360,7 +360,7 @@ def main_comparison():
         st.error(f"❌ Error K=3: {results_k3['error']}")
         return
     
-    st.header("2. Resultados Numéricos Clave y Comparación Markov")
+    st.header("Resultados Numéricos Clave y Comparación Markov")
     st.markdown(f"**Fecha del Último Cálculo:** {endog_final.index[-1].strftime('%Y-%m-%d')}")
     st.markdown("---")
 
