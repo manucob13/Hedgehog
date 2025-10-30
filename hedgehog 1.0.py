@@ -1,136 +1,79 @@
-import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
-import plotly.graph_objects as go
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
 import warnings
-import matplotlib.pyplot as plt
 from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
 from sklearn.preprocessing import StandardScaler
-from matplotlib.dates import DateFormatter
-from matplotlib.lines import Line2D # Necesaria para la leyenda manual en el gráfico
 
-# --- Configuración de la app ---
-st.set_page_config(page_title="HEDGEHOG", layout="wide")
-st.title("📊 HEDGEHOG 1.0")
+# Ocultar advertencias de statsmodels que a menudo aparecen durante el ajuste
+warnings.filterwarnings('ignore')
 
-# --- Descarga de datos históricos ---
-@st.cache_data(ttl=86400)
+# --- Descarga de datos históricos (Cacheado) ---
 def fetch_data():
+    """Descarga datos históricos del ^GSPC (SPX) y ^VIX (VIX)."""
     start = "2010-01-01"
     end = datetime.now()
 
     # Descarga SPX y VIX
-    spx = yf.download("^GSPC", start=start, end=end, auto_adjust=False, multi_level_index=False)
-    vix = yf.download("^VIX", start=start, end=end, auto_adjust=False, multi_level_index=False)
+    spx = yf.download("^GSPC", start=start, end=end, auto_adjust=False, multi_level_index=False, progress=False)
+    vix = yf.download("^VIX", start=start, end=end, auto_adjust=False, multi_level_index=False, progress=False)
 
-    # Convertir índices a datetime
+    # Preparación y fusión de datos
     spx.index = pd.to_datetime(spx.index)
     vix_series = vix['Close'].rename('VIX')
     vix_series.index = pd.to_datetime(vix_series.index)
 
-    # Fusionar SPX con VIX
     df_merged = spx.merge(vix_series, how='left', left_index=True, right_index=True)
     df_merged.dropna(subset=['VIX'], inplace=True)
+    
+    print(f"DEBUG: Datos descargados desde {df_merged.index.min().date()} hasta {df_merged.index.max().date()}")
 
     return df_merged
 
-# Cargar datos
-df = fetch_data()
-st.success(f"✅ Descarga datos SPX - VIX desde {df.index.min().date()} - {df.index.max().date()}")
+# --- Cálculo de Indicadores (Cacheado) ---
+def calculate_indicators(df_raw: pd.DataFrame):
+    """Calcula todos los indicadores técnicos necesarios (RV, ATR, NR, VIX Change)."""
+    spx = df_raw.copy()
 
-# --- Selección de rango para graficar SPX ---
-st.sidebar.header("Rango grafico -  SPX")
-min_date = df.index.min().date()
-max_date = df.index.max().date()
+    # 1. Volatilidad Realizada (RV_5d y RV_21d)
+    spx['log_ret'] = np.log(spx['Close'] / spx['Close'].shift(1))
+    spx['RV_5d'] = spx['log_ret'].rolling(window=5).std() * np.sqrt(252)
+    spx['RV_21d'] = spx['log_ret'].rolling(window=21).std() * np.sqrt(252)
 
-# Valores por defecto: últimos 3 meses
-default_end = max_date
-default_start = (pd.Timestamp(default_end) - pd.DateOffset(months=3)).date()
+    # 2. Average True Range (ATR_14)
+    spx['daily_range'] = spx['High'] - spx['Low']
+    spx['previous_close'] = spx['Close'].shift(1)
+    spx['tr1'] = spx['High'] - spx['Low']
+    spx['tr2'] = (spx['High'] - spx['previous_close']).abs()
+    spx['tr3'] = (spx['Low'] - spx['previous_close']).abs()
+    spx['true_range'] = spx[['tr1', 'tr2', 'tr3']].max(axis=1)
+    period = 14
+    spx['ATR_14'] = spx['true_range'].rolling(window=period).mean()
+    spx.drop(columns=['previous_close', 'tr1', 'tr2', 'tr3', 'daily_range'], inplace=True)
 
-# Selector de fechas
-start_plot = st.sidebar.date_input("Fecha inicio", min_value=min_date, max_value=max_date, value=default_start)
-end_plot = st.sidebar.date_input("Fecha fin", min_value=start_plot, max_value=max_date, value=default_end)
+    # 3. Narrow Range (NR14 - Binario)
+    window = 14
+    spx['nr14_threshold'] = spx['true_range'].rolling(window=window).quantile(0.14)
+    # NR14 es 1 si el rango de hoy es estrecho
+    spx['NR14'] = (spx['true_range'] < spx['nr14_threshold']).astype(int)
+    spx.drop(columns=['true_range', 'nr14_threshold'], inplace=True)
+    
+    # 4. Ratio de volatilidad en el VIX
+    spx['VIX_pct_change'] = spx['VIX'].pct_change()
+    
+    print("DEBUG: Indicadores calculados.")
+    return spx
 
-# --- Filtrar DataFrame según rango ---
-df_plot = df.loc[(df.index.date >= start_plot) & (df.index.date <= end_plot)]
-
-# --- Gráfico SPX con velas japonesas (sin huecos de fines de semana) ---
-if not df_plot.empty:
-    # Convertir índice a string para eje categórico
-    df_plot_plotly = df_plot.copy()
-    df_plot_plotly['Fecha_str'] = df_plot_plotly.index.strftime('%Y-%m-%d')
-
-    fig = go.Figure(data=[go.Candlestick(
-        x=df_plot_plotly['Fecha_str'],
-        open=df_plot_plotly['Open'],
-        high=df_plot_plotly['High'],
-        low=df_plot_plotly['Low'],
-        close=df_plot_plotly['Close'],
-        increasing_line_color='green',
-        decreasing_line_color='red'
-    )])
-
-    fig.update_layout(
-        xaxis_title="Fecha",
-        yaxis_title="Precio",
-        xaxis_rangeslider_visible=False,
-        xaxis_type='category',  # elimina huecos de fines de semana
-        template="plotly_white"
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    st.warning("No hay datos disponibles para el rango seleccionado.")
-
-# --- Volatilidad realizada 5d vs 21d ---
-spx = df.copy()
-# Calcular retornos logarítmicos diarios
-spx['log_ret'] = np.log(spx['Close'] / spx['Close'].shift(1))
-# Calcular volatilidad realizada móvil anualizada a 5 y 21 días
-spx['RV_5d'] = spx['log_ret'].rolling(window=5).std() * np.sqrt(252)
-spx['RV_21d'] = spx['log_ret'].rolling(window=21).std() * np.sqrt(252)
-
-## --- ATR ---
-# Calcular rango diario como High - Low
-spx['daily_range'] = spx['High'] - spx['Low']
-# Calcular True Range (TR)
-spx['previous_close'] = spx['Close'].shift(1)
-spx['tr1'] = spx['High'] - spx['Low']
-spx['tr2'] = (spx['High'] - spx['previous_close']).abs()
-spx['tr3'] = (spx['Low'] - spx['previous_close']).abs()
-spx['true_range'] = spx[['tr1', 'tr2', 'tr3']].max(axis=1)
-# Calcular ATR como media móvil simple del True Range en ventana de 14 días (o la que prefieras)
-period = 14
-spx['ATR_14'] = spx['true_range'].rolling(window=period).mean()
-# Limpiar columnas auxiliares si quieres
-spx.drop(columns=['previous_close', 'tr1', 'tr2', 'tr3'], inplace=True)
-
-## --- Narrow Range (NR) ---
-# Calcular ventana para NR
-window = 14
-# Calcular percentil 14 (o cuantil 0.14) del true_range en ventana móvil
-spx['nr14_threshold'] = spx['true_range'].rolling(window=window).quantile(0.14)
-# Crear columna que indica si el true_range está por debajo del percentil 14% (True=NR día estrecho)
-spx['NR14'] = spx['true_range'] < spx['nr14_threshold']
-
-## --- Ratio de volatilidad en el VIX ---
-spx['VIX_pct_change'] = spx['VIX'].pct_change()
-# Mostrar las últimas tres filas del DataFrame spx
-
-## --- MARKOV ---
-@st.cache_data(ttl=3600) # Importante para que Streamlit no recalcule el modelo en cada interacción
-
-# Calculo y entrenamiento MODELO de MARKOV
+# --- MARKOV CALCULATION (Función de lógica pura) ---
 def markov_calculation(spx: pd.DataFrame):
     """
     Prepara los datos, ajusta el modelo Markov-Switching y extrae los resultados clave.
     Devuelve un diccionario con los resultados del modelo.
     """
     
-    st.subheader("⚙️ 1. Preparación y Cálculo del Modelo Markov")
-    st.info("Ajustando el modelo. Esto puede tomar unos segundos...")
+    print("DEBUG: Ajustando el modelo Markov-Switching...")
 
     # --- 0. CONFIGURACIÓN Y LIMPIEZA ---
     endog_variable = 'RV_5d'
@@ -140,7 +83,6 @@ def markov_calculation(spx: pd.DataFrame):
 
     data_markov = spx.copy()
     
-    # Manejar NaN y tipo de dato para NR14
     if 'NR14' in data_markov.columns:
         data_markov['NR14'] = data_markov['NR14'].fillna(0).astype(int) 
 
@@ -180,7 +122,7 @@ def markov_calculation(spx: pd.DataFrame):
     exog_tvtp_final = data_final[variables_tvtp]
     
     if len(endog_final) < 50:
-        st.error(f"❌ Datos insuficientes para el modelo Markov. Solo {len(endog_final)} puntos disponibles.")
+        print(f"ERROR: Datos insuficientes para el modelo Markov. Solo {len(endog_final)} puntos disponibles.")
         return None
 
     # --- 2. AJUSTE DEL MODELO MARKOV-SWITCHING ---
@@ -191,14 +133,14 @@ def markov_calculation(spx: pd.DataFrame):
             switching_variance=True, switching_trend=True, exog_tvtp=exog_tvtp_final
         )
         resultado = modelo.fit(maxiter=500, disp=False)
-        st.success("✅ Ajuste exitoso del Modelo Markov-Switching.")
+        print("DEBUG: Ajuste exitoso del Modelo Markov-Switching.")
     except Exception as e:
         # Intento de reajuste con 'powell'
         try:
             resultado = modelo.fit(maxiter=500, disp=False, method='powell')
-            st.warning("⚠️ Ajuste inicial falló. Reajuste exitoso usando el método 'powell'.")
+            print("WARNING: Ajuste inicial falló. Reajuste exitoso usando el método 'powell'.")
         except Exception as e2:
-            st.error(f"❌ ERROR CRÍTICO: Ambos métodos de ajuste fallaron: {e2}")
+            print(f"ERROR CRÍTICO: Ambos métodos de ajuste fallaron: {e2}")
             return None 
 
     # --- 3. EXTRACCIÓN E INTERPRETACIÓN DE RESULTADOS ---
@@ -206,7 +148,7 @@ def markov_calculation(spx: pd.DataFrame):
     # Identificar los Índices de Régimen (Basado en la varianza)
     regimen_vars = resultado.params.filter(regex='sigma2|Variance').sort_values(ascending=True)
     if len(regimen_vars) < 2:
-        st.error("❌ ADVERTENCIA: No se pudieron extraer los dos parámetros de varianza.")
+        print("ERROR: ADVERTENCIA: No se pudieron extraer los dos parámetros de varianza.")
         return None
 
     # Extracción de índices y nombres de parámetros
@@ -223,6 +165,10 @@ def markov_calculation(spx: pd.DataFrame):
     # Obtención de la Probabilidad de Régimen HOY
     probabilidades_filtradas = resultado.filtered_marginal_probabilities
     ultima_probabilidad = probabilidades_filtradas.iloc[-1]
+    
+    # Obtener la fecha de la última observación
+    ultima_fecha = probabilidades_filtradas.index[-1].strftime('%Y-%m-%d')
+
 
     prob_baja_vol = ultima_probabilidad.get(regimen_baja_vol_index, 0)
     
@@ -247,116 +193,36 @@ def markov_calculation(spx: pd.DataFrame):
         'UMBRAL_COMPRESION': UMBRAL_COMPRESION,
         'var_baja_vol': resultado.params[regimen_baja_vol_param_name],
         'var_alta_vol': resultado.params[regimen_alta_vol_param_name],
-        'summary': resultado.summary().as_text()
+        'summary': resultado.summary().as_text(),
+        'ultima_fecha': ultima_fecha # Nuevo: Fecha del último entrenamiento
     }
 
-# GRAFICAR MARKOV
-def markov_plot(results: dict):
-    """
-    Muestra los resultados del modelo Markov en Streamlit (texto y gráfico).
-    """
-    if results is None:
-        return
-
-    plt.style.use('seaborn-v0_8-darkgrid')
+# --- EJECUCIÓN DE PRUEBA (Para ver los resultados en consola) ---
+if __name__ == "__main__":
+    print("--- INICIANDO PRUEBA DE MÓDULO DE ANÁLISIS ---")
     
-    st.subheader("📊 2. Visualización Detallada (Últimos 60 Días)")
+    # 1. Cargar datos base
+    df_raw = fetch_data()
 
-    # Extracción de variables necesarias del diccionario de resultados
-    endog_final = results['endog_final']
-    resultado = results['resultado']
-    regimen_baja_vol_index = results['regimen_baja_vol_index']
-    UMBRAL_RV5D_P_OBJETIVO = results['UMBRAL_RV5D_P_OBJETIVO']
-    P_USADO = results['P_USADO']
-    UMBRAL_COMPRESION = results['UMBRAL_COMPRESION']
-
-    # 4.1 Filtrado de datos para los últimos 60 días
-    fecha_final = endog_final.index.max()
-    fecha_inicio = fecha_final - pd.DateOffset(days=60) 
-
-    rv_5d_filtrada = endog_final[endog_final.index >= fecha_inicio]
-    prob_regimen_baja_completa = resultado.smoothed_marginal_probabilities[regimen_baja_vol_index]
-    prob_filtrada = prob_regimen_baja_completa[prob_regimen_baja_completa.index >= fecha_inicio]
-
-    # --- Generación del gráfico (Dos Subplots) ---
-    fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
-    fig.suptitle('Análisis de Régimen de Volatilidad (Últimos 60 Días)', fontsize=16)
-
-    # Gráfico 1: RV_5d
-    axes[0].set_title(f"1. Volatilidad Realizada (RV_5d)")
+    # 2. Calcular indicadores
+    spx_indicators = calculate_indicators(df_raw)
     
-    # Dibujar líneas con colores dinámicos
-    for i in range(1, len(rv_5d_filtrada)):
-        x_vals = [rv_5d_filtrada.index[i-1], rv_5d_filtrada.index[i]]
-        y_vals = [rv_5d_filtrada.iloc[i-1], rv_5d_filtrada.iloc[i]]
-        color = 'green' if rv_5d_filtrada.iloc[i] > rv_5d_filtrada.iloc[i-1] else 'red'
-        axes[0].plot(x_vals, y_vals, color=color, linewidth=1.5, alpha=0.8)
-        
-    axes[0].scatter(rv_5d_filtrada.index, rv_5d_filtrada.values, c='blue', s=20, alpha=0.6, zorder=5)
-    
-    # Dibujar Umbral RV_5d
-    axes[0].axhline(UMBRAL_RV5D_P_OBJETIVO, color='orange', linestyle=':', linewidth=2, alpha=0.9,
-                    label=f"Umbral Baja Vol. (P{P_USADO:.0f}: {UMBRAL_RV5D_P_OBJETIVO:.4f})")
-    
-    # Leyenda manual
-    from matplotlib.lines import Line2D
-    legend_elements = [
-        Line2D([0], [0], color='green', linewidth=2, label='RV_5d Sube'),
-        Line2D([0], [0], color='red', linewidth=2, label='RV_5d Baja'),
-        Line2D([0], [0], color='orange', linestyle=':', linewidth=2, label=f"Umbral (P{P_USADO:.0f})")
-    ]
-    axes[0].legend(handles=legend_elements, loc='upper right')
-    axes[0].grid(True, linestyle='--', alpha=0.6)
+    # Nuevo: Mostrar últimas 3 filas del dataframe con indicadores
+    print("\n--- ÚLTIMAS 3 FILAS DEL DATAFRAME DE INDICADORES (SPX) ---")
+    print(spx_indicators.tail(3).to_string())
 
-    # Gráfico 2: Probabilidad Suavizada
-    axes[1].plot(prob_filtrada.index, prob_filtrada.values, label=f'Prob. Baja Volatilidad (Reg. {regimen_baja_vol_index})', color='green', linewidth=2)
-    axes[1].axhline(0.5, color='red', linestyle='--', alpha=0.7, label='Umbral 50%')
-    axes[1].axhline(UMBRAL_COMPRESION, color='orange', linestyle=':', linewidth=2, alpha=0.7, label=f"Umbral {int(UMBRAL_COMPRESION*100)}% (Señal Fuerte)")
-    axes[1].set_title('2. Probabilidad de Régimen de Baja Volatilidad/Compresión')
-    axes[1].fill_between(prob_filtrada.index, 0, prob_filtrada.values, where=prob_filtrada.values > 0.5, color='green', alpha=0.3)
-    axes[1].legend(loc='upper right')
-    axes[1].set_ylim(0, 1)
-    axes[1].grid(True, linestyle='--', alpha=0.6)
+    # 3. Ejecutar modelo Markov
+    markov_results = markov_calculation(spx_indicators)
 
-    # Formato de Fechas en el Eje X
-    axes[1].set_xticks(prob_filtrada.index[::len(prob_filtrada)//10 or 1])
-    date_form = DateFormatter("%m-%d")
-    axes[1].xaxis.set_major_formatter(date_form)
-    plt.xticks(rotation=45, ha='right')
-
-    plt.xlabel("Fecha")
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    
-    # Mostrar el gráfico en Streamlit
-    st.pyplot(fig)
-
-st.header("Análisis de Régimen de Volatilidad")
-markov_results = markov_calculation(spx)
-
-if markov_results:
-    st.subheader("✅ Resultados Clave del Cálculo")
-
-    # Mostrar el umbral RV_5d
-    st.markdown(f"🔥 **UMBRAL RV_5d (P{markov_results['P_USADO']:.0f} más cercano a 0.10):** `{markov_results['UMBRAL_RV5D_P_OBJETIVO']:.4f}`")
-
-    # Mostrar las varianzas de los regímenes
-    st.markdown("---")
-    st.markdown(f"**Varianza Baja Volatilidad (Reg. {markov_results['regimen_baja_vol_index']}):** `{markov_results['var_baja_vol']:.4f}`")
-    st.markdown(f"**Varianza Alta Volatilidad (Reg. {markov_results['regimen_alta_vol_index']}):** `{markov_results['var_alta_vol']:.4f}`")
-
-    # Mostrar la probabilidad de hoy
-    st.markdown("---")
-    st.markdown(f"**🚀 Probabilidad HOY (Baja Volatilidad):** **`{markov_results['prob_baja_vol']:.4f}`**")
-    st.markdown(f"## {markov_results['conclusion']}")
-
-    with st.expander("Ver Resumen Estadístico Completo del Modelo"):
-        st.code(markov_results['summary'])
-    
-    markov_plot(markov_results) 
-else:
-    st.error("El cálculo del modelo Markov falló. Revisar logs anteriores.")
-
-
-
-##### POR DONDE VAMOS ####
-
+    # 4. Imprimir resultados clave
+    if markov_results:
+        print("\n--- RESULTADOS CLAVE DEL MODELO MARKOV ---")
+        print(f"Fecha de Entrenamiento: {markov_results['ultima_fecha']}") # Nuevo: Mostrar la fecha
+        print(f"Probabilidad de Baja Volatilidad (HOY): {markov_results['prob_baja_vol']:.4f}")
+        print(f"Conclusión de la Señal: {markov_results['conclusion']}")
+        print(f"Varianza Régimen Baja Vol.: {markov_results['var_baja_vol']:.4f}")
+        print(f"Varianza Régimen Alta Vol.: {markov_results['var_alta_vol']:.4f}")
+        print("\nResumen Estadístico Completo:")
+        print(markov_results['summary'])
+    else:
+        print("\n--- NO SE PUDO OBTENER RESULTADOS DEL MODELO MARKOV ---")
