@@ -317,8 +317,9 @@ def main_comparison():
     # BOTÓN PARA FORZAR LA ACTUALIZACIÓN (La solución al problema de caché)
     if st.button("🔄 Forzar Actualización (Limpiar Caché de Datos)"):
         st.cache_data.clear()
-        st.experimental_rerun()
-    
+        # LA FUNCIÓN CORREGIDA ES st.rerun()
+        st.rerun()
+        
     # --- 1. Cargar datos y calcular indicadores ---
     with st.spinner("Descargando datos históricos y calculando indicadores..."):
         df_raw = fetch_data()
@@ -357,22 +358,34 @@ def main_comparison():
         # Título K=2 (Ahora a la izquierda, paralelo al K=3)
         st.subheader("Modelo K=2 (Objetivo RV=0.10)") 
         with st.spinner("Ajustando Modelo K=2..."):
-            results_k2 = markov_calculation_k2(endog_final, exog_tvtp_final)
+            # Para evitar errores en caso de que las funciones reales no existan
+            try:
+                results_k2 = markov_calculation_k2(endog_final, exog_tvtp_final)
+            except NameError:
+                 st.error("Error: markov_calculation_k2 no definida.")
+                 return
 
     # --- 3. Ejecutar Modelo K=3 ---
     with col_k3:
         # Título K=3 (Ahora a la derecha, paralelo al K=2)
         st.subheader("Modelo K=3 (Objetivo Varianza)")
         with st.spinner("Ajustando Modelo K=3..."):
-            results_k3 = markov_calculation_k3(endog_final, exog_tvtp_final)
+            # Para evitar errores en caso de que las funciones reales no existan
+            try:
+                results_k3 = markov_calculation_k3(endog_final, exog_tvtp_final)
+            except NameError:
+                 st.error("Error: markov_calculation_k3 no definida.")
+                 return
+
 
     # --- 4. Mostrar Resultados Clave y Comparación (Tabla) ---
 
-    if 'error' in results_k2:
-        st.error(f"❌ Error K=2: {results_k2['error']}")
+    # Verificación de resultados
+    if results_k2 is None or 'error' in results_k2:
+        st.error(f"❌ Error K=2: {results_k2.get('error', 'Error al ejecutar el modelo K=2') if results_k2 else 'Resultados K=2 nulos'}")
         return
-    if 'error' in results_k3:
-        st.error(f"❌ Error K=3: {results_k3['error']}")
+    if results_k3 is None or 'error' in results_k3:
+        st.error(f"❌ Error K=3: {results_k3.get('error', 'Error al ejecutar el modelo K=3') if results_k3 else 'Resultados K=3 nulos'}")
         return
     
     # El texto de resultados numérico ahora usa st.subheader para ser más pequeño
@@ -439,6 +452,9 @@ def main_comparison():
     
     La **Probabilidad Consolidada (Baja + Media)** del K=3 ofrece una señal de entrada/salida más robusta: solo da luz verde cuando la suma de los dos estados favorables supera el 70%, actuando como un **filtro más estricto contra el ruido** que el K=2 ignora.
     """)
+
+
+
 
 # ==============================================================================
 # EJECUCIÓN DEL SCRIPT
