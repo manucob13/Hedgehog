@@ -5,13 +5,14 @@ import numpy as np
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots # Importamos subplots
 import warnings
 
 warnings.filterwarnings('ignore')
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(page_title="Gráficos - HEDGEHOG", layout="wide")
-st.title("📊 Gráficos de Análisis Técnico")
+st.title("📊 Gráficos de Análisis Técnico Combinados")
 
 # --- FUNCIÓN PARA CARGAR DATOS (Reutilizada de app.py) ---
 @st.cache_data(ttl=86400)
@@ -99,167 +100,154 @@ spx_filtered = spx_filtered[spx_filtered.index.dayofweek < 5]  # 0=Lunes, 4=Vier
 
 st.markdown(f"**Período seleccionado:** {fecha_inicio} hasta {fecha_final} ({len(spx_filtered)} días)")
 
-# --- GRÁFICO DE VELAS JAPONESAS ---
-st.subheader("📈 S&P 500 - Velas Japonesas")
+# --- PREPARACIÓN DE DATOS PARA GRÁFICO COMBINADO ---
 
-# Crear etiquetas de fecha inteligentes para el eje x del Candlestick
+# Crear etiquetas de fecha inteligentes para el eje x
 date_labels = []
 prev_year = None
 prev_month = None
 
 for d in spx_filtered.index:
-    # Si cambia el año, mostrar año
     if prev_year is None or d.year != prev_year:
         date_labels.append(d.strftime('%b %y'))
         prev_year = d.year
         prev_month = d.month
-    # Si cambia el mes, mostrar mes y día
     elif d.month != prev_month:
         date_labels.append(d.strftime('%b %d'))
         prev_month = d.month
-    # Mismo mes, solo mostrar el día cada 5 días aprox
     elif len(date_labels) % 5 == 0:
         date_labels.append(d.strftime('%d'))
     else:
-        date_labels.append('')  # Sin etiqueta para no saturar
+        date_labels.append('')
 
-fig = go.Figure(data=[go.Candlestick(
+# Convertir RV_5d a porcentaje
+spx_filtered['RV_5d_pct'] = spx_filtered['RV_5d'] * 100
+
+# Lógica de Color para RV
+UMBRAL_RV = 0.10
+spx_filtered['RV_change'] = spx_filtered['RV_5d_pct'].diff()
+is_up = spx_filtered['RV_change'] >= 0
+
+is_down = ~is_up
+rv_green_mask = is_up | is_up.shift(-1).fillna(False)
+rv_red_mask = is_down | is_down.shift(-1).fillna(False)
+
+rv_green_plot = spx_filtered['RV_5d_pct'].where(rv_green_mask, other=np.nan)
+rv_red_plot = spx_filtered['RV_5d_pct'].where(rv_red_mask, other=np.nan)
+
+# --- CREAR SUBPLOTS ---
+# 2 filas, 1 columna. Compartir el eje x
+fig_combined = make_subplots(
+    rows=2, 
+    cols=1, 
+    shared_xaxes=True, 
+    vertical_spacing=0.02,
+    row_heights=[0.7, 0.3], # SPX toma 70%, RV toma 30% del alto
+    subplot_titles=("S&P 500 - Velas Japonesas", "") # El segundo título queda vacío
+)
+
+# ----------------------------------------------------
+# 1. GRÁFICO DE VELAS JAPONESAS (Fila 1)
+# ----------------------------------------------------
+fig_combined.add_trace(go.Candlestick(
     x=list(range(len(spx_filtered))),
     open=spx_filtered['Open'],
     high=spx_filtered['High'],
     low=spx_filtered['Low'],
     close=spx_filtered['Close'],
-    name='SPX'
-)])
+    name='SPX',
+    showlegend=False
+), row=1, col=1)
 
-fig.update_layout(
-    title=f'S&P 500 - Velas Japonesas ({fecha_inicio} a {fecha_final})',
-    yaxis_title='Precio',
-    xaxis_title='',
-    template='plotly_white',
-    height=600,
-    xaxis_rangeslider_visible=False,
-    xaxis=dict(
-        tickmode='array',
-        tickvals=list(range(len(spx_filtered))),
-        ticktext=date_labels,
-        tickangle=-45
-    ),
-    hovermode='x unified'
-)
+# Configuraciones de la Fila 1
+fig_combined.update_yaxes(title_text='Precio', row=1, col=1)
+fig_combined.update_xaxes(showticklabels=False, row=1, col=1) # Ocultar etiquetas X en el gráfico superior
 
-st.plotly_chart(fig, use_container_width=True)
+# ----------------------------------------------------
+# 2. GRÁFICO DE VOLATILIDAD REALIZADA (RV_5d) (Fila 2)
+# ----------------------------------------------------
 
-# --- GRÁFICO DE VOLATILIDAD REALIZADA (RV_5d) CON UMBRAL BICOLOR ---
-st.subheader("📉 Volatilidad Realizada (RV\_5d) con Umbral")
-
-UMBRAL_RV = 0.10 # El umbral que queremos mostrar
-
-fig_rv = go.Figure()
-
-# Convertir RV_5d a porcentaje
-spx_filtered['RV_5d_pct'] = spx_filtered['RV_5d'] * 100
-
-# ----------------------------------------------------------------------
-# LÓGICA DE COLOR FINAL Y PUNTOS BLANCOS
-# Subida (>= 0) -> Verde
-# Bajada (< 0) -> Rojo
-# Puntos -> Blanco (para visualización limpia)
-# ----------------------------------------------------------------------
-
-# 1. Calcular el cambio diario de RV
-spx_filtered['RV_change'] = spx_filtered['RV_5d_pct'].diff()
-
-# 2. Determinar la dirección (True para Subida/Mantiene, False para Bajada)
-is_up = spx_filtered['RV_change'] >= 0
-
-# 3. Traza de LÍNEA VERDE (Subida o Mantenimiento)
-# La máscara incluye el punto actual si es subida Y el punto anterior si es el inicio de una subida
-rv_green_mask = is_up | is_up.shift(-1).fillna(False)
-rv_green_plot = spx_filtered['RV_5d_pct'].where(rv_green_mask, other=np.nan)
-
-# Trazo para la volatilidad en SUBIDA (Verde)
-fig_rv.add_trace(go.Scatter(
-    x=spx_filtered.index,
+# Traza de LÍNEA VERDE (Subida)
+fig_combined.add_trace(go.Scatter(
+    x=list(range(len(spx_filtered))),
     y=rv_green_plot,
-    mode='lines', # Solo líneas, sin markers aquí
+    mode='lines',
     name='Subida', 
     line=dict(color='green', width=2),
     hoverinfo='text',
-    text=[f"RV: {y:.2f}% ({'Sube' if u else 'Baja'})" for y, u in zip(spx_filtered['RV_5d_pct'], is_up)]
-))
+    text=[f"RV: {y:.2f}% ({'Sube' if u else 'Baja'})" for y, u in zip(spx_filtered['RV_5d_pct'], is_up)],
+    showlegend=False # Ocultar leyenda
+), row=2, col=1)
 
-
-# 4. Traza de LÍNEA ROJA (Bajada)
-# La máscara incluye el punto actual si es bajada Y el punto anterior si es el inicio de una bajada
-is_down = ~is_up
-rv_red_mask = is_down | is_down.shift(-1).fillna(False)
-rv_red_plot = spx_filtered['RV_5d_pct'].where(rv_red_mask, other=np.nan)
-
-# Trazo para la volatilidad en BAJADA (Rojo)
-fig_rv.add_trace(go.Scatter(
-    x=spx_filtered.index,
+# Traza de LÍNEA ROJA (Bajada)
+fig_combined.add_trace(go.Scatter(
+    x=list(range(len(spx_filtered))),
     y=rv_red_plot,
-    mode='lines', # Solo líneas, sin markers aquí
+    mode='lines',
     name='Bajada', 
     line=dict(color='red', width=2),
     hoverinfo='text',
-    text=[f"RV: {y:.2f}% ({'Sube' if u else 'Baja'})" for y, u in zip(spx_filtered['RV_5d_pct'], is_up)]
-))
+    text=[f"RV: {y:.2f}% ({'Sube' if u else 'Baja'})" for y, u in zip(spx_filtered['RV_5d_pct'], is_up)],
+    showlegend=False # Ocultar leyenda
+), row=2, col=1)
 
-
-# 5. Traza de PUNTOS (Markers) en BLANCO (sobre ambas líneas)
-fig_rv.add_trace(go.Scatter(
-    x=spx_filtered.index,
+# Traza de PUNTOS (Markers) en BLANCO
+fig_combined.add_trace(go.Scatter(
+    x=list(range(len(spx_filtered))),
     y=spx_filtered['RV_5d_pct'],
-    mode='markers', # Solo markers, sin línea
-    name='Puntos', # Se puede quitar de la leyenda si no es necesario
-    marker=dict(color='white', size=6, line=dict(width=1, color='blue')), # Borde azul para destacar
-    showlegend=False, # No mostrar en la leyenda
-    hoverinfo='skip' # No queremos hover info duplicada
-))
+    mode='markers',
+    name='Puntos',
+    marker=dict(color='white', size=6, line=dict(width=1, color='blue')),
+    showlegend=False,
+    hoverinfo='skip'
+), row=2, col=1)
 
-
-# Añadir línea horizontal discontinua del umbral (la línea real)
-fig_rv.add_shape(
+# Añadir línea horizontal discontinua del umbral (Fila 2)
+fig_combined.add_shape(
     type="line",
-    x0=spx_filtered.index[0], y0=UMBRAL_RV * 100,
-    x1=spx_filtered.index[-1], y1=UMBRAL_RV * 100,
+    x0=0, y0=UMBRAL_RV * 100,
+    x1=len(spx_filtered) - 1, y1=UMBRAL_RV * 100,
     line=dict(color="orange", width=2, dash="dot"),
-    layer="below"
+    layer="below",
+    row=2, col=1
 )
 
-# Añadir etiqueta para el umbral (en el lado derecho)
-fig_rv.add_annotation(
-    x=spx_filtered.index[-1], # Fecha final
-    y=UMBRAL_RV * 100,      # Valor del umbral
+# Añadir etiqueta para el umbral (Fila 2)
+fig_combined.add_annotation(
+    x=len(spx_filtered) - 1, # Último punto del eje X
+    y=UMBRAL_RV * 100,
     text=f'Umbral: {UMBRAL_RV*100:.2f}%', 
     showarrow=False,
     xanchor='left',
     yanchor='bottom', 
     font=dict(size=12, color="orange"),
-    xshift=5 # Desplazamiento horizontal para que no se superponga
+    xshift=5,
+    row=2, col=1
 )
 
-fig_rv.update_layout(
-    title='Volatilidad Realizada a 5 Días del S&P 500 (Anualizada)',
-    yaxis_title='RV (%)',
-    xaxis_title='Fecha',
+# Configuraciones de la Fila 2
+fig_combined.update_yaxes(title_text='RV (%)', row=2, col=1, tickformat=".2f")
+
+
+# --- CONFIGURACIÓN FINAL DEL GRÁFICO COMBINADO ---
+fig_combined.update_layout(
+    title=f'S&P 500 y Volatilidad Realizada RV_5d ({fecha_inicio} a {fecha_final})',
     template='plotly_white',
-    height=450,
+    height=800, # Aumento la altura para los dos gráficos
+    xaxis_rangeslider_visible=False,
     hovermode='x unified',
-    # Ajustamos la posición de la leyenda
-    legend=dict(
-        orientation="h",
-        yanchor="bottom", y=1.02, 
-        xanchor="right", x=1,
-        traceorder='normal'
-    )
 )
 
-fig_rv.update_yaxes(tickformat=".2f") # Formato con 2 decimales
-st.plotly_chart(fig_rv, use_container_width=True)
+# Configurar el eje X compartido (solo las etiquetas inferiores)
+fig_combined.update_xaxes(
+    tickmode='array',
+    tickvals=list(range(len(spx_filtered))),
+    ticktext=date_labels,
+    tickangle=-45,
+    row=2, col=1
+)
 
+st.plotly_chart(fig_combined, use_container_width=True)
 
 # --- INFORMACIÓN ADICIONAL ---
 st.markdown("---")
@@ -278,3 +266,4 @@ with col4:
 with col5:
     rv_latest = spx_filtered['RV_5d'].iloc[-1] * 100
     st.metric("RV_5d (Último)", f"{rv_latest:.2f}%")
+
