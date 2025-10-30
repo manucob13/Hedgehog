@@ -28,7 +28,7 @@ def fetch_data():
     df_merged = spx.merge(vix_series, how='left', left_index=True, right_index=True)
     df_merged.dropna(subset=['VIX'], inplace=True)
     
-    print(f"DEBUG: Datos descargados desde {df_merged.index.min().date()} hasta {df_merged.index.max().date()}")
+    print(f"DEBUG: Datos descargados desde {df_merged.index.min().date()} hasta {df_merged.index.max().date()}", flush=True)
 
     return df_merged
 
@@ -63,7 +63,8 @@ def calculate_indicators(df_raw: pd.DataFrame):
     # 4. Ratio de volatilidad en el VIX
     spx['VIX_pct_change'] = spx['VIX'].pct_change()
     
-    print("DEBUG: Indicadores calculados.")
+    print("DEBUG: Indicadores calculados.", flush=True)
+
     return spx
 
 # --- MARKOV CALCULATION (Función de lógica pura) ---
@@ -73,7 +74,7 @@ def markov_calculation(spx: pd.DataFrame):
     Devuelve un diccionario con los resultados del modelo.
     """
     
-    print("DEBUG: Ajustando el modelo Markov-Switching...")
+    print("DEBUG: Ajustando el modelo Markov-Switching...", flush=True)
 
     # --- 0. CONFIGURACIÓN Y LIMPIEZA ---
     endog_variable = 'RV_5d'
@@ -122,7 +123,7 @@ def markov_calculation(spx: pd.DataFrame):
     exog_tvtp_final = data_final[variables_tvtp]
     
     if len(endog_final) < 50:
-        print(f"ERROR: Datos insuficientes para el modelo Markov. Solo {len(endog_final)} puntos disponibles.")
+        print(f"ERROR: Datos insuficientes para el modelo Markov. Solo {len(endog_final)} puntos disponibles.", flush=True)
         return None
 
     # --- 2. AJUSTE DEL MODELO MARKOV-SWITCHING ---
@@ -133,14 +134,14 @@ def markov_calculation(spx: pd.DataFrame):
             switching_variance=True, switching_trend=True, exog_tvtp=exog_tvtp_final
         )
         resultado = modelo.fit(maxiter=500, disp=False)
-        print("DEBUG: Ajuste exitoso del Modelo Markov-Switching.")
+        print("DEBUG: Ajuste exitoso del Modelo Markov-Switching.", flush=True)
     except Exception as e:
         # Intento de reajuste con 'powell'
         try:
             resultado = modelo.fit(maxiter=500, disp=False, method='powell')
-            print("WARNING: Ajuste inicial falló. Reajuste exitoso usando el método 'powell'.")
+            print("WARNING: Ajuste inicial falló. Reajuste exitoso usando el método 'powell'.", flush=True)
         except Exception as e2:
-            print(f"ERROR CRÍTICO: Ambos métodos de ajuste fallaron: {e2}")
+            print(f"ERROR CRÍTICO: Ambos métodos de ajuste fallaron: {e2}", flush=True)
             return None 
 
     # --- 3. EXTRACCIÓN E INTERPRETACIÓN DE RESULTADOS ---
@@ -148,7 +149,7 @@ def markov_calculation(spx: pd.DataFrame):
     # Identificar los Índices de Régimen (Basado en la varianza)
     regimen_vars = resultado.params.filter(regex='sigma2|Variance').sort_values(ascending=True)
     if len(regimen_vars) < 2:
-        print("ERROR: ADVERTENCIA: No se pudieron extraer los dos parámetros de varianza.")
+        print("ERROR: ADVERTENCIA: No se pudieron extraer los dos parámetros de varianza.", flush=True)
         return None
 
     # Extracción de índices y nombres de parámetros
@@ -199,7 +200,7 @@ def markov_calculation(spx: pd.DataFrame):
 
 # --- EJECUCIÓN DE PRUEBA (Para ver los resultados en consola) ---
 if __name__ == "__main__":
-    print("--- INICIANDO PRUEBA DE MÓDULO DE ANÁLISIS ---")
+    print("--- INICIANDO PRUEBA DE MÓDULO DE ANÁLISIS ---", flush=True)
     
     # 1. Cargar datos base
     df_raw = fetch_data()
