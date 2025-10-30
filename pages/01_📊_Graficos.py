@@ -143,8 +143,8 @@ fig_combined = make_subplots(
     shared_xaxes=True, 
     vertical_spacing=0.02,
     row_heights=[0.7, 0.3], # SPX toma 70%, RV toma 30% del alto
-    # Añadimos títulos a ambos subplots para claridad
-    subplot_titles=("S&P 500 - Velas Japonesas", "Volatilidad Realizada (RV_5d)") 
+    # Títulos eliminados según la solicitud del usuario
+    # subplot_titles=("S&P 500 - Velas Japonesas", "Volatilidad Realizada (RV_5d)") 
 )
 
 # ----------------------------------------------------
@@ -226,8 +226,8 @@ fig_combined.update_yaxes(title_text='RV (%)', row=2, col=1, tickformat=".2f")
 
 # --- CONFIGURACIÓN FINAL DEL GRÁFICO COMBINADO ---
 fig_combined.update_layout(
-    title=f'S&P 500 y Volatilidad Realizada RV_5d ({fecha_inicio} a {fecha_final})',
-    # Usamos un tema oscuro (como el ejemplo de TradingView)
+    # Título principal de la gráfica eliminado según la solicitud del usuario
+    # title=f'S&P 500 y Volatilidad Realizada RV_5d ({fecha_inicio} a {fecha_final})',
     template='plotly_dark',
     height=800, 
     xaxis_rangeslider_visible=False,
