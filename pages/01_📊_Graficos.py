@@ -6,11 +6,10 @@ from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots 
-# Importamos dependencias de Markov que tenías en el archivo principal
 from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
 from sklearn.preprocessing import StandardScaler 
 import warnings
-import math # Añadido por si se necesita para los modelos de Markov
+import math 
 
 warnings.filterwarnings('ignore')
 
@@ -150,7 +149,7 @@ with st.spinner("Cargando datos y ajustando Modelo Markov K=2..."):
 
 if 'error' in results_k2:
     st.error(f"❌ Error al ejecutar el modelo K=2: {results_k2['error']}")
-    st.stop() # Detener si falla el modelo
+    st.stop() 
 
 st.success(f"✅ Datos y Modelo Markov K=2 cargados exitosamente. ({len(spx)} días)")
 
@@ -216,7 +215,8 @@ indice_baja = results_k2['indices_regimen']['Baja']
 prob_baja_serie = probabilidades[indice_baja].loc[spx_filtered.index]
 prob_baja_serie = prob_baja_serie.fillna(method='ffill')
 
-UMBRAL_COMPRESION = results_k2['UMBRAL_COMPRESION']
+UMBRAL_ALERTA = 0.50 # Nuevo umbral
+UMBRAL_COMPRESION = results_k2['UMBRAL_COMPRESION'] # 0.70
 
 # --- CREAR SUBPLOTS (3 FILAS) ---
 fig_combined = make_subplots(
@@ -299,10 +299,10 @@ fig_combined.add_annotation(
 
 # Configuraciones de la Fila 2
 fig_combined.update_yaxes(title_text='RV (%)', row=2, col=1, tickformat=".2f")
-fig_combined.update_xaxes(showticklabels=False, row=2, col=1) # Ocultar etiquetas X en el gráfico intermedio
+fig_combined.update_xaxes(showticklabels=False, row=2, col=1) 
 
 # ----------------------------------------------------
-# 3. GRÁFICO DE MARKOV K=2 (PROBABILIDAD BAJA) (Fila 3 - NUEVO)
+# 3. GRÁFICO DE MARKOV K=2 (PROBABILIDAD BAJA) (Fila 3)
 # ----------------------------------------------------
 
 fig_combined.add_trace(go.Scatter(
@@ -310,7 +310,7 @@ fig_combined.add_trace(go.Scatter(
     y=prob_baja_serie,
     mode='lines',
     name='Prob. Baja Volatilidad',
-    line=dict(color='#8A2BE2', width=2), # Color Morado distintivo
+    line=dict(color='#8A2BE2', width=2), 
     fill='tozeroy', 
     fillcolor='rgba(138, 43, 226, 0.3)',
     hoverinfo='text',
@@ -318,27 +318,50 @@ fig_combined.add_trace(go.Scatter(
     showlegend=False
 ), row=3, col=1)
 
-# Añadir línea horizontal discontinua del Umbral de Compresión (70%)
+# Umbral 1: 70% (Línea de Compresión Fuerte)
 fig_combined.add_shape(
     type="line",
     x0=0, y0=UMBRAL_COMPRESION,
     x1=len(spx_filtered) - 1, y1=UMBRAL_COMPRESION,
-    line=dict(color="#FFD700", width=1, dash="dot"), # Línea Dorada
+    line=dict(color="#FFD700", width=2, dash="dash"), # Línea Dorada más gruesa, "Dash"
     layer="below",
     row=3, col=1
 )
 
-# Añadir etiqueta para el umbral (Fila 3)
-fig_combined.add_annotation(
-    x=0, y=1.0, 
-    text=f'Umbral Señal: {UMBRAL_COMPRESION*100:.0f}%', 
-    showarrow=False,
-    xref='x3', yref='y3 domain', 
-    xanchor='left', yanchor='top', 
-    font=dict(size=12, color="#FFD700"),
-    xshift=5, yshift=-5, 
+# Umbral 2: 50% (Línea de Alerta/Cambio de Régimen)
+fig_combined.add_shape(
+    type="line",
+    x0=0, y0=UMBRAL_ALERTA,
+    x1=len(spx_filtered) - 1, y1=UMBRAL_ALERTA,
+    line=dict(color="#29B6F6", width=1, dash="dot"), # Línea Azul claro más fina, "Dot"
+    layer="below",
     row=3, col=1
 )
+
+# Añadir etiqueta para el umbral 70%
+fig_combined.add_annotation(
+    x=len(spx_filtered) - 1, y=UMBRAL_COMPRESION, 
+    text=f'Compresión Fuerte ({UMBRAL_COMPRESION*100:.0f}%)', 
+    showarrow=False,
+    xref='x3', yref='y3', # Referencia a las coordenadas de los datos
+    xanchor='right', yanchor='bottom', 
+    font=dict(size=12, color="#FFD700"),
+    xshift=0, yshift=5,
+    row=3, col=1
+)
+
+# Añadir etiqueta para el umbral 50%
+fig_combined.add_annotation(
+    x=len(spx_filtered) - 1, y=UMBRAL_ALERTA, 
+    text=f'Alerta ({UMBRAL_ALERTA*100:.0f}%)', 
+    showarrow=False,
+    xref='x3', yref='y3', # Referencia a las coordenadas de los datos
+    xanchor='right', yanchor='bottom', 
+    font=dict(size=12, color="#29B6F6"),
+    xshift=0, yshift=5,
+    row=3, col=1
+)
+
 
 # Configuraciones de la Fila 3
 fig_combined.update_yaxes(title_text='Prob. K=2', row=3, col=1, tickformat=".2f", range=[0, 1])
@@ -346,7 +369,7 @@ fig_combined.update_yaxes(title_text='Prob. K=2', row=3, col=1, tickformat=".2f"
 # --- CONFIGURACIÓN FINAL DEL GRÁFICO COMBINADO ---
 fig_combined.update_layout(
     template='plotly_dark',
-    height=900, # Aumentado para acomodar el nuevo subplot
+    height=900, 
     xaxis_rangeslider_visible=False,
     hovermode='x unified',
     plot_bgcolor='#131722', 
@@ -361,7 +384,7 @@ fig_combined.update_xaxes(
     tickvals=list(range(len(spx_filtered))),
     ticktext=date_labels,
     tickangle=-45,
-    row=3, col=1, # Eje X final es la Fila 3
+    row=3, col=1, 
     showgrid=False
 )
 
