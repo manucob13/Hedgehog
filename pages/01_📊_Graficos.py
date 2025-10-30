@@ -161,7 +161,9 @@ fig_rv = go.Figure()
 spx_filtered['RV_5d_pct'] = spx_filtered['RV_5d'] * 100
 
 # ----------------------------------------------------------------------
-# LÓGICA DE COLOR ACTUALIZADA: Basada en la dirección del movimiento (Subida/Bajada)
+# LÓGICA DE COLOR ACTUALIZADA (Corregida): Basada en la dirección del movimiento (Subida/Bajada)
+# Sube (>= 0) -> Verde
+# Baja (< 0) -> Rojo
 # ----------------------------------------------------------------------
 
 # Calcular el cambio diario de RV (RV_5d actual - RV_5d anterior)
@@ -177,36 +179,36 @@ rv_down = spx_filtered['RV_change'] < 0
 # Un cambio ocurre si la dirección actual (up/down) es diferente a la dirección anterior
 is_change = rv_up.shift(1, fill_value=True) != rv_up.fillna(True) # fillna(True) para evitar problemas con NaN iniciales
 
-# 1. Preparar los datos para la traza ROJA (Subida o Mantenimiento)
+
+# --- 1. Preparar los datos para la traza VERDE (Subida o Mantenimiento) ---
 # Incluimos los puntos donde sube/mantiene o donde hubo un cambio de dirección
-red_mask = (rv_up) | (is_change.shift(-1, fill_value=False)) | (is_change)
-rv_red_plot = spx_filtered['RV_5d_pct'].where(red_mask, other=np.nan)
-
-
-# 2. Preparar los datos para la traza VERDE (Bajada)
-# Incluimos los puntos donde baja o donde hubo un cambio de dirección
-green_mask = (rv_down) | (is_change.shift(-1, fill_value=False)) | (is_change)
+green_mask = (rv_up) | (is_change.shift(-1, fill_value=False)) | (is_change)
 rv_green_plot = spx_filtered['RV_5d_pct'].where(green_mask, other=np.nan)
 
-
-# Trazo para la volatilidad en SUBIDA (Rojo)
-fig_rv.add_trace(go.Scatter(
-    x=spx_filtered.index,
-    y=rv_red_plot,
-    mode='lines+markers',
-    name='RV (Rojo - Sube/Mantiene)',
-    line=dict(color='red', width=2),
-    marker=dict(color='red', size=6, line=dict(width=1, color='DarkSlateGrey'))
-))
-
-# Trazo para la volatilidad en BAJADA (Verde)
+# Trazo para la volatilidad en SUBIDA (Verde)
 fig_rv.add_trace(go.Scatter(
     x=spx_filtered.index,
     y=rv_green_plot,
     mode='lines+markers',
-    name='RV (Verde - Baja)',
+    name='RV (Verde - Sube/Mantiene)',
     line=dict(color='green', width=2),
     marker=dict(color='green', size=6, line=dict(width=1, color='DarkSlateGrey'))
+))
+
+
+# --- 2. Preparar los datos para la traza ROJA (Bajada) ---
+# Incluimos los puntos donde baja o donde hubo un cambio de dirección
+red_mask = (rv_down) | (is_change.shift(-1, fill_value=False)) | (is_change)
+rv_red_plot = spx_filtered['RV_5d_pct'].where(red_mask, other=np.nan)
+
+# Trazo para la volatilidad en BAJADA (Rojo)
+fig_rv.add_trace(go.Scatter(
+    x=spx_filtered.index,
+    y=rv_red_plot,
+    mode='lines+markers',
+    name='RV (Rojo - Baja)',
+    line=dict(color='red', width=2),
+    marker=dict(color='red', size=6, line=dict(width=1, color='DarkSlateGrey'))
 ))
 
 
