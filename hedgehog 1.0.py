@@ -37,8 +37,8 @@ def fetch_data():
 print("--- INICIANDO PRUEBA DE MÓDULO DE ANÁLISIS (PASO 1: DESCARGA) ---", flush=True)
     
 # 1. Cargar datos base
-df_raw = fetch_data()
-st.success(f"✅ Descarga datos SPX - VIX desde {df.index.min().date()} - {df.index.max().date()}")
+spx = fetch_data()
+st.success(f"✅ Descarga datos SPX - VIX desde {spx.index.min().date()} - {spx.index.max().date()}")
 # to_string() es mejor que un simple print para asegurar el formato en la consola
 st.spx.tail(5)
         
