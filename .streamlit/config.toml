@@ -1,3 +1,0 @@
-[server]
-# Intenta con la versión 3.11, que a veces es más estable que 3.10 en la nube.
-pythonVersion = 3.11
