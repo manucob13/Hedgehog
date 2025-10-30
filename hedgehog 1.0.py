@@ -6,8 +6,6 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
 from sklearn.preprocessing import StandardScaler
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import warnings
 import math
 
@@ -16,7 +14,7 @@ warnings.filterwarnings('ignore')
 
 # --- CONFIGURACIÓN DE LA APP ---
 st.set_page_config(page_title="HEDGEHOG 1.1 - Comparación K=2 vs K=3", layout="wide")
-st.title("🔬 Comparación de Modelos Markov-Switching: K=2 (Original) vs K=3 (Consolidado)")
+st.title("🔬 Modelos de voalitaidad: Markov K=2 (2 estados ) y K=3 ( 3 estados fx varianza consolidado ()")
 st.markdown("""
 Esta herramienta ejecuta y compara dos modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
 del S&P 500 para determinar qué enfoque ofrece una señal más clara para la volatilidad Media y Baja.
@@ -118,7 +116,7 @@ def markov_calculation_k2(endog_final, exog_tvtp_final):
     UMBRAL_COMPRESION = 0.70 
     
     if endog_final is None or exog_tvtp_final is None:
-         return {'error': "Datos insuficientes para el modelo K=2."}
+        return {'error': "Datos insuficientes para el modelo K=2."}
 
     # --- 1. AJUSTE DEL MODELO ---
     try:
@@ -135,7 +133,11 @@ def markov_calculation_k2(endog_final, exog_tvtp_final):
     regimen_vars_sorted = regimen_vars.sort_values(ascending=True)
     
     # 0 = Baja Volatilidad (Lower Variance)
-    regimen_baja_vol_index = int(regimen_vars_sorted.index[0].split('[')[1].replace(']', ''))
+    # Se extrae el índice de régimen (el número entre corchetes, p. ej., '[0]' -> 0)
+    def extract_regime_index(index_str):
+        return int(index_str.split('[')[1].replace(']', ''))
+    
+    regimen_baja_vol_index = extract_regime_index(regimen_vars_sorted.index[0])
     
     # --- 3. CÁLCULO DEL UMBRAL DINÁMICO (Lógica 0.10) ---
     best_percentile = None
@@ -172,7 +174,7 @@ def markov_calculation_k2(endog_final, exog_tvtp_final):
     }
 
 # ==============================================================================
-# 3. MODELO K=3 (PROPUESTO - SIN OBJETIVO FIJO)
+# 3. MODELO K=3 (3 estados y rangos en funcion varianza)
 # ==============================================================================
 
 @st.cache_data(ttl=3600)
@@ -184,8 +186,8 @@ def markov_calculation_k3(endog_final, exog_tvtp_final):
     UMBRAL_COMPRESION = 0.70 
     
     if endog_final is None or exog_tvtp_final is None:
-         return {'error': "Datos insuficientes para el modelo K=3."}
-         
+        return {'error': "Datos insuficientes para el modelo K=3."}
+        
     # --- 1. AJUSTE DEL MODELO ---
     try:
         modelo = MarkovRegression(
@@ -200,7 +202,7 @@ def markov_calculation_k3(endog_final, exog_tvtp_final):
     regimen_vars = resultado.params.filter(regex='sigma2|Variance')
 
     if len(regimen_vars) < 3:
-         return {'error': "ADVERTENCIA: No se pudieron extraer los tres parámetros de varianza."}
+        return {'error': "ADVERTENCIA: No se pudieron extraer los tres parámetros de varianza."}
 
     # Ordenar las varianzas para asignar: 0=Baja, 1=Media, 2=Alta
     regimen_vars_sorted = regimen_vars.sort_values(ascending=True)
@@ -230,179 +232,123 @@ def markov_calculation_k3(endog_final, exog_tvtp_final):
     
     return {
         'nombre': 'K=3 (Varianza Objetiva)',
-        'endog_final': endog_final,
         'resultado': resultado,
         'indices_regimen': indices_regimen,
         'varianzas_regimen': varianzas_regimen,
-        'probabilidades_filtradas': probabilidades_filtradas, 
         'prob_baja': prob_baja,
         'prob_media': prob_media,
         'UMBRAL_COMPRESION': UMBRAL_COMPRESION
     }
 
 # ==============================================================================
-# 4. FUNCIÓN PRINCIPAL DE VISUALIZACIÓN
+# 4. FUNCIÓN PRINCIPAL DE EJECUCIÓN Y VISUALIZACIÓN DE TABLA
 # ==============================================================================
 
-def comparison_plot(results_k2: dict, results_k3: dict, df_raw: pd.DataFrame):
-    """
-    Genera un gráfico Plotly comparando las probabilidades de Baja/Media Volatilidad
-    de ambos modelos, mostrando la suma K=3 como una sola señal.
-    """
-    st.subheader("📊 3. Gráfico de Comparación de Probabilidades (Últimos 120 Días)")
-    st.markdown("---")
-    
-    # Usamos los últimos 120 días para mayor claridad
-    endog_final_k2 = results_k2['endog_final']
-    fecha_final = endog_final_k2.index.max()
-    fecha_inicio = fecha_final - pd.DateOffset(days=120)
+def main_comparison():
+    # --- 1. Cargar datos y calcular indicadores ---
+    st.header("1. Carga y Preparación de Datos")
+    with st.spinner("Descargando datos históricos y calculando indicadores..."):
+        df_raw = fetch_data()
+        spx = calculate_indicators(df_raw)
+        endog_final, exog_tvtp_final = preparar_datos_markov(spx)
 
-    # DataFrame base para el gráfico (alineado con la RV_5d)
-    df_plot_base = endog_final_k2[endog_final_k2.index >= fecha_inicio].rename('RV_5d').to_frame()
-    df_spx_close = df_raw['Close'].loc[df_plot_base.index]
+    if endog_final is None:
+        st.error("❌ Error: No se pudieron preparar los datos para el análisis Markov.")
+        return
 
-    # --- Datos K=2 ---
-    prob_k2_full = results_k2['probabilidades_filtradas']
-    prob_k2_baja = prob_k2_full[results_k2['indices_regimen']['Baja']].loc[df_plot_base.index]
-    df_plot_base['Prob_K2_Baja'] = prob_k2_baja
-    
-    # --- Datos K=3 ---
-    prob_k3_full = results_k3['probabilidades_filtradas']
-    indices_k3 = results_k3['indices_regimen']
-    
-    prob_k3_baja = prob_k3_full[indices_k3['Baja']].loc[df_plot_base.index]
-    prob_k3_media = prob_k3_full[indices_k3['Media']].loc[df_plot_base.index]
-    
-    # CALCULAR LA SERIE CONSOLIDADA: Suma de Baja y Media para Theta Favorable
-    prob_k3_consolidada = prob_k3_baja + prob_k3_media
-    df_plot_base['Prob_K3_Favorable'] = prob_k3_consolidada
+    st.success(f"✅ Descarga y preparación exitosa. Datos listos para el análisis ({len(endog_final)} puntos).")
 
-    
-    # --- Creación del Gráfico ---
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                        subplot_titles=('Volatilidad Realizada (RV_5d) y SPX', 'Probabilidad de Régimen Favorable (Calma/Consolidación)'), 
-                        vertical_spacing=0.1,
-                        row_heights=[0.3, 0.7],
-                        specs=[[{"secondary_y": True}], 
-                               [{}]])                    
-
-    # 1. Subplot Superior: RV_5d y Precio SPX
-    # SPX Price (Eje Secundario)
-    fig.add_trace(go.Scatter(x=df_plot_base.index, y=df_spx_close, name='SPX Close', 
-                             line=dict(color='rgba(128, 128, 128, 0.5)', width=1)), row=1, col=1, secondary_y=True)
-    
-    # RV_5d (Eje Primario)
-    fig.add_trace(go.Scatter(x=df_plot_base.index, y=df_plot_base['RV_5d'], name='RV_5d', 
-                             line=dict(color='#0077b6', width=2)), row=1, col=1, secondary_y=False)
-    
-    # Umbral K=2 (Para referencia)
-    fig.add_hline(y=results_k2['UMBRAL_RV5D_P_OBJETIVO'], row=1, col=1, 
-                  line_dash="dot", line_color="orange", opacity=0.8,
-                  annotation_text=f"Umbral K=2 ({results_k2['UMBRAL_RV5D_P_OBJETIVO']:.4f})", 
-                  annotation_position="bottom right")
-
-
-    # 2. Subplot Inferior: Comparación de Probabilidades
-    
-    # Probabilidad K=2 (Baja Volatilidad) - Mantenida para comparación
-    fig.add_trace(go.Scatter(x=df_plot_base.index, y=df_plot_base['Prob_K2_Baja'], name='K=2 Baja (Señal Ambigua)', 
-                             line=dict(color='darkgreen', width=2, dash='dot')), row=2, col=1)
-    
-    # Probabilidad K=3 CONSOLIDADA - ¡La nueva línea de señal!
-    fig.add_trace(go.Scatter(x=df_plot_base.index, y=df_plot_base['Prob_K3_Favorable'], name='K=3 CONSOLIDADA (Baja + Media)', 
-                             line=dict(color='cyan', width=3, dash='solid')), row=2, col=1)
-
-    # Umbral de Señal Fuerte (70%)
-    fig.add_hline(y=results_k2['UMBRAL_COMPRESION'], row=2, col=1, 
-                  line_dash="dash", line_color="red", opacity=0.8,
-                  annotation_text="Umbral Señal Fuerte (70%)", annotation_position="top left")
-    
-    # --- Configuración Final ---
-    fig.update_layout(height=800, 
-                      title_text="Comparación de Probabilidades de Regímenes",
-                      legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-                      template="plotly_dark") # Usando dark mode para mejor contraste
-    
-    # Actualizar títulos de ejes para reflejar el cambio
-    fig.update_yaxes(title_text="RV_5d Anualizada", row=1, col=1, secondary_y=False)
-    fig.update_yaxes(title_text="Precio SPX", row=1, col=1, secondary_y=True)
-    fig.update_yaxes(title_text="Probabilidad", row=2, col=1, range=[0, 1.05])
-    
-    st.plotly_chart(fig, use_container_width=True)
-
-# ==============================================================================
-# 5. EJECUCIÓN DEL FLUJO DE TRABAJO
-# ==============================================================================
-
-# --- 1. Cargar datos y calcular indicadores ---
-st.header("1. Carga y Preparación de Datos")
-with st.spinner("Descargando datos históricos y calculando indicadores..."):
-    df_raw = fetch_data()
-    spx = calculate_indicators(df_raw)
-    endog_final, exog_tvtp_final = preparar_datos_markov(spx)
-
-if endog_final is None:
-    st.error("❌ Error: No se pudieron preparar los datos para el análisis Markov.")
-    st.stop()
-
-st.success(f"✅ Descarga y preparación exitosa. Datos listos para el análisis ({len(endog_final)} puntos).")
-
-col_k2, col_k3 = st.columns(2)
-results_k2, results_k3 = None, None
-
-# --- 2. Ejecutar Modelo K=2 ---
-with col_k2:
-    st.subheader("Modelo K=2 (Original, Objetivo RV=0.10)")
-    with st.spinner("Ajustando Modelo K=2..."):
-        results_k2 = markov_calculation_k2(endog_final, exog_tvtp_final)
-
-# --- 3. Ejecutar Modelo K=3 ---
-with col_k3:
-    st.subheader("Modelo K=3 (Propuesto, Varianza Objetiva)")
-    with st.spinner("Ajustando Modelo K=3..."):
-        results_k3 = markov_calculation_k3(endog_final, exog_tvtp_final)
-
-# --- 4. Mostrar Resultados Clave ---
-
-if 'error' in results_k2 or 'error' in results_k3:
-    st.error("Uno o ambos modelos fallaron. Revise los mensajes de error.")
-else:
-    st.header("2. Resultados Numéricos Clave")
-    
     col_k2, col_k3 = st.columns(2)
-    
+    results_k2, results_k3 = None, None
+
+    # --- 2. Ejecutar Modelo K=2 ---
     with col_k2:
-        st.markdown("### 🟢 K=2: Baja vs. Alta")
-        st.info(f"Umbral de RV 5d usado: **{results_k2['UMBRAL_RV5D_P_OBJETIVO']:.4f}** (P{results_k2['P_USADO']:.0f} es el más cercano a 0.10)")
-        st.markdown(f"**Varianza del Régimen Baja:** `{results_k2['varianzas_regimen']['Baja']:.5f}`")
-        st.markdown(f"**Varianza del Régimen Alta:** `{results_k2['varianzas_regimen']['Alta']:.5f}`")
-        st.markdown(f"**Probabilidad HOY (Baja Volatilidad):** **`{results_k2['prob_baja']:.4f}`**")
-    
+        st.subheader("Modelo K=2 (Original, Objetivo RV=0.10)")
+        with st.spinner("Ajustando Modelo K=2..."):
+            results_k2 = markov_calculation_k2(endog_final, exog_tvtp_final)
+
+    # --- 3. Ejecutar Modelo K=3 ---
     with col_k3:
-        st.markdown("### 🟡 K=3: Baja, Media, y Alta")
-        st.markdown(f"**Varianza del Régimen Baja:** `{results_k3['varianzas_regimen']['Baja']:.5f}`")
-        st.markdown(f"**Varianza del Régimen Media:** `{results_k3['varianzas_regimen']['Media']:.5f}`")
-        st.markdown(f"**Varianza del Régimen Alta:** `{results_k3['varianzas_regimen']['Alta']:.5f}`")
-        st.markdown(f"**Probabilidad HOY (Baja Volatilidad):** **`{results_k3['prob_baja']:.4f}`**")
-        st.markdown(f"**Probabilidad HOY (Media Volatilidad):** **`{results_k3['prob_media']:.4f}`**")
-        st.markdown(f"**Probabilidad HOY (Consolidada Baja+Media):** **`{results_k3['prob_baja'] + results_k3['prob_media']:.4f}`**")
+        st.subheader("Modelo K=3 (Propuesto, Varianza Objetiva)")
+        with st.spinner("Ajustando Modelo K=3..."):
+            results_k3 = markov_calculation_k3(endog_final, exog_tvtp_final)
 
+    # --- 4. Mostrar Resultados Clave y Comparación (Tabla) ---
 
-    # --- 5. Mostrar Gráfico de Comparación ---
-    comparison_plot(results_k2, results_k3, df_raw)
+    if 'error' in results_k2:
+        st.error(f"❌ Error K=2: {results_k2['error']}")
+        return
+    if 'error' in results_k3:
+        st.error(f"❌ Error K=3: {results_k3['error']}")
+        return
+    
+    st.header("2. Resultados Numéricos Clave y Comparación")
+    st.markdown(f"**Fecha del Último Cálculo:** {endog_final.index[-1].strftime('%Y-%m-%d')}")
+    st.markdown("---")
+
+    # Calculo de la probabilidad consolidada K=3
+    prob_k3_consolidada = results_k3['prob_baja'] + results_k3['prob_media']
+
+    # Crear DataFrame para la tabla de comparación
+    data_comparativa = {
+        'Métrica': [
+            'Probabilidad Baja (HOY)',
+            'Probabilidad Media (HOY)',
+            'Probabilidad Consolidada (Baja + Media)',
+            'Umbral de Señal de Entrada (70%)',
+            'Varianza Régimen Baja',
+            'Varianza Régimen Media',
+            'Varianza Régimen Alta',
+            'Umbral RV_5d Estimado (Para el Régimen Baja)'
+        ],
+        'K=2 (Original)': [
+            f"{results_k2['prob_baja']:.4f}",
+            'N/A (No existe)',
+            f"{results_k2['prob_baja']:.4f}",
+            f"{results_k2['UMBRAL_COMPRESION']:.2f}",
+            f"{results_k2['varianzas_regimen']['Baja']:.5f}",
+            'N/A (No existe)',
+            f"{results_k2['varianzas_regimen']['Alta']:.5f}",
+            f"{results_k2['UMBRAL_RV5D_P_OBJETIVO']:.4f}"
+        ],
+        'K=3 (Propuesto)': [
+            f"{results_k3['prob_baja']:.4f}",
+            f"{results_k3['prob_media']:.4f}",
+            f"**{prob_k3_consolidada:.4f}**",
+            f"{results_k3['UMBRAL_COMPRESION']:.2f}",
+            f"{results_k3['varianzas_regimen']['Baja']:.5f}",
+            f"{results_k3['varianzas_regimen']['Media']:.5f}",
+            f"{results_k3['varianzas_regimen']['Alta']:.5f}",
+            'Determinado por Varianza'
+        ]
+    }
+
+    df_comparativa = pd.DataFrame(data_comparativa)
+
+    st.dataframe(df_comparativa, hide_index=True, use_container_width=True)
+
+    # Mostrar la conclusión operativa
+    st.markdown("---")
+    st.subheader("Conclusión Operativa para Calendar Spreads")
+
+    if prob_k3_consolidada >= results_k3['UMBRAL_COMPRESION']:
+        st.success(f"**SEÑAL DE ENTRADA FUERTE (K=3):** El riesgo de Alta Volatilidad es bajo. La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, superando el umbral de 0.70. Condición Favorable para estrategias de Theta.")
+    else:
+        st.warning(f"**RIESGO ACTIVO (K=3):** La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, por debajo del umbral de 0.70. El Régimen de Alta Volatilidad ha tomado peso. Evitar entrar o considerar salir.")
     
     st.markdown("""
     ---
-    ### Conclusión para tu Estrategia de Calendar Spread (Señal Consolidada)
+    ### Entendiendo la Diferencia Clave
     
-    Hemos consolidado la señal del Modelo K=3 en una única línea **CIAN** ("K=3 CONSOLIDADA").
+    El **Modelo K=2** combina toda la volatilidad no-crisis en una única señal de 'Baja', lo que lo hace propenso a **falsos positivos** (como se vio en la caída de finales de julio), donde te mantiene en el trade cuando la volatilidad es 'Media' (consolidación).
     
-    1.  **Línea CIAN (K=3 Consolidada):** Muestra la probabilidad total de que el mercado esté en un estado de **Baja o Media Volatilidad**. Este valor es tu mejor indicador para los Calendar Spreads.
-    2.  **Línea de Puntos Verdes (K=2):** Se mantiene para que puedas comparar la ambigüedad de la señal original con la claridad de la nueva señal consolidada.
+    El **Modelo K=3** descompone la 'Baja' volatilidad en dos estados: 'Baja' (Calma Extrema) y 'Media' (Consolidación). 
     
-    **Regla de Señal de Entrada (Línea CIAN):**
-    
-    * **ENTRAR:** Si la Línea CIAN está por encima del Umbral de Señal Fuerte (70%).
-    * **SALIR/NO ENTRAR:** Si la Línea CIAN está por debajo de 70% (ya que el Régimen de Alta Volatilidad comienza a ganar peso).
+    La **Probabilidad Consolidada (Baja + Media)** del K=3 ofrece una señal de entrada/salida más robusta: solo da luz verde cuando la suma de los dos estados favorables supera el 70%, actuando como un **filtro más estricto contra el ruido** que el K=2 ignora.
     """)
 
+# ==============================================================================
+# EJECUCIÓN DEL SCRIPT
+# ==============================================================================
+if __name__ == "__main__":
+    main_comparison()
