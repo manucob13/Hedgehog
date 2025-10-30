@@ -209,11 +209,11 @@ fig_combined.add_shape(
 
 # Añadir etiqueta para el umbral (Fila 2)
 fig_combined.add_annotation(
-    x=len(spx_filtered) - 1, # Último punto del eje X
+    x=0, # Primer punto del eje X (izquierda)
     y=UMBRAL_RV * 100,
     text=f'Umbral: {UMBRAL_RV*100:.2f}%', 
     showarrow=False,
-    xanchor='right', # Ajuste de anclaje para que no se salga
+    xanchor='left', # Ajuste de anclaje para la izquierda
     yanchor='bottom', 
     font=dict(size=12, color="orange"),
     xshift=0,
