@@ -16,9 +16,9 @@ warnings.filterwarnings('ignore')
 
 # --- CONFIGURACIÓN DE LA APP ---
 st.set_page_config(page_title="HEDGEHOG 1.1 - Comparación K=2 vs K=3", layout="wide")
-st.title("🔬 Comparación de Modelos Markov-Switching: K=2 (Original) vs K=3 (Propuesto)")
+st.title("🔬 Comparación de Modelos Markov-Switching: K=2 (Original) vs K=3 (Consolidado)")
 st.markdown("""
-Esta herramienta ejecuta y compara dos modelos de Regresión de Markov sobre la Volatilidad Realizada (RV_5d) 
+Esta herramienta ejecuta y compara dos modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
 del S&P 500 para determinar qué enfoque ofrece una señal más clara para la volatilidad Media y Baja.
 """)
 
@@ -247,7 +247,7 @@ def markov_calculation_k3(endog_final, exog_tvtp_final):
 def comparison_plot(results_k2: dict, results_k3: dict, df_raw: pd.DataFrame):
     """
     Genera un gráfico Plotly comparando las probabilidades de Baja/Media Volatilidad
-    de ambos modelos.
+    de ambos modelos, mostrando la suma K=3 como una sola señal.
     """
     st.subheader("📊 3. Gráfico de Comparación de Probabilidades (Últimos 120 Días)")
     st.markdown("---")
@@ -272,18 +272,19 @@ def comparison_plot(results_k2: dict, results_k3: dict, df_raw: pd.DataFrame):
     
     prob_k3_baja = prob_k3_full[indices_k3['Baja']].loc[df_plot_base.index]
     prob_k3_media = prob_k3_full[indices_k3['Media']].loc[df_plot_base.index]
-    df_plot_base['Prob_K3_Baja'] = prob_k3_baja
-    df_plot_base['Prob_K3_Media'] = prob_k3_media
+    
+    # CALCULAR LA SERIE CONSOLIDADA: Suma de Baja y Media para Theta Favorable
+    prob_k3_consolidada = prob_k3_baja + prob_k3_media
+    df_plot_base['Prob_K3_Favorable'] = prob_k3_consolidada
 
     
     # --- Creación del Gráfico ---
-    # CORRECCIÓN CLAVE: Configuramos 'secondary_y': True solo para la primera fila
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                        subplot_titles=('Volatilidad Realizada (RV_5d) y SPX', 'Probabilidad de Régimen de Calma'), 
+                        subplot_titles=('Volatilidad Realizada (RV_5d) y SPX', 'Probabilidad de Régimen Favorable (Calma/Consolidación)'), 
                         vertical_spacing=0.1,
                         row_heights=[0.3, 0.7],
-                        specs=[[{"secondary_y": True}], # Fila 1: Permite eje secundario
-                               [{}]])                    # Fila 2: Sin eje secundario
+                        specs=[[{"secondary_y": True}], 
+                               [{}]])                    
 
     # 1. Subplot Superior: RV_5d y Precio SPX
     # SPX Price (Eje Secundario)
@@ -303,17 +304,13 @@ def comparison_plot(results_k2: dict, results_k3: dict, df_raw: pd.DataFrame):
 
     # 2. Subplot Inferior: Comparación de Probabilidades
     
-    # Probabilidad K=2 (Baja Volatilidad)
-    fig.add_trace(go.Scatter(x=df_plot_base.index, y=df_plot_base['Prob_K2_Baja'], name='Prob. K=2 Baja (0.10 Obj.)', 
-                             line=dict(color='darkgreen', width=2)), row=2, col=1)
+    # Probabilidad K=2 (Baja Volatilidad) - Mantenida para comparación
+    fig.add_trace(go.Scatter(x=df_plot_base.index, y=df_plot_base['Prob_K2_Baja'], name='K=2 Baja (Señal Ambigua)', 
+                             line=dict(color='darkgreen', width=2, dash='dot')), row=2, col=1)
     
-    # Probabilidad K=3 (Baja Volatilidad)
-    fig.add_trace(go.Scatter(x=df_plot_base.index, y=df_plot_base['Prob_K3_Baja'], name='Prob. K=3 Baja (Real Calma)', 
-                             line=dict(color='green', width=3, dash='dot')), row=2, col=1)
-
-    # Probabilidad K=3 (Media Volatilidad) - Clave para tu Calendar Spread
-    fig.add_trace(go.Scatter(x=df_plot_base.index, y=df_plot_base['Prob_K3_Media'], name='Prob. K=3 Media (Consolidación)', 
-                             line=dict(color='orange', width=2)), row=2, col=1)
+    # Probabilidad K=3 CONSOLIDADA - ¡La nueva línea de señal!
+    fig.add_trace(go.Scatter(x=df_plot_base.index, y=df_plot_base['Prob_K3_Favorable'], name='K=3 CONSOLIDADA (Baja + Media)', 
+                             line=dict(color='cyan', width=3, dash='solid')), row=2, col=1)
 
     # Umbral de Señal Fuerte (70%)
     fig.add_hline(y=results_k2['UMBRAL_COMPRESION'], row=2, col=1, 
@@ -324,7 +321,7 @@ def comparison_plot(results_k2: dict, results_k3: dict, df_raw: pd.DataFrame):
     fig.update_layout(height=800, 
                       title_text="Comparación de Probabilidades de Regímenes",
                       legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-                      template="plotly_white")
+                      template="plotly_dark") # Usando dark mode para mejor contraste
     
     # Actualizar títulos de ejes para reflejar el cambio
     fig.update_yaxes(title_text="RV_5d Anualizada", row=1, col=1, secondary_y=False)
@@ -361,7 +358,7 @@ with col_k2:
 
 # --- 3. Ejecutar Modelo K=3 ---
 with col_k3:
-    st.subheader("Modelo K=3 (Propuesto, Objetividad por Varianza)")
+    st.subheader("Modelo K=3 (Propuesto, Varianza Objetiva)")
     with st.spinner("Ajustando Modelo K=3..."):
         results_k3 = markov_calculation_k3(endog_final, exog_tvtp_final)
 
@@ -388,6 +385,7 @@ else:
         st.markdown(f"**Varianza del Régimen Alta:** `{results_k3['varianzas_regimen']['Alta']:.5f}`")
         st.markdown(f"**Probabilidad HOY (Baja Volatilidad):** **`{results_k3['prob_baja']:.4f}`**")
         st.markdown(f"**Probabilidad HOY (Media Volatilidad):** **`{results_k3['prob_media']:.4f}`**")
+        st.markdown(f"**Probabilidad HOY (Consolidada Baja+Media):** **`{results_k3['prob_baja'] + results_k3['prob_media']:.4f}`**")
 
 
     # --- 5. Mostrar Gráfico de Comparación ---
@@ -395,12 +393,16 @@ else:
     
     st.markdown("""
     ---
-    ### Conclusión para tu Estrategia de Calendar Spread
+    ### Conclusión para tu Estrategia de Calendar Spread (Señal Consolidada)
     
-    Al comparar los gráficos, notarás que:
+    Hemos consolidado la señal del Modelo K=3 en una única línea **CIAN** ("K=3 CONSOLIDADA").
     
-    1.  **Modelo K=2 (Línea Azul Oscura/Verde Oscuro):** Tiende a tener una probabilidad alta de Régimen Bajo incluso cuando la volatilidad es ligeramente superior al 0.10, porque el Régimen Bajo debe absorber todos los estados que no son "Crisis".
-    2.  **Modelo K=3 (Línea Verde Claro y Naranja):** La probabilidad de Baja Volatilidad (Línea Verde Claro) se reduce y se vuelve más estricta. La volatilidad baja y constante (ideal para Calendar) se distingue de la Volatilidad Media (Línea Naranja), que representa el mercado lateral con movimientos mayores.
-
-    **Recomendación:** Para tu Calendar Spread, la **suma de las probabilidades de Régimen Baja y Régimen Media del Modelo K=3** te da el mejor indicador de un mercado apto para la Theta (consolidación/calma). El régimen de Baja Volatilidad del K=3 (Verde Claro) te da la señal de máxima compresión.
+    1.  **Línea CIAN (K=3 Consolidada):** Muestra la probabilidad total de que el mercado esté en un estado de **Baja o Media Volatilidad**. Este valor es tu mejor indicador para los Calendar Spreads.
+    2.  **Línea de Puntos Verdes (K=2):** Se mantiene para que puedas comparar la ambigüedad de la señal original con la claridad de la nueva señal consolidada.
+    
+    **Regla de Señal de Entrada (Línea CIAN):**
+    
+    * **ENTRAR:** Si la Línea CIAN está por encima del Umbral de Señal Fuerte (70%).
+    * **SALIR/NO ENTRAR:** Si la Línea CIAN está por debajo de 70% (ya que el Régimen de Alta Volatilidad comienza a ganar peso).
     """)
+
