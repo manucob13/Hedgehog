@@ -12,7 +12,7 @@ st.title("📊 HEDGEHOG 1.0")
 @st.cache_data(ttl=86400)
 def fetch_data():
     start = "2010-01-01"
-    end = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")  # excluye hoy
+    end = (datetime.now()
 
     # Descarga SPX y VIX
     spx = yf.download("^GSPC", start=start, end=end, auto_adjust=False, multi_level_index=False)
