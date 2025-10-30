@@ -348,14 +348,14 @@ def main_comparison():
     # --- 2. Ejecutar Modelo K=2 ---
     with col_k2:
         # Título K=2 (Ahora a la izquierda, paralelo al K=3)
-        st.subheader("Modelo K=2 (Original, Objetivo RV=0.10)") 
+        st.subheader("Modelo K=2 (Objetivo RV=0.10)") 
         with st.spinner("Ajustando Modelo K=2..."):
             results_k2 = markov_calculation_k2(endog_final, exog_tvtp_final)
 
     # --- 3. Ejecutar Modelo K=3 ---
     with col_k3:
         # Título K=3 (Ahora a la derecha, paralelo al K=2)
-        st.subheader("Modelo K=3 (Propuesto, Varianza Objetiva)")
+        st.subheader("Modelo K=3 (Objetivo Varianza)")
         with st.spinner("Ajustando Modelo K=3..."):
             results_k3 = markov_calculation_k3(endog_final, exog_tvtp_final)
 
