@@ -203,8 +203,8 @@ with st.spinner("Calculando indicadores de volatilidad (RV, ATR, NR, VIX Change)
 st.success("✅ Indicadores calculados.")
 
 # Muestra de las últimas filas del DataFrame 
-st.subheader("Últimas 3 Filas del DataFrame de Indicadores (spx)")
-st.dataframe(spx.tail(3)) 
+st.subheader("Últimas 2 Filas del DataFrame de Indicadores (spx)")
+st.dataframe(spx.tail(2)) 
 
 # 3. Análisis de Régimen de Volatilidad
 st.header("2. Análisis de Régimen de Volatilidad (Modelo Markov)")
@@ -228,7 +228,7 @@ elif markov_results:
 
     with col2:
         # Esta línea muestra la última fecha de datos usada para el entrenamiento:
-        st.markdown(f"**Fecha de Entrenamiento:** `{markov_results['ultima_fecha']}`")
+        st.markdown(f"**Fecha del ultimo dia de Entrenamiento:** `{markov_results['ultima_fecha']}`")
         st.markdown(f"**🚀 Probabilidad HOY (Baja Volatilidad):** **`{markov_results['prob_baja_vol']:.4f}`**")
         st.markdown(f"## {markov_results['conclusion']}")
 
