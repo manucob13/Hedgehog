@@ -161,13 +161,12 @@ fig_rv = go.Figure()
 spx_filtered['RV_5d_pct'] = spx_filtered['RV_5d'] * 100
 
 # ----------------------------------------------------------------------
-# LÓGICA DE COLOR ACTUALIZADA (Corregida): Basada en la dirección del movimiento (Subida/Bajada)
-# Sube (>= 0) -> Verde
-# Baja (< 0) -> Rojo
+# LÓGICA DE COLOR CORREGIDA: Basada en la dirección del movimiento
+# Subida (>= 0) -> Verde
+# Bajada (< 0) -> Rojo
 # ----------------------------------------------------------------------
 
 # Calcular el cambio diario de RV (RV_5d actual - RV_5d anterior)
-# Necesitamos el shift(-1) para comparar el valor en el *punto final* del segmento
 spx_filtered['RV_change'] = spx_filtered['RV_5d_pct'].diff()
 
 # Identificar la subida (Subida o Mantenimiento >= 0)
@@ -175,9 +174,9 @@ rv_up = spx_filtered['RV_change'] >= 0
 # Identificar la bajada (< 0)
 rv_down = spx_filtered['RV_change'] < 0
 
-# Identificar los puntos donde la dirección CAMBIA (para asegurar la continuidad)
+# Identificar los puntos donde la dirección CAMBIA (para asegurar la continuidad de la línea)
 # Un cambio ocurre si la dirección actual (up/down) es diferente a la dirección anterior
-is_change = rv_up.shift(1, fill_value=True) != rv_up.fillna(True) # fillna(True) para evitar problemas con NaN iniciales
+is_change = rv_up.shift(1, fill_value=True) != rv_up.fillna(True)
 
 
 # --- 1. Preparar los datos para la traza VERDE (Subida o Mantenimiento) ---
@@ -232,10 +231,6 @@ fig_rv.add_annotation(
     font=dict(size=12, color="orange"),
     xshift=5 # Desplazamiento horizontal para que no se superponga
 )
-
-# Eliminamos las trazas ficticias de la leyenda ya que ahora las dos trazas principales
-# tienen nombres descriptivos y colores correctos.
-
 
 fig_rv.update_layout(
     title='Volatilidad Realizada a 5 Días del S&P 500 (Anualizada)',
