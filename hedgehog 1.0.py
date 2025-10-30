@@ -2,14 +2,15 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime, date
+from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
 from sklearn.preprocessing import StandardScaler
 import warnings
 import math
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import altair as alt # Importar Altair para futuros gráficos
+
 
 # Ocultar advertencias de statsmodels que a menudo aparecen durante el ajuste
 warnings.filterwarnings('ignore')
@@ -18,7 +19,7 @@ warnings.filterwarnings('ignore')
 st.set_page_config(page_title="HEDGEHOG 1.1", layout="wide")
 st.title("🔬 HEDGEHOG 1.1 Modelos de Volatilidad - Markov-Switching K=2-3 - NR/WR")
 st.markdown("""
-Esta herramienta ejecuta y compara dos modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
+Esta herramienta ejecuta y compara dos modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
 del S&P 500 y añade la señal de compresión **NR/WR (Narrow Range after Wide Range)** como indicador auxiliar.
 """)
 
@@ -29,8 +30,8 @@ del S&P 500 y añade la señal de compresión **NR/WR (Narrow Range after Wide R
 @st.cache_data(ttl=86400)
 def fetch_data():
     """Descarga datos históricos del ^GSPC (SPX) y ^VIX (VIX)."""
-    # Usamos un período largo para un ajuste robusto del modelo Markov
-    start = "2010-01-01" 
+    # Usamos un período largo para un ajuste robusto
+    start = "2010-01-01" 
     end = datetime.now()
 
     spx = yf.download("^GSPC", start=start, end=end, auto_adjust=False, multi_level_index=False, progress=False)
@@ -42,7 +43,7 @@ def fetch_data():
 
     df_merged = spx.merge(vix_series, how='left', left_index=True, right_index=True)
     df_merged.dropna(subset=['VIX'], inplace=True)
-     
+    
     return df_merged
 
 @st.cache_data(ttl=3600)
@@ -67,10 +68,10 @@ def calculate_indicators(df_raw: pd.DataFrame):
     spx['nr14_threshold'] = spx['High'].rolling(window=window).max() - spx['Low'].rolling(window=window).min()
     spx['NR14'] = (spx['High'] - spx['Low'] < spx['nr14_threshold']).astype(int)
     spx.drop(columns=['nr14_threshold'], inplace=True)
-     
+    
     # 4. Ratio de volatilidad en el VIX
     spx['VIX_pct_change'] = spx['VIX'].pct_change()
-     
+    
     return spx.dropna()
 
 
@@ -78,19 +79,19 @@ def preparar_datos_markov(spx: pd.DataFrame):
     """Estandariza los datos y alinea las series de tiempo."""
     endog_variable = 'RV_5d'
     variables_tvtp = ['VIX', 'ATR_14', 'VIX_pct_change', 'NR14']
-     
+    
     data_markov = spx.copy()
     endog = data_markov[endog_variable].dropna()
-     
+    
     # Estandarizar exógenas
     exog_tvtp_original = data_markov[variables_tvtp].copy()
     scaler_tvtp = StandardScaler()
     exog_tvtp_scaled_data = scaler_tvtp.fit_transform(exog_tvtp_original.dropna())
-     
+    
     exog_tvtp_scaled = pd.DataFrame(
-        exog_tvtp_scaled_data,
-        index=exog_tvtp_original.dropna().index,
-        columns=variables_tvtp
+        exog_tvtp_scaled_data,
+        index=exog_tvtp_original.dropna().index,
+        columns=variables_tvtp
     )
 
     # Alinear y eliminar NaNs finales
@@ -98,10 +99,10 @@ def preparar_datos_markov(spx: pd.DataFrame):
     endog_final = data_final[endog_variable]
     exog_tvtp_final = data_final[variables_tvtp]
     endog_final = endog_final.loc[exog_tvtp_final.index]
-     
+    
     if len(endog_final) < 50:
-        return None, None
-     
+        return None, None
+    
     return endog_final, exog_tvtp_final
 
 # --- LÓGICA NR/WR (Narrow Range after Wide Range) ---
@@ -109,17 +110,16 @@ def preparar_datos_markov(spx: pd.DataFrame):
 def check_recent_wr(wr_series: pd.Series, tr_series: pd.Series, wr_len: int, max_delay: int) -> pd.Series:
     """
     Verifica si hubo un Wide Range (WR) en las últimas 'max_delay' barras.
-    Replica el bucle 'for i = 1 to max_delay' de PineScript.
     """
     # Inicializar la serie de resultado con False
     wr_recent = pd.Series(False, index=wr_series.index)
-     
+    
     # Iterar sobre el retraso (delay)
     for i in range(1, max_delay + 1):
-        # Condición: tr[i] == ta.highest(tr, wr_len)[i]
-        condition = (tr_series.shift(i) == tr_series.rolling(window=wr_len).max().shift(i))
-        wr_recent = wr_recent | condition  # OR acumulativo
-     
+        # Condición: tr[i] == ta.highest(tr, wr_len)[i]
+        condition = (tr_series.shift(i) == tr_series.rolling(window=wr_len).max().shift(i))
+        wr_recent = wr_recent | condition  # OR acumulativo
+    
     return wr_recent
 
 def calculate_nr_wr_signal(spx_raw: pd.DataFrame) -> bool:
@@ -131,16 +131,16 @@ def calculate_nr_wr_signal(spx_raw: pd.DataFrame) -> bool:
     nr4_len = 4
     wr7_len = 7
     nr7_len = 7
-    max_delay = 3 
+    max_delay = 3 
 
     # --- TRUE RANGE ---
     high_low = df['High'] - df['Low']
     high_prev_close = np.abs(df['High'] - df['Close'].shift(1))
     low_prev_close = np.abs(df['Low'] - df['Close'].shift(1))
     df['tr_nr_wr'] = pd.DataFrame({
-        'hl': high_low, 
-        'hpc': high_prev_close, 
-        'lpc': low_prev_close
+        'hl': high_low, 
+        'hpc': high_prev_close, 
+        'lpc': low_prev_close
     }).max(axis=1)
 
     # Limpiar NaNs causados por el shift(1) del True Range
@@ -151,7 +151,7 @@ def calculate_nr_wr_signal(spx_raw: pd.DataFrame) -> bool:
     df['wr7'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=wr7_len).max())
     df['nr4'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=nr4_len).min())
     df['nr7'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=nr7_len).min())
-     
+    
     # Aplicar la función corregida
     df['wr4_recent'] = check_recent_wr(df['wr4'], df['tr_nr_wr'], wr4_len, max_delay)
     df['wr7_recent'] = check_recent_wr(df['wr7'], df['tr_nr_wr'], wr7_len, max_delay)
@@ -161,13 +161,13 @@ def calculate_nr_wr_signal(spx_raw: pd.DataFrame) -> bool:
 
 
     # --- SEÑALES FINALES ---
-    df['signal_nr4'] = df['nr4'] & df['wr4_recent'] 
+    df['signal_nr4'] = df['nr4'] & df['wr4_recent'] 
     df['signal_nr7'] = df['nr7'] & df['wr7_recent']
     df['signal_nr_final'] = df['signal_nr7'] | df['signal_nr4']
 
     # Devolver solo la última señal (True/False)
     if not df['signal_nr_final'].empty:
-        return df['signal_nr_final'].iloc[-1]
+        return df['signal_nr_final'].iloc[-1]
     return False
 
 # ==============================================================================
@@ -177,66 +177,66 @@ def calculate_nr_wr_signal(spx_raw: pd.DataFrame) -> bool:
 @st.cache_data(ttl=3600)
 def markov_calculation_k2(endog_final, exog_tvtp_final):
     """
-    Modelo de 2 regímenes: Baja vs. Alta. Usa 0.10 como objetivo para encontrar
-    el umbral dinámico de baja volatilidad.
+    Modelo de 2 regímenes: Baja vs. Alta. 
+    Devuelve un diccionario con resultados y la probabilidad filtrada del régimen Baja.
     """
     VALOR_OBJETIVO_RV5D = 0.10
-    UMBRAL_COMPRESION = 0.70 
-     
+    UMBRAL_COMPRESION = 0.70 
+    
     if endog_final is None or exog_tvtp_final is None:
-        return {'error': "Datos insuficientes para el modelo K=2."}
+        return {'error': "Datos insuficientes para el modelo K=2."}
 
     # --- 1. AJUSTE DEL MODELO ---
     try:
-        modelo = MarkovRegression(
-            endog=endog_final, k_regimes=2, trend='c', 
-            switching_variance=True, switching_trend=True, exog_tvtp=exog_tvtp_final
-        )
-        resultado = modelo.fit(maxiter=500, disp=False)
+        modelo = MarkovRegression(
+            endog=endog_final, k_regimes=2, trend='c', 
+            switching_variance=True, switching_trend=True, exog_tvtp=exog_tvtp_final
+        )
+        resultado = modelo.fit(maxiter=500, disp=False)
     except Exception as e:
-        return {'error': f"Error de ajuste K=2: {e}"} 
+        return {'error': f"Error de ajuste K=2: {e}"} 
 
     # --- 2. IDENTIFICACIÓN DE REGÍMENES (Por Varianza) ---
     regimen_vars = resultado.params.filter(regex='sigma2|Variance')
     regimen_vars_sorted = regimen_vars.sort_values(ascending=True)
-     
+    
     # Se extrae el índice de régimen (el número entre corchetes, p. ej., '[0]' -> 0)
     def extract_regime_index(index_str):
-        return int(index_str.split('[')[1].replace(']', ''))
-     
+        return int(index_str.split('[')[1].replace(']', ''))
+    
     regimen_baja_vol_index = extract_regime_index(regimen_vars_sorted.index[0])
-     
+    
     # --- 3. CÁLCULO DEL UMBRAL DINÁMICO (Lógica 0.10) ---
     best_percentile = None
     min_diff = float('inf')
     rv5d_historica = endog_final.values
-     
+    
     # Buscar el percentil (entre 10% y 50%) cuyo valor esté más cerca de 0.10
     for p in np.linspace(0.10, 0.50, 41): # 10% a 50% en pasos de 1%
-        percentile_val = np.percentile(rv5d_historica, p * 100)
-        diff = abs(percentile_val - VALOR_OBJETIVO_RV5D)
-        
-        if diff < min_diff:
-            min_diff = diff
-            best_percentile = p * 100
-            UMBRAL_RV5D_P_OBJETIVO = percentile_val
+        percentile_val = np.percentile(rv5d_historica, p * 100)
+        diff = abs(percentile_val - VALOR_OBJETIVO_RV5D)
+        
+        if diff < min_diff:
+            min_diff = diff
+            best_percentile = p * 100
+            UMBRAL_RV5D_P_OBJETIVO = percentile_val
 
     # --- 4. EXTRACCIÓN Y CONCLUSIÓN ---
     probabilidades_filtradas = resultado.filtered_marginal_probabilities
     ultima_probabilidad = probabilidades_filtradas.iloc[-1]
-     
+    
     prob_baja = ultima_probabilidad.get(regimen_baja_vol_index, 0)
-     
+    
     return {
-        'nombre': 'K=2 (Original con Objetivo 0.10)',
-        'endog_final': endog_final,
-        'resultado': resultado,
-        'indices_regimen': {'Baja': regimen_baja_vol_index},
-        'varianzas_regimen': {'Baja': regimen_vars_sorted.iloc[0], 'Alta': regimen_vars_sorted.iloc[1]},
-        'prob_baja': prob_baja,
-        'UMBRAL_RV5D_P_OBJETIVO': UMBRAL_RV5D_P_OBJETIVO,
-        'P_USADO': best_percentile,
-        'UMBRAL_COMPRESION': UMBRAL_COMPRESION
+        'nombre': 'K=2 (Original con Objetivo 0.10)',
+        'endog_final': endog_final,
+        'resultado': resultado,
+        'indices_regimen': {'Baja': regimen_baja_vol_index},
+        'varianzas_regimen': {'Baja': regimen_vars_sorted.iloc[0], 'Alta': regimen_vars_sorted.iloc[1]},
+        'prob_baja': prob_baja,
+        'UMBRAL_RV5D_P_OBJETIVO': UMBRAL_RV5D_P_OBJETIVO,
+        'P_USADO': best_percentile,
+        'UMBRAL_COMPRESION': UMBRAL_COMPRESION
     }
 
 # ==============================================================================
@@ -246,157 +246,129 @@ def markov_calculation_k2(endog_final, exog_tvtp_final):
 @st.cache_data(ttl=3600)
 def markov_calculation_k3(endog_final, exog_tvtp_final):
     """
-    Modelo de 3 regímenes: Baja, Media, Alta. Identifica regímenes
-    únicamente por las varianzas estimadas.
+    Modelo de 3 regímenes: Baja, Media, Alta. 
+    Devuelve un diccionario con resultados y las probabilidades de Baja y Media.
     """
-    UMBRAL_COMPRESION = 0.70 
-     
+    UMBRAL_COMPRESION = 0.70 
+    
     if endog_final is None or exog_tvtp_final is None:
-        return {'error': "Datos insuficientes para el modelo K=3."}
-        
+        return {'error': "Datos insuficientes para el modelo K=3."}
+        
     # --- 1. AJUSTE DEL MODELO ---
     try:
-        modelo = MarkovRegression(
-            endog=endog_final, k_regimes=3, trend='c', 
-            switching_variance=True, switching_trend=True, exog_tvtp=exog_tvtp_final
-        )
-        resultado = modelo.fit(maxiter=500, disp=False)
+        modelo = MarkovRegression(
+            endog=endog_final, k_regimes=3, trend='c', 
+            switching_variance=True, switching_trend=True, exog_tvtp=exog_tvtp_final
+        )
+        resultado = modelo.fit(maxiter=500, disp=False)
     except Exception as e:
-        return {'error': f"Error de ajuste K=3: {e}"} 
+        return {'error': f"Error de ajuste K=3: {e}"} 
 
     # --- 2. IDENTIFICACIÓN DE REGÍMENES (Por Varianza) ---
     regimen_vars = resultado.params.filter(regex='sigma2|Variance')
 
     if len(regimen_vars) < 3:
-        return {'error': "ADVERTENCIA: No se pudieron extraer los tres parámetros de varianza."}
+        return {'error': "ADVERTENCIA: No se pudieron extraer los tres parámetros de varianza."}
 
     # Ordenar las varianzas para asignar: 0=Baja, 1=Media, 2=Alta
     regimen_vars_sorted = regimen_vars.sort_values(ascending=True)
-     
+    
     # Extracción del índice de régimen (el número entre corchetes, p. ej., '[0]' -> 0)
     def extract_regime_index(index_str):
-        return int(index_str.split('[')[1].replace(']', ''))
-        
+        return int(index_str.split('[')[1].replace(']', ''))
+        
     indices_regimen = {
-        'Baja': extract_regime_index(regimen_vars_sorted.index[0]),
-        'Media': extract_regime_index(regimen_vars_sorted.index[1]),
-        'Alta': extract_regime_index(regimen_vars_sorted.index[2])
+        'Baja': extract_regime_index(regimen_vars_sorted.index[0]),
+        'Media': extract_regime_index(regimen_vars_sorted.index[1]),
+        'Alta': extract_regime_index(regimen_vars_sorted.index[2])
     }
-     
+    
     varianzas_regimen = {
-        'Baja': regimen_vars_sorted.iloc[0],
-        'Media': regimen_vars_sorted.iloc[1],
-        'Alta': regimen_vars_sorted.iloc[2]
+        'Baja': regimen_vars_sorted.iloc[0],
+        'Media': regimen_vars_sorted.iloc[1],
+        'Alta': regimen_vars_sorted.iloc[2]
     }
-     
+    
     # --- 3. EXTRACCIÓN Y CONCLUSIÓN ---
     probabilidades_filtradas = resultado.filtered_marginal_probabilities
     ultima_probabilidad = probabilidades_filtradas.iloc[-1]
-     
+    
     prob_baja = ultima_probabilidad.get(indices_regimen['Baja'], 0)
     prob_media = ultima_probabilidad.get(indices_regimen['Media'], 0)
-     
+    
     return {
-        'nombre': 'K=3 (Varianza Objetiva)',
-        'resultado': resultado,
-        'indices_regimen': indices_regimen,
-        'varianzas_regimen': varianzas_regimen,
-        'prob_baja': prob_baja,
-        'prob_media': prob_media,
-        'UMBRAL_COMPRESION': UMBRAL_COMPRESION
+        'nombre': 'K=3 (Varianza Objetiva)',
+        'resultado': resultado,
+        'indices_regimen': indices_regimen,
+        'varianzas_regimen': varianzas_regimen,
+        'prob_baja': prob_baja,
+        'prob_media': prob_media,
+        'UMBRAL_COMPRESION': UMBRAL_COMPRESION
     }
 
 # ==============================================================================
-# 4. FUNCIÓN DE GRÁFICO DE VELAS (NUEVA)
+# 4. FUNCIONES DE VISUALIZACIÓN
 # ==============================================================================
 
-def plot_candlestick_chart(df: pd.DataFrame, start_date: datetime, end_date: datetime):
-    """Genera y muestra el gráfico de velas japonesas para el SPX500."""
+def plot_candlestick_chart(df: pd.DataFrame, start_date: datetime):
+    """Genera el gráfico de velas japonesas del SPX500."""
     
-    # Filtrar datos por el rango seleccionado
-    df_chart = df.loc[(df.index >= start_date) & (df.index <= end_date)].copy()
-    
-    st.header("Gráfico de Velas: S&P 500 (^GSPC)")
+    # Filtrar datos por fecha de inicio
+    df_filtered = df[df.index >= start_date]
 
-    if df_chart.empty:
+    if df_filtered.empty:
         st.warning("No hay datos disponibles para el rango de fechas seleccionado.")
         return
 
-    # Crear el gráfico de velas
     fig = go.Figure(data=[go.Candlestick(
-        x=df_chart.index,
-        open=df_chart['Open'],
-        high=df_chart['High'],
-        low=df_chart['Low'],
-        close=df_chart['Close'],
-        increasing_line_color='#06D6A0', # Verde
-        decreasing_line_color='#EF476F', # Rojo
+        x=df_filtered.index,
+        open=df_filtered['Open'],
+        high=df_filtered['High'],
+        low=df_filtered['Low'],
+        close=df_filtered['Close'],
         name='SPX500'
     )])
 
-    # Configuración de diseño
     fig.update_layout(
-        title=f'S&P 500 (^GSPC) desde {start_date.strftime("%Y-%m-%d")} hasta HOY',
-        xaxis_title='Fecha',
-        yaxis_title='Precio (USD)',
-        template='plotly_white',
-        height=600,
-        margin=dict(l=20, r=20, t=50, b=20)
-    )
-
-    # Mejorar la apariencia del eje X y añadir selector de rango
-    fig.update_xaxes(
-        type='date',
-        tickformat="%d/%m/%Y",
-        rangeslider_visible=False,
-        rangeselector=dict(
-            buttons=list([
-                dict(count=1, label="1m", step="month", stepmode="backward"),
-                dict(count=3, label="3m", step="month", stepmode="backward"),
-                dict(count=6, label="6m", step="month", stepmode="backward"),
-                dict(count=1, label="1a", step="year", stepmode="backward"),
-                dict(step="all")
-            ])
-        )
+        title=f'Precio del SPX500 desde {start_date.strftime("%Y-%m-%d")} hasta HOY',
+        xaxis_title="Fecha",
+        yaxis_title="Precio (USD)",
+        xaxis_rangeslider_visible=False,
+        height=450,
+        margin=dict(l=20, r=20, t=50, b=20),
+        template="plotly_dark"
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
-# ==============================================================================
-# 5. FUNCIÓN PRINCIPAL DE EJECUCIÓN Y VISUALIZACIÓN DE TABLA
-# ==============================================================================
-
 def main_comparison():
-    # --- 1. Cargar datos ---
-    with st.spinner("Descargando datos históricos para el análisis (desde 2010)..."):
-        df_raw = fetch_data()
-
-    # --- 2. CONFIGURACIÓN DEL SELECTOR DE FECHA (BARRA LATERAL) ---
-    end_date_dt = datetime.now()
-    end_date = end_date_dt.date()
-    # Por defecto: 6 meses atrás
-    default_start_date = (end_date_dt - relativedelta(months=6)).date()
-
-    st.sidebar.header("Configuración de Gráfico")
-    start_date = st.sidebar.date_input(
-        "Fecha de Inicio del Gráfico",
+    
+    # --- BARRA LATERAL (CONTROL DE DATOS Y FILTROS) ---
+    st.sidebar.header("Filtro del Gráfico de Velas")
+    
+    # Fecha por defecto: Hace 6 meses
+    default_start_date = datetime.now() - relativedelta(months=6)
+    
+    # Selector de fecha de inicio
+    start_date_chart = st.sidebar.date_input(
+        "Fecha de Inicio del Gráfico:",
         value=default_start_date,
-        max_value=end_date,
-        min_value=datetime(2010, 1, 1).date(), # Limite inferior de los datos
-        help="La fecha final es siempre HOY."
+        min_value=datetime(2010, 1, 1),
+        max_value=datetime.now()
     )
-
-    # Convertir a datetime para filtrar en el gráfico
-    start_date_dt_filter = datetime.combine(start_date, datetime.min.time())
     
-    # --- 3. MOSTRAR GRÁFICO ---
-    plot_candlestick_chart(df_raw, start_date_dt_filter, end_date_dt)
+    # Fecha de fin (siempre hoy)
+    end_date_chart = datetime.now()
+    st.sidebar.markdown(f"**Fecha de Fin Fija:** {end_date_chart.strftime('%Y-%m-%d')} (Hoy)")
+    st.sidebar.markdown("---")
     
-    st.markdown("---")
     
-    # --- 4. PREPARACIÓN DE DATOS PARA MARKOV (Usa todo el histórico) ---
-    st.header("1. Preparación de Datos para el Modelo Markov")
-    with st.spinner("Calculando indicadores y estandarizando para el modelo Markov..."):
+    # --- 1. Cargar datos y calcular indicadores (Proceso Único) ---
+    st.header("1. Carga y Preparación de Datos")
+    
+    # Esta sección utiliza la lógica de caching. Se ejecuta sólo una vez o al día.
+    with st.spinner("Descargando datos históricos y calculando indicadores..."):
+        df_raw = fetch_data()
         spx = calculate_indicators(df_raw)
         endog_final, exog_tvtp_final = preparar_datos_markov(spx)
 
@@ -404,12 +376,21 @@ def main_comparison():
         st.error("❌ Error: No se pudieron preparar los datos para el análisis Markov.")
         return
 
-    st.success(f"✅ Preparación exitosa. Datos listos para el análisis ({len(endog_final)} puntos).")
-    st.dataframe(spx.tail(2))
+    st.success(f"✅ Descarga y preparación exitosa. Datos listos para el análisis ({len(endog_final)} puntos).")
+    
+    # Mostrar las últimas dos filas del DataFrame endógeno
+    st.subheader("Datos de Volatilidad Recientes ($\text{RV}_{5d}$)")
+    # El DataFrame endog_final es una Serie, lo convertimos a un DataFrame para mostrar el índice
+    st.dataframe(endog_final.tail(2).to_frame(), use_container_width=True)
     st.markdown("---")
 
+    
+    # --- 1.5. GRÁFICO DE VELAS ---
+    # Convertir a datetime para la comparación con el índice
+    plot_candlestick_chart(df_raw, datetime.combine(start_date_chart, datetime.min.time()))
 
-    # --- 5. Ejecutar Calculo NR/WR ---
+
+    # --- Ejecutar Calculo NR/WR ---
     st.header("2. Indicador NR/WR (Narrow Range after Wide Range)")
     with st.spinner("Calculando indicador NR/WR..."):
         nr_wr_signal_on = calculate_nr_wr_signal(df_raw) # Usamos df_raw que tiene High/Low/Close
@@ -420,25 +401,26 @@ def main_comparison():
         st.info("⚪ **SEÑAL NR/WR:** La compresión de volatilidad está **INACTIVA**. La volatilidad puede ser normal o ya ha explotado.")
     st.markdown("---")
     
+    
     st.header("3. Modelos de Markov")
     
     # Definir columnas para los títulos y la ejecución de los modelos (K=2 y K=3 en paralelo)
     col_k2, col_k3 = st.columns(2)
     results_k2, results_k3 = None, None
 
-    # --- 6. Ejecutar Modelo K=2 ---
+    # --- 3.1. Ejecutar Modelo K=2 ---
     with col_k2:
-        st.subheader("Modelo K=2 (Objetivo RV=0.10)") 
+        st.subheader("Modelo K=2 (Objetivo RV=0.10)") 
         with st.spinner("Ajustando Modelo K=2..."):
             results_k2 = markov_calculation_k2(endog_final, exog_tvtp_final)
 
-    # --- 7. Ejecutar Modelo K=3 ---
+    # --- 3.2. Ejecutar Modelo K=3 ---
     with col_k3:
         st.subheader("Modelo K=3 (Objetivo Varianza)")
         with st.spinner("Ajustando Modelo K=3..."):
             results_k3 = markov_calculation_k3(endog_final, exog_tvtp_final)
 
-    # --- 8. Mostrar Resultados Clave y Comparación (Tabla) ---
+    # --- 4. Mostrar Resultados Clave y Comparación (Tabla) ---
 
     if 'error' in results_k2:
         st.error(f"❌ Error K=2: {results_k2['error']}")
@@ -446,7 +428,8 @@ def main_comparison():
     if 'error' in results_k3:
         st.error(f"❌ Error K=3: {results_k3['error']}")
         return
-     
+    
+    # El texto de resultados numérico ahora usa st.subheader para ser más pequeño
     st.markdown(f"**Fecha del Último Cálculo:** {endog_final.index[-1].strftime('%Y-%m-%d')}")
     st.markdown("---")
 
@@ -499,15 +482,15 @@ def main_comparison():
         st.success(f"**SEÑAL DE ENTRADA FUERTE (K=3):** El riesgo de Alta Volatilidad es bajo. La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, mayor de 0.70. Condición Favorable para estrategias de Theta.")
     else:
         st.warning(f"**RIESGO ACTIVO (K=3):** La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, menor de 0.70. El Régimen de Alta Volatilidad ha tomado peso. Evitar entrar o considerar salir.")
-     
+    
     st.markdown("""
     ---
     ### Entendiendo la Diferencia Clave
-     
+    
     El **Modelo K=2** combina toda la volatilidad no-crisis en una única señal de 'Baja', lo que le hace propenso a **falsos positivos**.
-     
-    El **Modelo K=3** descompone la 'Baja' volatilidad en dos estados: 'Baja' (Calma Extrema) y 'Media' (Consolidación). 
-     
+    
+    El **Modelo K=3** descompone la 'Baja' volatilidad en dos estados: 'Baja' (Calma Extrema) y 'Media' (Consolidación). 
+    
     La **Probabilidad Consolidada (Baja + Media)** del K=3 ofrece una señal de entrada/salida más robusta: solo da luz verde cuando la suma de los dos estados favorables supera el 70%, actuando como un **filtro más estricto contra el ruido** que el K=2 ignora.
     """)
 
