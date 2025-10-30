@@ -323,9 +323,15 @@ def main_comparison():
         return
 
     st.success(f"✅ Descarga y preparación exitosa. Datos listos para el análisis ({len(endog_final)} puntos).")
+    
+    # NUEVA ADICIÓN: Mostrar las últimas dos filas del DataFrame endógeno
+    st.subheader("Datos de Volatilidad Recientes ($\text{RV}_{5d}$)")
+    # El DataFrame endog_final es una Serie, lo convertimos a un DataFrame para mostrar el índice
+    st.dataframe(endog_final.tail(2).to_frame(), use_container_width=True)
+    st.markdown("---")
+
 
     # --- Ejecutar Calculo NR/WR ---
-    st.markdown("---")
     st.header("2. Indicador NR/WR (Narrow Range after Wide Range)")
     with st.spinner("Calculando indicador NR/WR..."):
         nr_wr_signal_on = calculate_nr_wr_signal(df_raw) # Usamos df_raw que tiene High/Low/Close
