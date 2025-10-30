@@ -161,9 +161,10 @@ fig_rv = go.Figure()
 spx_filtered['RV_5d_pct'] = spx_filtered['RV_5d'] * 100
 
 # ----------------------------------------------------------------------
-# LÓGICA DE COLOR CORREGIDA FINAL: Basada en la dirección del movimiento
+# LÓGICA DE COLOR FINAL Y PUNTOS BLANCOS
 # Subida (>= 0) -> Verde
 # Bajada (< 0) -> Rojo
+# Puntos -> Blanco (para visualización limpia)
 # ----------------------------------------------------------------------
 
 # 1. Calcular el cambio diario de RV
@@ -172,51 +173,50 @@ spx_filtered['RV_change'] = spx_filtered['RV_5d_pct'].diff()
 # 2. Determinar la dirección (True para Subida/Mantiene, False para Bajada)
 is_up = spx_filtered['RV_change'] >= 0
 
-# 3. Encontrar los puntos de cambio de segmento (donde la dirección es diferente al día anterior)
-is_change_point = is_up.shift(1) != is_up
-is_change_point.iloc[0] = False # El primer punto no es un punto de cambio
-
-# --- 1. Traza VERDE (Subida o Mantenimiento) ---
-# La traza verde debe incluir: 
-# a) Todos los puntos donde is_up es True
-# b) Los puntos anteriores a un cambio de BAJADA a SUBIDA (para cerrar el segmento anterior)
-# c) Los puntos donde un segmento ROJO (Bajada) comienza a ser VERDE (Subida).
-rv_green_mask = is_up.copy()
-# Incluir el punto donde el segmento pasa de Rojo a Verde (el inicio del segmento verde)
-rv_green_mask = rv_green_mask | is_change_point.shift(-1).fillna(False)
-
+# 3. Traza de LÍNEA VERDE (Subida o Mantenimiento)
+# La máscara incluye el punto actual si es subida Y el punto anterior si es el inicio de una subida
+rv_green_mask = is_up | is_up.shift(-1).fillna(False)
 rv_green_plot = spx_filtered['RV_5d_pct'].where(rv_green_mask, other=np.nan)
 
 # Trazo para la volatilidad en SUBIDA (Verde)
 fig_rv.add_trace(go.Scatter(
     x=spx_filtered.index,
     y=rv_green_plot,
-    mode='lines+markers',
-    name='Subida', # Nombre según tu original
+    mode='lines', # Solo líneas, sin markers aquí
+    name='Subida', 
     line=dict(color='green', width=2),
-    marker=dict(color='blue', size=6, line=dict(width=1, color='DarkSlateGrey'))
+    hoverinfo='text',
+    text=[f"RV: {y:.2f}% ({'Sube' if u else 'Baja'})" for y, u in zip(spx_filtered['RV_5d_pct'], is_up)]
 ))
 
 
-# --- 2. Traza ROJA (Bajada) ---
-# La traza roja debe incluir: 
-# a) Todos los puntos donde is_up es False (i.e., NOT is_up)
-# b) Los puntos anteriores a un cambio de SUBIDA a BAJADA (para cerrar el segmento anterior)
-# c) Los puntos donde un segmento VERDE (Subida) comienza a ser ROJO (Bajada).
-rv_red_mask = ~is_up
-# Incluir el punto donde el segmento pasa de Verde a Rojo (el inicio del segmento rojo)
-rv_red_mask = rv_red_mask | is_change_point.shift(-1).fillna(False)
-
+# 4. Traza de LÍNEA ROJA (Bajada)
+# La máscara incluye el punto actual si es bajada Y el punto anterior si es el inicio de una bajada
+is_down = ~is_up
+rv_red_mask = is_down | is_down.shift(-1).fillna(False)
 rv_red_plot = spx_filtered['RV_5d_pct'].where(rv_red_mask, other=np.nan)
 
 # Trazo para la volatilidad en BAJADA (Rojo)
 fig_rv.add_trace(go.Scatter(
     x=spx_filtered.index,
     y=rv_red_plot,
-    mode='lines+markers',
-    name='Bajada', # Nombre según tu original
+    mode='lines', # Solo líneas, sin markers aquí
+    name='Bajada', 
     line=dict(color='red', width=2),
-    marker=dict(color='blue', size=6, line=dict(width=1, color='DarkSlateGrey'))
+    hoverinfo='text',
+    text=[f"RV: {y:.2f}% ({'Sube' if u else 'Baja'})" for y, u in zip(spx_filtered['RV_5d_pct'], is_up)]
+))
+
+
+# 5. Traza de PUNTOS (Markers) en BLANCO (sobre ambas líneas)
+fig_rv.add_trace(go.Scatter(
+    x=spx_filtered.index,
+    y=spx_filtered['RV_5d_pct'],
+    mode='markers', # Solo markers, sin línea
+    name='Puntos', # Se puede quitar de la leyenda si no es necesario
+    marker=dict(color='white', size=6, line=dict(width=1, color='blue')), # Borde azul para destacar
+    showlegend=False, # No mostrar en la leyenda
+    hoverinfo='skip' # No queremos hover info duplicada
 ))
 
 
@@ -240,10 +240,6 @@ fig_rv.add_annotation(
     font=dict(size=12, color="orange"),
     xshift=5 # Desplazamiento horizontal para que no se superponga
 )
-
-# Nota: Los puntos azules (markers) se mantienen en ambas trazas para que todos los puntos se vean,
-# aunque sólo una traza dibuje la línea entre ellos. He cambiado el color del marker a azul para 
-# que se parezca más a la imagen de referencia.
 
 fig_rv.update_layout(
     title='Volatilidad Realizada a 5 Días del S&P 500 (Anualizada)',
