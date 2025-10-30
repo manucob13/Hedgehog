@@ -327,7 +327,7 @@ def main_comparison():
     # NUEVA ADICIÓN: Mostrar las últimas dos filas del DataFrame endógeno
     st.subheader("Datos de Volatilidad Recientes ($\text{RV}_{5d}$)")
     # El DataFrame endog_final es una Serie, lo convertimos a un DataFrame para mostrar el índice
-    st.dataframe(endog_final.tail(2).to_frame(), use_container_width=True)
+    st.dataframe(endog_final.tail(2))
     st.markdown("---")
 
 
