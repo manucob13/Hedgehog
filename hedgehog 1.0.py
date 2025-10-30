@@ -50,8 +50,6 @@ end_plot = st.sidebar.date_input("Fecha fin", min_value=start_plot, max_value=ma
 df_plot = df.loc[(df.index.date >= start_plot) & (df.index.date <= end_plot)]
 
 # --- Gráfico SPX con velas japonesas (sin huecos de fines de semana) ---
-st.header(f"Gráfico de velas japonesas del S&P 500 ({start_plot} a {end_plot})")
-
 if not df_plot.empty:
     # Convertir índice a string para eje categórico
     df_plot_plotly = df_plot.copy()
