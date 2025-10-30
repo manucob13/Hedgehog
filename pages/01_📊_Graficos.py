@@ -161,55 +161,52 @@ fig_rv = go.Figure()
 spx_filtered['RV_5d_pct'] = spx_filtered['RV_5d'] * 100
 
 # ----------------------------------------------------------------------
-# SOLUCIÓN: Usar dos trazas (una roja y una verde) y asegurar la CONTINUIDAD
-# duplicando los puntos de cruce en ambas trazas.
+# LÓGICA DE COLOR ACTUALIZADA: Basada en la dirección del movimiento (Subida/Bajada)
 # ----------------------------------------------------------------------
 
-# Calcular la condición de cruce (cambia de estado)
-rv_above = spx_filtered['RV_5d'] > UMBRAL_RV
-rv_below = spx_filtered['RV_5d'] <= UMBRAL_RV
+# Calcular el cambio diario de RV (RV_5d actual - RV_5d anterior)
+# Necesitamos el shift(-1) para comparar el valor en el *punto final* del segmento
+spx_filtered['RV_change'] = spx_filtered['RV_5d_pct'].diff()
 
-# Identificar los puntos donde cruza el umbral
-# Un cruce ocurre si el estado actual es diferente al estado anterior (shift(1))
-is_crossing = rv_above.shift(1, fill_value=False) != rv_above
+# Identificar la subida (Subida o Mantenimiento >= 0)
+rv_up = spx_filtered['RV_change'] >= 0
+# Identificar la bajada (< 0)
+rv_down = spx_filtered['RV_change'] < 0
 
-# 1. Preparar los datos para la traza VERDE (RV <= UMBRAL)
-# Incluir puntos donde RV <= UMBRAL o donde el día *siguiente* está por encima (para dibujar hasta el cruce)
-# Y también incluir puntos donde el día actual es el cruce (para duplicar el punto de conexión)
-green_mask = (rv_below) | (is_crossing.shift(-1, fill_value=False)) | (is_crossing)
+# Identificar los puntos donde la dirección CAMBIA (para asegurar la continuidad)
+# Un cambio ocurre si la dirección actual (up/down) es diferente a la dirección anterior
+is_change = rv_up.shift(1, fill_value=True) != rv_up.fillna(True) # fillna(True) para evitar problemas con NaN iniciales
 
-# Usamos la máscara para seleccionar los valores y forzar NaN donde no aplica
-rv_green_plot = spx_filtered['RV_5d_pct'].where(green_mask, other=np.nan)
-
-
-# 2. Preparar los datos para la traza ROJA (RV > UMBRAL)
-# Incluir puntos donde RV > UMBRAL o donde el día *siguiente* está por debajo (para dibujar hasta el cruce)
-red_mask = (rv_above) | (is_crossing.shift(-1, fill_value=False)) | (is_crossing)
-
-# Usamos la máscara para seleccionar los valores y forzar NaN donde no aplica
+# 1. Preparar los datos para la traza ROJA (Subida o Mantenimiento)
+# Incluimos los puntos donde sube/mantiene o donde hubo un cambio de dirección
+red_mask = (rv_up) | (is_change.shift(-1, fill_value=False)) | (is_change)
 rv_red_plot = spx_filtered['RV_5d_pct'].where(red_mask, other=np.nan)
 
 
-# Trazo para la volatilidad por debajo del umbral (Verde)
-# Usamos 'lines+markers' para mostrar los puntos y la línea de color.
-fig_rv.add_trace(go.Scatter(
-    x=spx_filtered.index,
-    y=rv_green_plot,
-    mode='lines+markers',
-    name='RV ≤ 10% (Verde - Baja Volatilidad)',
-    line=dict(color='green', width=2),
-    marker=dict(color='green', size=6, line=dict(width=1, color='DarkSlateGrey'))
-))
+# 2. Preparar los datos para la traza VERDE (Bajada)
+# Incluimos los puntos donde baja o donde hubo un cambio de dirección
+green_mask = (rv_down) | (is_change.shift(-1, fill_value=False)) | (is_change)
+rv_green_plot = spx_filtered['RV_5d_pct'].where(green_mask, other=np.nan)
 
-# Trazo para la volatilidad por encima del umbral (Rojo)
-# Usamos 'lines+markers' para mostrar los puntos y la línea de color.
+
+# Trazo para la volatilidad en SUBIDA (Rojo)
 fig_rv.add_trace(go.Scatter(
     x=spx_filtered.index,
     y=rv_red_plot,
     mode='lines+markers',
-    name='RV > 10% (Rojo - Alta Volatilidad)',
+    name='RV (Rojo - Sube/Mantiene)',
     line=dict(color='red', width=2),
     marker=dict(color='red', size=6, line=dict(width=1, color='DarkSlateGrey'))
+))
+
+# Trazo para la volatilidad en BAJADA (Verde)
+fig_rv.add_trace(go.Scatter(
+    x=spx_filtered.index,
+    y=rv_green_plot,
+    mode='lines+markers',
+    name='RV (Verde - Baja)',
+    line=dict(color='green', width=2),
+    marker=dict(color='green', size=6, line=dict(width=1, color='DarkSlateGrey'))
 ))
 
 
