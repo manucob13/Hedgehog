@@ -317,30 +317,31 @@ fig_combined.update_xaxes(showticklabels=False, row=1, col=1)
 # 2. GRÁFICO DE VOLATILIDAD REALIZADA (RV_5d) (Fila 2)
 # ----------------------------------------------------
 
-# Traza de LÍNEA VERDE (Subida)
-fig_combined.add_trace(go.Scatter(
-    x=list(range(len(spx_filtered))),
-    y=rv_green_plot,
-    mode='lines', 
-    name='RV (Sube)', 
-    line=dict(color='#00B06B', width=2),
-    connectgaps=True,  # IMPORTANTE: Conecta los huecos
-    hoverinfo='text',
-    text=[f"RV: {y:.2f}% ({'Sube' if u else 'Baja'})" for y, u in zip(spx_filtered['RV_5d_pct'], is_up)],
-    showlegend=True 
-), row=2, col=1)
+# Dibujar segmentos individuales con color según dirección
+for i in range(len(spx_filtered) - 1):
+    # Determinar el color del segmento según si sube o baja
+    color = '#00B06B' if is_up.iloc[i+1] else '#F13A50'
+    
+    # Dibujar segmento entre punto i y punto i+1
+    fig_combined.add_trace(go.Scatter(
+        x=[i, i+1],
+        y=[spx_filtered['RV_5d_pct'].iloc[i], spx_filtered['RV_5d_pct'].iloc[i+1]],
+        mode='lines',
+        line=dict(color=color, width=2),
+        showlegend=False,
+        hoverinfo='skip'
+    ), row=2, col=1)
 
-# Traza de LÍNEA ROJA (Bajada)
+# Añadir puntos invisibles para el hover unificado
 fig_combined.add_trace(go.Scatter(
     x=list(range(len(spx_filtered))),
-    y=rv_red_plot,
-    mode='lines', 
-    name='RV (Baja)', 
-    line=dict(color='#F13A50', width=2),
-    connectgaps=True,  # IMPORTANTE: Conecta los huecos
+    y=spx_filtered['RV_5d_pct'],
+    mode='markers',
+    marker=dict(size=0.1, color='rgba(0,0,0,0)'),
+    name='RV',
     hoverinfo='text',
-    text=[f"RV: {y:.2f}% ({'Sube' if u else 'Baja'})" for y, u in zip(spx_filtered['RV_5d_pct'], is_up)],
-    showlegend=False 
+    text=[f"RV: {y:.2f}%" for y in spx_filtered['RV_5d_pct']],
+    showlegend=True
 ), row=2, col=1)
 
 # Añadir línea horizontal discontinua del umbral (Fila 2)
