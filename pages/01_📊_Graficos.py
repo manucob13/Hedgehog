@@ -143,7 +143,8 @@ fig_combined = make_subplots(
     shared_xaxes=True, 
     vertical_spacing=0.02,
     row_heights=[0.7, 0.3], # SPX toma 70%, RV toma 30% del alto
-    subplot_titles=("S&P 500 - Velas Japonesas", "") # El segundo título queda vacío
+    # Añadimos títulos a ambos subplots para claridad
+    subplot_titles=("S&P 500 - Velas Japonesas", "Volatilidad Realizada (RV_5d)") 
 )
 
 # ----------------------------------------------------
@@ -156,7 +157,10 @@ fig_combined.add_trace(go.Candlestick(
     low=spx_filtered['Low'],
     close=spx_filtered['Close'],
     name='SPX',
-    showlegend=False
+    showlegend=False,
+    # Hacemos las velas más discretas en el tema oscuro
+    increasing=dict(line=dict(color='#00B06B')),
+    decreasing=dict(line=dict(color='#F13A50'))
 ), row=1, col=1)
 
 # Configuraciones de la Fila 1
@@ -171,35 +175,26 @@ fig_combined.update_xaxes(showticklabels=False, row=1, col=1) # Ocultar etiqueta
 fig_combined.add_trace(go.Scatter(
     x=list(range(len(spx_filtered))),
     y=rv_green_plot,
-    mode='lines',
-    name='Subida', 
-    line=dict(color='green', width=2),
+    mode='lines+markers', # Añadimos markers para puntos más claros
+    name='Sube/Mantiene (Baja Volatilidad)', 
+    line=dict(color='#00B06B', width=2),
+    marker=dict(size=5, color='#00B06B'),
     hoverinfo='text',
     text=[f"RV: {y:.2f}% ({'Sube' if u else 'Baja'})" for y, u in zip(spx_filtered['RV_5d_pct'], is_up)],
-    showlegend=False # Ocultar leyenda
+    showlegend=False
 ), row=2, col=1)
 
 # Traza de LÍNEA ROJA (Bajada)
 fig_combined.add_trace(go.Scatter(
     x=list(range(len(spx_filtered))),
     y=rv_red_plot,
-    mode='lines',
-    name='Bajada', 
-    line=dict(color='red', width=2),
+    mode='lines+markers', # Añadimos markers para puntos más claros
+    name='Baja (Alta Volatilidad)', 
+    line=dict(color='#F13A50', width=2),
+    marker=dict(size=5, color='#F13A50'),
     hoverinfo='text',
     text=[f"RV: {y:.2f}% ({'Sube' if u else 'Baja'})" for y, u in zip(spx_filtered['RV_5d_pct'], is_up)],
-    showlegend=False # Ocultar leyenda
-), row=2, col=1)
-
-# Traza de PUNTOS (Markers) en BLANCO
-fig_combined.add_trace(go.Scatter(
-    x=list(range(len(spx_filtered))),
-    y=spx_filtered['RV_5d_pct'],
-    mode='markers',
-    name='Puntos',
-    marker=dict(color='white', size=6, line=dict(width=1, color='blue')),
-    showlegend=False,
-    hoverinfo='skip'
+    showlegend=False
 ), row=2, col=1)
 
 # Añadir línea horizontal discontinua del umbral (Fila 2)
@@ -218,10 +213,10 @@ fig_combined.add_annotation(
     y=UMBRAL_RV * 100,
     text=f'Umbral: {UMBRAL_RV*100:.2f}%', 
     showarrow=False,
-    xanchor='left',
+    xanchor='right', # Ajuste de anclaje para que no se salga
     yanchor='bottom', 
     font=dict(size=12, color="orange"),
-    xshift=5,
+    xshift=0,
     row=2, col=1
 )
 
@@ -232,10 +227,17 @@ fig_combined.update_yaxes(title_text='RV (%)', row=2, col=1, tickformat=".2f")
 # --- CONFIGURACIÓN FINAL DEL GRÁFICO COMBINADO ---
 fig_combined.update_layout(
     title=f'S&P 500 y Volatilidad Realizada RV_5d ({fecha_inicio} a {fecha_final})',
-    template='plotly_white',
-    height=800, # Aumento la altura para los dos gráficos
+    # Usamos un tema oscuro (como el ejemplo de TradingView)
+    template='plotly_dark',
+    height=800, 
     xaxis_rangeslider_visible=False,
     hovermode='x unified',
+    # Añadimos un borde más grueso y colores que definen los 'recuadros'
+    plot_bgcolor='#131722', # Fondo del área de trazado
+    paper_bgcolor='#131722', # Fondo del papel
+    font=dict(color='#AAAAAA'),
+    # Borde entre los subplots para separarlos visualmente
+    margin=dict(t=50, b=100, l=60, r=40),
 )
 
 # Configurar el eje X compartido (solo las etiquetas inferiores)
@@ -244,8 +246,15 @@ fig_combined.update_xaxes(
     tickvals=list(range(len(spx_filtered))),
     ticktext=date_labels,
     tickangle=-45,
-    row=2, col=1
+    row=2, col=1,
+    showgrid=False # Ocultar rejilla vertical
 )
+# Configuraciones adicionales para ejes en tema oscuro
+fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=1, col=1)
+fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=1, col=1)
+fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=2, col=1)
+fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=2, col=1)
+
 
 st.plotly_chart(fig_combined, use_container_width=True)
 
