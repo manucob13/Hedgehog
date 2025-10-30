@@ -209,14 +209,17 @@ fig_combined.add_shape(
 
 # Añadir etiqueta para el umbral (Fila 2)
 fig_combined.add_annotation(
-    x=0, # Primer punto del eje X (izquierda)
-    y=UMBRAL_RV * 100,
+    x=0, # Primer punto del eje X (izquierda - coordenada de dato)
+    y=1.0, # Posición superior en el dominio Y (0=abajo, 1=arriba)
     text=f'Umbral: {UMBRAL_RV*100:.2f}%', 
     showarrow=False,
+    xref='x2',      # Referencia al eje X de la segunda fila
+    yref='y2 domain', # Referencia al dominio Y de la segunda fila (0 a 1)
     xanchor='left', # Ajuste de anclaje para la izquierda
-    yanchor='bottom', 
+    yanchor='top', # Ajuste de anclaje para el borde superior
     font=dict(size=12, color="orange"),
-    xshift=0,
+    xshift=5, # Desplazamiento a la derecha para un pequeño margen
+    yshift=-5, # Desplazamiento hacia abajo para un pequeño margen
     row=2, col=1
 )
 
