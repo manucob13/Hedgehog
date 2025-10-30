@@ -3,36 +3,32 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime
-from dateutil.relativedelta import relativedelta # Necesario para la lógica de fechas
-import plotly.graph_objects as go
-import warnings
-import matplotlib.pyplot as plt
+from dateutil.relativedelta import relativedelta
 from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
 from sklearn.preprocessing import StandardScaler
-from matplotlib.dates import DateFormatter
-from matplotlib.lines import Line2D 
+import warnings
 
 # Ocultar advertencias de statsmodels que a menudo aparecen durante el ajuste
 warnings.filterwarnings('ignore')
 
 # --- Configuración de la app ---
 st.set_page_config(page_title="HEDGEHOG", layout="wide")
-st.title("📊 HEDGEHOG 1.0")
+st.title("📊 HEDGEHOG 1.0 - Análisis Básico de Volatilidad")
 
-# --- Funciones de Lógica Central ---
+# ==============================================================================
+# 1. FUNCIONES DE LÓGICA PURA
+# (Estas funciones NO contienen llamadas directas a Streamlit, solo lógica de datos)
+# ==============================================================================
 
-# Descarga de datos históricos (Cacheado)
 @st.cache_data(ttl=86400)
 def fetch_data():
     """Descarga datos históricos del ^GSPC (SPX) y ^VIX (VIX)."""
     start = "2010-01-01"
     end = datetime.now()
 
-    # Descarga SPX y VIX
     spx = yf.download("^GSPC", start=start, end=end, auto_adjust=False, multi_level_index=False, progress=False)
     vix = yf.download("^VIX", start=start, end=end, auto_adjust=False, multi_level_index=False, progress=False)
 
-    # Preparación y fusión de datos
     spx.index = pd.to_datetime(spx.index)
     vix_series = vix['Close'].rename('VIX')
     vix_series.index = pd.to_datetime(vix_series.index)
@@ -42,7 +38,6 @@ def fetch_data():
     
     return df_merged
 
-# Cálculo de Indicadores (Cacheado)
 @st.cache_data(ttl=3600)
 def calculate_indicators(df_raw: pd.DataFrame):
     """Calcula todos los indicadores técnicos necesarios (RV, ATR, NR, VIX Change)."""
@@ -75,7 +70,6 @@ def calculate_indicators(df_raw: pd.DataFrame):
     
     return spx
 
-# Cálculo y entrenamiento MODELO de MARKOV (Cacheado)
 @st.cache_data(ttl=3600)
 def markov_calculation(spx: pd.DataFrame):
     """
@@ -83,10 +77,7 @@ def markov_calculation(spx: pd.DataFrame):
     Devuelve un diccionario con los resultados del modelo.
     """
     
-    st.subheader("⚙️ 1. Preparación y Cálculo del Modelo Markov")
-    st.info("Ajustando el modelo. Esto puede tomar unos segundos...")
-
-    # --- 0. CONFIGURACIÓN Y LIMPIEZA ---
+    # --- 0. CONFIGURACIÓN ---
     endog_variable = 'RV_5d'
     variables_tvtp = ['VIX', 'ATR_14', 'VIX_pct_change', 'NR14']
     UMBRAL_COMPRESION = 0.70
@@ -99,12 +90,12 @@ def markov_calculation(spx: pd.DataFrame):
 
     # --- 1. PREPARACIÓN DE DATOS Y ESTANDARIZACIÓN ---
     endog = data_markov[endog_variable].dropna()
-
+    
     # CÁLCULO DINÁMICO DEL UMBRAL RV_5d
     rv5d_historico = endog.copy()
     percentiles = np.linspace(0.10, 0.50, 41)
-    best_percentile = 0.10
     min_diff = float('inf')
+    best_percentile = 0.10
 
     for p in percentiles:
         p_value = rv5d_historico.quantile(p)
@@ -133,8 +124,7 @@ def markov_calculation(spx: pd.DataFrame):
     exog_tvtp_final = data_final[variables_tvtp]
     
     if len(endog_final) < 50:
-        st.error(f"❌ Datos insuficientes para el modelo Markov. Solo {len(endog_final)} puntos disponibles.")
-        return None
+        return {'error': f"Datos insuficientes para el modelo Markov. Solo {len(endog_final)} puntos disponibles."}
 
     # --- 2. AJUSTE DEL MODELO MARKOV-SWITCHING ---
     resultado = None
@@ -144,21 +134,19 @@ def markov_calculation(spx: pd.DataFrame):
             switching_variance=True, switching_trend=True, exog_tvtp=exog_tvtp_final
         )
         resultado = modelo.fit(maxiter=500, disp=False)
-        st.success("✅ Ajuste exitoso del Modelo Markov-Switching.")
-    except Exception as e:
+    except Exception:
         try:
+            # Intento con un método diferente si el primero falla
             resultado = modelo.fit(maxiter=500, disp=False, method='powell')
-            st.warning("⚠️ Ajuste inicial falló. Reajuste exitoso usando el método 'powell'.")
         except Exception as e2:
-            st.error(f"❌ ERROR CRÍTICO: Ambos métodos de ajuste fallaron: {e2}")
-            return None 
+            return {'error': f"ERROR CRÍTICO: Ambos métodos de ajuste fallaron: {e2}"} 
 
     # --- 3. EXTRACCIÓN E INTERPRETACIÓN DE RESULTADOS ---
     regimen_vars = resultado.params.filter(regex='sigma2|Variance').sort_values(ascending=True)
     if len(regimen_vars) < 2:
-        st.error("❌ ADVERTENCIA: No se pudieron extraer los dos parámetros de varianza.")
-        return None
+        return {'error': "ADVERTENCIA: No se pudieron extraer los dos parámetros de varianza."}
 
+    # Determinar el índice del régimen de baja volatilidad (el que tiene la varianza más pequeña)
     try:
         regimen_baja_vol_param_name = regimen_vars.index[0]
         regimen_baja_vol_index = int(regimen_baja_vol_param_name.split('[')[1].replace(']', ''))
@@ -171,7 +159,7 @@ def markov_calculation(spx: pd.DataFrame):
     
     probabilidades_filtradas = resultado.filtered_marginal_probabilities
     ultima_probabilidad = probabilidades_filtradas.iloc[-1]
-    ultima_fecha = probabilidades_filtradas.index[-1].strftime('%Y-%m-%d') # Fecha de entrenamiento
+    ultima_fecha = probabilidades_filtradas.index[-1].strftime('%Y-%m-%d')
 
     prob_baja_vol = ultima_probabilidad.get(regimen_baja_vol_index, 0)
     
@@ -198,143 +186,37 @@ def markov_calculation(spx: pd.DataFrame):
         'ultima_fecha': ultima_fecha
     }
 
-# GRAFICAR MARKOV
-def markov_plot(results: dict):
-    """Muestra los resultados del modelo Markov en Streamlit."""
-    if results is None:
-        return
 
-    plt.style.use('seaborn-v0_8-darkgrid')
-    
-    st.subheader("📊 2. Visualización Detallada (Últimos 90 Días)")
-
-    endog_final = results['endog_final']
-    resultado = results['resultado']
-    regimen_baja_vol_index = results['regimen_baja_vol_index']
-    UMBRAL_RV5D_P_OBJETIVO = results['UMBRAL_RV5D_P_OBJETIVO']
-    P_USADO = results['P_USADO']
-    UMBRAL_COMPRESION = results['UMBRAL_COMPRESION']
-
-    # 4.1 Filtrado de datos para los últimos 90 días
-    fecha_final = endog_final.index.max()
-    fecha_inicio = fecha_final - pd.DateOffset(days=90) 
-
-    rv_5d_filtrada = endog_final[endog_final.index >= fecha_inicio]
-    prob_regimen_baja_completa = resultado.smoothed_marginal_probabilities[regimen_baja_vol_index]
-    prob_filtrada = prob_regimen_baja_completa[prob_regimen_baja_completa.index >= fecha_inicio]
-
-    # --- Generación del gráfico (Dos Subplots) ---
-    fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
-    fig.suptitle(f'Análisis de Régimen de Volatilidad (Hasta {results["ultima_fecha"]})', fontsize=16)
-
-    # Gráfico 1: RV_5d
-    axes[0].set_title(f"1. Volatilidad Realizada (RV_5d)")
-    
-    # Dibujar líneas con colores dinámicos
-    for i in range(1, len(rv_5d_filtrada)):
-        x_vals = [rv_5d_filtrada.index[i-1], rv_5d_filtrada.index[i]]
-        y_vals = [rv_5d_filtrada.iloc[i-1], rv_5d_filtrada.iloc[i]]
-        color = 'green' if rv_5d_filtrada.iloc[i] > rv_5d_filtrada.iloc[i-1] else 'red'
-        axes[0].plot(x_vals, y_vals, color=color, linewidth=1.5, alpha=0.8)
-        
-    axes[0].scatter(rv_5d_filtrada.index, rv_5d_filtrada.values, c='blue', s=20, alpha=0.6, zorder=5)
-    
-    # Dibujar Umbral RV_5d
-    axes[0].axhline(UMBRAL_RV5D_P_OBJETIVO, color='orange', linestyle=':', linewidth=2, alpha=0.9,
-                    label=f"Umbral Baja Vol. (P{P_USADO:.0f}: {UMBRAL_RV5D_P_OBJETIVO:.4f})")
-    
-    # Leyenda manual
-    legend_elements = [
-        Line2D([0], [0], color='green', linewidth=2, label='RV_5d Sube'),
-        Line2D([0], [0], color='red', linewidth=2, label='RV_5d Baja'),
-        Line2D([0], [0], color='orange', linestyle=':', linewidth=2, label=f"Umbral (P{P_USADO:.0f})")
-    ]
-    axes[0].legend(handles=legend_elements, loc='upper right')
-    axes[0].grid(True, linestyle='--', alpha=0.6)
-
-    # Gráfico 2: Probabilidad Suavizada
-    axes[1].plot(prob_filtrada.index, prob_filtrada.values, label=f'Prob. Baja Volatilidad (Reg. {regimen_baja_vol_index})', color='green', linewidth=2)
-    axes[1].axhline(0.5, color='red', linestyle='--', alpha=0.7, label='Umbral 50%')
-    axes[1].axhline(UMBRAL_COMPRESION, color='orange', linestyle=':', linewidth=2, alpha=0.7, label=f"Umbral {int(UMBRAL_COMPRESION*100)}% (Señal Fuerte)")
-    axes[1].set_title('2. Probabilidad de Régimen de Baja Volatilidad/Compresión')
-    axes[1].fill_between(prob_filtrada.index, 0, prob_filtrada.values, where=prob_filtrada.values > 0.5, color='green', alpha=0.3)
-    axes[1].legend(loc='upper right')
-    axes[1].set_ylim(0, 1)
-    axes[1].grid(True, linestyle='--', alpha=0.6)
-
-    # Formato de Fechas en el Eje X
-    axes[1].set_xticks(prob_filtrada.index[::len(prob_filtrada)//10 or 1])
-    date_form = DateFormatter("%m-%d")
-    axes[1].xaxis.set_major_formatter(date_form)
-    plt.xticks(rotation=45, ha='right')
-
-    plt.xlabel("Fecha")
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    
-    # Mostrar el gráfico en Streamlit
-    st.pyplot(fig)
-
-
-# --- Flujo de la Aplicación ---
+# ==============================================================================
+# 2. FLUJO DE EJECUCIÓN PRINCIPAL Y PANTALLA DE STREAMLIT
+# ==============================================================================
 
 # 1. Cargar datos base
-df_raw = fetch_data()
-st.success(f"✅ Descarga datos SPX - VIX desde {df_raw.index.min().date()} - {df_raw.index.max().date()}")
+st.header("1. Descarga y Cálculo de Indicadores")
+with st.spinner("Descargando datos históricos (^GSPC y ^VIX)..."):
+    df_raw = fetch_data()
+st.success(f"✅ Descarga de datos exitosa desde {df_raw.index.min().date()} - {df_raw.index.max().date()}")
 
 # 2. Calcular indicadores
-spx = calculate_indicators(df_raw)
+with st.spinner("Calculando indicadores de volatilidad (RV, ATR, NR, VIX Change)..."):
+    spx = calculate_indicators(df_raw)
+st.success("✅ Indicadores calculados.")
 
-# --- Sección de Gráfico de Velas SPX (Parte 1: Sidebar y Filtrado) ---
-st.header("Análisis de Precios")
-st.sidebar.header("Rango grafico - SPX")
-min_date = spx.index.min().date()
-max_date = spx.index.max().date()
-
-default_end = max_date
-default_start = (pd.Timestamp(default_end) - pd.DateOffset(months=3)).date()
-
-start_plot = st.sidebar.date_input("Fecha inicio", min_value=min_date, max_value=max_date, value=default_start)
-end_plot = st.sidebar.date_input("Fecha fin", min_value=start_plot, max_value=max_date, value=default_end)
-
-df_plot = spx.loc[(spx.index.date >= start_plot) & (spx.index.date <= end_plot)]
-
-# --- Gráfico SPX con velas japonesas ---
-if not df_plot.empty:
-    df_plot_plotly = df_plot.copy()
-    df_plot_plotly['Fecha_str'] = df_plot_plotly.index.strftime('%Y-%m-%d')
-
-    fig = go.Figure(data=[go.Candlestick(
-        x=df_plot_plotly['Fecha_str'],
-        open=df_plot_plotly['Open'],
-        high=df_plot_plotly['High'],
-        low=df_plot_plotly['Low'],
-        close=df_plot_plotly['Close'],
-        increasing_line_color='green',
-        decreasing_line_color='red'
-    )])
-
-    fig.update_layout(
-        xaxis_title="Fecha",
-        yaxis_title="Precio",
-        xaxis_rangeslider_visible=False,
-        xaxis_type='category', 
-        template="plotly_white"
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    st.warning("No hay datos disponibles para el rango seleccionado.")
-
-# Visualización de las últimas filas de los indicadores
-with st.expander("Ver últimas filas del DataFrame de Indicadores (spx)"):
-    # CORRECCIÓN: Usamos st.dataframe para mostrar la variable 'spx'
-    st.dataframe(spx.tail(5)) 
+# Muestra de las últimas filas del DataFrame (Corregido: NO es st.spx)
+st.subheader("Últimas 5 Filas del DataFrame de Indicadores (spx)")
+st.dataframe(spx.tail(5)) # <-- Corrección del error 'AttributeError: st.spx...'
 
 # 3. Análisis de Régimen de Volatilidad
-st.header("Análisis de Régimen de Volatilidad")
-markov_results = markov_calculation(spx)
+st.header("2. Análisis de Régimen de Volatilidad (Modelo Markov)")
 
-if markov_results:
+markov_results = None
+with st.spinner("⚙️ Ajustando el Modelo Markov-Switching... Esto puede tardar unos segundos."):
+    markov_results = markov_calculation(spx)
+
+if markov_results and 'error' in markov_results:
+    st.error(f"❌ Cálculo Fallido: {markov_results['error']}")
+elif markov_results:
+    st.success("✅ Ajuste del Modelo Markov exitoso.")
     st.subheader("✅ Resultados Clave del Cálculo")
 
     col1, col2 = st.columns([1, 1])
@@ -352,7 +234,6 @@ if markov_results:
     with st.expander("Ver Resumen Estadístico Completo del Modelo"):
         st.code(markov_results['summary'])
     
-    markov_plot(markov_results) 
+    # markov_plot(markov_results) # Gráfico excluido a petición del usuario
 else:
-    st.error("El cálculo del modelo Markov falló. Revisar logs anteriores.")
-
+    st.error("El cálculo del modelo Markov no devolvió resultados.")
