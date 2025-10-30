@@ -257,7 +257,11 @@ def main_comparison():
 
     st.success(f"✅ Descarga y preparación exitosa. Datos listos para el análisis ({len(endog_final)} puntos).")
 
-    ol_k2, col_k3 = st.columns(2)
+
+
+    
+
+    col_k2, col_k3 = st.columns(2)
     results_k2, results_k3 = None, None
     
     
