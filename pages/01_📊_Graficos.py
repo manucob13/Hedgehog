@@ -160,28 +160,22 @@ fig_rv = go.Figure()
 # Convertir RV_5d a porcentaje
 spx_filtered['RV_5d_pct'] = spx_filtered['RV_5d'] * 100
 
-# Separar los datos por encima y por debajo del umbral para el trazo de la línea
-rv_below_threshold = spx_filtered[spx_filtered['RV_5d'] <= UMBRAL_RV]['RV_5d_pct']
-rv_above_threshold = spx_filtered[spx_filtered['RV_5d'] > UMBRAL_RV]['RV_5d_pct']
+# Calcular el color para cada punto: 'red' si > Umbral, 'green' si <= Umbral
+colors = ['red' if x > UMBRAL_RV * 100 else 'green' for x in spx_filtered['RV_5d_pct']]
 
-# Trazo para la volatilidad por debajo del umbral (verde)
+
+# Trazo único para la volatilidad con color condicional
 fig_rv.add_trace(go.Scatter(
     x=spx_filtered.index,
-    y=rv_below_threshold.where(spx_filtered['RV_5d'] <= UMBRAL_RV), # Solo puntos <= UMBRAL
+    y=spx_filtered['RV_5d_pct'],
     mode='lines+markers',
-    name='RV ≤ 10% (Subida)',
-    line=dict(color='green', width=2),
-    marker=dict(color='blue', size=6)
-))
-
-# Trazo para la volatilidad por encima del umbral (rojo)
-fig_rv.add_trace(go.Scatter(
-    x=spx_filtered.index,
-    y=rv_above_threshold.where(spx_filtered['RV_5d'] > UMBRAL_RV), # Solo puntos > UMBRAL
-    mode='lines+markers',
-    name='RV > 10% (Bajada)',
-    line=dict(color='red', width=2),
-    marker=dict(color='blue', size=6)
+    name='RV 5 días (Anualizada)',
+    line=dict(color='lightgray', width=2), # Línea base neutral
+    marker=dict(
+        color=colors, # Color del marcador condicional (rojo/verde)
+        size=6,
+        line=dict(width=1, color='DarkSlateGrey') # Borde del marcador
+    )
 ))
 
 # Añadir línea horizontal discontinua del umbral (la línea real)
@@ -205,14 +199,41 @@ fig_rv.add_annotation(
     xshift=5 # Desplazamiento horizontal para que no se superponga
 )
 
+# Añadir trazas ficticias para la leyenda de colores (opcional: si quieres que la leyenda muestre los colores)
+# Traza roja para la leyenda (por encima del umbral)
+fig_rv.add_trace(go.Scatter(
+    x=[None], y=[None],
+    mode='lines+markers',
+    name='RV > 10% (Rojo)',
+    line=dict(color='red', width=3),
+    marker=dict(color='red', size=8),
+    showlegend=True
+))
+# Traza verde para la leyenda (por debajo del umbral)
+fig_rv.add_trace(go.Scatter(
+    x=[None], y=[None],
+    mode='lines+markers',
+    name='RV ≤ 10% (Verde)',
+    line=dict(color='green', width=3),
+    marker=dict(color='green', size=8),
+    showlegend=True
+))
+
+
 fig_rv.update_layout(
     title='Volatilidad Realizada a 5 Días del S&P 500 (Anualizada)',
     yaxis_title='RV (%)',
     xaxis_title='Fecha',
     template='plotly_white',
-    height=450, # Aumentado ligeramente para el título
+    height=450,
     hovermode='x unified',
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1) # Leyenda en la parte superior
+    # Ajustamos la posición de la leyenda
+    legend=dict(
+        orientation="h",
+        yanchor="bottom", y=1.02, 
+        xanchor="right", x=1,
+        traceorder='normal'
+    )
 )
 
 fig_rv.update_yaxes(tickformat=".2f") # Formato con 2 decimales
