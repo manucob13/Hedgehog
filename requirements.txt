@@ -1,13 +1,14 @@
 streamlit
 pandas
-numpy==1.24.4  # Versión estable y compatible
-scipy==1.10.1  # statsmodels a menudo depende implícitamente de scipy
+numpy
+scipy
 requests
 yfinance
 matplotlib
 plotly
-statsmodels==0.13.5 # Una versión probada y muy estable
-scikit-learn==1.2.2 # Versión estable y compatible
+statsmodels
+scikit-learn
+
 
 
 
