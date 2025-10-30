@@ -79,8 +79,8 @@ st.sidebar.header("⚙️ Configuración del Gráfico")
 fecha_final = spx.index[-1].date()
 st.sidebar.info(f"📅 Última fecha disponible: {fecha_final}")
 
-# Fecha de inicio (por defecto 3 meses atrás)
-fecha_inicio_default = fecha_final - timedelta(days=90)
+# Fecha de inicio (por defecto 2 meses atrás, ~60 días)
+fecha_inicio_default = fecha_final - timedelta(days=60)
 
 fecha_inicio = st.sidebar.date_input(
     "Fecha de inicio:",
