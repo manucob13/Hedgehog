@@ -205,11 +205,14 @@ def markov_calculation_k3(endog_final, exog_tvtp_final):
     # Ordenar las varianzas para asignar: 0=Baja, 1=Media, 2=Alta
     regimen_vars_sorted = regimen_vars.sort_values(ascending=True)
     
-    # FIX: Se corrigió el índice de split para 'Alta' de [2] a [1]
+    # Extracción del índice de régimen (el número entre corchetes, p. ej., '[0]' -> 0)
+    def extract_regime_index(index_str):
+        return int(index_str.split('[')[1].replace(']', ''))
+        
     indices_regimen = {
-        'Baja': int(regimen_vars_sorted.index[0].split('[')[1].replace(']', '')),
-        'Media': int(regimen_vars_sorted.index[1].split('[')[1].replace(']', '')),
-        'Alta': int(regimen_vars_sorted.index[2].split('[')[1].replace(']', ''))
+        'Baja': extract_regime_index(regimen_vars_sorted.index[0]),
+        'Media': extract_regime_index(regimen_vars_sorted.index[1]),
+        'Alta': extract_regime_index(regimen_vars_sorted.index[2])
     }
     
     varianzas_regimen = {
@@ -274,10 +277,13 @@ def comparison_plot(results_k2: dict, results_k3: dict, df_raw: pd.DataFrame):
 
     
     # --- Creación del Gráfico ---
+    # CORRECCIÓN CLAVE: Configuramos 'secondary_y': True solo para la primera fila
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
                         subplot_titles=('Volatilidad Realizada (RV_5d) y SPX', 'Probabilidad de Régimen de Calma'), 
                         vertical_spacing=0.1,
-                        row_heights=[0.3, 0.7])
+                        row_heights=[0.3, 0.7],
+                        specs=[[{"secondary_y": True}], # Fila 1: Permite eje secundario
+                               [{}]])                    # Fila 2: Sin eje secundario
 
     # 1. Subplot Superior: RV_5d y Precio SPX
     # SPX Price (Eje Secundario)
@@ -320,6 +326,7 @@ def comparison_plot(results_k2: dict, results_k3: dict, df_raw: pd.DataFrame):
                       legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                       template="plotly_white")
     
+    # Actualizar títulos de ejes para reflejar el cambio
     fig.update_yaxes(title_text="RV_5d Anualizada", row=1, col=1, secondary_y=False)
     fig.update_yaxes(title_text="Precio SPX", row=1, col=1, secondary_y=True)
     fig.update_yaxes(title_text="Probabilidad", row=2, col=1, range=[0, 1.05])
