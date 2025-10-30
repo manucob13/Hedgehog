@@ -257,11 +257,12 @@ def main_comparison():
 
     st.success(f"✅ Descarga y preparación exitosa. Datos listos para el análisis ({len(endog_final)} puntos).")
 
-    col_k2, col_k3 = st.columns(2)
-    results_k2, results_k3 = None, None
-
     # --- 2. Ejecutar Modelo K=2 ---
     st.header("2. Calculos Markov k2 - k3")
+
+    ol_k2, col_k3 = st.columns(2)
+    results_k2, results_k3 = None, None
+    
     with col_k2:
         st.subheader("Modelo K=2 (Objetivo RV=0.10)")
         with st.spinner("Ajustando Modelo K=2..."):
