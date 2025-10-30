@@ -369,7 +369,6 @@ def main_comparison():
         return
     
     # El texto de resultados numérico ahora usa st.subheader para ser más pequeño
-    st.subheader("Resultados Numéricos Clave y Comparación Markov") 
     st.markdown(f"**Fecha del Último Cálculo:** {endog_final.index[-1].strftime('%Y-%m-%d')}")
     st.markdown("---")
 
