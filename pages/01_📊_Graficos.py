@@ -106,15 +106,16 @@ fig = go.Figure(data=[go.Candlestick(
 
 fig.update_layout(
     title=f'S&P 500 - Velas Japonesas ({fecha_inicio} a {fecha_final})',
-    yaxis_title='Precio',
-    xaxis_title='Fecha',
+    yaxis_title='',  # Sin título en eje Y
+    xaxis_title='',  # Sin título en eje X
     template='plotly_white',
     height=600,
     xaxis_rangeslider_visible=False,
     # IMPORTANTE: Esto elimina los espacios de fines de semana
     xaxis=dict(
-        type='category',  # Trata las fechas como categorías
-        categoryorder='category ascending'
+        rangebreaks=[
+            dict(bounds=["sat", "sun"])  # Oculta sábados y domingos
+        ]
     ),
     hovermode='x unified'
 )
