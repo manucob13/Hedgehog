@@ -14,11 +14,10 @@ warnings.filterwarnings('ignore')
 
 # --- CONFIGURACIÓN DE LA APP ---
 st.set_page_config(page_title="HEDGEHOG 1.1 - Comparación K=2 vs K=3", layout="wide")
-st.title("🔬 Modelos de voalitaidad: Markov K=2 (2 estados ) y K=3 ( 3 estados fx varianza consolidado ()")
+st.title("🔬 HEDGEHOG 1.1 ")
 st.markdown("""
-Esta herramienta ejecuta y compara dos modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
-del S&P 500 para determinar qué enfoque ofrece una señal más clara para la volatilidad Media y Baja.
-""")
+Modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
+del S&P 500. Comparativa Markov K=2 (2 states) y K=3 (3 states fx varianza consolidado) """)
 
 # ==============================================================================
 # 1. FUNCIONES DE LÓGICA PURA (CARGA Y PREPARACIÓN)
@@ -263,13 +262,13 @@ def main_comparison():
 
     # --- 2. Ejecutar Modelo K=2 ---
     with col_k2:
-        st.subheader("Modelo K=2 (Original, Objetivo RV=0.10)")
+        st.subheader("Modelo K=2 (Objetivo RV=0.10)")
         with st.spinner("Ajustando Modelo K=2..."):
             results_k2 = markov_calculation_k2(endog_final, exog_tvtp_final)
 
     # --- 3. Ejecutar Modelo K=3 ---
     with col_k3:
-        st.subheader("Modelo K=3 (Propuesto, Varianza Objetiva)")
+        st.subheader("Modelo K=3 (Varianza Objetiva)")
         with st.spinner("Ajustando Modelo K=3..."):
             results_k3 = markov_calculation_k3(endog_final, exog_tvtp_final)
 
@@ -301,7 +300,7 @@ def main_comparison():
             'Varianza Régimen Alta',
             'Umbral RV_5d Estimado (Para el Régimen Baja)'
         ],
-        'K=2 (Original)': [
+        'K=2': [
             f"{results_k2['prob_baja']:.4f}",
             'N/A (No existe)',
             f"{results_k2['prob_baja']:.4f}",
@@ -311,7 +310,7 @@ def main_comparison():
             f"{results_k2['varianzas_regimen']['Alta']:.5f}",
             f"{results_k2['UMBRAL_RV5D_P_OBJETIVO']:.4f}"
         ],
-        'K=3 (Propuesto)': [
+        'K=3': [
             f"{results_k3['prob_baja']:.4f}",
             f"{results_k3['prob_media']:.4f}",
             f"**{prob_k3_consolidada:.4f}**",
@@ -340,7 +339,7 @@ def main_comparison():
     ---
     ### Entendiendo la Diferencia Clave
     
-    El **Modelo K=2** combina toda la volatilidad no-crisis en una única señal de 'Baja', lo que lo hace propenso a **falsos positivos** (como se vio en la caída de finales de julio), donde te mantiene en el trade cuando la volatilidad es 'Media' (consolidación).
+    El **Modelo K=2** combina toda la volatilidad no-crisis en una única señal de 'Baja', lo que lo hace propenso a **falsos positivos**.
     
     El **Modelo K=3** descompone la 'Baja' volatilidad en dos estados: 'Baja' (Calma Extrema) y 'Media' (Consolidación). 
     
