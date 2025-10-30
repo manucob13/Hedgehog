@@ -316,7 +316,19 @@ fig_combined.update_xaxes(showticklabels=False, row=1, col=1)
 # ----------------------------------------------------
 # 2. GRÁFICO DE VOLATILIDAD REALIZADA (RV_5d) (Fila 2)
 # ----------------------------------------------------
-# Traza de LÍNEA VERDE (Subida) - Volatilidad Baja
+
+# FIX: Agregar una línea base continua de RV en un color neutro (gris oscuro) 
+# para asegurar la continuidad visual.
+fig_combined.add_trace(go.Scatter(
+    x=list(range(len(spx_filtered))),
+    y=spx_filtered['RV_5d_pct'],
+    mode='lines',
+    name='RV (Base)',
+    line=dict(color='#383C44', width=1), # Gris oscuro
+    showlegend=False
+), row=2, col=1)
+
+# Traza de LÍNEA VERDE (Subida)
 fig_combined.add_trace(go.Scatter(
     x=list(range(len(spx_filtered))),
     y=rv_green_plot,
