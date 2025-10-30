@@ -120,14 +120,12 @@ for d in spx_filtered.index:
         date_labels.append('')  # Sin etiqueta para no saturar
 
 fig = go.Figure(data=[go.Candlestick(
-    x=list(range(len(spx_filtered))),  # Usar índices numéricos
+    x=list(range(len(spx_filtered))),
     open=spx_filtered['Open'],
     high=spx_filtered['High'],
     low=spx_filtered['Low'],
     close=spx_filtered['Close'],
-    name='SPX',
-    customdata=spx_filtered.index.strftime('%Y-%m-%d'),
-    hovertemplate='<b>%{customdata}</b><br>Open: %{open}<br>High: %{high}<br>Low: %{low}<br>Close: %{close}<extra></extra>'
+    name='SPX'
 )])
 
 fig.update_layout(
