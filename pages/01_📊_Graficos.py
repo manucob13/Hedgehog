@@ -166,21 +166,25 @@ fig_rv = go.Figure(data=[
 # Añadir línea de referencia del promedio para el período
 rv_avg = spx_filtered['RV_5d'].mean() * 100
 
+# 1. Agregar la línea de promedio (Shape)
 fig_rv.add_shape(
     type="line",
     x0=spx_filtered.index[0], y0=rv_avg,
     x1=spx_filtered.index[-1], y1=rv_avg,
     line=dict(color="gray", width=1, dash="dash"),
-    # Añadir anotación para el promedio
-    label=dict(
-        text=f'Promedio: {rv_avg:.2f}%', 
-        textangle=0,
-        x=spx_filtered.index[-1], 
-        y=rv_avg,
-        xanchor='right',
-        yanchor='bottom',
-        font=dict(size=10, color="gray")
-    )
+    layer="below" # Asegura que la línea esté debajo de los datos
+)
+
+# 2. Agregar la etiqueta de texto para el promedio (Annotation)
+fig_rv.add_annotation(
+    x=spx_filtered.index[-1], # Fecha final
+    y=rv_avg,                # Valor de RV promedio
+    text=f'Promedio: {rv_avg:.2f}%', 
+    showarrow=False,
+    xanchor='right',
+    yanchor='bottom', # Coloca el texto ligeramente debajo de la línea
+    font=dict(size=10, color="gray"),
+    yshift=-5 # Desplazamiento vertical para que no toque la línea
 )
 
 fig_rv.update_layout(
