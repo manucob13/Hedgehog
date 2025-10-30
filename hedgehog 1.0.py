@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
 from sklearn.preprocessing import StandardScaler
 from matplotlib.dates import DateFormatter
+from matplotlib.lines import Line2D # Necesaria para la leyenda manual en el gráfico
 
 # --- Configuración de la app ---
 st.set_page_config(page_title="HEDGEHOG", layout="wide")
@@ -120,6 +121,8 @@ spx['VIX_pct_change'] = spx['VIX'].pct_change()
 
 ## --- MARKOV ---
 @st.cache_data(ttl=3600) # Importante para que Streamlit no recalcule el modelo en cada interacción
+
+# Calculo y entrenamiento MODELO de MARKOV
 def markov_calculation(spx: pd.DataFrame):
     """
     Prepara los datos, ajusta el modelo Markov-Switching y extrae los resultados clave.
@@ -247,33 +250,7 @@ def markov_calculation(spx: pd.DataFrame):
         'summary': resultado.summary().as_text()
     }
 
-
-st.header("Análisis de Régimen de Volatilidad")
-markov_results = markov_calculation(spx)
-
-if markov_results:
-    st.subheader("✅ Resultados Clave del Cálculo")
-
-    # Mostrar el umbral RV_5d
-    st.markdown(f"🔥 **UMBRAL RV_5d (P{markov_results['P_USADO']:.0f} más cercano a 0.10):** `{markov_results['UMBRAL_RV5D_P_OBJETIVO']:.4f}`")
-
-    # Mostrar las varianzas de los regímenes
-    st.markdown("---")
-    st.markdown(f"**Varianza Baja Volatilidad (Reg. {markov_results['regimen_baja_vol_index']}):** `{markov_results['var_baja_vol']:.4f}`")
-    st.markdown(f"**Varianza Alta Volatilidad (Reg. {markov_results['regimen_alta_vol_index']}):** `{markov_results['var_alta_vol']:.4f}`")
-
-    # Mostrar la probabilidad de hoy
-    st.markdown("---")
-    st.markdown(f"**🚀 Probabilidad HOY (Baja Volatilidad):** **`{markov_results['prob_baja_vol']:.4f}`**")
-    st.markdown(f"## {markov_results['conclusion']}")
-
-    with st.expander("Ver Resumen Estadístico Completo del Modelo"):
-        st.code(markov_results['summary'])
-    
-    # Aquí es donde pasaríamos al siguiente paso (el gráfico)
-else:
-    st.error("El cálculo del modelo Markov falló. Revisar logs anteriores.")
-
+# GRAFICAR MARKOV
 def markov_plot(results: dict):
     """
     Muestra los resultados del modelo Markov en Streamlit (texto y gráfico).
@@ -352,6 +329,34 @@ def markov_plot(results: dict):
     
     # Mostrar el gráfico en Streamlit
     st.pyplot(fig)
+
+st.header("Análisis de Régimen de Volatilidad")
+markov_results = markov_calculation(spx)
+
+if markov_results:
+    st.subheader("✅ Resultados Clave del Cálculo")
+
+    # Mostrar el umbral RV_5d
+    st.markdown(f"🔥 **UMBRAL RV_5d (P{markov_results['P_USADO']:.0f} más cercano a 0.10):** `{markov_results['UMBRAL_RV5D_P_OBJETIVO']:.4f}`")
+
+    # Mostrar las varianzas de los regímenes
+    st.markdown("---")
+    st.markdown(f"**Varianza Baja Volatilidad (Reg. {markov_results['regimen_baja_vol_index']}):** `{markov_results['var_baja_vol']:.4f}`")
+    st.markdown(f"**Varianza Alta Volatilidad (Reg. {markov_results['regimen_alta_vol_index']}):** `{markov_results['var_alta_vol']:.4f}`")
+
+    # Mostrar la probabilidad de hoy
+    st.markdown("---")
+    st.markdown(f"**🚀 Probabilidad HOY (Baja Volatilidad):** **`{markov_results['prob_baja_vol']:.4f}`**")
+    st.markdown(f"## {markov_results['conclusion']}")
+
+    with st.expander("Ver Resumen Estadístico Completo del Modelo"):
+        st.code(markov_results['summary'])
+    
+    markov_plot(markov_results) 
+else:
+    st.error("El cálculo del modelo Markov falló. Revisar logs anteriores.")
+
+
 
 ##### POR DONDE VAMOS ####
 
