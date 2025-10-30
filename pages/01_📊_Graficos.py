@@ -236,8 +236,7 @@ fig_combined.add_trace(go.Candlestick(
     high=spx_filtered['High'],
     low=spx_filtered['Low'],
     close=spx_filtered['Close'],
-    name='S&P 500', # Añadida etiqueta de leyenda
-    # showlegend=False, # Ahora lo mostraremos en el layout
+    name='S&P 500', 
     increasing=dict(line=dict(color='#00B06B')),
     decreasing=dict(line=dict(color='#F13A50'))
 ), row=1, col=1)
@@ -254,12 +253,12 @@ fig_combined.add_trace(go.Scatter(
     x=list(range(len(spx_filtered))),
     y=rv_green_plot,
     mode='lines+markers', 
-    name='RV (Sube/Baja Vol.)', # Etiqueta de leyenda
+    name='RV (Sube/Baja Vol.)', 
     line=dict(color='#00B06B', width=2),
     marker=dict(size=5, color='#00B06B'),
     hoverinfo='text',
     text=[f"RV: {y:.2f}% ({'Sube' if u else 'Baja'})" for y, u in zip(spx_filtered['RV_5d_pct'], is_up)],
-    showlegend=True # Mostrar en la leyenda
+    showlegend=True 
 ), row=2, col=1)
 
 # Traza de LÍNEA ROJA (Bajada)
@@ -267,12 +266,12 @@ fig_combined.add_trace(go.Scatter(
     x=list(range(len(spx_filtered))),
     y=rv_red_plot,
     mode='lines+markers', 
-    name='RV (Baja)', # Etiqueta de leyenda
+    name='RV (Baja)', 
     line=dict(color='#F13A50', width=2),
     marker=dict(size=5, color='#F13A50'),
     hoverinfo='text',
     text=[f"RV: {y:.2f}% ({'Sube' if u else 'Baja'})" for y, u in zip(spx_filtered['RV_5d_pct'], is_up)],
-    showlegend=False # No duplicar la leyenda RV
+    showlegend=False 
 ), row=2, col=1)
 
 # Añadir línea horizontal discontinua del umbral (Fila 2)
@@ -309,13 +308,13 @@ fig_combined.add_trace(go.Scatter(
     x=list(range(len(spx_filtered))),
     y=prob_baja_serie,
     mode='lines',
-    name='Prob. K=2 (Baja Vol.)', # Etiqueta de leyenda
+    name='Prob. K=2 (Baja Vol.)', 
     line=dict(color='#8A2BE2', width=2), 
     fill='tozeroy', 
     fillcolor='rgba(138, 43, 226, 0.3)',
     hoverinfo='text',
     text=[f"Prob. Baja K=2: {p:.4f}" for p in prob_baja_serie],
-    showlegend=True # Mostrar en la leyenda
+    showlegend=True 
 ), row=3, col=1)
 
 # Umbral 1: 70% (Línea de Compresión Fuerte)
@@ -333,39 +332,45 @@ fig_combined.add_shape(
     type="line",
     x0=0, y0=UMBRAL_ALERTA,
     x1=len(spx_filtered) - 1, y1=UMBRAL_ALERTA,
-    line=dict(color="#FFFFFF", width=1, dash="dot"), # ¡CAMBIADO A BLANCO (#FFFFFF)!
+    line=dict(color="#FFFFFF", width=1, dash="dot"), # Blanco
     layer="below",
     row=3, col=1
 )
 
-# Añadir etiqueta para el umbral 70%
+# Etiqueta para el umbral 70% - MOVIDA A LA IZQUIERDA
 fig_combined.add_annotation(
-    x=len(spx_filtered) - 1, y=UMBRAL_COMPRESION, 
+    x=0, # Primer punto del eje X (izquierda)
+    y=UMBRAL_COMPRESION, 
     text=f'Compresión Fuerte ({UMBRAL_COMPRESION*100:.0f}%)', 
     showarrow=False,
     xref='x3', yref='y3', 
-    xanchor='right', yanchor='bottom', 
+    xanchor='left', # Anclaje a la izquierda
+    yanchor='bottom', 
     font=dict(size=12, color="#FFD700"),
-    xshift=0, yshift=5,
+    xshift=5, # Pequeño margen a la derecha
+    yshift=5, 
     row=3, col=1
 )
 
-# Añadir etiqueta para el umbral 50%
+# Etiqueta para el umbral 50% - MOVIDA A LA IZQUIERDA
 fig_combined.add_annotation(
-    x=len(spx_filtered) - 1, y=UMBRAL_ALERTA, 
+    x=0, # Primer punto del eje X (izquierda)
+    y=UMBRAL_ALERTA, 
     text=f'Alerta ({UMBRAL_ALERTA*100:.0f}%)', 
     showarrow=False,
     xref='x3', yref='y3', 
-    xanchor='right', yanchor='bottom', 
-    font=dict(size=12, color="#FFFFFF"), # ¡CAMBIADO A BLANCO!
-    xshift=0, yshift=5,
+    xanchor='left', # Anclaje a la izquierda
+    yanchor='bottom', 
+    font=dict(size=12, color="#FFFFFF"), # Blanco
+    xshift=5, # Pequeño margen a la derecha
+    yshift=5,
     row=3, col=1
 )
 
 # Configuraciones de la Fila 3
 fig_combined.update_yaxes(title_text='Prob. K=2', row=3, col=1, tickformat=".2f", range=[0, 1])
 
-# --- CONFIGURACIÓN FINAL DEL GRÁFICO COMBINADO (Ajuste de Leyenda) ---
+# --- CONFIGURACIÓN FINAL DEL GRÁFICO COMBINADO ---
 fig_combined.update_layout(
     template='plotly_dark',
     height=900, 
@@ -375,14 +380,14 @@ fig_combined.update_layout(
     paper_bgcolor='#131722', 
     font=dict(color='#AAAAAA'),
     margin=dict(t=50, b=100, l=60, r=40),
-    # AJUSTES DE LEYENDA para moverla a la izquierda
+    # AJUSTES DE LEYENDA (ya estaban a la izquierda)
     showlegend=True,
     legend=dict(
         orientation="v",
         yanchor="top",
-        y=1, # Parte superior
+        y=1, 
         xanchor="left",
-        x=0.01, # Lado izquierdo
+        x=0.01, 
         bgcolor="rgba(0,0,0,0.5)",
         bordercolor="rgba(255,255,255,0.1)",
         borderwidth=1,
