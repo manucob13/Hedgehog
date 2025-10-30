@@ -161,22 +161,42 @@ fig_rv = go.Figure()
 spx_filtered['RV_5d_pct'] = spx_filtered['RV_5d'] * 100
 
 # Calcular el color para cada punto: 'red' si > Umbral, 'green' si <= Umbral
-colors = ['red' if x > UMBRAL_RV * 100 else 'green' for x in spx_filtered['RV_5d_pct']]
+# NOTA: Para cambiar el color de la LÍNEA que CONECTA los puntos, necesitamos múltiples trazas o usar un 'scatter plot' 
+# con 'line.color' para cada segmento. Plotly no soporta esto directamente en una sola traza con lines+markers.
+# Por lo tanto, volvemos al método de dos trazas, pero asegurando que la conexión se mantenga solo donde corresponde.
 
+# ----------------------------------------------------------------------
+# SOLUCIÓN: Usar dos trazas (una roja y una verde) y asegurar la continuidad
+# utilizando numpy.where para dejar valores NaN en los puntos que no cumplen la condición.
+# ----------------------------------------------------------------------
 
-# Trazo único para la volatilidad con color condicional
+# Valores por debajo del umbral (Verde)
+rv_green = np.where(spx_filtered['RV_5d'] <= UMBRAL_RV, spx_filtered['RV_5d_pct'], np.nan)
+# Valores por encima del umbral (Rojo)
+rv_red = np.where(spx_filtered['RV_5d'] > UMBRAL_RV, spx_filtered['RV_5d_pct'], np.nan)
+
+# Trazo para la volatilidad por debajo del umbral (Verde)
+# Usamos 'lines+markers' para mostrar los puntos y la línea de color.
 fig_rv.add_trace(go.Scatter(
     x=spx_filtered.index,
-    y=spx_filtered['RV_5d_pct'],
+    y=rv_green,
     mode='lines+markers',
-    name='RV 5 días (Anualizada)',
-    line=dict(color='lightgray', width=2), # Línea base neutral
-    marker=dict(
-        color=colors, # Color del marcador condicional (rojo/verde)
-        size=6,
-        line=dict(width=1, color='DarkSlateGrey') # Borde del marcador
-    )
+    name='RV ≤ 10% (Verde - Baja Volatilidad)',
+    line=dict(color='green', width=2),
+    marker=dict(color='green', size=6, line=dict(width=1, color='DarkSlateGrey'))
 ))
+
+# Trazo para la volatilidad por encima del umbral (Rojo)
+# Usamos 'lines+markers' para mostrar los puntos y la línea de color.
+fig_rv.add_trace(go.Scatter(
+    x=spx_filtered.index,
+    y=rv_red,
+    mode='lines+markers',
+    name='RV > 10% (Rojo - Alta Volatilidad)',
+    line=dict(color='red', width=2),
+    marker=dict(color='red', size=6, line=dict(width=1, color='DarkSlateGrey'))
+))
+
 
 # Añadir línea horizontal discontinua del umbral (la línea real)
 fig_rv.add_shape(
@@ -199,25 +219,8 @@ fig_rv.add_annotation(
     xshift=5 # Desplazamiento horizontal para que no se superponga
 )
 
-# Añadir trazas ficticias para la leyenda de colores (opcional: si quieres que la leyenda muestre los colores)
-# Traza roja para la leyenda (por encima del umbral)
-fig_rv.add_trace(go.Scatter(
-    x=[None], y=[None],
-    mode='lines+markers',
-    name='RV > 10% (Rojo)',
-    line=dict(color='red', width=3),
-    marker=dict(color='red', size=8),
-    showlegend=True
-))
-# Traza verde para la leyenda (por debajo del umbral)
-fig_rv.add_trace(go.Scatter(
-    x=[None], y=[None],
-    mode='lines+markers',
-    name='RV ≤ 10% (Verde)',
-    line=dict(color='green', width=3),
-    marker=dict(color='green', size=8),
-    showlegend=True
-))
+# Eliminamos las trazas ficticias de la leyenda ya que ahora las dos trazas principales
+# tienen nombres descriptivos y colores correctos.
 
 
 fig_rv.update_layout(
