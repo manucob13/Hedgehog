@@ -150,41 +150,59 @@ fig.update_layout(
 
 st.plotly_chart(fig, use_container_width=True)
 
-# --- GRÁFICO DE VOLATILIDAD REALIZADA (RV_5d) ---
-st.subheader("📉 Volatilidad Realizada (RV\_5d)")
+# --- GRÁFICO DE VOLATILIDAD REALIZADA (RV_5d) CON UMBRAL BICOLOR ---
+st.subheader("📉 Volatilidad Realizada (RV\_5d) con Umbral")
 
-fig_rv = go.Figure(data=[
-    go.Scatter(
-        x=spx_filtered.index,
-        y=spx_filtered['RV_5d'] * 100, # Multiplicar por 100 para mostrar en %
-        mode='lines',
-        name='RV 5 días (Anualizada)',
-        line=dict(color='#E57373', width=2) # Color rojo/suave
-    )
-])
+UMBRAL_RV = 0.10 # El umbral que queremos mostrar
 
-# Añadir línea de referencia del promedio para el período
-rv_avg = spx_filtered['RV_5d'].mean() * 100
+fig_rv = go.Figure()
 
-# 1. Agregar la línea de promedio (Shape)
+# Convertir RV_5d a porcentaje
+spx_filtered['RV_5d_pct'] = spx_filtered['RV_5d'] * 100
+
+# Separar los datos por encima y por debajo del umbral para el trazo de la línea
+rv_below_threshold = spx_filtered[spx_filtered['RV_5d'] <= UMBRAL_RV]['RV_5d_pct']
+rv_above_threshold = spx_filtered[spx_filtered['RV_5d'] > UMBRAL_RV]['RV_5d_pct']
+
+# Trazo para la volatilidad por debajo del umbral (verde)
+fig_rv.add_trace(go.Scatter(
+    x=spx_filtered.index,
+    y=rv_below_threshold.where(spx_filtered['RV_5d'] <= UMBRAL_RV), # Solo puntos <= UMBRAL
+    mode='lines+markers',
+    name='RV ≤ 10% (Subida)',
+    line=dict(color='green', width=2),
+    marker=dict(color='blue', size=6)
+))
+
+# Trazo para la volatilidad por encima del umbral (rojo)
+fig_rv.add_trace(go.Scatter(
+    x=spx_filtered.index,
+    y=rv_above_threshold.where(spx_filtered['RV_5d'] > UMBRAL_RV), # Solo puntos > UMBRAL
+    mode='lines+markers',
+    name='RV > 10% (Bajada)',
+    line=dict(color='red', width=2),
+    marker=dict(color='blue', size=6)
+))
+
+# Añadir línea horizontal discontinua del umbral (la línea real)
 fig_rv.add_shape(
     type="line",
-    x0=spx_filtered.index[0], y0=rv_avg,
-    x1=spx_filtered.index[-1], y1=rv_avg,
-    line=dict(color="gray", width=1, dash="dash"),
-    layer="below" # Asegura que la línea esté debajo de los datos
+    x0=spx_filtered.index[0], y0=UMBRAL_RV * 100,
+    x1=spx_filtered.index[-1], y1=UMBRAL_RV * 100,
+    line=dict(color="orange", width=2, dash="dot"),
+    layer="below"
 )
 
-# 2. Agregar la etiqueta de texto para el promedio (Annotation)
+# Añadir etiqueta para el umbral (en el lado derecho)
 fig_rv.add_annotation(
     x=spx_filtered.index[-1], # Fecha final
-    y=rv_avg,                # Valor de RV promedio
-    text=f'Promedio: {rv_avg:.2f}%', 
+    y=UMBRAL_RV * 100,      # Valor del umbral
+    text=f'Umbral: {UMBRAL_RV*100:.2f}%', 
     showarrow=False,
-    xanchor='right',
-    yanchor='bottom', # Coloca el texto ligeramente debajo de la línea
-    font=dict(size=10, color="gray"),
-    yshift=-5 # Desplazamiento vertical para que no toque la línea
+    xanchor='left',
+    yanchor='bottom', 
+    font=dict(size=12, color="orange"),
+    xshift=5 # Desplazamiento horizontal para que no se superponga
 )
 
 fig_rv.update_layout(
@@ -192,16 +210,17 @@ fig_rv.update_layout(
     yaxis_title='RV (%)',
     xaxis_title='Fecha',
     template='plotly_white',
-    height=400,
+    height=450, # Aumentado ligeramente para el título
     hovermode='x unified',
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1) # Leyenda en la parte superior
 )
 
 fig_rv.update_yaxes(tickformat=".2f") # Formato con 2 decimales
 st.plotly_chart(fig_rv, use_container_width=True)
 
+
 # --- INFORMACIÓN ADICIONAL ---
 st.markdown("---")
-# Hemos añadido una quinta columna para la Volatilidad Realizada
 col1, col2, col3, col4, col5 = st.columns(5) 
 
 with col1:
