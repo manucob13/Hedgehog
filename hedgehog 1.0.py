@@ -17,7 +17,7 @@ st.set_page_config(page_title="HEDGEHOG 1.1 - Comparación K=2 vs K=3", layout="
 st.title("🔬 HEDGEHOG 1.1 ")
 st.markdown("""
 Modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
-del S&P 500. Comparativa Markov K=2 (2 states) y K=3 (3 states fx varianza consolidado) """)
+del S&P 500. Comparativa Markov K=2 y K=3 ( fx varianza consolidado) """)
 
 # ==============================================================================
 # 1. FUNCIONES DE LÓGICA PURA (CARGA Y PREPARACIÓN)
@@ -328,7 +328,7 @@ def main_comparison():
 
     # Mostrar la conclusión operativa
     st.markdown("---")
-    st.subheader("Conclusión Operativa para Calendar Spreads")
+    st.subheader("Conclusión Operativa")
 
     if prob_k3_consolidada >= results_k3['UMBRAL_COMPRESION']:
         st.success(f"**SEÑAL DE ENTRADA FUERTE (K=3):** El riesgo de Alta Volatilidad es bajo. La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, superando el umbral de 0.70. Condición Favorable para estrategias de Theta.")
@@ -339,11 +339,11 @@ def main_comparison():
     ---
     ### Entendiendo la Diferencia Clave
     
-    El **Modelo K=2** combina toda la volatilidad no-crisis en una única señal de 'Baja', lo que lo hace propenso a **falsos positivos**.
+    El **Modelo K=2** combina toda la volatilidad no-crisis en una única señal de 'Baja', lo que le hace propenso a **falsos positivos**.
     
     El **Modelo K=3** descompone la 'Baja' volatilidad en dos estados: 'Baja' (Calma Extrema) y 'Media' (Consolidación). 
     
-    La **Probabilidad Consolidada (Baja + Media)** del K=3 ofrece una señal de entrada/salida más robusta: solo da luz verde cuando la suma de los dos estados favorables supera el 70%, actuando como un **filtro más estricto contra el ruido** que el K=2 ignora.
+    La **Probabilidad Consolidada (Baja + Media)** del K=3 ofrece una señal de entrada/salida más robusta: da luz verde cuando la suma de los dos estados favorables supera el 70%, actuando como un **filtro más estricto contra el ruido** que el K=2 ignora.
     """)
 
 # ==============================================================================
