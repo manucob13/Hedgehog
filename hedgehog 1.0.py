@@ -326,7 +326,7 @@ def main_comparison():
 
     # --- Ejecutar Calculo NR/WR ---
     st.markdown("---")
-    st.subheader("2. Indicador NR/WR (Narrow Range after Wide Range)")
+    st.header("2. Indicador NR/WR (Narrow Range after Wide Range)")
     with st.spinner("Calculando indicador NR/WR..."):
         nr_wr_signal_on = calculate_nr_wr_signal(df_raw) # Usamos df_raw que tiene High/Low/Close
     
@@ -336,7 +336,8 @@ def main_comparison():
         st.info("⚪ **SEÑAL NR/WR:** La compresión de volatilidad está **INACTIVA**. La volatilidad puede ser normal o ya ha explotado.")
     st.markdown("---")
     
-    st.subheader("3. Modelo K=2 (Original, Objetivo RV=0.10)")
+    st.header("3. Modelos de Markov")
+    st.subheader("Modelo K=2 (Original, Objetivo RV=0.10)")
     col_k2, col_k3 = st.columns(2)
     results_k2, results_k3 = None, None
 
