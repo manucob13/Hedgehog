@@ -39,6 +39,7 @@ def calculate_indicators(df_raw: pd.DataFrame):
 
     # 1. Volatilidad Realizada (RV_5d)
     spx['log_ret'] = np.log(spx['Close'] / spx['Close'].shift(1))
+    # RV_5d: Desviación estándar de los retornos logarítmicos de 5 días, anualizada (multiplicado por sqrt(252))
     spx['RV_5d'] = spx['log_ret'].rolling(window=5).std() * np.sqrt(252)
 
     # 2. Average True Range (ATR_14)
@@ -57,6 +58,9 @@ def calculate_indicators(df_raw: pd.DataFrame):
     
     # 4. Ratio de volatilidad en el VIX
     spx['VIX_pct_change'] = spx['VIX'].pct_change()
+    
+    # Eliminamos la columna de retornos logarítmicos que ya no es necesaria
+    spx.drop(columns=['log_ret'], inplace=True)
     
     return spx.dropna()
 
@@ -98,7 +102,7 @@ st.markdown(f"**Período seleccionado:** {fecha_inicio} hasta {fecha_final} ({le
 # --- GRÁFICO DE VELAS JAPONESAS ---
 st.subheader("📈 S&P 500 - Velas Japonesas")
 
-# Crear etiquetas de fecha inteligentes
+# Crear etiquetas de fecha inteligentes para el eje x del Candlestick
 date_labels = []
 prev_year = None
 prev_month = None
@@ -130,7 +134,7 @@ fig = go.Figure(data=[go.Candlestick(
 
 fig.update_layout(
     title=f'S&P 500 - Velas Japonesas ({fecha_inicio} a {fecha_final})',
-    yaxis_title='',
+    yaxis_title='Precio',
     xaxis_title='',
     template='plotly_white',
     height=600,
@@ -146,9 +150,55 @@ fig.update_layout(
 
 st.plotly_chart(fig, use_container_width=True)
 
+# --- GRÁFICO DE VOLATILIDAD REALIZADA (RV_5d) ---
+st.subheader("📉 Volatilidad Realizada (RV\_5d)")
+
+fig_rv = go.Figure(data=[
+    go.Scatter(
+        x=spx_filtered.index,
+        y=spx_filtered['RV_5d'] * 100, # Multiplicar por 100 para mostrar en %
+        mode='lines',
+        name='RV 5 días (Anualizada)',
+        line=dict(color='#E57373', width=2) # Color rojo/suave
+    )
+])
+
+# Añadir línea de referencia del promedio para el período
+rv_avg = spx_filtered['RV_5d'].mean() * 100
+
+fig_rv.add_shape(
+    type="line",
+    x0=spx_filtered.index[0], y0=rv_avg,
+    x1=spx_filtered.index[-1], y1=rv_avg,
+    line=dict(color="gray", width=1, dash="dash"),
+    # Añadir anotación para el promedio
+    label=dict(
+        text=f'Promedio: {rv_avg:.2f}%', 
+        textangle=0,
+        x=spx_filtered.index[-1], 
+        y=rv_avg,
+        xanchor='right',
+        yanchor='bottom',
+        font=dict(size=10, color="gray")
+    )
+)
+
+fig_rv.update_layout(
+    title='Volatilidad Realizada a 5 Días del S&P 500 (Anualizada)',
+    yaxis_title='RV (%)',
+    xaxis_title='Fecha',
+    template='plotly_white',
+    height=400,
+    hovermode='x unified',
+)
+
+fig_rv.update_yaxes(tickformat=".2f") # Formato con 2 decimales
+st.plotly_chart(fig_rv, use_container_width=True)
+
 # --- INFORMACIÓN ADICIONAL ---
 st.markdown("---")
-col1, col2, col3, col4 = st.columns(4)
+# Hemos añadido una quinta columna para la Volatilidad Realizada
+col1, col2, col3, col4, col5 = st.columns(5) 
 
 with col1:
     st.metric("Precio Actual", f"${spx_filtered['Close'].iloc[-1]:.2f}")
@@ -160,3 +210,6 @@ with col3:
     st.metric("Máximo", f"${spx_filtered['High'].max():.2f}")
 with col4:
     st.metric("Mínimo", f"${spx_filtered['Low'].min():.2f}")
+with col5:
+    rv_latest = spx_filtered['RV_5d'].iloc[-1] * 100
+    st.metric("RV_5d (Último)", f"{rv_latest:.2f}%")
