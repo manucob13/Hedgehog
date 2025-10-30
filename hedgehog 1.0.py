@@ -38,11 +38,8 @@ print("--- INICIANDO PRUEBA DE MÓDULO DE ANÁLISIS (PASO 1: DESCARGA) ---", flu
     
 # 1. Cargar datos base
 df_raw = fetch_data()
-
-# 2. Mostrar un resumen de los datos descargados
-print("\n--- DATOS RAW DESCARGADOS (ÚLTIMAS 5 FILAS) ---")
+st.success(f"✅ Descarga datos SPX - VIX desde {df.index.min().date()} - {df.index.max().date()}")
 # to_string() es mejor que un simple print para asegurar el formato en la consola
-print(df_raw.tail(5).to_string())
-print(f"\nDataFrame cargado con éxito. Filas totales: {len(df_raw)}")
+st.spx.tail(5)
         
     
