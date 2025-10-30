@@ -5,8 +5,12 @@ import numpy as np
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots # Importamos subplots
+from plotly.subplots import make_subplots 
+# Importamos dependencias de Markov que tenías en el archivo principal
+from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
+from sklearn.preprocessing import StandardScaler 
 import warnings
+import math # Añadido por si se necesita para los modelos de Markov
 
 warnings.filterwarnings('ignore')
 
@@ -14,7 +18,10 @@ warnings.filterwarnings('ignore')
 st.set_page_config(page_title="Gráficos - HEDGEHOG", layout="wide")
 st.title("📊 Gráficos de Análisis Técnico Combinados")
 
-# --- FUNCIÓN PARA CARGAR DATOS (Reutilizada de app.py) ---
+# ==============================================================================
+# 1. FUNCIONES DE LÓGICA PURA (DUPLICADAS)
+# ==============================================================================
+
 @st.cache_data(ttl=86400)
 def fetch_data():
     """Descarga datos históricos del ^GSPC (SPX) y ^VIX (VIX)."""
@@ -35,12 +42,11 @@ def fetch_data():
 
 @st.cache_data(ttl=3600)
 def calculate_indicators(df_raw: pd.DataFrame):
-    """Calcula todos los indicadores técnicos necesarios."""
+    """Calcula todos los indicadores técnicos necesarios (RV, ATR, NR, VIX Change)."""
     spx = df_raw.copy()
 
     # 1. Volatilidad Realizada (RV_5d)
     spx['log_ret'] = np.log(spx['Close'] / spx['Close'].shift(1))
-    # RV_5d: Desviación estándar de los retornos logarítmicos de 5 días, anualizada (multiplicado por sqrt(252))
     spx['RV_5d'] = spx['log_ret'].rolling(window=5).std() * np.sqrt(252)
 
     # 2. Average True Range (ATR_14)
@@ -59,27 +65,99 @@ def calculate_indicators(df_raw: pd.DataFrame):
     
     # 4. Ratio de volatilidad en el VIX
     spx['VIX_pct_change'] = spx['VIX'].pct_change()
-    
-    # Eliminamos la columna de retornos logarítmicos que ya no es necesaria
     spx.drop(columns=['log_ret'], inplace=True)
     
     return spx.dropna()
 
-# --- CARGAR DATOS ---
-with st.spinner("Cargando datos..."):
+
+def preparar_datos_markov(spx: pd.DataFrame):
+    """Estandariza los datos y alinea las series de tiempo."""
+    endog_variable = 'RV_5d'
+    variables_tvtp = ['VIX', 'ATR_14', 'VIX_pct_change', 'NR14']
+    
+    data_markov = spx.copy()
+    endog = data_markov[endog_variable].dropna()
+    
+    # Estandarizar exógenas
+    exog_tvtp_original = data_markov[variables_tvtp].copy()
+    scaler_tvtp = StandardScaler()
+    exog_tvtp_scaled_data = scaler_tvtp.fit_transform(exog_tvtp_original.dropna())
+    
+    exog_tvtp_scaled = pd.DataFrame(
+        exog_tvtp_scaled_data,
+        index=exog_tvtp_original.dropna().index,
+        columns=variables_tvtp
+    )
+
+    # Alinear y eliminar NaNs finales
+    data_final = pd.concat([endog, exog_tvtp_scaled], axis=1).dropna()
+    endog_final = data_final[endog_variable]
+    exog_tvtp_final = data_final[variables_tvtp]
+    endog_final = endog_final.loc[exog_tvtp_final.index]
+    
+    if len(endog_final) < 50:
+        return None, None
+    
+    return endog_final, exog_tvtp_final
+
+@st.cache_data(ttl=3600)
+def markov_calculation_k2(endog_final, exog_tvtp_final):
+    """
+    Modelo de 2 regímenes: Baja vs. Alta. Usa 0.10 como objetivo para encontrar
+    el umbral dinámico de baja volatilidad.
+    """
+    VALOR_OBJETIVO_RV5D = 0.10
+    UMBRAL_COMPRESION = 0.70 
+    
+    if endog_final is None or exog_tvtp_final is None:
+        return {'error': "Datos insuficientes para el modelo K=2."}
+
+    # --- 1. AJUSTE DEL MODELO ---
+    try:
+        modelo = MarkovRegression(
+            endog=endog_final, k_regimes=2, trend='c', 
+            switching_variance=True, switching_trend=True, exog_tvtp=exog_tvtp_final
+        )
+        resultado = modelo.fit(maxiter=500, disp=False)
+    except Exception as e:
+        return {'error': f"Error de ajuste K=2: {e}"} 
+
+    # --- 2. IDENTIFICACIÓN DE REGÍMENES (Por Varianza) ---
+    regimen_vars = resultado.params.filter(regex='sigma2|Variance')
+    regimen_vars_sorted = regimen_vars.sort_values(ascending=True)
+    
+    def extract_regime_index(index_str):
+        return int(index_str.split('[')[1].replace(']', ''))
+    
+    regimen_baja_vol_index = extract_regime_index(regimen_vars_sorted.index[0])
+    
+    # --- 3. EXTRACCIÓN Y CONCLUSIÓN ---
+    return {
+        'resultado': resultado,
+        'indices_regimen': {'Baja': regimen_baja_vol_index},
+        'UMBRAL_COMPRESION': UMBRAL_COMPRESION
+    }
+
+# ==============================================================================
+# 2. CARGAR Y EJECUTAR MODELOS
+# ==============================================================================
+
+with st.spinner("Cargando datos y ajustando Modelo Markov K=2..."):
     df_raw = fetch_data()
     spx = calculate_indicators(df_raw)
+    endog_final, exog_tvtp_final = preparar_datos_markov(spx)
+    results_k2 = markov_calculation_k2(endog_final, exog_tvtp_final)
 
-st.success(f"✅ Datos cargados: {len(spx)} días disponibles")
+if 'error' in results_k2:
+    st.error(f"❌ Error al ejecutar el modelo K=2: {results_k2['error']}")
+    st.stop() # Detener si falla el modelo
+
+st.success(f"✅ Datos y Modelo Markov K=2 cargados exitosamente. ({len(spx)} días)")
 
 # --- CONTROLES DE FECHA ---
 st.sidebar.header("⚙️ Configuración del Gráfico")
-
-# Fecha final (última disponible)
 fecha_final = spx.index[-1].date()
 st.sidebar.info(f"📅 Última fecha disponible: {fecha_final}")
-
-# Fecha de inicio (por defecto 2 meses atrás, ~60 días)
 fecha_inicio_default = fecha_final - timedelta(days=60)
 
 fecha_inicio = st.sidebar.date_input(
@@ -94,9 +172,7 @@ fecha_inicio_dt = pd.to_datetime(fecha_inicio)
 fecha_final_dt = pd.to_datetime(fecha_final)
 
 spx_filtered = spx[(spx.index >= fecha_inicio_dt) & (spx.index <= fecha_final_dt)].copy()
-
-# ELIMINAR fines de semana del DataFrame
-spx_filtered = spx_filtered[spx_filtered.index.dayofweek < 5]  # 0=Lunes, 4=Viernes
+spx_filtered = spx_filtered[spx_filtered.index.dayofweek < 5] # ELIMINAR fines de semana
 
 st.markdown(f"**Período seleccionado:** {fecha_inicio} hasta {fecha_final} ({len(spx_filtered)} días)")
 
@@ -120,31 +196,35 @@ for d in spx_filtered.index:
     else:
         date_labels.append('')
 
-# Convertir RV_5d a porcentaje
+# Volatilidad Realizada a porcentaje
 spx_filtered['RV_5d_pct'] = spx_filtered['RV_5d'] * 100
 
 # Lógica de Color para RV
 UMBRAL_RV = 0.10
 spx_filtered['RV_change'] = spx_filtered['RV_5d_pct'].diff()
 is_up = spx_filtered['RV_change'] >= 0
-
 is_down = ~is_up
 rv_green_mask = is_up | is_up.shift(-1).fillna(False)
 rv_red_mask = is_down | is_down.shift(-1).fillna(False)
-
 rv_green_plot = spx_filtered['RV_5d_pct'].where(rv_green_mask, other=np.nan)
 rv_red_plot = spx_filtered['RV_5d_pct'].where(rv_red_mask, other=np.nan)
 
-# --- CREAR SUBPLOTS ---
-# 2 filas, 1 columna. Compartir el eje x
+
+# Datos Markov para el período filtrado
+probabilidades = results_k2['resultado'].filtered_marginal_probabilities
+indice_baja = results_k2['indices_regimen']['Baja']
+prob_baja_serie = probabilidades[indice_baja].loc[spx_filtered.index]
+prob_baja_serie = prob_baja_serie.fillna(method='ffill')
+
+UMBRAL_COMPRESION = results_k2['UMBRAL_COMPRESION']
+
+# --- CREAR SUBPLOTS (3 FILAS) ---
 fig_combined = make_subplots(
-    rows=2, 
+    rows=3, 
     cols=1, 
     shared_xaxes=True, 
     vertical_spacing=0.02,
-    row_heights=[0.7, 0.3], # SPX toma 70%, RV toma 30% del alto
-    # Títulos eliminados según la solicitud del usuario
-    # subplot_titles=("S&P 500 - Velas Japonesas", "Volatilidad Realizada (RV_5d)") 
+    row_heights=[0.6, 0.2, 0.2], # SPX: 60%, RV: 20%, Markov: 20%
 )
 
 # ----------------------------------------------------
@@ -158,25 +238,23 @@ fig_combined.add_trace(go.Candlestick(
     close=spx_filtered['Close'],
     name='SPX',
     showlegend=False,
-    # Hacemos las velas más discretas en el tema oscuro
     increasing=dict(line=dict(color='#00B06B')),
     decreasing=dict(line=dict(color='#F13A50'))
 ), row=1, col=1)
 
 # Configuraciones de la Fila 1
 fig_combined.update_yaxes(title_text='Precio', row=1, col=1)
-fig_combined.update_xaxes(showticklabels=False, row=1, col=1) # Ocultar etiquetas X en el gráfico superior
+fig_combined.update_xaxes(showticklabels=False, row=1, col=1)
 
 # ----------------------------------------------------
 # 2. GRÁFICO DE VOLATILIDAD REALIZADA (RV_5d) (Fila 2)
 # ----------------------------------------------------
-
 # Traza de LÍNEA VERDE (Subida)
 fig_combined.add_trace(go.Scatter(
     x=list(range(len(spx_filtered))),
     y=rv_green_plot,
-    mode='lines+markers', # Añadimos markers para puntos más claros
-    name='Sube/Mantiene (Baja Volatilidad)', 
+    mode='lines+markers', 
+    name='Sube/Mantiene', 
     line=dict(color='#00B06B', width=2),
     marker=dict(size=5, color='#00B06B'),
     hoverinfo='text',
@@ -188,8 +266,8 @@ fig_combined.add_trace(go.Scatter(
 fig_combined.add_trace(go.Scatter(
     x=list(range(len(spx_filtered))),
     y=rv_red_plot,
-    mode='lines+markers', # Añadimos markers para puntos más claros
-    name='Baja (Alta Volatilidad)', 
+    mode='lines+markers', 
+    name='Baja', 
     line=dict(color='#F13A50', width=2),
     marker=dict(size=5, color='#F13A50'),
     hoverinfo='text',
@@ -209,60 +287,97 @@ fig_combined.add_shape(
 
 # Añadir etiqueta para el umbral (Fila 2)
 fig_combined.add_annotation(
-    x=0, # Primer punto del eje X (izquierda - coordenada de dato)
-    y=1.0, # Posición superior en el dominio Y (0=abajo, 1=arriba)
-    text=f'Umbral: {UMBRAL_RV*100:.2f}%', 
+    x=0, y=1.0, 
+    text=f'Umbral RV: {UMBRAL_RV*100:.2f}%', 
     showarrow=False,
-    xref='x2',      # Referencia al eje X de la segunda fila
-    yref='y2 domain', # Referencia al dominio Y de la segunda fila (0 a 1)
-    xanchor='left', # Ajuste de anclaje para la izquierda
-    yanchor='top', # Ajuste de anclaje para el borde superior
+    xref='x2', yref='y2 domain', 
+    xanchor='left', yanchor='top', 
     font=dict(size=12, color="orange"),
-    xshift=5, # Desplazamiento a la derecha para un pequeño margen
-    yshift=-5, # Desplazamiento hacia abajo para un pequeño margen
+    xshift=5, yshift=-5, 
     row=2, col=1
 )
 
 # Configuraciones de la Fila 2
 fig_combined.update_yaxes(title_text='RV (%)', row=2, col=1, tickformat=".2f")
+fig_combined.update_xaxes(showticklabels=False, row=2, col=1) # Ocultar etiquetas X en el gráfico intermedio
 
+# ----------------------------------------------------
+# 3. GRÁFICO DE MARKOV K=2 (PROBABILIDAD BAJA) (Fila 3 - NUEVO)
+# ----------------------------------------------------
+
+fig_combined.add_trace(go.Scatter(
+    x=list(range(len(spx_filtered))),
+    y=prob_baja_serie,
+    mode='lines',
+    name='Prob. Baja Volatilidad',
+    line=dict(color='#8A2BE2', width=2), # Color Morado distintivo
+    fill='tozeroy', 
+    fillcolor='rgba(138, 43, 226, 0.3)',
+    hoverinfo='text',
+    text=[f"Prob. Baja K=2: {p:.4f}" for p in prob_baja_serie],
+    showlegend=False
+), row=3, col=1)
+
+# Añadir línea horizontal discontinua del Umbral de Compresión (70%)
+fig_combined.add_shape(
+    type="line",
+    x0=0, y0=UMBRAL_COMPRESION,
+    x1=len(spx_filtered) - 1, y1=UMBRAL_COMPRESION,
+    line=dict(color="#FFD700", width=1, dash="dot"), # Línea Dorada
+    layer="below",
+    row=3, col=1
+)
+
+# Añadir etiqueta para el umbral (Fila 3)
+fig_combined.add_annotation(
+    x=0, y=1.0, 
+    text=f'Umbral Señal: {UMBRAL_COMPRESION*100:.0f}%', 
+    showarrow=False,
+    xref='x3', yref='y3 domain', 
+    xanchor='left', yanchor='top', 
+    font=dict(size=12, color="#FFD700"),
+    xshift=5, yshift=-5, 
+    row=3, col=1
+)
+
+# Configuraciones de la Fila 3
+fig_combined.update_yaxes(title_text='Prob. K=2', row=3, col=1, tickformat=".2f", range=[0, 1])
 
 # --- CONFIGURACIÓN FINAL DEL GRÁFICO COMBINADO ---
 fig_combined.update_layout(
-    # Título principal de la gráfica eliminado según la solicitud del usuario
-    # title=f'S&P 500 y Volatilidad Realizada RV_5d ({fecha_inicio} a {fecha_final})',
     template='plotly_dark',
-    height=800, 
+    height=900, # Aumentado para acomodar el nuevo subplot
     xaxis_rangeslider_visible=False,
     hovermode='x unified',
-    # Añadimos un borde más grueso y colores que definen los 'recuadros'
-    plot_bgcolor='#131722', # Fondo del área de trazado
-    paper_bgcolor='#131722', # Fondo del papel
+    plot_bgcolor='#131722', 
+    paper_bgcolor='#131722', 
     font=dict(color='#AAAAAA'),
-    # Borde entre los subplots para separarlos visualmente
     margin=dict(t=50, b=100, l=60, r=40),
 )
 
-# Configurar el eje X compartido (solo las etiquetas inferiores)
+# Configurar el eje X compartido (solo las etiquetas inferiores, ahora en la Fila 3)
 fig_combined.update_xaxes(
     tickmode='array',
     tickvals=list(range(len(spx_filtered))),
     ticktext=date_labels,
     tickangle=-45,
-    row=2, col=1,
-    showgrid=False # Ocultar rejilla vertical
+    row=3, col=1, # Eje X final es la Fila 3
+    showgrid=False
 )
+
 # Configuraciones adicionales para ejes en tema oscuro
 fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=1, col=1)
 fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=1, col=1)
 fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=2, col=1)
 fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=2, col=1)
-
+fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=3, col=1)
+fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=3, col=1)
 
 st.plotly_chart(fig_combined, use_container_width=True)
 
 # --- INFORMACIÓN ADICIONAL ---
 st.markdown("---")
+# ... El resto de la sección de st.metric ...
 col1, col2, col3, col4, col5 = st.columns(5) 
 
 with col1:
