@@ -115,7 +115,8 @@ fig.update_layout(
     xaxis=dict(
         rangebreaks=[
             dict(bounds=["sat", "sun"])  # Oculta sábados y domingos
-        ]
+        ],
+        tickformat='%b %d',  # Solo Mes y Día (ej: Jul 31, Aug 15)
     ),
     hovermode='x unified'
 )
