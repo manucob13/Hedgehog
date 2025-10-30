@@ -13,8 +13,8 @@ import math
 warnings.filterwarnings('ignore')
 
 # --- CONFIGURACIÓN DE LA APP ---
-st.set_page_config(page_title="HEDGEHOG 1.1 - Comparación K=2 vs K=3", layout="wide")
-st.title("🔬 Comparación de Modelos Markov-Switching: K=2 (Original) vs K=3 (Consolidado)")
+st.set_page_config(page_title="HEDGEHOG 1.1", layout="wide")
+st.title("🔬 HEDGEHOG Modelos de Volatilidad - Markov-Switching K=2-3 - NR/WR")
 st.markdown("""
 Esta herramienta ejecuta y compara dos modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
 del S&P 500 y añade la señal de compresión **NR/WR (Narrow Range after Wide Range)** como indicador auxiliar.
@@ -171,7 +171,7 @@ def calculate_nr_wr_signal(spx_raw: pd.DataFrame) -> bool:
     return False
 
 # ==============================================================================
-# 2. MODELO K=2 (ORIGINAL - CON OBJETIVO 0.10)
+# 2. MODELO K=2 (RV OBJETIVO 0.10)
 # ==============================================================================
 
 @st.cache_data(ttl=3600)
@@ -240,7 +240,7 @@ def markov_calculation_k2(endog_final, exog_tvtp_final):
     }
 
 # ==============================================================================
-# 3. MODELO K=3 (PROPUESTO - SIN OBJETIVO FIJO)
+# 3. MODELO K=3 (FUNCION VARIANZA)
 # ==============================================================================
 
 @st.cache_data(ttl=3600)
