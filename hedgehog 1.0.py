@@ -407,7 +407,7 @@ def main_comparison():
 
     # Mostrar la conclusión operativa
     st.markdown("---")
-    st.subheader("Conclusión Operativa para Calendar Spreads")
+    st.subheader("Conclusión Operativa")
 
     if prob_k3_consolidada >= results_k3['UMBRAL_COMPRESION']:
         st.success(f"**SEÑAL DE ENTRADA FUERTE (K=3):** El riesgo de Alta Volatilidad es bajo. La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, superando el umbral de 0.70. Condición Favorable para estrategias de Theta.")
@@ -418,7 +418,7 @@ def main_comparison():
     ---
     ### Entendiendo la Diferencia Clave
     
-    El **Modelo K=2** combina toda la volatilidad no-crisis en una única señal de 'Baja', lo que lo hace propenso a **falsos positivos** (como se vio en la caída de finales de julio), donde te mantiene en el trade cuando la volatilidad es 'Media' (consolidación).
+    El **Modelo K=2** combina toda la volatilidad no-crisis en una única señal de 'Baja', lo que le hace propenso a **falsos positivos** (como se vio en la caída de finales de julio), donde te mantiene en el trade cuando la volatilidad es 'Media' (consolidación).
     
     El **Modelo K=3** descompone la 'Baja' volatilidad en dos estados: 'Baja' (Calma Extrema) y 'Media' (Consolidación). 
     
