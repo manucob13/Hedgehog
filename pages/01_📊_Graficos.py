@@ -18,6 +18,12 @@ warnings.filterwarnings('ignore')
 st.set_page_config(page_title="Gráficos - HEDGEHOG", layout="wide")
 st.title("📊 Gráficos de Análisis Técnico Combinados (K=2, K=3)")
 
+# --- INSERCIÓN: BOTÓN PARA FORZAR LA ACTUALIZACIÓN DE DATOS ---
+if st.button("🔄 Forzar Actualización de Datos (Limpiar Caché)", help="Esto borrará la caché de 24 horas de los datos del SPX y VIX y los descargará de nuevo."):
+    st.cache_data.clear()
+    st.rerun()
+st.markdown("---")
+
 # ==============================================================================
 # 1. FUNCIONES DE LÓGICA PURA (ADAPTADAS DEL MAIN)
 # ==============================================================================
