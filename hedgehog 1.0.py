@@ -14,10 +14,11 @@ warnings.filterwarnings('ignore')
 
 # --- CONFIGURACIÓN DE LA APP ---
 st.set_page_config(page_title="HEDGEHOG 1.1 - Comparación K=2 vs K=3", layout="wide")
-st.title("🔬 HEDGEHOG 1.1 ")
+st.title("🔬 Comparación de Modelos Markov-Switching: K=2 (Original) vs K=3 (Consolidado)")
 st.markdown("""
-Modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
-del S&P 500. Comparativa Markov K=2 y K=3 ( fx varianza consolidado ) """)
+Esta herramienta ejecuta y compara dos modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
+del S&P 500 y añade la señal de compresión **NR/WR (Narrow Range after Wide Range)** como indicador auxiliar.
+""")
 
 # ==============================================================================
 # 1. FUNCIONES DE LÓGICA PURA (CARGA Y PREPARACIÓN)
@@ -59,7 +60,7 @@ def calculate_indicators(df_raw: pd.DataFrame):
     spx['ATR_14'] = spx['true_range'].rolling(window=14).mean()
     spx.drop(columns=['tr1', 'tr2', 'tr3', 'true_range'], inplace=True)
 
-    # 3. Narrow Range (NR14 - Binario)
+    # 3. Narrow Range (NR14 - Binario - Usado como exógena en Markov)
     window = 14
     spx['nr14_threshold'] = spx['High'].rolling(window=window).max() - spx['Low'].rolling(window=window).min()
     spx['NR14'] = (spx['High'] - spx['Low'] < spx['nr14_threshold']).astype(int)
@@ -101,6 +102,74 @@ def preparar_datos_markov(spx: pd.DataFrame):
     
     return endog_final, exog_tvtp_final
 
+# --- LÓGICA NR/WR (Narrow Range after Wide Range) ---
+
+def check_recent_wr(wr_series: pd.Series, tr_series: pd.Series, wr_len: int, max_delay: int) -> pd.Series:
+    """
+    Verifica si hubo un Wide Range (WR) en las últimas 'max_delay' barras.
+    Replica el bucle 'for i = 1 to max_delay' de PineScript.
+    """
+    # Inicializar la serie de resultado con False
+    wr_recent = pd.Series(False, index=wr_series.index)
+    
+    # Iterar sobre el retraso (delay)
+    for i in range(1, max_delay + 1):
+        # Condición: tr[i] == ta.highest(tr, wr_len)[i]
+        # En pandas: tr_series.shift(i) es el TR de hace 'i' días.
+        #           tr_series.rolling(wr_len).max().shift(i) es el máximo TR de la ventana de WR de hace 'i' días.
+        condition = (tr_series.shift(i) == tr_series.rolling(window=wr_len).max().shift(i))
+        wr_recent = wr_recent | condition  # OR acumulativo
+    
+    return wr_recent
+
+def calculate_nr_wr_signal(spx_raw: pd.DataFrame) -> bool:
+    """Calcula la señal NR/WR (Narrow Range after Wide Range) usando la lógica corregida."""
+    df = spx_raw.copy()
+
+    # --- PARÁMETROS ---
+    wr4_len = 4
+    nr4_len = 4
+    wr7_len = 7
+    nr7_len = 7
+    max_delay = 3 
+
+    # --- TRUE RANGE ---
+    high_low = df['High'] - df['Low']
+    high_prev_close = np.abs(df['High'] - df['Close'].shift(1))
+    low_prev_close = np.abs(df['Low'] - df['Close'].shift(1))
+    df['tr_nr_wr'] = pd.DataFrame({
+        'hl': high_low, 
+        'hpc': high_prev_close, 
+        'lpc': low_prev_close
+    }).max(axis=1)
+
+    # Limpiar NaNs causados por el shift(1) del True Range
+    df.dropna(subset=['tr_nr_wr'], inplace=True)
+
+    # --- WR & NR (Series booleanas) ---
+    df['wr4'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=wr4_len).max())
+    df['wr7'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=wr7_len).max())
+    df['nr4'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=nr4_len).min())
+    df['nr7'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=nr7_len).min())
+    
+    # Aplicar la función corregida
+    df['wr4_recent'] = check_recent_wr(df['wr4'], df['tr_nr_wr'], wr4_len, max_delay)
+    df['wr7_recent'] = check_recent_wr(df['wr7'], df['tr_nr_wr'], wr7_len, max_delay)
+
+    # Asegurar que todas las series de booleanos estén alineadas antes de la lógica final
+    df.dropna(subset=['wr4_recent', 'wr7_recent', 'nr4', 'nr7'], inplace=True)
+
+
+    # --- SEÑALES FINALES ---
+    df['signal_nr4'] = df['nr4'] & df['wr4_recent'] 
+    df['signal_nr7'] = df['nr7'] & df['wr7_recent']
+    df['signal_nr_final'] = df['signal_nr7'] | df['signal_nr4']
+
+    # Devolver solo la última señal (True/False)
+    if not df['signal_nr_final'].empty:
+        return df['signal_nr_final'].iloc[-1]
+    return False
+
 # ==============================================================================
 # 2. MODELO K=2 (ORIGINAL - CON OBJETIVO 0.10)
 # ==============================================================================
@@ -131,7 +200,6 @@ def markov_calculation_k2(endog_final, exog_tvtp_final):
     regimen_vars = resultado.params.filter(regex='sigma2|Variance')
     regimen_vars_sorted = regimen_vars.sort_values(ascending=True)
     
-    # 0 = Baja Volatilidad (Lower Variance)
     # Se extrae el índice de régimen (el número entre corchetes, p. ej., '[0]' -> 0)
     def extract_regime_index(index_str):
         return int(index_str.split('[')[1].replace(']', ''))
@@ -165,7 +233,6 @@ def markov_calculation_k2(endog_final, exog_tvtp_final):
         'resultado': resultado,
         'indices_regimen': {'Baja': regimen_baja_vol_index},
         'varianzas_regimen': {'Baja': regimen_vars_sorted.iloc[0], 'Alta': regimen_vars_sorted.iloc[1]},
-        'probabilidades_filtradas': probabilidades_filtradas, 
         'prob_baja': prob_baja,
         'UMBRAL_RV5D_P_OBJETIVO': UMBRAL_RV5D_P_OBJETIVO,
         'P_USADO': best_percentile,
@@ -173,7 +240,7 @@ def markov_calculation_k2(endog_final, exog_tvtp_final):
     }
 
 # ==============================================================================
-# 3. MODELO K=3 (3 estados y rangos en funcion varianza)
+# 3. MODELO K=3 (PROPUESTO - SIN OBJETIVO FIJO)
 # ==============================================================================
 
 @st.cache_data(ttl=3600)
@@ -256,20 +323,31 @@ def main_comparison():
         return
 
     st.success(f"✅ Descarga y preparación exitosa. Datos listos para el análisis ({len(endog_final)} puntos).")
+
+    # --- Ejecutar Calculo NR/WR ---
+    st.markdown("---")
+    st.subheader("Indicador NR/WR (Narrow Range after Wide Range)")
+    with st.spinner("Calculando indicador NR/WR..."):
+        nr_wr_signal_on = calculate_nr_wr_signal(df_raw) # Usamos df_raw que tiene High/Low/Close
     
-    st.header("2. Calculos Markov k2 - k3")
+    if nr_wr_signal_on:
+        st.success("🟢 **SEÑAL NR/WR:** La compresión de volatilidad está **ACTIVA**. Alta probabilidad de ruptura inminente.")
+    else:
+        st.info("⚪ **SEÑAL NR/WR:** La compresión de volatilidad está **INACTIVA**. La volatilidad puede ser normal o ya ha explotado.")
+    st.markdown("---")
+    
     col_k2, col_k3 = st.columns(2)
     results_k2, results_k3 = None, None
-    
+
     # --- 2. Ejecutar Modelo K=2 ---
     with col_k2:
-        st.subheader("Modelo K=2 (Objetivo RV=0.10)")
+        st.subheader("Modelo K=2 (Original, Objetivo RV=0.10)")
         with st.spinner("Ajustando Modelo K=2..."):
             results_k2 = markov_calculation_k2(endog_final, exog_tvtp_final)
 
     # --- 3. Ejecutar Modelo K=3 ---
     with col_k3:
-        st.subheader("Modelo K=3 (Objetivo Varianza)")
+        st.subheader("Modelo K=3 (Propuesto, Varianza Objetiva)")
         with st.spinner("Ajustando Modelo K=3..."):
             results_k3 = markov_calculation_k3(endog_final, exog_tvtp_final)
 
@@ -282,6 +360,7 @@ def main_comparison():
         st.error(f"❌ Error K=3: {results_k3['error']}")
         return
     
+    st.header("2. Resultados Numéricos Clave y Comparación Markov")
     st.markdown(f"**Fecha del Último Cálculo:** {endog_final.index[-1].strftime('%Y-%m-%d')}")
     st.markdown("---")
 
@@ -300,7 +379,7 @@ def main_comparison():
             'Varianza Régimen Alta',
             'Umbral RV_5d Estimado (Para el Régimen Baja)'
         ],
-        'K=2': [
+        'K=2 (Original)': [
             f"{results_k2['prob_baja']:.4f}",
             'N/A (No existe)',
             f"{results_k2['prob_baja']:.4f}",
@@ -310,7 +389,7 @@ def main_comparison():
             f"{results_k2['varianzas_regimen']['Alta']:.5f}",
             f"{results_k2['UMBRAL_RV5D_P_OBJETIVO']:.4f}"
         ],
-        'K=3': [
+        'K=3 (Propuesto)': [
             f"{results_k3['prob_baja']:.4f}",
             f"{results_k3['prob_media']:.4f}",
             f"**{prob_k3_consolidada:.4f}**",
@@ -328,22 +407,22 @@ def main_comparison():
 
     # Mostrar la conclusión operativa
     st.markdown("---")
-    st.subheader("Conclusión Operativa")
+    st.subheader("Conclusión Operativa para Calendar Spreads")
 
     if prob_k3_consolidada >= results_k3['UMBRAL_COMPRESION']:
-        st.success(f"**SEÑAL DE ENTRADA FUERTE (K=3):** El riesgo de Alta Volatilidad es bajo. La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, mayor que 0.70. Condición Favorable para estrategias de Theta.")
+        st.success(f"**SEÑAL DE ENTRADA FUERTE (K=3):** El riesgo de Alta Volatilidad es bajo. La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, superando el umbral de 0.70. Condición Favorable para estrategias de Theta.")
     else:
-        st.warning(f"**RIESGO ACTIVO (K=3):** La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, menor que 0.70. El Régimen de Alta Volatilidad ha tomado peso. Evitar entrar o considerar salir.")
+        st.warning(f"**RIESGO ACTIVO (K=3):** La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, por debajo del umbral de 0.70. El Régimen de Alta Volatilidad ha tomado peso. Evitar entrar o considerar salir.")
     
     st.markdown("""
     ---
     ### Entendiendo la Diferencia Clave
     
-    El **Modelo K=2** combina toda la volatilidad no-crisis en una única señal de 'Baja', lo que le hace propenso a **falsos positivos**.
+    El **Modelo K=2** combina toda la volatilidad no-crisis en una única señal de 'Baja', lo que lo hace propenso a **falsos positivos** (como se vio en la caída de finales de julio), donde te mantiene en el trade cuando la volatilidad es 'Media' (consolidación).
     
     El **Modelo K=3** descompone la 'Baja' volatilidad en dos estados: 'Baja' (Calma Extrema) y 'Media' (Consolidación). 
     
-    La **Probabilidad Consolidada (Baja + Media)** del K=3 ofrece una señal de entrada/salida más robusta: da luz verde cuando la suma de los dos estados favorables supera el 70%, actuando como un **filtro más estricto contra el ruido** que el K=2 ignora.
+    La **Probabilidad Consolidada (Baja + Media)** del K=3 ofrece una señal de entrada/salida más robusta: solo da luz verde cuando la suma de los dos estados favorables supera el 70%, actuando como un **filtro más estricto contra el ruido** que el K=2 ignora.
     """)
 
 # ==============================================================================
