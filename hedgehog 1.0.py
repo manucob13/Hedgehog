@@ -102,6 +102,15 @@ period = 14
 spx['ATR_14'] = spx['true_range'].rolling(window=period).mean()
 # Limpiar columnas auxiliares si quieres
 spx.drop(columns=['previous_close', 'tr1', 'tr2', 'tr3'], inplace=True)
+
+## --- Narrow Range (NR) ---
+# Calcular ventana para NR
+window = 14
+# Calcular percentil 14 (o cuantil 0.14) del true_range en ventana móvil
+spx['nr14_threshold'] = spx['true_range'].rolling(window=window).quantile(0.14)
+# Crear columna que indica si el true_range está por debajo del percentil 14% (True=NR día estrecho)
+spx['NR14'] = spx['true_range'] < spx['nr14_threshold']
 # Mostrar las últimas tres filas del DataFrame spx
 st.dataframe(spx.tail(3))
+
 
