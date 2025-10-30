@@ -8,16 +8,13 @@ from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
 from sklearn.preprocessing import StandardScaler
 import warnings
 import math
-import plotly.graph_objects as go
-import altair as alt # Importar Altair para futuros gráficos
-
 
 # Ocultar advertencias de statsmodels que a menudo aparecen durante el ajuste
 warnings.filterwarnings('ignore')
 
 # --- CONFIGURACIÓN DE LA APP ---
 st.set_page_config(page_title="HEDGEHOG 1.1", layout="wide")
-st.title("🔬 HEDGEHOG 1.1 Modelos de Volatilidad - Markov-Switching K=2-3 - NR/WR")
+st.title("🔬 HEDGEHOG 1.1     Modelos de Volatilidad - Markov-Switching K=2-3 - NR/WR")
 st.markdown("""
 Esta herramienta ejecuta y compara dos modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
 del S&P 500 y añade la señal de compresión **NR/WR (Narrow Range after Wide Range)** como indicador auxiliar.
@@ -110,6 +107,7 @@ def preparar_datos_markov(spx: pd.DataFrame):
 def check_recent_wr(wr_series: pd.Series, tr_series: pd.Series, wr_len: int, max_delay: int) -> pd.Series:
     """
     Verifica si hubo un Wide Range (WR) en las últimas 'max_delay' barras.
+    Replica el bucle 'for i = 1 to max_delay' de PineScript.
     """
     # Inicializar la serie de resultado con False
     wr_recent = pd.Series(False, index=wr_series.index)
@@ -117,6 +115,8 @@ def check_recent_wr(wr_series: pd.Series, tr_series: pd.Series, wr_len: int, max
     # Iterar sobre el retraso (delay)
     for i in range(1, max_delay + 1):
         # Condición: tr[i] == ta.highest(tr, wr_len)[i]
+        # En pandas: tr_series.shift(i) es el TR de hace 'i' días.
+        #           tr_series.rolling(wr_len).max().shift(i) es el máximo TR de la ventana de WR de hace 'i' días.
         condition = (tr_series.shift(i) == tr_series.rolling(window=wr_len).max().shift(i))
         wr_recent = wr_recent | condition  # OR acumulativo
     
@@ -177,8 +177,8 @@ def calculate_nr_wr_signal(spx_raw: pd.DataFrame) -> bool:
 @st.cache_data(ttl=3600)
 def markov_calculation_k2(endog_final, exog_tvtp_final):
     """
-    Modelo de 2 regímenes: Baja vs. Alta. 
-    Devuelve un diccionario con resultados y la probabilidad filtrada del régimen Baja.
+    Modelo de 2 regímenes: Baja vs. Alta. Usa 0.10 como objetivo para encontrar
+    el umbral dinámico de baja volatilidad.
     """
     VALOR_OBJETIVO_RV5D = 0.10
     UMBRAL_COMPRESION = 0.70 
@@ -246,8 +246,8 @@ def markov_calculation_k2(endog_final, exog_tvtp_final):
 @st.cache_data(ttl=3600)
 def markov_calculation_k3(endog_final, exog_tvtp_final):
     """
-    Modelo de 3 regímenes: Baja, Media, Alta. 
-    Devuelve un diccionario con resultados y las probabilidades de Baja y Media.
+    Modelo de 3 regímenes: Baja, Media, Alta. Identifica regímenes
+    únicamente por las varianzas estimadas.
     """
     UMBRAL_COMPRESION = 0.70 
     
@@ -307,66 +307,12 @@ def markov_calculation_k3(endog_final, exog_tvtp_final):
     }
 
 # ==============================================================================
-# 4. FUNCIONES DE VISUALIZACIÓN
+# 4. FUNCIÓN PRINCIPAL DE EJECUCIÓN Y VISUALIZACIÓN DE TABLA
 # ==============================================================================
 
-def plot_candlestick_chart(df: pd.DataFrame, start_date: datetime):
-    """Genera el gráfico de velas japonesas del SPX500."""
-    
-    # Filtrar datos por fecha de inicio
-    df_filtered = df[df.index >= start_date]
-
-    if df_filtered.empty:
-        st.warning("No hay datos disponibles para el rango de fechas seleccionado.")
-        return
-
-    fig = go.Figure(data=[go.Candlestick(
-        x=df_filtered.index,
-        open=df_filtered['Open'],
-        high=df_filtered['High'],
-        low=df_filtered['Low'],
-        close=df_filtered['Close'],
-        name='SPX500'
-    )])
-
-    fig.update_layout(
-        title=f'Precio del SPX500 desde {start_date.strftime("%Y-%m-%d")} hasta HOY',
-        xaxis_title="Fecha",
-        yaxis_title="Precio (USD)",
-        xaxis_rangeslider_visible=False,
-        height=450,
-        margin=dict(l=20, r=20, t=50, b=20),
-        template="plotly_dark"
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
 def main_comparison():
-    
-    # --- BARRA LATERAL (CONTROL DE DATOS Y FILTROS) ---
-    st.sidebar.header("Filtro del Gráfico de Velas")
-    
-    # Fecha por defecto: Hace 6 meses
-    default_start_date = datetime.now() - relativedelta(months=6)
-    
-    # Selector de fecha de inicio
-    start_date_chart = st.sidebar.date_input(
-        "Fecha de Inicio del Gráfico:",
-        value=default_start_date,
-        min_value=datetime(2010, 1, 1),
-        max_value=datetime.now()
-    )
-    
-    # Fecha de fin (siempre hoy)
-    end_date_chart = datetime.now()
-    st.sidebar.markdown(f"**Fecha de Fin Fija:** {end_date_chart.strftime('%Y-%m-%d')} (Hoy)")
-    st.sidebar.markdown("---")
-    
-    
-    # --- 1. Cargar datos y calcular indicadores (Proceso Único) ---
+    # --- 1. Cargar datos y calcular indicadores ---
     st.header("1. Carga y Preparación de Datos")
-    
-    # Esta sección utiliza la lógica de caching. Se ejecuta sólo una vez o al día.
     with st.spinner("Descargando datos históricos y calculando indicadores..."):
         df_raw = fetch_data()
         spx = calculate_indicators(df_raw)
@@ -378,16 +324,8 @@ def main_comparison():
 
     st.success(f"✅ Descarga y preparación exitosa. Datos listos para el análisis ({len(endog_final)} puntos).")
     
-    # Mostrar las últimas dos filas del DataFrame endógeno
-    st.subheader("Datos de Volatilidad Recientes ($\text{RV}_{5d}$)")
-    # El DataFrame endog_final es una Serie, lo convertimos a un DataFrame para mostrar el índice
-    st.dataframe(endog_final.tail(2).to_frame(), use_container_width=True)
+    st.dataframe(spx.tail(2))
     st.markdown("---")
-
-    
-    # --- 1.5. GRÁFICO DE VELAS ---
-    # Convertir a datetime para la comparación con el índice
-    plot_candlestick_chart(df_raw, datetime.combine(start_date_chart, datetime.min.time()))
 
 
     # --- Ejecutar Calculo NR/WR ---
@@ -401,21 +339,22 @@ def main_comparison():
         st.info("⚪ **SEÑAL NR/WR:** La compresión de volatilidad está **INACTIVA**. La volatilidad puede ser normal o ya ha explotado.")
     st.markdown("---")
     
-    
     st.header("3. Modelos de Markov")
     
     # Definir columnas para los títulos y la ejecución de los modelos (K=2 y K=3 en paralelo)
     col_k2, col_k3 = st.columns(2)
     results_k2, results_k3 = None, None
 
-    # --- 3.1. Ejecutar Modelo K=2 ---
+    # --- 2. Ejecutar Modelo K=2 ---
     with col_k2:
+        # Título K=2 (Ahora a la izquierda, paralelo al K=3)
         st.subheader("Modelo K=2 (Objetivo RV=0.10)") 
         with st.spinner("Ajustando Modelo K=2..."):
             results_k2 = markov_calculation_k2(endog_final, exog_tvtp_final)
 
-    # --- 3.2. Ejecutar Modelo K=3 ---
+    # --- 3. Ejecutar Modelo K=3 ---
     with col_k3:
+        # Título K=3 (Ahora a la derecha, paralelo al K=2)
         st.subheader("Modelo K=3 (Objetivo Varianza)")
         with st.spinner("Ajustando Modelo K=3..."):
             results_k3 = markov_calculation_k3(endog_final, exog_tvtp_final)
