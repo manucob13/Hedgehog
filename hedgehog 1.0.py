@@ -86,6 +86,22 @@ spx['log_ret'] = np.log(spx['Close'] / spx['Close'].shift(1))
 # Calcular volatilidad realizada móvil anualizada a 5 y 21 días
 spx['RV_5d'] = spx['log_ret'].rolling(window=5).std() * np.sqrt(252)
 spx['RV_21d'] = spx['log_ret'].rolling(window=21).std() * np.sqrt(252)
+
+
+## --- ATR ---
+# Calcular rango diario como High - Low
+spx['daily_range'] = spx['High'] - spx['Low']
+# Calcular True Range (TR)
+spx['previous_close'] = spx['Close'].shift(1)
+spx['tr1'] = spx['High'] - spx['Low']
+spx['tr2'] = (spx['High'] - spx['previous_close']).abs()
+spx['tr3'] = (spx['Low'] - spx['previous_close']).abs()
+spx['true_range'] = spx[['tr1', 'tr2', 'tr3']].max(axis=1)
+# Calcular ATR como media móvil simple del True Range en ventana de 14 días (o la que prefieras)
+period = 14
+spx['ATR_14'] = spx['true_range'].rolling(window=period).mean()
+# Limpiar columnas auxiliares si quieres
+spx.drop(columns=['previous_close', 'tr1', 'tr2', 'tr3'], inplace=True)
 # Mostrar las últimas tres filas del DataFrame spx
 st.dataframe(spx.tail(3))
 
