@@ -261,7 +261,6 @@ def main_comparison():
     col_k2, col_k3 = st.columns(2)
     results_k2, results_k3 = None, None
     
-    
     # --- 2. Ejecutar Modelo K=2 ---
     with col_k2:
         st.subheader("Modelo K=2 (Objetivo RV=0.10)")
