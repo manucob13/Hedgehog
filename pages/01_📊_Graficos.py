@@ -215,7 +215,7 @@ indice_baja = results_k2['indices_regimen']['Baja']
 prob_baja_serie = probabilidades[indice_baja].loc[spx_filtered.index]
 prob_baja_serie = prob_baja_serie.fillna(method='ffill')
 
-UMBRAL_ALERTA = 0.50 # Nuevo umbral
+UMBRAL_ALERTA = 0.50 
 UMBRAL_COMPRESION = results_k2['UMBRAL_COMPRESION'] # 0.70
 
 # --- CREAR SUBPLOTS (3 FILAS) ---
@@ -236,8 +236,8 @@ fig_combined.add_trace(go.Candlestick(
     high=spx_filtered['High'],
     low=spx_filtered['Low'],
     close=spx_filtered['Close'],
-    name='SPX',
-    showlegend=False,
+    name='S&P 500', # Añadida etiqueta de leyenda
+    # showlegend=False, # Ahora lo mostraremos en el layout
     increasing=dict(line=dict(color='#00B06B')),
     decreasing=dict(line=dict(color='#F13A50'))
 ), row=1, col=1)
@@ -249,17 +249,17 @@ fig_combined.update_xaxes(showticklabels=False, row=1, col=1)
 # ----------------------------------------------------
 # 2. GRÁFICO DE VOLATILIDAD REALIZADA (RV_5d) (Fila 2)
 # ----------------------------------------------------
-# Traza de LÍNEA VERDE (Subida)
+# Traza de LÍNEA VERDE (Subida) - Volatilidad Baja
 fig_combined.add_trace(go.Scatter(
     x=list(range(len(spx_filtered))),
     y=rv_green_plot,
     mode='lines+markers', 
-    name='Sube/Mantiene', 
+    name='RV (Sube/Baja Vol.)', # Etiqueta de leyenda
     line=dict(color='#00B06B', width=2),
     marker=dict(size=5, color='#00B06B'),
     hoverinfo='text',
     text=[f"RV: {y:.2f}% ({'Sube' if u else 'Baja'})" for y, u in zip(spx_filtered['RV_5d_pct'], is_up)],
-    showlegend=False
+    showlegend=True # Mostrar en la leyenda
 ), row=2, col=1)
 
 # Traza de LÍNEA ROJA (Bajada)
@@ -267,12 +267,12 @@ fig_combined.add_trace(go.Scatter(
     x=list(range(len(spx_filtered))),
     y=rv_red_plot,
     mode='lines+markers', 
-    name='Baja', 
+    name='RV (Baja)', # Etiqueta de leyenda
     line=dict(color='#F13A50', width=2),
     marker=dict(size=5, color='#F13A50'),
     hoverinfo='text',
     text=[f"RV: {y:.2f}% ({'Sube' if u else 'Baja'})" for y, u in zip(spx_filtered['RV_5d_pct'], is_up)],
-    showlegend=False
+    showlegend=False # No duplicar la leyenda RV
 ), row=2, col=1)
 
 # Añadir línea horizontal discontinua del umbral (Fila 2)
@@ -309,13 +309,13 @@ fig_combined.add_trace(go.Scatter(
     x=list(range(len(spx_filtered))),
     y=prob_baja_serie,
     mode='lines',
-    name='Prob. Baja Volatilidad',
+    name='Prob. K=2 (Baja Vol.)', # Etiqueta de leyenda
     line=dict(color='#8A2BE2', width=2), 
     fill='tozeroy', 
     fillcolor='rgba(138, 43, 226, 0.3)',
     hoverinfo='text',
     text=[f"Prob. Baja K=2: {p:.4f}" for p in prob_baja_serie],
-    showlegend=False
+    showlegend=True # Mostrar en la leyenda
 ), row=3, col=1)
 
 # Umbral 1: 70% (Línea de Compresión Fuerte)
@@ -323,7 +323,7 @@ fig_combined.add_shape(
     type="line",
     x0=0, y0=UMBRAL_COMPRESION,
     x1=len(spx_filtered) - 1, y1=UMBRAL_COMPRESION,
-    line=dict(color="#FFD700", width=2, dash="dash"), # Línea Dorada más gruesa, "Dash"
+    line=dict(color="#FFD700", width=2, dash="dash"), 
     layer="below",
     row=3, col=1
 )
@@ -333,7 +333,7 @@ fig_combined.add_shape(
     type="line",
     x0=0, y0=UMBRAL_ALERTA,
     x1=len(spx_filtered) - 1, y1=UMBRAL_ALERTA,
-    line=dict(color="#29B6F6", width=1, dash="dot"), # Línea Azul claro más fina, "Dot"
+    line=dict(color="#FFFFFF", width=1, dash="dot"), # ¡CAMBIADO A BLANCO (#FFFFFF)!
     layer="below",
     row=3, col=1
 )
@@ -343,7 +343,7 @@ fig_combined.add_annotation(
     x=len(spx_filtered) - 1, y=UMBRAL_COMPRESION, 
     text=f'Compresión Fuerte ({UMBRAL_COMPRESION*100:.0f}%)', 
     showarrow=False,
-    xref='x3', yref='y3', # Referencia a las coordenadas de los datos
+    xref='x3', yref='y3', 
     xanchor='right', yanchor='bottom', 
     font=dict(size=12, color="#FFD700"),
     xshift=0, yshift=5,
@@ -355,18 +355,17 @@ fig_combined.add_annotation(
     x=len(spx_filtered) - 1, y=UMBRAL_ALERTA, 
     text=f'Alerta ({UMBRAL_ALERTA*100:.0f}%)', 
     showarrow=False,
-    xref='x3', yref='y3', # Referencia a las coordenadas de los datos
+    xref='x3', yref='y3', 
     xanchor='right', yanchor='bottom', 
-    font=dict(size=12, color="#29B6F6"),
+    font=dict(size=12, color="#FFFFFF"), # ¡CAMBIADO A BLANCO!
     xshift=0, yshift=5,
     row=3, col=1
 )
 
-
 # Configuraciones de la Fila 3
 fig_combined.update_yaxes(title_text='Prob. K=2', row=3, col=1, tickformat=".2f", range=[0, 1])
 
-# --- CONFIGURACIÓN FINAL DEL GRÁFICO COMBINADO ---
+# --- CONFIGURACIÓN FINAL DEL GRÁFICO COMBINADO (Ajuste de Leyenda) ---
 fig_combined.update_layout(
     template='plotly_dark',
     height=900, 
@@ -376,6 +375,19 @@ fig_combined.update_layout(
     paper_bgcolor='#131722', 
     font=dict(color='#AAAAAA'),
     margin=dict(t=50, b=100, l=60, r=40),
+    # AJUSTES DE LEYENDA para moverla a la izquierda
+    showlegend=True,
+    legend=dict(
+        orientation="v",
+        yanchor="top",
+        y=1, # Parte superior
+        xanchor="left",
+        x=0.01, # Lado izquierdo
+        bgcolor="rgba(0,0,0,0.5)",
+        bordercolor="rgba(255,255,255,0.1)",
+        borderwidth=1,
+        font=dict(size=10)
+    )
 )
 
 # Configurar el eje X compartido (solo las etiquetas inferiores, ahora en la Fila 3)
