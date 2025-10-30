@@ -76,3 +76,15 @@ if not df_plot.empty:
     st.plotly_chart(fig, use_container_width=True)
 else:
     st.warning("No hay datos disponibles para el rango seleccionado.")
+
+
+# --- Volatilidad realizada 5d vs 21d ---
+spx = df.copy()
+# Calcular retornos logarítmicos diarios
+spx['log_ret'] = np.log(spx['Close'] / spx['Close'].shift(1))
+# Calcular volatilidad realizada móvil anualizada a 5 y 21 días
+spx['RV_5d'] = spx['log_ret'].rolling(window=5).std() * np.sqrt(252)
+spx['RV_21d'] = spx['log_ret'].rolling(window=21).std() * np.sqrt(252)
+# Mostrar las últimas tres filas del DataFrame spx
+st.dataframe(spx.tail(3))
+
