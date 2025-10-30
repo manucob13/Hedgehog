@@ -2,6 +2,11 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime
 
+# --- Configuración de la app ---
+st.set_page_config(page_title="HEDGEHOG", layout="wide")
+st.title("📊 HEDGEHOG 1.0")
+@st.cache_data(ttl=86400)
+
 # --- Descarga de datos históricos (Cacheado) ---
 def fetch_data():
     """Descarga datos históricos del ^GSPC (SPX) y ^VIX (VIX)."""
