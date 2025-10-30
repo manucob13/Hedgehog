@@ -160,26 +160,41 @@ fig_rv = go.Figure()
 # Convertir RV_5d a porcentaje
 spx_filtered['RV_5d_pct'] = spx_filtered['RV_5d'] * 100
 
-# Calcular el color para cada punto: 'red' si > Umbral, 'green' si <= Umbral
-# NOTA: Para cambiar el color de la LÍNEA que CONECTA los puntos, necesitamos múltiples trazas o usar un 'scatter plot' 
-# con 'line.color' para cada segmento. Plotly no soporta esto directamente en una sola traza con lines+markers.
-# Por lo tanto, volvemos al método de dos trazas, pero asegurando que la conexión se mantenga solo donde corresponde.
-
 # ----------------------------------------------------------------------
-# SOLUCIÓN: Usar dos trazas (una roja y una verde) y asegurar la continuidad
-# utilizando numpy.where para dejar valores NaN en los puntos que no cumplen la condición.
+# SOLUCIÓN: Usar dos trazas (una roja y una verde) y asegurar la CONTINUIDAD
+# duplicando los puntos de cruce en ambas trazas.
 # ----------------------------------------------------------------------
 
-# Valores por debajo del umbral (Verde)
-rv_green = np.where(spx_filtered['RV_5d'] <= UMBRAL_RV, spx_filtered['RV_5d_pct'], np.nan)
-# Valores por encima del umbral (Rojo)
-rv_red = np.where(spx_filtered['RV_5d'] > UMBRAL_RV, spx_filtered['RV_5d_pct'], np.nan)
+# Calcular la condición de cruce (cambia de estado)
+rv_above = spx_filtered['RV_5d'] > UMBRAL_RV
+rv_below = spx_filtered['RV_5d'] <= UMBRAL_RV
+
+# Identificar los puntos donde cruza el umbral
+# Un cruce ocurre si el estado actual es diferente al estado anterior (shift(1))
+is_crossing = rv_above.shift(1, fill_value=False) != rv_above
+
+# 1. Preparar los datos para la traza VERDE (RV <= UMBRAL)
+# Incluir puntos donde RV <= UMBRAL o donde el día *siguiente* está por encima (para dibujar hasta el cruce)
+# Y también incluir puntos donde el día actual es el cruce (para duplicar el punto de conexión)
+green_mask = (rv_below) | (is_crossing.shift(-1, fill_value=False)) | (is_crossing)
+
+# Usamos la máscara para seleccionar los valores y forzar NaN donde no aplica
+rv_green_plot = spx_filtered['RV_5d_pct'].where(green_mask, other=np.nan)
+
+
+# 2. Preparar los datos para la traza ROJA (RV > UMBRAL)
+# Incluir puntos donde RV > UMBRAL o donde el día *siguiente* está por debajo (para dibujar hasta el cruce)
+red_mask = (rv_above) | (is_crossing.shift(-1, fill_value=False)) | (is_crossing)
+
+# Usamos la máscara para seleccionar los valores y forzar NaN donde no aplica
+rv_red_plot = spx_filtered['RV_5d_pct'].where(red_mask, other=np.nan)
+
 
 # Trazo para la volatilidad por debajo del umbral (Verde)
 # Usamos 'lines+markers' para mostrar los puntos y la línea de color.
 fig_rv.add_trace(go.Scatter(
     x=spx_filtered.index,
-    y=rv_green,
+    y=rv_green_plot,
     mode='lines+markers',
     name='RV ≤ 10% (Verde - Baja Volatilidad)',
     line=dict(color='green', width=2),
@@ -190,7 +205,7 @@ fig_rv.add_trace(go.Scatter(
 # Usamos 'lines+markers' para mostrar los puntos y la línea de color.
 fig_rv.add_trace(go.Scatter(
     x=spx_filtered.index,
-    y=rv_red,
+    y=rv_red_plot,
     mode='lines+markers',
     name='RV > 10% (Rojo - Alta Volatilidad)',
     line=dict(color='red', width=2),
