@@ -5,6 +5,6 @@ requests
 yfinance
 matplotlib
 plotly
-
-
-
+warnings
+statsmodels
+sklearn
