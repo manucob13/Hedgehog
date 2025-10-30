@@ -261,6 +261,7 @@ def main_comparison():
     results_k2, results_k3 = None, None
 
     # --- 2. Ejecutar Modelo K=2 ---
+    st.header("2. Calculos Markov k2 - k3")
     with col_k2:
         st.subheader("Modelo K=2 (Objetivo RV=0.10)")
         with st.spinner("Ajustando Modelo K=2..."):
@@ -281,7 +282,6 @@ def main_comparison():
         st.error(f"❌ Error K=3: {results_k3['error']}")
         return
     
-    st.header("2. Resultados Numéricos Clave y Comparación")
     st.markdown(f"**Fecha del Último Cálculo:** {endog_final.index[-1].strftime('%Y-%m-%d')}")
     st.markdown("---")
 
