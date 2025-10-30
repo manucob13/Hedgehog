@@ -90,13 +90,19 @@ fecha_final_dt = pd.to_datetime(fecha_final)
 
 spx_filtered = spx[(spx.index >= fecha_inicio_dt) & (spx.index <= fecha_final_dt)].copy()
 
+# ELIMINAR fines de semana del DataFrame
+spx_filtered = spx_filtered[spx_filtered.index.dayofweek < 5]  # 0=Lunes, 4=Viernes
+
 st.markdown(f"**Período seleccionado:** {fecha_inicio} hasta {fecha_final} ({len(spx_filtered)} días)")
 
 # --- GRÁFICO DE VELAS JAPONESAS ---
 st.subheader("📈 S&P 500 - Velas Japonesas")
 
+# Crear etiquetas de fecha personalizadas (solo mes y día)
+date_labels = [d.strftime('%b %d') for d in spx_filtered.index]
+
 fig = go.Figure(data=[go.Candlestick(
-    x=spx_filtered.index,
+    x=date_labels,
     open=spx_filtered['Open'],
     high=spx_filtered['High'],
     low=spx_filtered['Low'],
@@ -106,17 +112,13 @@ fig = go.Figure(data=[go.Candlestick(
 
 fig.update_layout(
     title=f'S&P 500 - Velas Japonesas ({fecha_inicio} a {fecha_final})',
-    yaxis_title='',  # Sin título en eje Y
-    xaxis_title='',  # Sin título en eje X
+    yaxis_title='',
+    xaxis_title='',
     template='plotly_white',
     height=600,
     xaxis_rangeslider_visible=False,
-    # IMPORTANTE: Esto elimina los espacios de fines de semana
     xaxis=dict(
-        rangebreaks=[
-            dict(bounds=["sat", "sun"])  # Oculta sábados y domingos
-        ],
-        tickformat='%b %d',  # Solo Mes y Día (ej: Jul 31, Aug 15)
+        type='category',
     ),
     hovermode='x unified'
 )
