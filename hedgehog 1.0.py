@@ -205,10 +205,11 @@ def markov_calculation_k3(endog_final, exog_tvtp_final):
     # Ordenar las varianzas para asignar: 0=Baja, 1=Media, 2=Alta
     regimen_vars_sorted = regimen_vars.sort_values(ascending=True)
     
+    # FIX: Se corrigió el índice de split para 'Alta' de [2] a [1]
     indices_regimen = {
         'Baja': int(regimen_vars_sorted.index[0].split('[')[1].replace(']', '')),
         'Media': int(regimen_vars_sorted.index[1].split('[')[1].replace(']', '')),
-        'Alta': int(regimen_vars_sorted.index[2].split('[')[2].replace(']', ''))
+        'Alta': int(regimen_vars_sorted.index[2].split('[')[1].replace(']', ''))
     }
     
     varianzas_regimen = {
