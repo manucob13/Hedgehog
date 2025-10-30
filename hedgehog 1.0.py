@@ -110,6 +110,10 @@ window = 14
 spx['nr14_threshold'] = spx['true_range'].rolling(window=window).quantile(0.14)
 # Crear columna que indica si el true_range está por debajo del percentil 14% (True=NR día estrecho)
 spx['NR14'] = spx['true_range'] < spx['nr14_threshold']
+
+
+## --- Ratio de volatilidad en el VIX ---
+spx['VIX_pct_change'] = spx['VIX'].pct_change()
 # Mostrar las últimas tres filas del DataFrame spx
 st.dataframe(spx.tail(3))
 
