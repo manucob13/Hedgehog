@@ -274,5 +274,84 @@ if markov_results:
 else:
     st.error("El cálculo del modelo Markov falló. Revisar logs anteriores.")
 
+def markov_plot(results: dict):
+    """
+    Muestra los resultados del modelo Markov en Streamlit (texto y gráfico).
+    """
+    if results is None:
+        return
+
+    plt.style.use('seaborn-v0_8-darkgrid')
+    
+    st.subheader("📊 2. Visualización Detallada (Últimos 60 Días)")
+
+    # Extracción de variables necesarias del diccionario de resultados
+    endog_final = results['endog_final']
+    resultado = results['resultado']
+    regimen_baja_vol_index = results['regimen_baja_vol_index']
+    UMBRAL_RV5D_P_OBJETIVO = results['UMBRAL_RV5D_P_OBJETIVO']
+    P_USADO = results['P_USADO']
+    UMBRAL_COMPRESION = results['UMBRAL_COMPRESION']
+
+    # 4.1 Filtrado de datos para los últimos 60 días
+    fecha_final = endog_final.index.max()
+    fecha_inicio = fecha_final - pd.DateOffset(days=60) 
+
+    rv_5d_filtrada = endog_final[endog_final.index >= fecha_inicio]
+    prob_regimen_baja_completa = resultado.smoothed_marginal_probabilities[regimen_baja_vol_index]
+    prob_filtrada = prob_regimen_baja_completa[prob_regimen_baja_completa.index >= fecha_inicio]
+
+    # --- Generación del gráfico (Dos Subplots) ---
+    fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+    fig.suptitle('Análisis de Régimen de Volatilidad (Últimos 60 Días)', fontsize=16)
+
+    # Gráfico 1: RV_5d
+    axes[0].set_title(f"1. Volatilidad Realizada (RV_5d)")
+    
+    # Dibujar líneas con colores dinámicos
+    for i in range(1, len(rv_5d_filtrada)):
+        x_vals = [rv_5d_filtrada.index[i-1], rv_5d_filtrada.index[i]]
+        y_vals = [rv_5d_filtrada.iloc[i-1], rv_5d_filtrada.iloc[i]]
+        color = 'green' if rv_5d_filtrada.iloc[i] > rv_5d_filtrada.iloc[i-1] else 'red'
+        axes[0].plot(x_vals, y_vals, color=color, linewidth=1.5, alpha=0.8)
+        
+    axes[0].scatter(rv_5d_filtrada.index, rv_5d_filtrada.values, c='blue', s=20, alpha=0.6, zorder=5)
+    
+    # Dibujar Umbral RV_5d
+    axes[0].axhline(UMBRAL_RV5D_P_OBJETIVO, color='orange', linestyle=':', linewidth=2, alpha=0.9,
+                    label=f"Umbral Baja Vol. (P{P_USADO:.0f}: {UMBRAL_RV5D_P_OBJETIVO:.4f})")
+    
+    # Leyenda manual
+    from matplotlib.lines import Line2D
+    legend_elements = [
+        Line2D([0], [0], color='green', linewidth=2, label='RV_5d Sube'),
+        Line2D([0], [0], color='red', linewidth=2, label='RV_5d Baja'),
+        Line2D([0], [0], color='orange', linestyle=':', linewidth=2, label=f"Umbral (P{P_USADO:.0f})")
+    ]
+    axes[0].legend(handles=legend_elements, loc='upper right')
+    axes[0].grid(True, linestyle='--', alpha=0.6)
+
+    # Gráfico 2: Probabilidad Suavizada
+    axes[1].plot(prob_filtrada.index, prob_filtrada.values, label=f'Prob. Baja Volatilidad (Reg. {regimen_baja_vol_index})', color='green', linewidth=2)
+    axes[1].axhline(0.5, color='red', linestyle='--', alpha=0.7, label='Umbral 50%')
+    axes[1].axhline(UMBRAL_COMPRESION, color='orange', linestyle=':', linewidth=2, alpha=0.7, label=f"Umbral {int(UMBRAL_COMPRESION*100)}% (Señal Fuerte)")
+    axes[1].set_title('2. Probabilidad de Régimen de Baja Volatilidad/Compresión')
+    axes[1].fill_between(prob_filtrada.index, 0, prob_filtrada.values, where=prob_filtrada.values > 0.5, color='green', alpha=0.3)
+    axes[1].legend(loc='upper right')
+    axes[1].set_ylim(0, 1)
+    axes[1].grid(True, linestyle='--', alpha=0.6)
+
+    # Formato de Fechas en el Eje X
+    axes[1].set_xticks(prob_filtrada.index[::len(prob_filtrada)//10 or 1])
+    date_form = DateFormatter("%m-%d")
+    axes[1].xaxis.set_major_formatter(date_form)
+    plt.xticks(rotation=45, ha='right')
+
+    plt.xlabel("Fecha")
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    
+    # Mostrar el gráfico en Streamlit
+    st.pyplot(fig)
+
 ##### POR DONDE VAMOS ####
 
