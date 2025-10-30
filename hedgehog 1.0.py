@@ -269,7 +269,7 @@ def main_comparison():
 
     # --- 3. Ejecutar Modelo K=3 ---
     with col_k3:
-        st.subheader("Modelo K=3 (Varianza Objetiva)")
+        st.subheader("Modelo K=3 (Objetivo Varianza)")
         with st.spinner("Ajustando Modelo K=3..."):
             results_k3 = markov_calculation_k3(endog_final, exog_tvtp_final)
 
