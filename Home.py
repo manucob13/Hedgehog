@@ -311,8 +311,15 @@ def markov_calculation_k3(endog_final, exog_tvtp_final):
 # ==============================================================================
 
 def main_comparison():
-    # --- 1. Cargar datos y calcular indicadores ---
+    
     st.header("1. Carga y Preparación de Datos")
+    
+    # BOTÓN PARA FORZAR LA ACTUALIZACIÓN (La solución al problema de caché)
+    if st.button("🔄 Forzar Actualización (Limpiar Caché de Datos)"):
+        st.cache_data.clear()
+        st.experimental_rerun()
+    
+    # --- 1. Cargar datos y calcular indicadores ---
     with st.spinner("Descargando datos históricos y calculando indicadores..."):
         df_raw = fetch_data()
         spx = calculate_indicators(df_raw)
