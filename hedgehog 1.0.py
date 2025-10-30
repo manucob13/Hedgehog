@@ -14,7 +14,7 @@ warnings.filterwarnings('ignore')
 
 # --- CONFIGURACIÓN DE LA APP ---
 st.set_page_config(page_title="HEDGEHOG 1.1", layout="wide")
-st.title("🔬 HEDGEHOG Modelos de Volatilidad - Markov-Switching K=2-3 - NR/WR")
+st.title("🔬 HEDGEHOG 1.1     Modelos de Volatilidad - Markov-Switching K=2-3 - NR/WR")
 st.markdown("""
 Esta herramienta ejecuta y compara dos modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
 del S&P 500 y añade la señal de compresión **NR/WR (Narrow Range after Wide Range)** como indicador auxiliar.
