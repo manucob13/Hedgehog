@@ -30,20 +30,16 @@ def fetch_data():
 # --- para enfocarnos en la descarga de datos.
 
 # --- EJECUCIÓN DE PRUEBA (SOLO DESCARGA) ---
-if __name__ == "__main__":
-    print("--- INICIANDO PRUEBA DE MÓDULO DE ANÁLISIS (PASO 1: DESCARGA) ---", flush=True)
-    
-    # 1. Cargar datos base
-    try:
-        df_raw = fetch_data()
-        
-        # 2. Mostrar un resumen de los datos descargados
-        print("\n--- DATOS RAW DESCARGADOS (ÚLTIMAS 5 FILAS) ---")
-        # to_string() es mejor que un simple print para asegurar el formato en la consola
-        print(df_raw.tail(5).to_string())
-        print(f"\nDataFrame cargado con éxito. Filas totales: {len(df_raw)}")
-        
-    except Exception as e:
-        print(f"\nERROR CRÍTICO DURANTE LA DESCARGA DE DATOS: {e}")
-        print("Asegúrate de tener conexión a Internet para acceder a Yahoo Finance.")
 
+print("--- INICIANDO PRUEBA DE MÓDULO DE ANÁLISIS (PASO 1: DESCARGA) ---", flush=True)
+    
+# 1. Cargar datos base
+df_raw = fetch_data()
+
+# 2. Mostrar un resumen de los datos descargados
+print("\n--- DATOS RAW DESCARGADOS (ÚLTIMAS 5 FILAS) ---")
+# to_string() es mejor que un simple print para asegurar el formato en la consola
+print(df_raw.tail(5).to_string())
+print(f"\nDataFrame cargado con éxito. Filas totales: {len(df_raw)}")
+        
+    
