@@ -1,0 +1,5 @@
+# Archivo: .streamlit/config.toml
+[server]
+# Forzamos una versión estable de Python (3.10 o 3.11)
+# para asegurar la compatibilidad con statsmodels.
+pythonVersion = 3.10
