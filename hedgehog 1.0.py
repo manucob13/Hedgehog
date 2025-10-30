@@ -34,7 +34,7 @@ df = fetch_data()
 st.success(f"✅ Descarga datos SPX - VIX desde {df.index.min().date()} hasta {df.index.max().date()}")
 
 # --- Selección de rango para graficar SPX ---
-st.sidebar.header("Selecciona rango para graficar SPX")
+st.sidebar.header("Rango grafico -  SPX")
 min_date = df.index.min().date()
 max_date = df.index.max().date()
 
