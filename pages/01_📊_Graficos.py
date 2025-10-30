@@ -98,16 +98,36 @@ st.markdown(f"**Período seleccionado:** {fecha_inicio} hasta {fecha_final} ({le
 # --- GRÁFICO DE VELAS JAPONESAS ---
 st.subheader("📈 S&P 500 - Velas Japonesas")
 
-# Crear etiquetas de fecha personalizadas (solo mes y día)
-date_labels = [d.strftime('%b %d') for d in spx_filtered.index]
+# Crear etiquetas de fecha inteligentes
+date_labels = []
+prev_year = None
+prev_month = None
+
+for d in spx_filtered.index:
+    # Si cambia el año, mostrar año
+    if prev_year is None or d.year != prev_year:
+        date_labels.append(d.strftime('%b %y'))
+        prev_year = d.year
+        prev_month = d.month
+    # Si cambia el mes, mostrar mes y día
+    elif d.month != prev_month:
+        date_labels.append(d.strftime('%b %d'))
+        prev_month = d.month
+    # Mismo mes, solo mostrar el día cada 5 días aprox
+    elif len(date_labels) % 5 == 0:
+        date_labels.append(d.strftime('%d'))
+    else:
+        date_labels.append('')  # Sin etiqueta para no saturar
 
 fig = go.Figure(data=[go.Candlestick(
-    x=date_labels,
+    x=list(range(len(spx_filtered))),  # Usar índices numéricos
     open=spx_filtered['Open'],
     high=spx_filtered['High'],
     low=spx_filtered['Low'],
     close=spx_filtered['Close'],
-    name='SPX'
+    name='SPX',
+    customdata=spx_filtered.index.strftime('%Y-%m-%d'),
+    hovertemplate='<b>%{customdata}</b><br>Open: %{open}<br>High: %{high}<br>Low: %{low}<br>Close: %{close}<extra></extra>'
 )])
 
 fig.update_layout(
@@ -118,7 +138,10 @@ fig.update_layout(
     height=600,
     xaxis_rangeslider_visible=False,
     xaxis=dict(
-        type='category',
+        tickmode='array',
+        tickvals=list(range(len(spx_filtered))),
+        ticktext=date_labels,
+        tickangle=-45
     ),
     hovermode='x unified'
 )
