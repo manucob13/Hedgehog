@@ -33,6 +33,10 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
     # Convertir umbrales a float donde sea posible para cálculo
     def safe_float_convert(value):
         try:
+            # Reemplazar 'ON'/'OFF' con un valor seguro si es necesario para lógica, aunque
+            # en este caso solo necesitamos la conversión para las reglas numéricas.
+            if isinstance(value, str) and value.upper() in ['ON', 'OFF', 'RV_AYER']:
+                return value
             return float(value)
         except (ValueError, TypeError):
             return value
@@ -60,16 +64,18 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
         
         # Lógica de Cumplimiento
         if row['ID'] == 'r1_nr_wr':
+            # NR/WR: Compara si la señal actual (True/False) cumple con el umbral 'ON'/'OFF'
             if umbral_str == 'ON':
                 regla_cumplida = metrica_actual 
             elif umbral_str == 'OFF':
                 regla_cumplida = not metrica_actual
         
         elif row['ID'] == 'r7_rv5d_menor':
+            # RV_5d HOY vs AYER
             regla_cumplida = metrica_actual < rv5d_ayer
             
         else: # Reglas de probabilidad y RV_5d (FLOAT)
-            if isinstance(umbral_calc, float):
+            if isinstance(umbral_calc, (float, int)):
                 if operador == '>=':
                     regla_cumplida = metrica_actual >= umbral_calc
                 elif operador == '<=':
@@ -95,25 +101,20 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
     
     # Determinar el resultado global y el color del semáforo
     if num_reglas_activas == 0:
-        res_final = "INACTIVA (0 Reglas Activas)"
+        res_final_texto = "INACTIVA (0 Reglas Activas)"
         senal_color = "background-color: #AAAAAA; color: black"
     elif senal_entrada_global_interactiva:
-        # Petición: Quitar el texto
-        res_final = "" 
+        res_final_texto = "" # Vacío para señal ACTIVA
         senal_color = "background-color: #008000; color: white" # Verde
     else:
-        # Petición: Quitar el texto también para la señal DENEGADA (roja)
-        res_final = "" # <-- VACÍO
+        # Petición: Vacío también para señal DENEGADA
+        res_final_texto = "" 
         senal_color = "background-color: #8B0000; color: white" # Rojo
         
     # Crear la fila de resumen (Semáforo Global)
+    # Solo necesitamos 'Regla' y 'ID' para la barra de color
     fila_resumen = pd.DataFrame([{
-        'Activa': False, 
         'Regla': '🚥 SEMÁFORO GLOBAL HEDGEHOG 🚥', 
-        'Operador': 'ALL', 
-        'Umbral': '-', 
-        'Valor Actual': '-', 
-        'Cumple': res_final, # <-- Ya está vacío
         'ID': 'FINAL' 
     }])
     
@@ -222,6 +223,7 @@ def main_comparison():
     rv5d_ayer_val = spx["RV_5d"].iloc[-2]
     
     default_config_data = {
+        # Regla 1 (NR/WR) incluida aquí
         'Regla': ['1. Señal NR/WR Activa', '2. Prob. K=2 Baja Vol.', '3. Prob. K=3 Media Vol.', '4. Prob. K=3 Baja Vol.', '5. Prob. K=3 Consolidada', '6. RV_5d Actual', f'7. RV_5d HOY vs. AYER ({rv5d_ayer_val:.4f})'],
         'Operador': ['==', '>=', '>=', '>=', '>=', '<=', '<'],
         'Umbral': ['ON', 0.70, 0.75, 0.15, 0.95, 0.10, 'RV_AYER'], 
@@ -243,68 +245,36 @@ def main_comparison():
         'r7_rv5d_menor': rv5d_hoy, 
     }
     
-    # --- 3. División de Reglas para Manipulación ---
+    # --- 3. CONFIGURACIÓN DE TODAS LAS REGLAS (DATA EDITOR UNIFICADO) ---
+    st.markdown("##### Configuración de Reglas (NR/WR, Volatilidad y Markov)")
+
     df_config = st.session_state['config_df'].copy()
     
-    df_nr_wr = df_config[df_config['ID'] == 'r1_nr_wr'].iloc[0]
-    df_reglas_editables = df_config[df_config['ID'] != 'r1_nr_wr'].reset_index(drop=True)
-    
-    
-    # --------------------------------------------------------------------------
-    # --- A. CONFIGURACIÓN DE LA REGLA 1 (SELECTBOX) ---
-    # --------------------------------------------------------------------------
-    st.markdown("##### Regla 1: Señal NR/WR (Selectbox)")
-    
-    col_r1, col_op, col_umbral, col_actual, col_activa = st.columns([4, 1, 2, 2, 1])
-    
-    with col_r1:
-        st.markdown(f"**{df_nr_wr['Regla']}**")
-    with col_op:
-        st.markdown(df_nr_wr['Operador'])
-    with col_umbral:
-        umbral_r1 = st.selectbox(
-            label='Umbral R1', options=['ON', 'OFF'],
-            index=0 if df_nr_wr['Umbral'] == 'ON' else 1,
-            key='umbral_r1_select', label_visibility='collapsed'
-        )
-    with col_actual:
-        st.markdown(f"<div style='text-align: center; padding-top: 5px;'>**{metricas_actuales['r1_nr_wr'] and '🟢 ACTIVA' or '⚪ INACTIVA'}**</div>", unsafe_allow_html=True)
-    with col_activa:
-        activa_r1 = st.checkbox(
-            label='Activa R1', value=df_nr_wr['Activa'],
-            key='activa_r1_check', label_visibility='collapsed'
-        )
-        
-    df_config.loc[df_config['ID'] == 'r1_nr_wr', 'Umbral'] = umbral_r1
-    df_config.loc[df_config['ID'] == 'r1_nr_wr', 'Activa'] = activa_r1
-    
-    # --------------------------------------------------------------------------
-    # --- B. CONFIGURACIÓN DE REGLAS 2-7 (DATA EDITOR) ---
-    # --------------------------------------------------------------------------
-    st.markdown("---")
-    st.markdown("##### Reglas 2-7: Volatilidad y Markov (Umbral Editable)")
+    # Calculate 'Valor Actual' for ALL rules before editor
+    df_config['Valor Actual'] = df_config['ID'].apply(lambda id: 
+        (metricas_actuales[id] and '🟢 ACTIVA' or '⚪ INACTIVA') if id == 'r1_nr_wr' else 
+        f"{metricas_actuales[id]:.4f}"
+    )
 
-    col_config_2_7 = {
+    col_config_all = {
         'Regla': st.column_config.TextColumn("Regla (Filtro)", disabled=True),
         'Operador': st.column_config.TextColumn("Op.", disabled=True, width="tiny"),
-        'Umbral': st.column_config.NumberColumn("Umbral", format="%.4f", min_value=0.0, max_value=1.0, width="small"),
+        # Usamos TextColumn para permitir 'ON'/'OFF' y números
+        'Umbral': st.column_config.TextColumn("Umbral"), 
         'Valor Actual': st.column_config.TextColumn("Valor Actual", disabled=True, width="small"),
         'Activa': st.column_config.CheckboxColumn("ON/OFF", width="small"),
         'ID': None
     }
     
-    df_reglas_editables['Valor Actual'] = df_reglas_editables['ID'].apply(lambda id: f"{metricas_actuales[id]:.4f}")
-    
-    edited_df_2_7 = st.data_editor(
-        df_reglas_editables, 
-        column_config=col_config_2_7,
+    edited_df = st.data_editor(
+        df_config,
+        column_config=col_config_all,
         hide_index=True,
-        use_container_width=False, 
-        key='config_editor_2_7'
+        use_container_width=True, 
+        key='config_editor_all'
     )
     
-    df_config.loc[df_config['ID'] != 'r1_nr_wr', ['Umbral', 'Activa']] = edited_df_2_7[['Umbral', 'Activa']].values
-    st.session_state['config_df'] = df_config 
+    st.session_state['config_df'] = edited_df 
     
     
     # --------------------------------------------------------------------------
@@ -348,34 +318,23 @@ def main_comparison():
             styled_df_body,
             hide_index=True,
             use_container_width=True,
-            # Se omite 'Activa' para que no se muestre
             column_order=('Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'), 
             column_config={'ID': st.column_config.Column(disabled=True, width="tiny")} 
         )
 
-        # 3. AÑADIR ESPACIO Y MOSTRAR EL PIE (FOOTER)
-        st.markdown("<br>", unsafe_allow_html=True) # <-- Espacio de separación
+        # 3. AÑADIR ESPACIO Y MOSTRAR EL PIE (FOOTER) como barra de color
+        st.markdown("<br>", unsafe_allow_html=True) 
 
-        # Función de estilo para el Pie (Aplica el color global a toda la fila)
-        def color_cumple_footer(row):
-            styles = pd.Series('', index=row.index)
-            styles[:] = senal_color # Aplica el color a todas las celdas de la fila
-            return styles
+        footer_text = df_footer.iloc[0]['Regla'] # "🚥 SEMÁFORO GLOBAL HEDGEHOG 🚥"
         
-        # Eliminamos 'Activa' para el footer ya que no se usa en el estilo (sólo en el body)
-        styled_df_footer = df_footer.drop(columns=['Activa']).style.apply(color_cumple_footer, axis=1)
-        
-        # Centralizar el texto del pie de página
-        styled_df_footer = styled_df_footer.set_properties(**{'text-align': 'center'}, 
-                                            subset=['Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'])
-
-        st.dataframe(
-            styled_df_footer,
-            hide_index=True,
-            use_container_width=True,
-            column_order=('Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'), 
-            column_config={'ID': st.column_config.Column(disabled=True, width="tiny")} 
+        # Creamos una barra de color sólida que ocupa el ancho completo
+        st.markdown(
+            f"<div style='text-align: center; font-size: 1.2em; padding: 10px; border-radius: 5px; {senal_color}'>"
+            f"**{footer_text}**" 
+            f"</div>",
+            unsafe_allow_html=True
         )
+
     else:
         st.info("Presione '🚀 Recalcular Semáforo Consolidado' para ver la lógica aplicada.")
 
