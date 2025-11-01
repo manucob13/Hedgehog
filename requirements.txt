@@ -1,4 +1,5 @@
 streamlit
+streamlit_plotly_events
 pandas
 numpy
 scipy
@@ -8,6 +9,7 @@ matplotlib
 plotly
 statsmodels
 scikit-learn
+
 
 
 
