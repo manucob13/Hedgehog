@@ -142,7 +142,7 @@ def main_comparison():
     st.markdown("---")
 
     # ----------------------------------------------------------------------
-    # 4. LÓGICA HEDGEHOG Y SEMÁFORO GLOBAL 🚥 (SOLUCIÓN ROBUSTA)
+    # 4. LÓGICA HEDGEHOG Y SEMÁFORO GLOBAL 🚥 (UNIFICADO)
     # ----------------------------------------------------------------------
     st.header("4. Lógica HEDGEHOG y Semáforo Global 🚥")
 
@@ -284,7 +284,6 @@ def main_comparison():
                 regla_cumplida = not metrica_actual
         
         elif row['ID'] == 'r7_rv5d_menor':
-            # Nota: rv5d_ayer ya está capturado en la variable
             regla_cumplida = metrica_actual < rv5d_ayer
             
         else: # FLOAT
@@ -311,7 +310,7 @@ def main_comparison():
 
     # --- 8. Crear la Tabla de Presentación Final con Semáforo ---
     
-    # IMPORTANTE: Incluimos 'ID' aquí para que la función color_cumple pueda acceder a ella
+    # Incluimos 'ID' para que la función color_cumple pueda acceder a ella (corrección del KeyError)
     df_presentacion = df_config_final[['Activa', 'Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple', 'ID']].copy()
     
     # Determinar el resultado global y el color del semáforo
@@ -333,7 +332,7 @@ def main_comparison():
         'Umbral': '-', 
         'Valor Actual': '-', 
         'Cumple': res_final,
-        'ID': 'FINAL' # El ID es crucial para la función color_cumple
+        'ID': 'FINAL' 
     }])
     
     df_final_display_con_resumen = pd.concat([df_presentacion, fila_resumen], ignore_index=True)
@@ -342,7 +341,6 @@ def main_comparison():
     def color_cumple(row):
         styles = pd.Series('', index=row.index)
         
-        # Este acceso a 'ID' ahora es seguro
         if row['ID'] == 'FINAL':
             styles[:] = senal_color
         # Colorear solo la columna 'Cumple' para las reglas individuales
@@ -355,7 +353,7 @@ def main_comparison():
 
     st.markdown("### Tabla Consolidada de Lógica y Resultado 🚦")
     
-    # Aplicar el estilo a la tabla final (pasamos el DF CON la columna 'ID')
+    # Aplicar el estilo a la tabla final 
     styled_df = df_final_display_con_resumen.style.apply(color_cumple, axis=1)
 
     st.dataframe(
@@ -371,20 +369,24 @@ def main_comparison():
     # ----------------------------------------------------------------------
     # FIN DE LA NUEVA SECCIÓN
     # ----------------------------------------------------------------------
-
-    # Mostrar la conclusión operativa (original, ahora solo texto explicativo)
-    st.subheader("Conclusión Operativa (Original K=3)")
+    
+    # --- SECCIÓN DE CONCLUSIÓN K=3 RESTAURADA (Original) ---
+    st.subheader("Conclusión Operativa")
 
     if prob_k3_consolidada >= results_k3['UMBRAL_COMPRESION']:
-        st.success(f"**SEÑAL DE ENTRADA FUERTE (K=3):** La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, mayor de 0.70. Condición Favorable para estrategias de Theta.")
+        st.success(f"**SEÑAL DE ENTRADA FUERTE (K=3):** El riesgo de Alta Volatilidad es bajo. La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, mayor de 0.70. Condición Favorable para estrategias de Theta.")
     else:
-        st.warning(f"**RIESGO ACTIVO (K=3):** La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, menor de 0.70. Evitar entrar o considerar salir.")
+        st.warning(f"**RIESGO ACTIVO (K=3):** La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, menor de 0.70. El Régimen de Alta Volatilidad ha tomado peso. Evitar entrar o considerar salir.")
     
     st.markdown("""
     ---
     ### Entendiendo la Diferencia Clave
     
-    El **Modelo K=3** descompone la 'Baja' volatilidad en dos estados: 'Baja' y 'Media', ofreciendo una **señal consolidada más robusta** que el modelo K=2.
+    El **Modelo K=2** combina toda la volatilidad no-crisis en una única señal de 'Baja', lo que le hace propenso a **falsos positivos**.
+    
+    El **Modelo K=3** descompone la 'Baja' volatilidad en dos estados: 'Baja' (Calma Extrema) y 'Media' (Consolidación). 
+    
+    La **Probabilidad Consolidada (Baja + Media)** del K=3 ofrece una señal de entrada/salida más robusta: solo da luz verde cuando la suma de los dos estados favorables supera el 70%, actuando como un **filtro más estricto contra el ruido** que el K=2 ignora.
     """)
 
 
