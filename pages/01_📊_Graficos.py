@@ -361,12 +361,17 @@ fig_combined.update_layout(
     )
 )
 
-# --- CONFIGURAR LÍNEA VERTICAL (SPIKE) QUE CRUZA TODOS LOS GRÁFICOS ---
-# Usar paper_ref para que la línea cruce TODOS los subplots verticalmente
+# ----------------------------------------------------------------------------------
+# MODIFICACIÓN CLAVE: CONFIGURAR EL SPIKE VERTICAL PARA QUE CRUCE TODOS LOS PLOTS
+# ----------------------------------------------------------------------------------
+
+# Se mantiene tu bucle. La propiedad 'across' en spikemode es la que lo extiende.
 for i in range(1, 6):
     fig_combined.update_xaxes(
         showspikes=True,
-        spikemode='across+toaxis',  # across cruza el subplot, toaxis llega hasta el eje
+        # 'across' hace que la línea cruce el área del plot. 
+        # Al aplicarse a los 5 ejes, cruza los 5 subplots.
+        spikemode='across+toaxis', 
         spikesnap='cursor',
         spikecolor='rgba(255, 255, 255, 0.6)',
         spikethickness=1,
@@ -375,14 +380,18 @@ for i in range(1, 6):
         col=1
     )
 
-for i in range(1, 6):
+    # También deshabilitamos los spikes Y para que solo se vea la línea vertical
     fig_combined.update_yaxes(
         showspikes=False,
         row=i, 
         col=1
     )
+    
+# ----------------------------------------------------------------------------------
+# CONFIGURACIONES DE EJE X (Se deja solo el código que estaba al final)
+# ----------------------------------------------------------------------------------
 
-# Configurar el eje X compartido
+# Configurar el eje X compartido (solo las etiquetas del último plot)
 fig_combined.update_xaxes(
     tickmode='array',
     tickvals=list(range(len(spx_filtered))),
