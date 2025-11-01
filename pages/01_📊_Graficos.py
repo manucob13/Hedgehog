@@ -70,6 +70,9 @@ nr_wr_filtered = nr_wr_series.reindex(spx_filtered.index).fillna(0)
 UMBRAL_ALERTA = 0.50 
 UMBRAL_COMPRESION = results_k2['UMBRAL_COMPRESION']
 
+# Preparar las fechas formateadas para el hover
+fechas_formateadas = spx_filtered.index.strftime('%Y-%m-%d').tolist()
+
 # --- CREAR SUBPLOTS (5 FILAS) ---
 fig_combined = make_subplots(
     rows=5, 
@@ -82,6 +85,18 @@ fig_combined = make_subplots(
 # ----------------------------------------------------
 # 1. GRÁFICO DE VELAS JAPONESAS (Fila 1)
 # ----------------------------------------------------
+# Para Candlestick, creamos texto personalizado para cada punto
+hover_text_candles = [
+    f"<b>{fecha}</b><br>Open: {o:.2f}<br>High: {h:.2f}<br>Low: {l:.2f}<br>Close: {c:.2f}"
+    for fecha, o, h, l, c in zip(
+        fechas_formateadas,
+        spx_filtered['Open'],
+        spx_filtered['High'],
+        spx_filtered['Low'],
+        spx_filtered['Close']
+    )
+]
+
 fig_combined.add_trace(go.Candlestick(
     x=list(range(len(spx_filtered))),
     open=spx_filtered['Open'],
@@ -89,13 +104,8 @@ fig_combined.add_trace(go.Candlestick(
     low=spx_filtered['Low'],
     close=spx_filtered['Close'],
     name='S&P 500',
-    customdata=spx_filtered.index.strftime('%Y-%m-%d'),
-    hovertemplate='<b>%{customdata}</b><br>' +
-                  'Open: %{open:.2f}<br>' +
-                  'High: %{high:.2f}<br>' +
-                  'Low: %{low:.2f}<br>' +
-                  'Close: %{close:.2f}<br>' +
-                  '<extra></extra>',
+    text=hover_text_candles,
+    hoverinfo='text',
     increasing=dict(line=dict(color='#00B06B')),
     decreasing=dict(line=dict(color='#F13A50'))
 ), row=1, col=1)
@@ -125,8 +135,8 @@ fig_combined.add_trace(go.Scatter(
     mode='markers',
     marker=dict(size=0.1, color='rgba(0,0,0,0)'),
     name='RV',
-    customdata=spx_filtered.index.strftime('%Y-%m-%d'),
-    hovertemplate='<b>%{customdata}</b><br>RV: %{y:.2f}%<extra></extra>',
+    customdata=[[fecha] for fecha in fechas_formateadas],
+    hovertemplate='<b>%{customdata[0]}</b><br>RV: %{y:.2f}%<extra></extra>',
     showlegend=True
 ), row=2, col=1)
 
@@ -165,8 +175,8 @@ fig_combined.add_trace(go.Scatter(
     line=dict(color='#8A2BE2', width=2),
     fill='tozeroy', 
     fillcolor='rgba(138, 43, 226, 0.3)',
-    customdata=spx_filtered.index.strftime('%Y-%m-%d'),
-    hovertemplate='<b>%{customdata}</b><br>Prob. Baja K=2: %{y:.4f}<extra></extra>',
+    customdata=[[fecha] for fecha in fechas_formateadas],
+    hovertemplate='<b>%{customdata[0]}</b><br>Prob. Baja K=2: %{y:.4f}<extra></extra>',
     showlegend=True 
 ), row=3, col=1)
 
@@ -231,8 +241,8 @@ fig_combined.add_trace(go.Scatter(
     line=dict(color='#00FF7F', width=2),
     fill='tozeroy', 
     fillcolor='rgba(0, 255, 127, 0.3)',
-    customdata=spx_filtered.index.strftime('%Y-%m-%d'),
-    hovertemplate='<b>%{customdata}</b><br>Prob. Consolidada K=3: %{y:.4f}<extra></extra>',
+    customdata=[[fecha] for fecha in fechas_formateadas],
+    hovertemplate='<b>%{customdata[0]}</b><br>Prob. Consolidada K=3: %{y:.4f}<extra></extra>',
     showlegend=True 
 ), row=4, col=1)
 
@@ -297,9 +307,8 @@ fig_combined.add_trace(go.Bar(
         color='#FF6B35',
         line=dict(width=0)
     ),
-    customdata=spx_filtered.index.strftime('%Y-%m-%d'),
-    hovertemplate='<b>%{customdata}</b><br>NR/WR: %{text}<extra></extra>',
-    text=[f"{'ACTIVA' if s > 0 else 'INACTIVA'}" for s in nr_wr_filtered],
+    customdata=[[fecha, 'ACTIVA' if s > 0 else 'INACTIVA'] for fecha, s in zip(fechas_formateadas, nr_wr_filtered)],
+    hovertemplate='<b>%{customdata[0]}</b><br>NR/WR: %{customdata[1]}<extra></extra>',
     showlegend=True,
     width=0.8
 ), row=5, col=1)
