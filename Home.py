@@ -89,19 +89,17 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
 
     # --- Creación de la Tabla de Presentación Final ---
     
-    # Solo incluimos las columnas necesarias, OMITIENDO 'Activa' para la visualización final
+    # Se incluye la columna 'Activa' para que la función de estilo pueda leer su estado
     df_presentacion = df_config_calc[['Activa', 'Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple', 'ID']].copy()
     
-    # Se añade la columna 'Activa' al DataFrame para que la función de estilo pueda leer su estado
-    # (aunque la columna se omita después en el 'column_order')
     
     # Determinar el resultado global y el color del semáforo
     if num_reglas_activas == 0:
         res_final = "INACTIVA (0 Reglas Activas)"
         senal_color = "background-color: #AAAAAA; color: black"
     elif senal_entrada_global_interactiva:
-        # CORRECCIÓN 3: Quitar el texto de la línea final (Semáforo Global)
-        res_final = "" # Dejar vacío para que solo se vea el color
+        # Petición: Quitar el texto de la línea final (Semáforo Global)
+        res_final = "" 
         senal_color = "background-color: #008000; color: white" # Verde
     else:
         num_reglas_fallidas = num_reglas_activas - sum(df_config_calc.loc[df_config_calc['Activa'], 'Cumple'] == 'SÍ')
@@ -335,32 +333,31 @@ def main_comparison():
             if row['ID'] == 'FINAL':
                 styles[:] = senal_color
             
-            # Solo aplica color si la regla estaba ACTIVA (columna 'Activa' es True/False)
+            # Solo aplica color si la regla estaba ACTIVA (la columna 'Activa' todavía existe aquí)
             elif row['Activa']: 
                 if row['Cumple'] == 'SÍ':
                     styles['Cumple'] = 'background-color: #008000; color: white'
                 else:
                     styles['Cumple'] = 'background-color: #8B0000; color: white'
             
-            # Si no está activa, no aplica ningún estilo (queda en blanco/gris)
+            # Si no está activa, no aplica ningún estilo
             
             return styles
 
-        # Ocultamos la columna Activa antes de aplicar estilos y visualización
-        df_display = df_final_display_con_resumen.drop(columns=['Activa'])
-        
-        styled_df = df_display.style.apply(color_cumple, axis=1)
+        # 💥 CORRECCIÓN: Aplicar el estilo al DataFrame COMPLETO.
+        styled_df = df_final_display_con_resumen.style.apply(color_cumple, axis=1)
 
         # Usamos CSS para centrar el texto en las celdas
         styled_df = styled_df.set_properties(**{'text-align': 'center'}, 
                                             subset=['Operador', 'Umbral', 'Valor Actual', 'Cumple'])
         
-        # CORRECCIÓN 1: Se quitó 'Activa' del column_order
+        # La columna 'Activa' se oculta porque no está en 'column_order'
         st.dataframe(
             styled_df,
             hide_index=True,
             use_container_width=True,
-            column_order=('Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'),
+            # Se omite 'Activa' para que no se muestre
+            column_order=('Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'), 
             column_config={'ID': st.column_config.Column(disabled=True, width="tiny")} 
         )
     else:
