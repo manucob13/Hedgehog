@@ -13,14 +13,10 @@ warnings.filterwarnings('ignore')
 # FUNCIONES DE CARGA Y PREPARACIÓN (COMPARTIDAS)
 # ==============================================================================
 
-# utils.py (VERSIÓN FINAL CORREGIDA)
-
-import streamlit as st
-
 def check_password():
     """
     Controla el acceso. Devuelve True si el usuario ingresa las credenciales correctas,
-    y False en caso contrario, mostrando un formulario de login (y errores solo tras intento).
+    y False en caso contrario, mostrando un formulario de login y errores solo tras un intento.
     """
     
     # 1. Intenta obtener las credenciales de st.secrets
@@ -29,37 +25,47 @@ def check_password():
     except KeyError:
         st.error("Error: Las credenciales secretas no están configuradas.")
         return False
+    
+    # --- Inicialización Robusta del Estado ---
+    # Inicializa el estado 'login_attempted' a False solo si no existe.
+    if "login_attempted" not in st.session_state:
+        st.session_state["login_attempted"] = False
 
     def password_entered():
         """Verifica si el usuario y la contraseña introducidos son correctos."""
+        
+        # ⚠️ CLAVE: Aseguramos que el estado de intento se marca SÍ O SÍ.
+        st.session_state["login_attempted"] = True
+        
         if (st.session_state.get("username") == credentials["username"]
                 and st.session_state.get("password") == credentials["password"]):
             st.session_state["password_correct"] = True
             # Limpiamos los campos de entrada para mayor seguridad
             del st.session_state["password"]
             del st.session_state["username"]
+            st.experimental_rerun() # Forzamos la re-ejecución si tiene éxito
         else:
             st.session_state["password_correct"] = False
-            # Añadimos un indicador de que ya hubo un intento fallido
-            st.session_state["login_attempted"] = True 
+            # Si falla, no hacemos rerun aquí para que el error se muestre.
 
 
+    # 2. Control de Acceso
     if st.session_state.get("password_correct", False):
-        # 3. Credenciales correctas: acceso permitido
+        # Credenciales correctas: acceso permitido
         return True
     
-    # 2. Mostrar formulario en la barra lateral
+    # 3. Mostrar formulario y error condicional
     with st.sidebar:
+        # Si ya ha fallado en un intento previo, mostramos un error temporal
+        if st.session_state["login_attempted"] and not st.session_state.get("password_correct", False):
+            st.error("😕 Usuario o Contraseña incorrecta")
+
         st.text_input("Usuario", on_change=password_entered, key="username")
         st.text_input(
             "Contraseña", type="password", on_change=password_entered, key="password"
         )
-        
-        # 4. Mostrar error SOLO si el intento fallido ha ocurrido
-        if st.session_state.get("login_attempted", False):
-            st.error("😕 Usuario o Contraseña incorrecta")
             
-    # Si el formulario se está mostrando (o el login es incorrecto), el acceso es False
+    # Si no tiene acceso (el formulario se está mostrando), devolvemos False
     return False
 
 @st.cache_data(ttl=86400)
