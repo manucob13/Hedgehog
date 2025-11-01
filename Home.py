@@ -399,13 +399,11 @@ def main_comparison():
     dte_front_date = today + timedelta(days=dte_front_days)
     dte_back_date = today + timedelta(days=dte_back_days)
 
-    # Creación de la tabla
+    # Creación de la tabla (Modificada según la petición)
     dte_data = {
-        'Métrica': ['Fecha de Hoy', 'DTE Front (días)', 'DTE Back (días)', 'Fecha DTE Front', 'Fecha DTE Back'],
+        'Métrica': ['Fecha de Hoy', 'DTE FRONT', 'DTE BACK'],
         'Valor': [
             today.strftime('%Y-%m-%d'), 
-            dte_front_days, 
-            dte_back_days, 
             dte_front_date.strftime('%Y-%m-%d'), 
             dte_back_date.strftime('%Y-%m-%d')
         ]
