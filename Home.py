@@ -33,8 +33,6 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
     # Convertir umbrales a float donde sea posible para cálculo
     def safe_float_convert(value):
         try:
-            # Reemplazar 'ON'/'OFF' con un valor seguro si es necesario para lógica, aunque
-            # en este caso solo necesitamos la conversión para las reglas numéricas.
             if isinstance(value, str) and value.upper() in ['ON', 'OFF', 'RV_AYER']:
                 return value
             return float(value)
@@ -107,12 +105,11 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
         res_final_texto = "" # Vacío para señal ACTIVA
         senal_color = "background-color: #008000; color: white" # Verde
     else:
-        # Petición: Vacío también para señal DENEGADA
+        # Vacío también para señal DENEGADA
         res_final_texto = "" 
         senal_color = "background-color: #8B0000; color: white" # Rojo
         
     # Crear la fila de resumen (Semáforo Global)
-    # Solo necesitamos 'Regla' y 'ID' para la barra de color
     fila_resumen = pd.DataFrame([{
         'Regla': '🚥 SEMÁFORO GLOBAL HEDGEHOG 🚥', 
         'ID': 'FINAL' 
@@ -212,8 +209,31 @@ def main_comparison():
 
     df_comparativa = pd.DataFrame(data_comparativa)
     st.dataframe(df_comparativa, hide_index=True, use_container_width=True)
+    
+    # --------------------------------------------------------------------------
+    # SECCIONES MOVIDAS AQUI (Conclusión Operativa y Entendiendo la Diferencia)
+    # --------------------------------------------------------------------------
     st.markdown("---")
+    st.subheader("Conclusión Operativa")
 
+    if prob_k3_consolidada >= results_k3['UMBRAL_COMPRESION']:
+        st.success(f"**SEÑAL DE ENTRADA FUERTE (K=3):** El riesgo de Alta Volatilidad es bajo. La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, mayor de 0.70. Condición Favorable para estrategias de Theta.")
+    else:
+        st.warning(f"**RIESGO ACTIVO (K=3):** La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, menor de 0.70. El Régimen de Alta Volatilidad ha tomado peso. Evitar entrar o considerar salir.")
+    
+    st.markdown("""
+    ---
+    ### Entendiendo la Diferencia Clave
+    
+    El **Modelo K=2** combina toda la volatilidad no-crisis en una única señal de 'Baja', lo que le hace propenso a **falsos positivos**.
+    
+    El **Modelo K=3** descompone la 'Baja' volatilidad en dos estados: 'Baja' (Calma Extrema) y 'Media' (Consolidación). 
+    
+    La **Probabilidad Consolidada (Baja + Media)** del K=3 ofrece una señal de entrada/salida más robusta: solo da luz verde cuando la suma de los dos estados favorables supera el 70%, actuando como un **filtro más estricto contra el ruido** que el K=2 ignora.
+    """)
+    st.markdown("---")
+    # --------------------------------------------------------------------------
+    
     # ----------------------------------------------------------------------
     # 4. LÓGICA HEDGEHOG Y SEMÁFORO GLOBAL 🚥 (UNIFICADO)
     # ----------------------------------------------------------------------
@@ -322,12 +342,12 @@ def main_comparison():
             column_config={'ID': st.column_config.Column(disabled=True, width="tiny")} 
         )
 
-        # 3. AÑADIR ESPACIO Y MOSTRAR EL PIE (FOOTER) como barra de color
+        # 3. AÑADIR ESPACIO Y MOSTRAR EL PIE (FOOTER) como barra de color SIN ENCABEZADOS
         st.markdown("<br>", unsafe_allow_html=True) 
 
         footer_text = df_footer.iloc[0]['Regla'] # "🚥 SEMÁFORO GLOBAL HEDGEHOG 🚥"
         
-        # Creamos una barra de color sólida que ocupa el ancho completo
+        # Usamos markdown para crear una barra de color sólida y limpia
         st.markdown(
             f"<div style='text-align: center; font-size: 1.2em; padding: 10px; border-radius: 5px; {senal_color}'>"
             f"**{footer_text}**" 
@@ -340,25 +360,6 @@ def main_comparison():
 
     st.markdown("---")
     # ----------------------------------------------------------------------
-    
-    # --- SECCIÓN DE CONCLUSIÓN K=3 ---
-    st.subheader("Conclusión Operativa")
-
-    if prob_k3_consolidada >= results_k3['UMBRAL_COMPRESION']:
-        st.success(f"**SEÑAL DE ENTRADA FUERTE (K=3):** El riesgo de Alta Volatilidad es bajo. La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, mayor de 0.70. Condición Favorable para estrategias de Theta.")
-    else:
-        st.warning(f"**RIESGO ACTIVO (K=3):** La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, menor de 0.70. El Régimen de Alta Volatilidad ha tomado peso. Evitar entrar o considerar salir.")
-    
-    st.markdown("""
-    ---
-    ### Entendiendo la Diferencia Clave
-    
-    El **Modelo K=2** combina toda la volatilidad no-crisis en una única señal de 'Baja', lo que le hace propenso a **falsos positivos**.
-    
-    El **Modelo K=3** descompone la 'Baja' volatilidad en dos estados: 'Baja' (Calma Extrema) y 'Media' (Consolidación). 
-    
-    La **Probabilidad Consolidada (Baja + Media)** del K=3 ofrece una señal de entrada/salida más robusta: solo da luz verde cuando la suma de los dos estados favorables supera el 70%, actuando como un **filtro más estricto contra el ruido** que el K=2 ignora.
-    """)
 
 
 if __name__ == "__main__":
