@@ -48,11 +48,12 @@ def check_password():
                 st.session_state["password_correct"] = True
                 
                 # Opcional: Limpiamos los campos para seguridad
+                # Nota: Las keys de los inputs deben coincidir: "login_username_input" y "login_password_input"
                 del st.session_state["login_username_input"]
                 del st.session_state["login_password_input"]
                 
-                # Forzamos la re-ejecución para cargar la app
-                st.experimental_rerun()
+                # CORRECCIÓN DE ERROR: Usamos st.rerun()
+                st.rerun() 
             else:
                 st.session_state["password_correct"] = False
                 # Mostramos el error solo después del intento fallido
