@@ -103,17 +103,20 @@ def preparar_datos_markov(spx: pd.DataFrame):
     
     return endog_final, exog_tvtp_final
 
-# --- LÓGICA NR/WR (Narrow Range after Wide Range) ---
+# --- LÓGICA NR/WR (Narrow Range after Wide Range) - IDÉNTICA AL SCRIPT ORIGINAL ---
 
-def check_recent_wr(wr_series: pd.Series, tr_series: pd.Series, wr_len: int, max_delay: int) -> pd.Series:
+def check_recent_wr(wr_series, tr_series, wr_len, max_delay):
     """
-    Verifica si hubo un Wide Range (WR) en las últimas 'max_delay' barras.
+    Verifica si hubo un WR en las últimas 'max_delay' barras.
+    Replica el bucle 'for i = 1 to max_delay' de PineScript.
     """
     wr_recent = pd.Series(False, index=wr_series.index)
     
     for i in range(1, max_delay + 1):
+        # Condición: tr[i] == ta.highest(tr, wr_len)[i]
+        # En pandas: tr_series.shift(i) == tr_series.rolling(wr_len).max().shift(i)
         condition = (tr_series.shift(i) == tr_series.rolling(window=wr_len).max().shift(i))
-        wr_recent = wr_recent | condition
+        wr_recent = wr_recent | condition  # OR acumulativo
     
     return wr_recent
 
@@ -138,25 +141,23 @@ def calculate_nr_wr_signal_series(spx_raw: pd.DataFrame) -> pd.Series:
         'lpc': low_prev_close
     }).max(axis=1)
 
-    df.dropna(subset=['tr_nr_wr'], inplace=True)
-
-    # --- WR & NR (Series booleanas) ---
+    # --- WR & NR ---
     df['wr4'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=wr4_len).max())
     df['wr7'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=wr7_len).max())
     df['nr4'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=nr4_len).min())
     df['nr7'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=nr7_len).min())
     
+    # Aplicar la función corregida
     df['wr4_recent'] = check_recent_wr(df['wr4'], df['tr_nr_wr'], wr4_len, max_delay)
     df['wr7_recent'] = check_recent_wr(df['wr7'], df['tr_nr_wr'], wr7_len, max_delay)
-
-    df.dropna(subset=['wr4_recent', 'wr7_recent', 'nr4', 'nr7'], inplace=True)
 
     # --- SEÑALES FINALES ---
     df['signal_nr4'] = df['nr4'] & df['wr4_recent'] 
     df['signal_nr7'] = df['nr7'] & df['wr7_recent']
-    df['signal_nr_final'] = (df['signal_nr7'] | df['signal_nr4']).astype(float)
+    df['signal_nr_final'] = df['signal_nr7'] | df['signal_nr4']
 
-    return df['signal_nr_final']
+    # Convertir a float para compatibilidad con gráficos (1.0 = ON, 0.0 = OFF)
+    return df['signal_nr_final'].astype(float)
 
 @st.cache_data(ttl=3600)
 def markov_calculation_k2(endog_final, exog_tvtp_final):
@@ -311,8 +312,6 @@ spx_filtered['RV_5d_pct'] = spx_filtered['RV_5d'] * 100
 UMBRAL_RV = 0.10
 spx_filtered['RV_change'] = spx_filtered['RV_5d_pct'].diff()
 is_up = spx_filtered['RV_change'] >= 0
-rv_green_plot = spx_filtered['RV_5d_pct'].where(is_up, other=np.nan)
-rv_red_plot = spx_filtered['RV_5d_pct'].where(~is_up, other=np.nan)
 
 prob_baja_serie_k2 = results_k2['prob_baja'].loc[spx_filtered.index].fillna(method='ffill')
 
@@ -546,6 +545,10 @@ fig_combined.add_trace(go.Bar(
         color='#FF6B35',
         line=dict(width=0)
     ),
+    hoverinfo='text',
+    text=[f"NR/WR: {'ACTIVA' if s > 0 else 'INACTIVA'}" for s in nr_wr_filtered],
+    showlegend=True,
+    width=0.8
 ), row=5, col=1)
 
 fig_combined.add_shape(
@@ -610,7 +613,6 @@ fig_combined.update_xaxes(
 # Configuraciones adicionales para ejes en tema oscuro
 fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=1, col=1)
 fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=1, col=1)
-fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=2, col=1)
 fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=2, col=1)
 fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=3, col=1)
 fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=3, col=1)
