@@ -284,6 +284,7 @@ def main_comparison():
                 regla_cumplida = not metrica_actual
         
         elif row['ID'] == 'r7_rv5d_menor':
+            # Nota: rv5d_ayer ya está capturado en la variable
             regla_cumplida = metrica_actual < rv5d_ayer
             
         else: # FLOAT
@@ -310,6 +311,7 @@ def main_comparison():
 
     # --- 8. Crear la Tabla de Presentación Final con Semáforo ---
     
+    # IMPORTANTE: Incluimos 'ID' aquí para que la función color_cumple pueda acceder a ella
     df_presentacion = df_config_final[['Activa', 'Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple', 'ID']].copy()
     
     # Determinar el resultado global y el color del semáforo
@@ -331,7 +333,7 @@ def main_comparison():
         'Umbral': '-', 
         'Valor Actual': '-', 
         'Cumple': res_final,
-        'ID': 'FINAL'
+        'ID': 'FINAL' # El ID es crucial para la función color_cumple
     }])
     
     df_final_display_con_resumen = pd.concat([df_presentacion, fila_resumen], ignore_index=True)
@@ -340,7 +342,7 @@ def main_comparison():
     def color_cumple(row):
         styles = pd.Series('', index=row.index)
         
-        # Colorear la fila de resultado final
+        # Este acceso a 'ID' ahora es seguro
         if row['ID'] == 'FINAL':
             styles[:] = senal_color
         # Colorear solo la columna 'Cumple' para las reglas individuales
@@ -353,14 +355,16 @@ def main_comparison():
 
     st.markdown("### Tabla Consolidada de Lógica y Resultado 🚦")
     
-    # Aplicar el estilo a la tabla final
-    styled_df = df_final_display_con_resumen.drop(columns=['ID']).style.apply(color_cumple, axis=1)
+    # Aplicar el estilo a la tabla final (pasamos el DF CON la columna 'ID')
+    styled_df = df_final_display_con_resumen.style.apply(color_cumple, axis=1)
 
     st.dataframe(
         styled_df,
         hide_index=True,
         use_container_width=True,
-        column_order=('Activa', 'Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple')
+        # Ocultamos 'ID' usando column_config
+        column_order=('Activa', 'Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'),
+        column_config={'ID': st.column_config.Column(disabled=True, width="tiny")} 
     )
 
     st.markdown("---")
