@@ -546,10 +546,6 @@ fig_combined.add_trace(go.Bar(
         color='#FF6B35',
         line=dict(width=0)
     ),
-    hoverinfo='text',
-    text=[f"NR/WR: {'ACTIVA' if s > 0 else 'INACTIVA'}" for s in nr_wr_filtered],
-    showlegend=True,
-    width=0.8
 ), row=5, col=1)
 
 fig_combined.add_shape(
