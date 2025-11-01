@@ -88,7 +88,14 @@ fig_combined.add_trace(go.Candlestick(
     high=spx_filtered['High'],
     low=spx_filtered['Low'],
     close=spx_filtered['Close'],
-    name='S&P 500', 
+    name='S&P 500',
+    customdata=spx_filtered.index.strftime('%Y-%m-%d'),
+    hovertemplate='<b>%{customdata}</b><br>' +
+                  'Open: %{open:.2f}<br>' +
+                  'High: %{high:.2f}<br>' +
+                  'Low: %{low:.2f}<br>' +
+                  'Close: %{close:.2f}<br>' +
+                  '<extra></extra>',
     increasing=dict(line=dict(color='#00B06B')),
     decreasing=dict(line=dict(color='#F13A50'))
 ), row=1, col=1)
@@ -118,8 +125,8 @@ fig_combined.add_trace(go.Scatter(
     mode='markers',
     marker=dict(size=0.1, color='rgba(0,0,0,0)'),
     name='RV',
-    hoverinfo='text',
-    text=[f"RV: {y:.2f}%" for y in spx_filtered['RV_5d_pct']],
+    customdata=spx_filtered.index.strftime('%Y-%m-%d'),
+    hovertemplate='<b>%{customdata}</b><br>RV: %{y:.2f}%<extra></extra>',
     showlegend=True
 ), row=2, col=1)
 
@@ -158,8 +165,8 @@ fig_combined.add_trace(go.Scatter(
     line=dict(color='#8A2BE2', width=2),
     fill='tozeroy', 
     fillcolor='rgba(138, 43, 226, 0.3)',
-    hoverinfo='text',
-    text=[f"Prob. Baja K=2: {p:.4f}" for p in prob_baja_serie_k2],
+    customdata=spx_filtered.index.strftime('%Y-%m-%d'),
+    hovertemplate='<b>%{customdata}</b><br>Prob. Baja K=2: %{y:.4f}<extra></extra>',
     showlegend=True 
 ), row=3, col=1)
 
@@ -224,8 +231,8 @@ fig_combined.add_trace(go.Scatter(
     line=dict(color='#00FF7F', width=2),
     fill='tozeroy', 
     fillcolor='rgba(0, 255, 127, 0.3)',
-    hoverinfo='text',
-    text=[f"Prob. Consolidada K=3: {p:.4f}" for p in prob_k3_consolidada],
+    customdata=spx_filtered.index.strftime('%Y-%m-%d'),
+    hovertemplate='<b>%{customdata}</b><br>Prob. Consolidada K=3: %{y:.4f}<extra></extra>',
     showlegend=True 
 ), row=4, col=1)
 
@@ -290,6 +297,11 @@ fig_combined.add_trace(go.Bar(
         color='#FF6B35',
         line=dict(width=0)
     ),
+    customdata=spx_filtered.index.strftime('%Y-%m-%d'),
+    hovertemplate='<b>%{customdata}</b><br>NR/WR: %{text}<extra></extra>',
+    text=[f"{'ACTIVA' if s > 0 else 'INACTIVA'}" for s in nr_wr_filtered],
+    showlegend=True,
+    width=0.8
 ), row=5, col=1)
 
 fig_combined.add_shape(
@@ -322,7 +334,7 @@ fig_combined.update_layout(
     template='plotly_dark',
     height=1100, 
     xaxis_rangeslider_visible=False,
-    hovermode='x unified',
+    hovermode='x',
     plot_bgcolor='#131722', 
     paper_bgcolor='#131722', 
     font=dict(color='#AAAAAA'),
@@ -340,6 +352,26 @@ fig_combined.update_layout(
         font=dict(size=10)
     )
 )
+
+# --- CONFIGURAR LÍNEA VERTICAL (SPIKE) QUE CRUZA TODOS LOS GRÁFICOS ---
+for i in range(1, 6):
+    fig_combined.update_xaxes(
+        showspikes=True,
+        spikemode='across',
+        spikesnap='cursor',
+        spikecolor='rgba(255, 255, 255, 0.5)',
+        spikethickness=1,
+        spikedash='dot',
+        row=i, 
+        col=1
+    )
+
+for i in range(1, 6):
+    fig_combined.update_yaxes(
+        showspikes=False,
+        row=i, 
+        col=1
+    )
 
 # Configurar el eje X compartido (solo las etiquetas inferiores, ahora en la Fila 5)
 fig_combined.update_xaxes(
