@@ -185,4 +185,238 @@ def main_comparison():
     if nr_wr_signal_on:
         st.success("🟢 **SEÑAL NR/WR:** La compresión de volatilidad está **ACTIVA**. Alta probabilidad de ruptura inminente.")
     else:
-        st.info("⚪ **
+        st.info("⚪ **SEÑAL NR/WR:** La compresión de volatilidad está **INACTIVA**. La volatilidad puede ser normal o ya ha explotado.")
+    st.markdown("---")
+    
+    st.header("3. Modelos de Markov")
+    
+    if 'error' in results_k2:
+        st.error(f"❌ Error K=2: {results_k2['error']}")
+        return
+    if 'error' in results_k3:
+        st.error(f"❌ Error K=3: {results_k3['error']}")
+        return
+    
+    st.markdown(f"**Fecha del Último Cálculo:** {endog_final.index[-1].strftime('%Y-%m-%d')}")
+    st.markdown("---")
+
+    prob_k3_consolidada = results_k3['prob_baja'] + results_k3['prob_media']
+
+    data_comparativa = {
+        'Métrica': ['Probabilidad Baja (HOY)', 'Probabilidad Media (HOY)', 'Probabilidad Consolidada (Baja + Media)', 'Umbral de Señal de Entrada (70%)', 'Varianza Régimen Baja', 'Varianza Régimen Media', 'Varianza Régimen Alta', 'Umbral RV_5d Estimado (Para el Régimen Baja)'],
+        'K=2 (Original)': [f"{results_k2['prob_baja']:.4f}", 'N/A (No existe)', f"{results_k2['prob_baja']:.4f}", f"{results_k2['UMBRAL_COMPRESION']:.2f}", f"{results_k2['varianzas_regimen']['Baja']:.5f}", 'N/A (No existe)', f"{results_k2['varianzas_regimen']['Alta']:.5f}", f"{results_k2['UMBRAL_RV5D_P_OBJETIVO']:.4f}"],
+        'K=3 (Propuesto)': [f"{results_k3['prob_baja']:.4f}", f"{results_k3['prob_media']:.4f}", f"**{prob_k3_consolidada:.4f}**", f"{results_k3['UMBRAL_COMPRESION']:.2f}", f"{results_k3['varianzas_regimen']['Baja']:.5f}", f"{results_k3['varianzas_regimen']['Media']:.5f}", f"{results_k3['varianzas_regimen']['Alta']:.5f}", 'Determinado por Varianza']
+    }
+
+    df_comparativa = pd.DataFrame(data_comparativa)
+    st.dataframe(df_comparativa, hide_index=True, use_container_width=True)
+    
+    # --------------------------------------------------------------------------
+    # Conclusión Operativa y Entendiendo la Diferencia
+    # --------------------------------------------------------------------------
+    st.markdown("---")
+    st.subheader("Conclusión Operativa")
+
+    if prob_k3_consolidada >= results_k3['UMBRAL_COMPRESION']:
+        st.success(f"**SEÑAL DE ENTRADA FUERTE (K=3):** El riesgo de Alta Volatilidad es bajo. La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, mayor de 0.70. Condición Favorable para estrategias de Theta.")
+    else:
+        st.warning(f"**RIESGO ACTIVO (K=3):** La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, menor de 0.70. El Régimen de Alta Volatilidad ha tomado peso. Evitar entrar o considerar salir.")
+    
+    st.markdown("""
+    ---
+    ### Entendiendo la Diferencia Clave
+    
+    El **Modelo K=2** combina toda la volatilidad no-crisis en una única señal de 'Baja', lo que le hace propenso a **falsos positivos**.
+    
+    El **Modelo K=3** descompone la 'Baja' volatilidad en dos estados: 'Baja' (Calma Extrema) y 'Media' (Consolidación). 
+    
+    La **Probabilidad Consolidada (Baja + Media)** del K=3 ofrece una señal de entrada/salida más robusta: solo da luz verde cuando la suma de los dos estados favorables supera el 70%, actuando como un **filtro más estricto contra el ruido** que el K=2 ignora.
+    """)
+    st.markdown("---")
+    # --------------------------------------------------------------------------
+    
+    # ----------------------------------------------------------------------
+    # 4. LÓGICA HEDGEHOG Y SEMÁFORO GLOBAL 🚥 (UNIFICADO)
+    # ----------------------------------------------------------------------
+    st.header("4. Lógica HEDGEHOG y Semáforo Global 🚥")
+
+    # --- 1. Inicializar la lógica de configuración en session_state ---
+    rv5d_ayer_val = spx["RV_5d"].iloc[-2]
+    
+    # VALORES POR DEFECTO ACTUALIZADOS FINALMENTE SEGÚN LA PETICIÓN DEL USUARIO
+    default_config_data = {
+        'Regla': ['1. Señal NR/WR Activa', '2. Prob. K=2 Baja Vol.', '3. Prob. K=3 Media Vol.', '4. Prob. K=3 Baja Vol.', '5. Prob. K=3 Consolidada', '6. RV_5d Actual', f'7. RV_5d HOY vs. AYER ({rv5d_ayer_val:.4f})'],
+        'Operador': ['==', '>=', '>=', '>=', '>=', '<=', '<'],
+        # Umbrales
+        'Umbral': ['ON', '0.9000', '0.7500', '0.1500', '0.9500', '0.1000', 'RV_AYER'], 
+        # Activación (R1, R2, R5, R6, R7 en ON. R3, R4 en OFF)
+        'Activa': [True, True, False, False, True, True, True], 
+        'ID': ['r1_nr_wr', 'r2_k2_70', 'r3_k3_media_75', 'r4_k3_baja_15', 'r5_k3_consol_95', 'r6_rv5d_10', 'r7_rv5d_menor']
+    }
+    
+    if 'config_df' not in st.session_state:
+        st.session_state['config_df'] = pd.DataFrame(default_config_data)
+
+    # --- 2. Extracción de Métricas Clave y Valores ---
+    rv5d_hoy = spx['RV_5d'].iloc[-1]
+    rv5d_ayer = spx['RV_5d'].iloc[-2]
+    
+    metricas_actuales = {
+        'r1_nr_wr': nr_wr_signal_on, 'r2_k2_70': results_k2['prob_baja'],
+        'r3_k3_media_75': results_k3['prob_media'], 'r4_k3_baja_15': results_k3['prob_baja'],
+        'r5_k3_consol_95': prob_k3_consolidada, 'r6_rv5d_10': rv5d_hoy,
+        'r7_rv5d_menor': rv5d_hoy, 
+    }
+    
+    # --- 3. CONFIGURACIÓN DE TODAS LAS REGLAS (DATA EDITOR UNIFICADO) ---
+    st.markdown("##### Configuración de Reglas (NR/WR, Volatilidad y Markov)")
+
+    df_config = st.session_state['config_df'].copy()
+    
+    # Calculate 'Valor Actual' for ALL rules before editor
+    df_config['Valor Actual'] = df_config['ID'].apply(lambda id: 
+        (metricas_actuales[id] and '🟢 ACTIVA' or '⚪ INACTIVA') if id == 'r1_nr_wr' else 
+        f"{metricas_actuales[id]:.4f}"
+    )
+
+    col_config_all = {
+        'Regla': st.column_config.TextColumn("Regla (Filtro)", disabled=True),
+        'Operador': st.column_config.TextColumn("Op.", disabled=True, width="tiny"),
+        'Umbral': st.column_config.TextColumn("Umbral"), 
+        'Valor Actual': st.column_config.TextColumn("Valor Actual", disabled=True, width="small"),
+        'Activa': st.column_config.CheckboxColumn("ON/OFF", width="small"),
+        'ID': None
+    }
+    
+    edited_df = st.data_editor(
+        df_config,
+        column_config=col_config_all,
+        hide_index=True,
+        use_container_width=True, 
+        key='config_editor_all'
+    )
+    
+    st.session_state['config_df'] = edited_df 
+    
+    
+    # --------------------------------------------------------------------------
+    # --- C. BOTÓN DE CÁLCULO Y TABLA CONSOLIDADA ---
+    # --------------------------------------------------------------------------
+    
+    st.markdown("---")
+    
+    # BOTÓN DE CÁLCULO EXPLÍCITO
+    if st.button("🚀 Recalcular Semáforo Consolidado"):
+        calcular_y_mostrar_semaforo(st.session_state['config_df'], metricas_actuales, rv5d_ayer)
+    
+    st.markdown("### Tabla Consolidada de Lógica y Resultado 🚦")
+    
+    # Mostrar la tabla consolidada solo si ya se ha calculado
+    if 'df_semaforo_body' in st.session_state:
+        df_body = st.session_state['df_semaforo_body']
+        df_footer = st.session_state['df_semaforo_footer']
+        senal_color = st.session_state['senal_color']
+        
+        # 1. Función para dar formato de color del Cuerpo (Body)
+        def color_cumple_body(row):
+            styles = pd.Series('', index=row.index)
+            
+            # Solo aplica color si la regla estaba ACTIVA
+            if row['Activa']: 
+                if row['Cumple'] == 'SÍ':
+                    styles['Cumple'] = 'background-color: #008000; color: white'
+                else:
+                    styles['Cumple'] = 'background-color: #8B0000; color: white'
+            
+            return styles
+
+        # 2. Estilizar y MOSTRAR el Cuerpo de la tabla
+        styled_df_body = df_body.style.apply(color_cumple_body, axis=1)
+
+        styled_df_body = styled_df_body.set_properties(**{'text-align': 'center'}, 
+                                            subset=['Operador', 'Umbral', 'Valor Actual', 'Cumple'])
+        
+        st.dataframe(
+            styled_df_body,
+            hide_index=True,
+            use_container_width=True,
+            column_order=('Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'), 
+            column_config={'ID': st.column_config.Column(disabled=True, width="tiny")} 
+        )
+
+        # 3. AÑADIR ESPACIO Y MOSTRAR EL PIE (FOOTER) como barra de color SIN ENCABEZADOS
+        st.markdown("<br>", unsafe_allow_html=True) 
+
+        footer_text = df_footer.iloc[0]['Regla'] # "🚥 SEMÁFORO GLOBAL HEDGEHOG 🚥"
+        
+        # Usamos markdown para crear una barra de color sólida y limpia
+        st.markdown(
+            f"<div style='text-align: center; font-size: 1.2em; padding: 10px; border-radius: 5px; {senal_color}'>"
+            f"**{footer_text}**" 
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
+    else:
+        st.info("Presione '🚀 Recalcular Semáforo Consolidado' para ver la lógica aplicada.")
+
+    st.markdown("---")
+    # ----------------------------------------------------------------------
+
+    # ----------------------------------------------------------------------
+    # 5. DTEs
+    # ----------------------------------------------------------------------
+    st.header("5. DTEs (Days To Expiration)")
+    
+    # Inicializar valores de entrada en session_state con 7 y 14 por defecto
+    if 'dte_front_days' not in st.session_state:
+        st.session_state['dte_front_days'] = 7
+    if 'dte_back_days' not in st.session_state:
+        st.session_state['dte_back_days'] = 14 # Por defecto 14 días
+    
+    # Asegurar que los number_input reflejen los defaults correctos
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        dte_front_days = st.number_input(
+            "DTE Front (días)", 
+            min_value=1, 
+            max_value=365, 
+            value=st.session_state['dte_front_days'], 
+            key='dte_front_input'
+        )
+        st.session_state['dte_front_days'] = dte_front_days
+
+    with col2:
+        dte_back_days = st.number_input(
+            "DTE Back (días)", 
+            min_value=1, 
+            max_value=365, 
+            value=st.session_state['dte_back_days'], 
+            key='dte_back_input'
+        )
+        st.session_state['dte_back_days'] = dte_back_days
+        
+    # Cálculo de fechas
+    today = date.today()
+    dte_front_date = today + timedelta(days=dte_front_days)
+    dte_back_date = today + timedelta(days=dte_back_days)
+
+    # Creación de la tabla
+    dte_data = {
+        'Métrica': ['Fecha de Hoy', 'DTE FRONT', 'DTE BACK'],
+        'Valor': [
+            today.strftime('%Y-%m-%d'), 
+            dte_front_date.strftime('%Y-%m-%d'), 
+            dte_back_date.strftime('%Y-%m-%d')
+        ]
+    }
+    
+    df_dte = pd.DataFrame(dte_data)
+    
+    st.markdown("---")
+    st.dataframe(df_dte, hide_index=True, use_container_width=True)
+    st.markdown("---")
+    
+if __name__ == "__main__":
+    main_comparison()
