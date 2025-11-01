@@ -78,7 +78,7 @@ fig_combined = make_subplots(
     rows=5, 
     cols=1, 
     shared_xaxes=True, 
-    # Usamos un espaciado MÍNIMO para reducir el "corte" visual del spike
+    # Espaciado mínimo para reducir la brecha del spike
     vertical_spacing=0.005, 
     row_heights=[0.45, 0.13, 0.14, 0.14, 0.14],
 )
@@ -364,17 +364,18 @@ fig_combined.update_layout(
 )
 
 # ----------------------------------------------------------------------------------
-# CONFIGURACIÓN DE SPIKE - REVERTIDA AL BUCLE ORIGINAL PERO OPTIMIZADA
+# CONFIGURACIÓN DE SPIKE - LA CLAVE ESTÁ EN EL MODO Y GROSOR
 # ----------------------------------------------------------------------------------
 
 for i in range(1, 6):
     fig_combined.update_xaxes(
         showspikes=True,
-        # 'across' extiende la línea sobre el área de trazado
-        spikemode='across', 
+        # Usamos 'across+toaxis' para asegurar que la línea toque el eje y cruce el plot area
+        spikemode='across+toaxis', 
         spikesnap='cursor',
-        spikecolor='rgba(255, 255, 255, 0.6)',
-        spikethickness=1,
+        # Spike ligeramente más oscuro para ocultar el corte en el fondo negro
+        spikecolor='rgba(255, 255, 255, 0.4)',
+        spikethickness=1.5, # Un poco más grueso ayuda a la continuidad visual
         spikedash='dot',
         row=i, 
         col=1
