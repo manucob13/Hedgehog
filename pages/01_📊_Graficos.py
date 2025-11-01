@@ -78,7 +78,7 @@ fig_combined = make_subplots(
     rows=5, 
     cols=1, 
     shared_xaxes=True, 
-    vertical_spacing=0.005, 
+    vertical_spacing=0.02, # Espaciado por defecto (mayor)
     row_heights=[0.45, 0.13, 0.14, 0.14, 0.14],
 )
 
@@ -111,18 +111,6 @@ fig_combined.add_trace(go.Candlestick(
 
 fig_combined.update_yaxes(title_text='Precio', row=1, col=1)
 fig_combined.update_xaxes(showticklabels=False, row=1, col=1)
-
-# **TRAZO FANTASMA (Para anclar el Spike)**
-fig_combined.add_trace(go.Scatter(
-    x=list(range(len(spx_filtered))),
-    y=[0] * len(spx_filtered), 
-    mode='lines',
-    name='Spike Anchor',
-    hoverinfo='skip',
-    showlegend=False,
-    line=dict(color='rgba(0,0,0,0)'),
-    marker=dict(color='rgba(0,0,0,0)')
-), row=1, col=1)
 
 # ----------------------------------------------------
 # 2. GRÁFICO DE VOLATILIDAD REALIZADA (RV_5d) (Fila 2)
@@ -354,7 +342,9 @@ fig_combined.update_layout(
     template='plotly_dark',
     height=1100, 
     xaxis_rangeslider_visible=False,
-    hovermode='x unified', 
+    # Se revierte a 'x' para el hovermode, que solo muestra un punto de datos
+    # y no intenta unir el hoverbox.
+    hovermode='x', 
     plot_bgcolor='#131722', 
     paper_bgcolor='#131722', 
     font=dict(color='#AAAAAA'),
@@ -374,28 +364,29 @@ fig_combined.update_layout(
 )
 
 # ----------------------------------------------------------------------------------
-# CONFIGURACIÓN DE SPIKE Y EJES (Solución más confiable)
+# CONFIGURACIÓN DE SPIKE POR DEFECTO
 # ----------------------------------------------------------------------------------
 
-# Deshabilitar spikes en ejes Y (general)
-fig_combined.update_yaxes(showspikes=False)
+for i in range(1, 6):
+    fig_combined.update_xaxes(
+        showspikes=True,
+        # Se revierte a spikemode por defecto (probablemente 'across' o vacío)
+        spikemode='across', 
+        spikesnap='cursor',
+        spikecolor='#AAAAAA',
+        spikethickness=1,
+        spikedash='dash',
+        row=i, 
+        col=1
+    )
 
-# Deshabilitar spikes en ejes X de las filas 2 a 5
-for i in range(2, 6):
-    fig_combined.update_xaxes(showspikes=False, row=i, col=1)
-
-# Habilitar el spike ÚNICAMENTE en el eje principal (Fila 1), que tiene el anclaje fantasma.
-fig_combined.update_xaxes(
-    showspikes=True,
-    spikemode='across+toaxis', 
-    spikesnap='cursor',
-    spikecolor='rgba(255, 255, 255, 0.4)',
-    spikethickness=1.5,
-    spikedash='dot',
-    row=1, 
-    col=1
-)
-
+    # Spike Y desactivado
+    fig_combined.update_yaxes(
+        showspikes=False,
+        row=i, 
+        col=1
+    )
+    
 # ----------------------------------------------------------------------------------
 # CONFIGURACIONES DE EJE X (Estética)
 # ----------------------------------------------------------------------------------
