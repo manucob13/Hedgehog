@@ -119,13 +119,15 @@ fig_combined.update_xaxes(showticklabels=False, row=1, col=1)
 for i in range(len(spx_filtered) - 1):
     color = '#00B06B' if is_up.iloc[i+1] else '#F13A50'
     
+    # MODIFICACIÓN CLAVE: El eje x2 usa el x5 (que tiene el spike)
     fig_combined.add_trace(go.Scatter(
         x=[i, i+1],
         y=[spx_filtered['RV_5d_pct'].iloc[i], spx_filtered['RV_5d_pct'].iloc[i+1]],
         mode='lines',
         line=dict(color=color, width=2),
         showlegend=False,
-        hoverinfo='skip'
+        hoverinfo='skip',
+        xaxis='x2' # Revisa si necesitas esto, pero con el update_traces de abajo debería bastar
     ), row=2, col=1)
 
 fig_combined.add_trace(go.Scatter(
@@ -342,7 +344,8 @@ fig_combined.update_layout(
     template='plotly_dark',
     height=1100, 
     xaxis_rangeslider_visible=False,
-    hovermode='x unified',
+    # El modo unified asegura que todos los datos de traces se muestren
+    hovermode='x unified', 
     plot_bgcolor='#131722', 
     paper_bgcolor='#131722', 
     font=dict(color='#AAAAAA'),
@@ -362,36 +365,37 @@ fig_combined.update_layout(
 )
 
 # ----------------------------------------------------------------------------------
-# MODIFICACIÓN CLAVE: CONFIGURAR EL SPIKE VERTICAL PARA QUE CRUCE TODOS LOS PLOTS
+# PASO ADICIONAL CLAVE: UNIFICAR TODOS LOS TRACES AL EJE X PRINCIPAL (x5)
+# Esto garantiza que el spike solo tenga una fuente de activación y se dibuje continuo.
+# ----------------------------------------------------------------------------------
+# Encuentra el nombre del eje X de la fila 5. En un layout 5x1 es 'x5'.
+# Usamos fig.update_traces para enlazar todos los traces a 'x5'.
+fig_combined.update_traces(xaxis='x5')
+
+
+# ----------------------------------------------------------------------------------
+# CONFIGURAR EL SPIKE VERTICAL SOLO EN EL EJE PRINCIPAL (x5)
+# Ya no necesitamos iterar por todos los ejes.
+# ----------------------------------------------------------------------------------
+fig_combined.update_xaxes(
+    showspikes=True,
+    # Usamos 'across+toaxis' para asegurar que cruce el plot area
+    spikemode='across+toaxis', 
+    spikesnap='cursor',
+    spikecolor='rgba(255, 255, 255, 0.6)',
+    spikethickness=1,
+    spikedash='dot',
+)
+
+# Desactivar spikes en Y para evitar líneas horizontales
+fig_combined.update_yaxes(showspikes=False)
+
+
+# ----------------------------------------------------------------------------------
+# CONFIGURACIONES DE EJE X
 # ----------------------------------------------------------------------------------
 
-# Se mantiene tu bucle. La propiedad 'across' en spikemode es la que lo extiende.
-for i in range(1, 6):
-    fig_combined.update_xaxes(
-        showspikes=True,
-        # 'across' hace que la línea cruce el área del plot. 
-        # Al aplicarse a los 5 ejes, cruza los 5 subplots.
-        spikemode='across+toaxis', 
-        spikesnap='cursor',
-        spikecolor='rgba(255, 255, 255, 0.6)',
-        spikethickness=1,
-        spikedash='dot',
-        row=i, 
-        col=1
-    )
-
-    # También deshabilitamos los spikes Y para que solo se vea la línea vertical
-    fig_combined.update_yaxes(
-        showspikes=False,
-        row=i, 
-        col=1
-    )
-    
-# ----------------------------------------------------------------------------------
-# CONFIGURACIONES DE EJE X (Se deja solo el código que estaba al final)
-# ----------------------------------------------------------------------------------
-
-# Configurar el eje X compartido (solo las etiquetas del último plot)
+# Configurar el eje X compartido (solo las etiquetas del último plot, que ahora es el principal)
 fig_combined.update_xaxes(
     tickmode='array',
     tickvals=list(range(len(spx_filtered))),
