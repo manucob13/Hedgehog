@@ -11,21 +11,18 @@ from sklearn.preprocessing import StandardScaler
 import warnings
 import math 
 
-# Ocultar advertencias de statsmodels que a menudo aparecen durante el ajuste
 warnings.filterwarnings('ignore')
 
-# --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(page_title="Gráficos - HEDGEHOG", layout="wide")
-st.title("📊 Gráficos de Análisis Técnico Combinados (K=2, K=3)")
+st.title("📊 Gráficos de Análisis Técnico Combinados (K=2, K=3, NR/WR)")
 
-# --- INSERCIÓN: BOTÓN PARA FORZAR LA ACTUALIZACIÓN DE DATOS ---
 if st.button("🔄 Forzar Actualización de Datos (Limpiar Caché)", help="Esto borrará la caché de 24 horas de los datos del SPX y VIX y los descargará de nuevo."):
     st.cache_data.clear()
     st.rerun()
 st.markdown("---")
 
 # ==============================================================================
-# 1. FUNCIONES DE LÓGICA PURA (ADAPTADAS DEL MAIN)
+# 1. FUNCIONES DE LÓGICA PURA
 # ==============================================================================
 
 @st.cache_data(ttl=86400)
@@ -106,19 +103,70 @@ def preparar_datos_markov(spx: pd.DataFrame):
     
     return endog_final, exog_tvtp_final
 
+# --- LÓGICA NR/WR (Narrow Range after Wide Range) ---
+
+def check_recent_wr(wr_series: pd.Series, tr_series: pd.Series, wr_len: int, max_delay: int) -> pd.Series:
+    """
+    Verifica si hubo un Wide Range (WR) en las últimas 'max_delay' barras.
+    """
+    wr_recent = pd.Series(False, index=wr_series.index)
+    
+    for i in range(1, max_delay + 1):
+        condition = (tr_series.shift(i) == tr_series.rolling(window=wr_len).max().shift(i))
+        wr_recent = wr_recent | condition
+    
+    return wr_recent
+
+def calculate_nr_wr_signal_series(spx_raw: pd.DataFrame) -> pd.Series:
+    """Calcula la señal NR/WR como serie temporal completa."""
+    df = spx_raw.copy()
+
+    # --- PARÁMETROS ---
+    wr4_len = 4
+    nr4_len = 4
+    wr7_len = 7
+    nr7_len = 7
+    max_delay = 3 
+
+    # --- TRUE RANGE ---
+    high_low = df['High'] - df['Low']
+    high_prev_close = np.abs(df['High'] - df['Close'].shift(1))
+    low_prev_close = np.abs(df['Low'] - df['Close'].shift(1))
+    df['tr_nr_wr'] = pd.DataFrame({
+        'hl': high_low, 
+        'hpc': high_prev_close, 
+        'lpc': low_prev_close
+    }).max(axis=1)
+
+    df.dropna(subset=['tr_nr_wr'], inplace=True)
+
+    # --- WR & NR (Series booleanas) ---
+    df['wr4'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=wr4_len).max())
+    df['wr7'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=wr7_len).max())
+    df['nr4'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=nr4_len).min())
+    df['nr7'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=nr7_len).min())
+    
+    df['wr4_recent'] = check_recent_wr(df['wr4'], df['tr_nr_wr'], wr4_len, max_delay)
+    df['wr7_recent'] = check_recent_wr(df['wr7'], df['tr_nr_wr'], wr7_len, max_delay)
+
+    df.dropna(subset=['wr4_recent', 'wr7_recent', 'nr4', 'nr7'], inplace=True)
+
+    # --- SEÑALES FINALES ---
+    df['signal_nr4'] = df['nr4'] & df['wr4_recent'] 
+    df['signal_nr7'] = df['nr7'] & df['wr7_recent']
+    df['signal_nr_final'] = (df['signal_nr7'] | df['signal_nr4']).astype(float)
+
+    return df['signal_nr_final']
+
 @st.cache_data(ttl=3600)
 def markov_calculation_k2(endog_final, exog_tvtp_final):
-    """
-    Modelo de 2 regímenes: Baja vs. Alta. Usa 0.10 como objetivo para encontrar
-    el umbral dinámico de baja volatilidad.
-    """
+    """Modelo de 2 regímenes."""
     VALOR_OBJETIVO_RV5D = 0.10
     UMBRAL_COMPRESION = 0.70 
     
     if endog_final is None or exog_tvtp_final is None:
         return {'error': "Datos insuficientes para el modelo K=2."}
 
-    # --- 1. AJUSTE DEL MODELO ---
     try:
         modelo = MarkovRegression(
             endog=endog_final, k_regimes=2, trend='c', 
@@ -128,7 +176,6 @@ def markov_calculation_k2(endog_final, exog_tvtp_final):
     except Exception as e:
         return {'error': f"Error de ajuste K=2: {e}"} 
 
-    # --- 2. IDENTIFICACIÓN DE REGÍMENES (Por Varianza) ---
     regimen_vars = resultado.params.filter(regex='sigma2|Variance')
     regimen_vars_sorted = regimen_vars.sort_values(ascending=True)
     
@@ -137,13 +184,11 @@ def markov_calculation_k2(endog_final, exog_tvtp_final):
     
     regimen_baja_vol_index = extract_regime_index(regimen_vars_sorted.index[0])
     
-    # --- 3. CÁLCULO DEL UMBRAL DINÁMICO (Lógica 0.10) ---
     best_percentile = None
     min_diff = float('inf')
     rv5d_historica = endog_final.values
     
-    # Buscar el percentil (entre 10% y 50%) cuyo valor esté más cerca de 0.10
-    for p in np.linspace(0.10, 0.50, 41): # 10% a 50% en pasos de 1%
+    for p in np.linspace(0.10, 0.50, 41):
         percentile_val = np.percentile(rv5d_historica, p * 100)
         diff = abs(percentile_val - VALOR_OBJETIVO_RV5D)
         
@@ -152,7 +197,6 @@ def markov_calculation_k2(endog_final, exog_tvtp_final):
             best_percentile = p * 100
             UMBRAL_RV5D_P_OBJETIVO = percentile_val
 
-    # --- 4. EXTRACCIÓN Y CONCLUSIÓN ---
     return {
         'nombre': 'K=2 (Original con Objetivo 0.10)',
         'endog_final': endog_final,
@@ -165,16 +209,12 @@ def markov_calculation_k2(endog_final, exog_tvtp_final):
 
 @st.cache_data(ttl=3600)
 def markov_calculation_k3(endog_final, exog_tvtp_final):
-    """
-    Modelo de 3 regímenes: Baja, Media, Alta. Identifica regímenes
-    únicamente por las varianzas estimadas.
-    """
+    """Modelo de 3 regímenes."""
     UMBRAL_COMPRESION = 0.70 
     
     if endog_final is None or exog_tvtp_final is None:
         return {'error': "Datos insuficientes para el modelo K=3."}
         
-    # --- 1. AJUSTE DEL MODELO ---
     try:
         modelo = MarkovRegression(
             endog=endog_final, k_regimes=3, trend='c', 
@@ -184,16 +224,13 @@ def markov_calculation_k3(endog_final, exog_tvtp_final):
     except Exception as e:
         return {'error': f"Error de ajuste K=3: {e}"} 
 
-    # --- 2. IDENTIFICACIÓN DE REGÍMENES (Por Varianza) ---
     regimen_vars = resultado.params.filter(regex='sigma2|Variance')
 
     if len(regimen_vars) < 3:
         return {'error': "ADVERTENCIA: No se pudieron extraer los tres parámetros de varianza."}
 
-    # Ordenar las varianzas para asignar: 0=Baja, 1=Media, 2=Alta
     regimen_vars_sorted = regimen_vars.sort_values(ascending=True)
     
-    # Extracción del índice de régimen (el número entre corchetes, p. ej., '[0]' -> 0)
     def extract_regime_index(index_str):
         return int(index_str.split('[')[1].replace(']', ''))
         
@@ -203,7 +240,6 @@ def markov_calculation_k3(endog_final, exog_tvtp_final):
         'Alta': extract_regime_index(regimen_vars_sorted.index[2])
     }
     
-    # --- 3. EXTRACCIÓN Y CONCLUSIÓN ---
     probabilidades_filtradas = resultado.filtered_marginal_probabilities
     
     prob_baja_serie = probabilidades_filtradas[indices_regimen['Baja']].rename('Prob_Baja_K3')
@@ -223,7 +259,7 @@ def markov_calculation_k3(endog_final, exog_tvtp_final):
 # 2. CARGAR Y EJECUTAR MODELOS
 # ==============================================================================
 
-with st.spinner("Cargando datos y ajustando Modelos Markov K=2 y K=3..."):
+with st.spinner("Cargando datos y ajustando Modelos Markov K=2, K=3 y NR/WR..."):
     df_raw = fetch_data()
     spx = calculate_indicators(df_raw)
     endog_final, exog_tvtp_final = preparar_datos_markov(spx)
@@ -234,6 +270,7 @@ with st.spinner("Cargando datos y ajustando Modelos Markov K=2 y K=3..."):
         
     results_k2 = markov_calculation_k2(endog_final, exog_tvtp_final)
     results_k3 = markov_calculation_k3(endog_final, exog_tvtp_final)
+    nr_wr_series = calculate_nr_wr_signal_series(df_raw)
 
 if 'error' in results_k2:
     st.error(f"❌ Error al ejecutar el modelo K=2: {results_k2['error']}")
@@ -242,13 +279,13 @@ if 'error' in results_k3:
     st.error(f"❌ Error al ejecutar el modelo K=3: {results_k3['error']}")
     st.stop() 
 
-st.success(f"✅ Datos y Modelos Markov (K=2, K=3) cargados exitosamente. ({len(spx)} días)")
+st.success(f"✅ Datos y Modelos (K=2, K=3, NR/WR) cargados exitosamente. ({len(spx)} días)")
 
 # --- CONTROLES DE FECHA ---
 st.sidebar.header("⚙️ Configuración del Gráfico")
 fecha_final = spx.index[-1].date()
 st.sidebar.info(f"📅 Última fecha disponible: {fecha_final}")
-fecha_inicio_default = fecha_final - timedelta(days=90) # Mostrar 3 meses por defecto
+fecha_inicio_default = fecha_final - timedelta(days=90)
 
 fecha_inicio = st.sidebar.date_input(
     "Fecha de inicio:",
@@ -262,16 +299,14 @@ fecha_inicio_dt = pd.to_datetime(fecha_inicio)
 fecha_final_dt = pd.to_datetime(fecha_final)
 
 spx_filtered = spx[(spx.index >= fecha_inicio_dt) & (spx.index <= fecha_final_dt)].copy()
-spx_filtered = spx_filtered[spx_filtered.index.dayofweek < 5] # ELIMINAR fines de semana
+spx_filtered = spx_filtered[spx_filtered.index.dayofweek < 5]
 
 # --- PREPARACIÓN DE DATOS PARA GRÁFICO COMBINADO ---
 
-# 1. Etiquetas de Fecha para el eje X
 date_labels = [d.strftime('%b %d') if i % 5 == 0 else '' for i, d in enumerate(spx_filtered.index)]
 date_labels[0] = spx_filtered.index[0].strftime('%b %d')
 date_labels[-1] = spx_filtered.index[-1].strftime('%b %d')
 
-# 2. RV a porcentaje y lógica de color
 spx_filtered['RV_5d_pct'] = spx_filtered['RV_5d'] * 100
 UMBRAL_RV = 0.10
 spx_filtered['RV_change'] = spx_filtered['RV_5d_pct'].diff()
@@ -279,26 +314,25 @@ is_up = spx_filtered['RV_change'] >= 0
 rv_green_plot = spx_filtered['RV_5d_pct'].where(is_up, other=np.nan)
 rv_red_plot = spx_filtered['RV_5d_pct'].where(~is_up, other=np.nan)
 
-
-# 3. Datos Markov K=2 (Probabilidad Baja)
 prob_baja_serie_k2 = results_k2['prob_baja'].loc[spx_filtered.index].fillna(method='ffill')
 
-# 4. Datos Markov K=3 (Probabilidad Consolidada)
 prob_baja_serie_k3 = results_k3['prob_baja'].loc[spx_filtered.index].fillna(method='ffill')
 prob_media_serie_k3 = results_k3['prob_media'].loc[spx_filtered.index].fillna(method='ffill')
 prob_k3_consolidada = prob_baja_serie_k3 + prob_media_serie_k3
 
+# Alinear NR/WR con el rango filtrado
+nr_wr_filtered = nr_wr_series.reindex(spx_filtered.index).fillna(0)
 
 UMBRAL_ALERTA = 0.50 
-UMBRAL_COMPRESION = results_k2['UMBRAL_COMPRESION'] # 0.70
+UMBRAL_COMPRESION = results_k2['UMBRAL_COMPRESION']
 
-# --- CREAR SUBPLOTS (4 FILAS) ---
+# --- CREAR SUBPLOTS (5 FILAS) ---
 fig_combined = make_subplots(
-    rows=4, 
+    rows=5, 
     cols=1, 
     shared_xaxes=True, 
     vertical_spacing=0.02,
-    row_heights=[0.5, 0.15, 0.175, 0.175], # SPX: 50%, RV: 15%, K=2: 17.5%, K=3: 17.5%
+    row_heights=[0.45, 0.13, 0.14, 0.14, 0.14],  # SPX: 45%, RV: 13%, K2: 14%, K3: 14%, NR/WR: 14%
 )
 
 # ----------------------------------------------------
@@ -315,7 +349,6 @@ fig_combined.add_trace(go.Candlestick(
     decreasing=dict(line=dict(color='#F13A50'))
 ), row=1, col=1)
 
-# Configuraciones de la Fila 1
 fig_combined.update_yaxes(title_text='Precio', row=1, col=1)
 fig_combined.update_xaxes(showticklabels=False, row=1, col=1)
 
@@ -323,12 +356,9 @@ fig_combined.update_xaxes(showticklabels=False, row=1, col=1)
 # 2. GRÁFICO DE VOLATILIDAD REALIZADA (RV_5d) (Fila 2)
 # ----------------------------------------------------
 
-# Dibujar segmentos individuales con color según dirección
 for i in range(len(spx_filtered) - 1):
-    # Determinar el color del segmento según si sube o baja
     color = '#00B06B' if is_up.iloc[i+1] else '#F13A50'
     
-    # Dibujar segmento entre punto i y punto i+1
     fig_combined.add_trace(go.Scatter(
         x=[i, i+1],
         y=[spx_filtered['RV_5d_pct'].iloc[i], spx_filtered['RV_5d_pct'].iloc[i+1]],
@@ -338,7 +368,6 @@ for i in range(len(spx_filtered) - 1):
         hoverinfo='skip'
     ), row=2, col=1)
 
-# Añadir puntos invisibles para el hover unificado
 fig_combined.add_trace(go.Scatter(
     x=list(range(len(spx_filtered))),
     y=spx_filtered['RV_5d_pct'],
@@ -350,7 +379,6 @@ fig_combined.add_trace(go.Scatter(
     showlegend=True
 ), row=2, col=1)
 
-# Añadir línea horizontal discontinua del umbral (Fila 2)
 fig_combined.add_shape(
     type="line",
     x0=0, y0=UMBRAL_RV * 100,
@@ -360,7 +388,6 @@ fig_combined.add_shape(
     row=2, col=1
 )
 
-# Añadir etiqueta para el umbral (Fila 2)
 fig_combined.add_annotation(
     x=0, y=1.0, 
     text=f'Umbral RV: {UMBRAL_RV*100:.2f}%', 
@@ -372,12 +399,11 @@ fig_combined.add_annotation(
     row=2, col=1
 )
 
-# Configuraciones de la Fila 2
 fig_combined.update_yaxes(title_text='RV (%)', row=2, col=1, tickformat=".2f")
 fig_combined.update_xaxes(showticklabels=False, row=2, col=1) 
 
 # ----------------------------------------------------
-# 3. GRÁFICO DE MARKOV K=2 (PROBABILIDAD BAJA) (Fila 3)
+# 3. GRÁFICO DE MARKOV K=2 (Fila 3)
 # ----------------------------------------------------
 
 fig_combined.add_trace(go.Scatter(
@@ -385,7 +411,7 @@ fig_combined.add_trace(go.Scatter(
     y=prob_baja_serie_k2,
     mode='lines',
     name='Prob. K=2 (Baja Vol.)', 
-    line=dict(color='#8A2BE2', width=2), # Púrpura
+    line=dict(color='#8A2BE2', width=2),
     fill='tozeroy', 
     fillcolor='rgba(138, 43, 226, 0.3)',
     hoverinfo='text',
@@ -393,7 +419,6 @@ fig_combined.add_trace(go.Scatter(
     showlegend=True 
 ), row=3, col=1)
 
-# Umbral 1: 70% (Línea de Compresión Fuerte)
 fig_combined.add_shape(
     type="line",
     x0=0, y0=UMBRAL_COMPRESION,
@@ -403,17 +428,15 @@ fig_combined.add_shape(
     row=3, col=1
 )
 
-# Umbral 2: 50% (Línea de Alerta/Cambio de Régimen)
 fig_combined.add_shape(
     type="line",
     x0=0, y0=UMBRAL_ALERTA,
     x1=len(spx_filtered) - 1, y1=UMBRAL_ALERTA,
-    line=dict(color="#FFFFFF", width=1, dash="dot"), # Blanco
+    line=dict(color="#FFFFFF", width=1, dash="dot"),
     layer="below",
     row=3, col=1
 )
 
-# Etiqueta para el umbral 70% - A LA IZQUIERDA
 fig_combined.add_annotation(
     x=0, 
     y=UMBRAL_COMPRESION, 
@@ -428,7 +451,6 @@ fig_combined.add_annotation(
     row=3, col=1
 )
 
-# Etiqueta para el umbral 50% - A LA IZQUIERDA
 fig_combined.add_annotation(
     x=0, 
     y=UMBRAL_ALERTA, 
@@ -443,12 +465,11 @@ fig_combined.add_annotation(
     row=3, col=1
 )
 
-# Configuraciones de la Fila 3
 fig_combined.update_yaxes(title_text='Prob. K=2', row=3, col=1, tickformat=".2f", range=[0, 1])
 fig_combined.update_xaxes(showticklabels=False, row=3, col=1) 
 
 # ----------------------------------------------------
-# 4. GRÁFICO DE MARKOV K=3 (PROBABILIDAD CONSOLIDADA) (Fila 4)
+# 4. GRÁFICO DE MARKOV K=3 (Fila 4)
 # ----------------------------------------------------
 
 fig_combined.add_trace(go.Scatter(
@@ -456,7 +477,7 @@ fig_combined.add_trace(go.Scatter(
     y=prob_k3_consolidada,
     mode='lines',
     name='Prob. K=3 (Baja+Media)', 
-    line=dict(color='#00FF7F', width=2), # Verde Esmeralda
+    line=dict(color='#00FF7F', width=2),
     fill='tozeroy', 
     fillcolor='rgba(0, 255, 127, 0.3)',
     hoverinfo='text',
@@ -464,7 +485,6 @@ fig_combined.add_trace(go.Scatter(
     showlegend=True 
 ), row=4, col=1)
 
-# Umbral 1: 70% (Línea de Compresión Fuerte)
 fig_combined.add_shape(
     type="line",
     x0=0, y0=UMBRAL_COMPRESION,
@@ -474,17 +494,15 @@ fig_combined.add_shape(
     row=4, col=1
 )
 
-# Umbral 2: 50% (Línea de Alerta/Cambio de Régimen)
 fig_combined.add_shape(
     type="line",
     x0=0, y0=UMBRAL_ALERTA,
     x1=len(spx_filtered) - 1, y1=UMBRAL_ALERTA,
-    line=dict(color="#FFFFFF", width=1, dash="dot"), # Blanco
+    line=dict(color="#FFFFFF", width=1, dash="dot"),
     layer="below",
     row=4, col=1
 )
 
-# Etiqueta para el umbral 70% - A LA IZQUIERDA
 fig_combined.add_annotation(
     x=0, 
     y=UMBRAL_COMPRESION, 
@@ -499,7 +517,6 @@ fig_combined.add_annotation(
     row=4, col=1
 )
 
-# Etiqueta para el umbral 50% - A LA IZQUIERDA
 fig_combined.add_annotation(
     x=0, 
     y=UMBRAL_ALERTA, 
@@ -514,13 +531,56 @@ fig_combined.add_annotation(
     row=4, col=1
 )
 
-# Configuraciones de la Fila 4
 fig_combined.update_yaxes(title_text='Prob. K=3', row=4, col=1, tickformat=".2f", range=[0, 1])
+fig_combined.update_xaxes(showticklabels=False, row=4, col=1)
+
+# ----------------------------------------------------
+# 5. GRÁFICO DE SEÑAL NR/WR (Fila 5)
+# ----------------------------------------------------
+
+fig_combined.add_trace(go.Scatter(
+    x=list(range(len(spx_filtered))),
+    y=nr_wr_filtered,
+    mode='lines',
+    name='Señal NR/WR', 
+    line=dict(color='#FF6B35', width=2),
+    fill='tozeroy', 
+    fillcolor='rgba(255, 107, 53, 0.3)',
+    hoverinfo='text',
+    text=[f"NR/WR: {'ACTIVA' if s > 0 else 'INACTIVA'}" for s in nr_wr_filtered],
+    showlegend=True 
+), row=5, col=1)
+
+# Línea de referencia en 0.5 para separar visualmente ACTIVA/INACTIVA
+fig_combined.add_shape(
+    type="line",
+    x0=0, y0=0.5,
+    x1=len(spx_filtered) - 1, y1=0.5,
+    line=dict(color="#AAAAAA", width=1, dash="dot"),
+    layer="below",
+    row=5, col=1
+)
+
+fig_combined.add_annotation(
+    x=0, 
+    y=0.9, 
+    text='COMPRESIÓN ACTIVA', 
+    showarrow=False,
+    xref='x5', yref='y5', 
+    xanchor='left', 
+    yanchor='top', 
+    font=dict(size=11, color="#FF6B35"),
+    xshift=5, 
+    yshift=-5,
+    row=5, col=1
+)
+
+fig_combined.update_yaxes(title_text='NR/WR', row=5, col=1, range=[0, 1], tickvals=[0, 1], ticktext=['OFF', 'ON'])
 
 # --- CONFIGURACIÓN FINAL DEL GRÁFICO COMBINADO ---
 fig_combined.update_layout(
     template='plotly_dark',
-    height=1000, 
+    height=1100, 
     xaxis_rangeslider_visible=False,
     hovermode='x unified',
     plot_bgcolor='#131722', 
@@ -541,13 +601,13 @@ fig_combined.update_layout(
     )
 )
 
-# Configurar el eje X compartido (solo las etiquetas inferiores, ahora en la Fila 4)
+# Configurar el eje X compartido (solo las etiquetas inferiores, ahora en la Fila 5)
 fig_combined.update_xaxes(
     tickmode='array',
     tickvals=list(range(len(spx_filtered))),
     ticktext=date_labels,
     tickangle=-45,
-    row=4, col=1, 
+    row=5, col=1, 
     showgrid=False
 )
 
@@ -560,13 +620,15 @@ fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True,
 fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=3, col=1)
 fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=4, col=1)
 fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=4, col=1)
+fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=5, col=1)
+fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=5, col=1)
 
 
 st.plotly_chart(fig_combined, use_container_width=True)
 
 # --- INFORMACIÓN ADICIONAL ---
 st.markdown("---")
-col1, col2, col3, col4, col5 = st.columns(5) 
+col1, col2, col3, col4, col5, col6 = st.columns(6) 
 
 with col1:
     st.metric("Precio Actual", f"${spx_filtered['Close'].iloc[-1]:.2f}")
@@ -581,3 +643,6 @@ with col4:
 with col5:
     rv_latest = spx_filtered['RV_5d'].iloc[-1] * 100
     st.metric("RV_5d (Último)", f"{rv_latest:.2f}%")
+with col6:
+    nr_wr_status = "🟢 ACTIVA" if nr_wr_filtered.iloc[-1] > 0 else "⚪ INACTIVA"
+    st.metric("Señal NR/WR", nr_wr_status)
