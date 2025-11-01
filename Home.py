@@ -102,21 +102,18 @@ def preparar_datos_markov(spx: pd.DataFrame):
     
     return endog_final, exog_tvtp_final
 
-# --- LÓGICA NR/WR (Narrow Range after Wide Range) ---
+# --- LÓGICA NR/WR (Narrow Range after Wide Range) - IDÉNTICA AL SCRIPT ORIGINAL ---
 
-def check_recent_wr(wr_series: pd.Series, tr_series: pd.Series, wr_len: int, max_delay: int) -> pd.Series:
+def check_recent_wr(wr_series, tr_series, wr_len, max_delay):
     """
-    Verifica si hubo un Wide Range (WR) en las últimas 'max_delay' barras.
+    Verifica si hubo un WR en las últimas 'max_delay' barras.
     Replica el bucle 'for i = 1 to max_delay' de PineScript.
     """
-    # Inicializar la serie de resultado con False
     wr_recent = pd.Series(False, index=wr_series.index)
     
-    # Iterar sobre el retraso (delay)
     for i in range(1, max_delay + 1):
         # Condición: tr[i] == ta.highest(tr, wr_len)[i]
-        # En pandas: tr_series.shift(i) es el TR de hace 'i' días.
-        #           tr_series.rolling(wr_len).max().shift(i) es el máximo TR de la ventana de WR de hace 'i' días.
+        # En pandas: tr_series.shift(i) == tr_series.rolling(wr_len).max().shift(i)
         condition = (tr_series.shift(i) == tr_series.rolling(window=wr_len).max().shift(i))
         wr_recent = wr_recent | condition  # OR acumulativo
     
@@ -143,10 +140,7 @@ def calculate_nr_wr_signal(spx_raw: pd.DataFrame) -> bool:
         'lpc': low_prev_close
     }).max(axis=1)
 
-    # Limpiar NaNs causados por el shift(1) del True Range
-    df.dropna(subset=['tr_nr_wr'], inplace=True)
-
-    # --- WR & NR (Series booleanas) ---
+    # --- WR & NR ---
     df['wr4'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=wr4_len).max())
     df['wr7'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=wr7_len).max())
     df['nr4'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=nr4_len).min())
@@ -155,10 +149,6 @@ def calculate_nr_wr_signal(spx_raw: pd.DataFrame) -> bool:
     # Aplicar la función corregida
     df['wr4_recent'] = check_recent_wr(df['wr4'], df['tr_nr_wr'], wr4_len, max_delay)
     df['wr7_recent'] = check_recent_wr(df['wr7'], df['tr_nr_wr'], wr7_len, max_delay)
-
-    # Asegurar que todas las series de booleanos estén alineadas antes de la lógica final
-    df.dropna(subset=['wr4_recent', 'wr7_recent', 'nr4', 'nr7'], inplace=True)
-
 
     # --- SEÑALES FINALES ---
     df['signal_nr4'] = df['nr4'] & df['wr4_recent'] 
@@ -317,7 +307,6 @@ def main_comparison():
     # BOTÓN PARA FORZAR LA ACTUALIZACIÓN (La solución al problema de caché)
     if st.button("🔄 Forzar Actualización (Limpiar Caché de Datos)"):
         st.cache_data.clear()
-        # LA FUNCIÓN CORREGIDA ES st.rerun()
         st.rerun()
         
     # --- 1. Cargar datos y calcular indicadores ---
@@ -355,27 +344,15 @@ def main_comparison():
 
     # --- 2. Ejecutar Modelo K=2 ---
     with col_k2:
-        # Título K=2 (Ahora a la izquierda, paralelo al K=3)
         st.subheader("Modelo K=2 (Objetivo RV=0.10)") 
         with st.spinner("Ajustando Modelo K=2..."):
-            # Para evitar errores en caso de que las funciones reales no existan
-            try:
-                results_k2 = markov_calculation_k2(endog_final, exog_tvtp_final)
-            except NameError:
-                 st.error("Error: markov_calculation_k2 no definida.")
-                 return
+            results_k2 = markov_calculation_k2(endog_final, exog_tvtp_final)
 
     # --- 3. Ejecutar Modelo K=3 ---
     with col_k3:
-        # Título K=3 (Ahora a la derecha, paralelo al K=2)
         st.subheader("Modelo K=3 (Objetivo Varianza)")
         with st.spinner("Ajustando Modelo K=3..."):
-            # Para evitar errores en caso de que las funciones reales no existan
-            try:
-                results_k3 = markov_calculation_k3(endog_final, exog_tvtp_final)
-            except NameError:
-                 st.error("Error: markov_calculation_k3 no definida.")
-                 return
+            results_k3 = markov_calculation_k3(endog_final, exog_tvtp_final)
 
 
     # --- 4. Mostrar Resultados Clave y Comparación (Tabla) ---
@@ -388,7 +365,6 @@ def main_comparison():
         st.error(f"❌ Error K=3: {results_k3.get('error', 'Error al ejecutar el modelo K=3') if results_k3 else 'Resultados K=3 nulos'}")
         return
     
-    # El texto de resultados numérico ahora usa st.subheader para ser más pequeño
     st.markdown(f"**Fecha del Último Cálculo:** {endog_final.index[-1].strftime('%Y-%m-%d')}")
     st.markdown("---")
 
