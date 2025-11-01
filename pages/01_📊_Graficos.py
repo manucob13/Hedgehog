@@ -5,10 +5,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-# =================================================================
-# AÑADIDO: Importar la función de control de acceso
 from utils import check_password
-# =================================================================
 
 st.set_page_config(page_title="Gráficos - HEDGEHOG", layout="wide")
 
@@ -22,123 +19,7 @@ if check_password():
     st.title("📊 Gráficos de Análisis Técnico Combinados (K=2, K=3, NR/WR)")
 
     # ==============================================================================
-    # VERIFICAR QUE EXISTEN LOS DATOS CALCULADOS (AHORA DENTRO DEL BLOQUE PROTEGIDO)
-    # ==============================================================================
-
-    if 'datos_calculados' not in st.session_state:
-        st.warning("⚠️ No hay datos calculados. Por favor, ve primero a la página principal (Home) para ejecutar los cálculos.")
-        st.stop()
-
-    # --- RECUPERAR DATOS DE SESSION_STATE ---
-    datos = st.session_state['datos_calculados']
-    df_raw = datos['df_raw']
-    spx = datos['spx']
-    endog_final = datos['endog_final']
-    results_k2 = datos['results_k2']
-    results_k3 = datos['results_k3']
-    nr_wr_series = datos['nr_wr_series']
-
-    st.success(f"✅ Datos cargados desde memoria. ({len(spx)} días disponibles)")
-
-    # --- CONTROLES DE FECHA ---
-    st.sidebar.header("⚙️ Configuración del Gráfico")
-    fecha_final = spx.index[-1].date()
-    st.sidebar.info(f"📅 Última fecha disponible: {fecha_final}")
-    fecha_inicio_default = fecha_final - timedelta(days=90)
-
-    fecha_inicio = st.sidebar.date_input(
-        "Fecha de inicio:",
-        value=fecha_inicio_default,
-        min_value=spx.index[0].date(),
-        max_value=fecha_final
-    )
-
-    # --- FILTRAR DATOS POR RANGO DE FECHAS ---
-    fecha_inicio_dt = pd.to_datetime(fecha_inicio)
-    fecha_final_dt = pd.to_datetime(fecha_final)
-
-    spx_filtered = spx[(spx.index >= fecha_inicio_dt) & (spx.index <= fecha_final_dt)].copy()
-    spx_filtered = spx_filtered[spx_filtered.index.dayofweek < 5]
-
-    # --- PREPARACIÓN DE DATOS PARA GRÁFICO COMBINADO ---
-
-    # Etiquetado del eje X
-    date_labels = [d.strftime('%b %d') if i % 5 == 0 else '' for i, d in enumerate(spx_filtered.index)]
-    date_labels[0] = spx_filtered.index[0].strftime('%b %d')
-    date_labels[-1] = spx_filtered.index[-1].strftime('%b %d')
-
-    spx_filtered['RV_5d_pct'] = spx_filtered['RV_5d'] * 100
-    UMBRAL_RV = 0.10
-    spx_filtered['RV_change'] = spx_filtered['RV_5d_pct'].diff()
-    is_up = spx_filtered['RV_change'] >= 0
-
-    prob_baja_serie_k2 = results_k2['prob_baja_serie'].loc[spx_filtered.index].fillna(method='ffill')
-
-    prob_baja_serie_k3 = results_k3['prob_baja_serie'].loc[spx_filtered.index].fillna(method='ffill')
-    prob_media_serie_k3 = results_k3['prob_media_serie'].loc[spx_filtered.index].fillna(method='ffill')
-    prob_k3_consolidada = prob_baja_serie_k3 + prob_media_serie_k3
-
-    nr_wr_filtered = nr_wr_series.reindex(spx_filtered.index).fillna(0)
-
-    UMBRAL_ALERTA = 0.50 
-    UMBRAL_COMPRESION = results_k2['UMBRAL_COMPRESION']
-
-    # Modificación clave: Formato de fecha para el hover (DÍA-MES-AÑO)
-    fechas_formateadas = spx_filtered.index.strftime('%d-%m-%Y').tolist()
-
-    # --- CREAR SUBPLOTS (5 FILAS) ---
-    fig_combined = make_subplots(
-        rows=5, 
-        cols=1, 
-        shared_xaxes=True, 
-        vertical_spacing=0.02, 
-        row_heights=[0.45, 0.13, 0.14, 0.14, 0.14],
-    )
-
-    # ----------------------------------------------------
-    # 1. GRÁFICO DE VELAS JAPONESAS (Fila 1)
-    # ----------------------------------------------------
-
-    # La lista hover_text_candles usa la nueva variable fechas_formateadas
-    hover_text_candles = [
-        f"<b>{fecha}</b><br>Open: {o:.2f}<br>High: {h:.2f}<br>Low: {l:.2f}<br>Close: {c:.2f}"
-        for fecha, o, h, l, c in zip(
-            fechas_formateadas,
-            spx_filtered['Open'],
-            spx_filtered['High'],
-            spx_filtered['Low'],
-            spx_filtered['Close']
-        )
-    ]
-
-    fig_combined.add_trace(go.Candlestick(
-        x=list(range(len(spx_filtered))),
-        open=spx_filtered['Open'],
-        h<ctrl60># pages/graficos.py
-import streamlit as st
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-# =================================================================
-# AÑADIDO: Importar la función de control de acceso
-from utils import check_password
-# =================================================================
-
-st.set_page_config(page_title="Gráficos - HEDGEHOG", layout="wide")
-
-
-# ==============================================================================
-# PUNTO DE ENTRADA PROTEGIDO
-# ==============================================================================
-# La aplicación solo se ejecuta si la función check_password devuelve True
-if check_password():
-    
-    st.title("📊 Gráficos de Análisis Técnico Combinados (K=2, K=3, NR/WR)")
-
-    # ==============================================================================
-    # VERIFICAR QUE EXISTEN LOS DATOS CALCULADOS (AHORA DENTRO DEL BLOQUE PROTEGIDO)
+    # VERIFICAR QUE EXISTEN LOS DATOS CALCULADOS
     # ==============================================================================
 
     if 'datos_calculados' not in st.session_state:
@@ -565,6 +446,6 @@ if check_password():
         st.metric("Señal NR/WR", nr_wr_status)
 
 else:
-    # Esto se muestra si el login falla (antes de que se ejecute el contenido de arriba)
+    # Mensaje mostrado si el usuario no está logueado
     st.title("🔒 Acceso a Gráficos Restringido")
     st.info("Por favor, introduce tus credenciales en el menú lateral (sidebar) para acceder a los gráficos.")
