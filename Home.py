@@ -1,7 +1,6 @@
 # home.py
 import streamlit as st
 import pandas as pd
-# Asegúrate de que tu archivo utils.py esté en el mismo directorio.
 from utils import (
     fetch_data, 
     calculate_indicators, 
@@ -33,9 +32,7 @@ def main_comparison():
     # BOTÓN PARA FORZAR LA ACTUALIZACIÓN
     if st.button("🔄 Forzar Actualización (Limpiar Caché de Datos)"):
         st.cache_data.clear()
-        # También limpiar session_state
         for key in list(st.session_state.keys()):
-            # Evitar borrar la configuración si existe
             if key not in ('config_df'): 
                 del st.session_state[key]
         st.rerun()
@@ -79,22 +76,16 @@ def main_comparison():
     
     else:
         st.info("ℹ️ Usando datos previamente calculados (ya están en memoria).")
-        # Recuperar datos
-        datos = st.session_state['datos_calculados']
-        df_raw = datos['df_raw']
-        spx = datos['spx']
-        endog_final = datos['endog_final']
-        results_k2 = datos['results_k2']
-        results_k3 = datos['results_k3']
-        nr_wr_signal_on = datos['nr_wr_signal_on']
+    
+    # --- Recuperar datos de session_state ---
+    datos = st.session_state['datos_calculados']
+    spx = datos['spx']
+    endog_final = datos['endog_final']
+    results_k2 = datos['results_k2']
+    results_k3 = datos['results_k3']
+    nr_wr_signal_on = datos['nr_wr_signal_on']
     
     # --- MOSTRAR VISTA PREVIA ---
-    spx = st.session_state['datos_calculados']['spx']
-    endog_final = st.session_state['datos_calculados']['endog_final']
-    results_k2 = st.session_state['datos_calculados']['results_k2']
-    results_k3 = st.session_state['datos_calculados']['results_k3']
-    nr_wr_signal_on = st.session_state['datos_calculados']['nr_wr_signal_on']
-    
     st.dataframe(spx.tail(2))
     st.markdown("---")
 
@@ -126,33 +117,20 @@ def main_comparison():
     # Crear DataFrame para la tabla de comparación
     data_comparativa = {
         'Métrica': [
-            'Probabilidad Baja (HOY)',
-            'Probabilidad Media (HOY)',
-            'Probabilidad Consolidada (Baja + Media)',
-            'Umbral de Señal de Entrada (70%)',
-            'Varianza Régimen Baja',
-            'Varianza Régimen Media',
-            'Varianza Régimen Alta',
-            'Umbral RV_5d Estimado (Para el Régimen Baja)'
+            'Probabilidad Baja (HOY)', 'Probabilidad Media (HOY)', 'Probabilidad Consolidada (Baja + Media)', 
+            'Umbral de Señal de Entrada (70%)', 'Varianza Régimen Baja', 'Varianza Régimen Media', 
+            'Varianza Régimen Alta', 'Umbral RV_5d Estimado (Para el Régimen Baja)'
         ],
         'K=2 (Original)': [
-            f"{results_k2['prob_baja']:.4f}",
-            'N/A (No existe)',
-            f"{results_k2['prob_baja']:.4f}",
-            f"{results_k2['UMBRAL_COMPRESION']:.2f}",
-            f"{results_k2['varianzas_regimen']['Baja']:.5f}",
-            'N/A (No existe)',
-            f"{results_k2['varianzas_regimen']['Alta']:.5f}",
+            f"{results_k2['prob_baja']:.4f}", 'N/A (No existe)', f"{results_k2['prob_baja']:.4f}", 
+            f"{results_k2['UMBRAL_COMPRESION']:.2f}", f"{results_k2['varianzas_regimen']['Baja']:.5f}", 
+            'N/A (No existe)', f"{results_k2['varianzas_regimen']['Alta']:.5f}", 
             f"{results_k2['UMBRAL_RV5D_P_OBJETIVO']:.4f}"
         ],
         'K=3 (Propuesto)': [
-            f"{results_k3['prob_baja']:.4f}",
-            f"{results_k3['prob_media']:.4f}",
-            f"**{prob_k3_consolidada:.4f}**",
-            f"{results_k3['UMBRAL_COMPRESION']:.2f}",
-            f"{results_k3['varianzas_regimen']['Baja']:.5f}",
-            f"{results_k3['varianzas_regimen']['Media']:.5f}",
-            f"{results_k3['varianzas_regimen']['Alta']:.5f}",
+            f"{results_k3['prob_baja']:.4f}", f"{results_k3['prob_media']:.4f}", f"**{prob_k3_consolidada:.4f}**", 
+            f"{results_k3['UMBRAL_COMPRESION']:.2f}", f"{results_k3['varianzas_regimen']['Baja']:.5f}", 
+            f"{results_k3['varianzas_regimen']['Media']:.5f}", f"{results_k3['varianzas_regimen']['Alta']:.5f}", 
             'Determinado por Varianza'
         ]
     }
@@ -169,10 +147,9 @@ def main_comparison():
     st.header("4. Configuración Dinámica de Señal (HEDGEHOG) ⚙️")
 
     # --- 1. Inicializar la lógica de configuración en session_state ---
-    
     rv5d_ayer_val = spx["RV_5d"].iloc[-2]
     
-    # Estructura inicial de la configuración (valores por defecto)
+    # Estructura inicial del DataFrame de configuración
     default_config_df = pd.DataFrame({
         'Regla': [
             '1. Señal NR/WR Activa', 
@@ -193,26 +170,20 @@ def main_comparison():
         st.session_state['config_df'] = default_config_df
 
     # --- 2. Extracción de Métricas Clave y Valores ---
-    prob_k2_baja = results_k2['prob_baja']
-    prob_k3_baja = results_k3['prob_baja']
-    prob_k3_media = results_k3['prob_media']
-    prob_k3_consolidada = prob_k3_baja + prob_k3_media
-
     rv5d_hoy = spx['RV_5d'].iloc[-1]
     rv5d_ayer = spx['RV_5d'].iloc[-2]
     
-    # Define la métrica actual (Valores reales para la comparación)
     metricas_actuales = {
         'r1_nr_wr': nr_wr_signal_on, 
-        'r2_k2_70': prob_k2_baja,
-        'r3_k3_media_75': prob_k3_media,
-        'r4_k3_baja_15': prob_k3_baja,
+        'r2_k2_70': results_k2['prob_baja'],
+        'r3_k3_media_75': results_k3['prob_media'],
+        'r4_k3_baja_15': results_k3['prob_baja'],
         'r5_k3_consol_95': prob_k3_consolidada,
         'r6_rv5d_10': rv5d_hoy,
         'r7_rv5d_menor': rv5d_hoy, 
     }
     
-    # --- 3. Pre-procesar el DataFrame para la Interfaz (añadir Valor Actual) ---
+    # --- 3. Pre-procesar el DataFrame para la Interfaz ---
     df_config_display = st.session_state['config_df'].copy()
     
     df_config_display['Valor Actual'] = df_config_display['ID'].apply(
@@ -220,18 +191,34 @@ def main_comparison():
                    "⚪ INACTIVA" if id == 'r1_nr_wr' else 
                    f"{metricas_actuales[id]:.4f}"
     )
-
-    # --- 4. Mostrar la tabla interactiva y capturar los cambios ---
     
+    # Añadimos la columna 'Cumple' para que sea visible en el data_editor (la actualizaremos después)
+    df_config_display['Cumple'] = 'NO'
+    
+    # --- 4. Definición de Columnas para st.data_editor ---
     col_config = {
         'Regla': st.column_config.TextColumn("Regla (Filtro)", disabled=True),
         'Operador': st.column_config.TextColumn("Operador", disabled=True),
-        'Umbral': st.column_config.NumberColumn("Umbral", format="%.4f", min_value=0.0, max_value=1.0),
+        'Umbral': st.column_config.TextColumn("Umbral", disabled=False), # Editable para NR/WR
         'Valor Actual': st.column_config.TextColumn("Valor Actual", disabled=True),
         'Activa': st.column_config.CheckboxColumn("ON/OFF"),
+        'Cumple': st.column_config.TextColumn("Cumple", disabled=True),
         'ID': None # Ocultar
     }
     
+    # Ajustamos la columna Umbral para la regla 1 (NR/WR) para que sea un desplegable
+    col_config['Umbral'] = st.column_config.SelectboxColumn(
+        "Umbral",
+        width="small",
+        options=['ON', 'OFF'],
+        default='ON'
+    )
+    
+    # Hacemos que la columna Umbral sea editable solo para las reglas 2-6 (FLOAT)
+    # Nota: st.data_editor no permite hacer una columna editable/no editable por fila fácilmente.
+    # Usamos un truco: configuramos todos como editable, pero la lógica de la regla 7 y el NR/WR ignorará la edición si no es un número.
+    
+    # --- 5. Mostrar la tabla interactiva y capturar los cambios ---
     edited_df = st.data_editor(
         df_config_display,
         column_config=col_config,
@@ -243,53 +230,46 @@ def main_comparison():
     # Guardar los cambios de Umbral y Activa de vuelta al state
     st.session_state['config_df'] = edited_df
     
-    # --- 5. Recalcular la Señal Global y la Columna 'Cumple' ---
+    # --- 6. Recalcular la Señal Global y la Columna 'Cumple' ---
     
     senal_entrada_global_interactiva = True
     num_reglas_activas = 0
-    df_config_display['Cumple'] = "NO" # Inicializar columna
+    df_config_final = edited_df.copy() # Usaremos este DF para la visualización final
 
-    for index, row in edited_df.iterrows():
+    for index, row in df_config_final.iterrows():
         rule_id = row['ID']
         metrica_actual = metricas_actuales[rule_id]
         operador = row['Operador']
-        # Convertir a cadena de texto para manejar 'ON', 'OFF', 'RV_AYER'
         umbral_str = str(row['Umbral']).upper()
         
         regla_cumplida = False
         
         # Lógica de Cumplimiento
-        if rule_id == 'r1_nr_wr': # BOOLEAN - NR/WR
+        if rule_id == 'r1_nr_wr': # BOOLEAN - NR/WR (Usa el desplegable)
             if umbral_str == 'ON':
                 regla_cumplida = metrica_actual # True (ACTIVA)
             elif umbral_str == 'OFF':
                 regla_cumplida = not metrica_actual # False (INACTIVA)
-            else:
-                # Si el usuario cambia el Umbral a un número, lo tratamos como 'ON' si es > 0
-                try:
-                    umbral_val = float(row['Umbral'])
-                    regla_cumplida = metrica_actual and (umbral_val > 0)
-                except ValueError:
-                    regla_cumplida = metrica_actual # Por defecto, si es distinto de OFF, es ON.
         
         elif rule_id == 'r7_rv5d_menor': # COMPARACIÓN RV_AYER
             regla_cumplida = metrica_actual < rv5d_ayer
             
-        elif umbral_str not in ('RV_AYER', 'ON', 'OFF'): # FLOAT (Probabilidades, RV_5d)
+        else: # FLOAT (Probabilidades, RV_5d)
             try:
+                # El Umbral para FLOAT se puede haber editado.
                 umbral_float = float(row['Umbral'])
                 if operador == '>=':
                     regla_cumplida = metrica_actual >= umbral_float
                 elif operador == '<=':
                     regla_cumplida = metrica_actual <= umbral_float
             except ValueError:
-                regla_cumplida = False # Falla si el umbral no es un número y debería serlo
+                regla_cumplida = False # Falla si el umbral no es un número.
 
-        # Actualizar columna 'Cumple'
+        # Actualizar columna 'Cumple' en el DF final
         if regla_cumplida:
-            df_config_display.loc[index, 'Cumple'] = "SÍ"
+            df_config_final.loc[index, 'Cumple'] = "SÍ"
         else:
-            df_config_display.loc[index, 'Cumple'] = "NO"
+            df_config_final.loc[index, 'Cumple'] = "NO"
 
         # Evaluación de la Señal Global
         if row['Activa']:
@@ -297,34 +277,56 @@ def main_comparison():
             if not regla_cumplida:
                 senal_entrada_global_interactiva = False
 
-    # --- 6. Mostrar la Tabla con el Resultado de Cumplimiento ---
+    # --- 7. Añadir la Fila de Resultado Final ---
     
-    # Creamos una versión de la tabla solo para visualización con formato de color
-    df_final_display = df_config_display[['Activa', 'Regla', 'Umbral', 'Valor Actual', 'Cumple']].copy()
-
+    if num_reglas_activas == 0:
+        res_final = "INACTIVA (0 Reglas Activas)"
+        senal_color = "background-color: #AAAAAA; color: black"
+    elif senal_entrada_global_interactiva:
+        res_final = f"SEÑAL ACTIVA (✓ {num_reglas_activas} Reglas)"
+        senal_color = "background-color: #008000; color: white"
+    else:
+        res_final = f"SEÑAL DENEGADA (X {num_reglas_activas} Reglas)"
+        senal_color = "background-color: #8B0000; color: white"
+        
+    # Crear la fila de resumen
+    fila_resumen = pd.DataFrame([{
+        'Regla': 'RESULTADO FINAL HEDGEHOG', 
+        'Operador': 'ALL', 
+        'Umbral': '-', 
+        'Valor Actual': '-', 
+        'Activa': True, 
+        'Cumple': res_final,
+        'ID': 'FINAL'
+    }])
+    
+    # Añadir al DataFrame final
+    df_final_display_con_resumen = pd.concat([df_config_final, fila_resumen], ignore_index=True)
+    
+    # --- 8. Mostrar la Tabla Final con Formato ---
+    
     # Función para dar formato de color
-    def color_cumple(val):
-        color = 'background-color: #008000; color: white' if val == 'SÍ' else 'background-color: #8B0000; color: white'
-        return color
-
-    st.markdown("### Estado Actual de las Reglas:")
-    st.dataframe(
-        df_final_display.style.applymap(color_cumple, subset=['Cumple']),
-        hide_index=True,
-        use_container_width=True
-    )
-    
-    # --- 7. Conclusión Final en Recuadro Destacado ---
-    st.markdown("---")
-    st.subheader("Resultado Final del Sistema HEDGEHOG 🎯")
-    
-    with st.container(border=True):
-        if num_reglas_activas == 0:
-            st.info("ℹ️ **NO HAY REGLAS ACTIVAS.** Active al menos una regla en la columna ON/OFF para evaluar la señal.")
-        elif senal_entrada_global_interactiva:
-            st.success(f"🎉 **¡SEÑAL DE ENTRADA ACTIVA!** Se cumplen todas las **{num_reglas_activas}** reglas activas actualmente.")
+    def color_cumple(row):
+        styles = pd.Series('background-color: white', index=row.index)
+        
+        # Colorear la fila de resultado final
+        if row['ID'] == 'FINAL':
+            styles[:] = senal_color
+        # Colorear solo la columna 'Cumple' para las reglas individuales
+        elif row['Cumple'] == 'SÍ':
+            styles['Cumple'] = 'background-color: #008000; color: white'
         else:
-            st.error(f"❌ **SEÑAL DE ENTRADA DENEGADA.** No se cumplen todas las **{num_reglas_activas}** reglas activas. Revise la columna 'Cumple'.")
+            styles['Cumple'] = 'background-color: #8B0000; color: white'
+            
+        return styles
+
+    st.markdown("### Evaluación de Condiciones y Señal de Entrada 🎯")
+    st.dataframe(
+        df_final_display_con_resumen.drop(columns=['ID']),
+        hide_index=True,
+        use_container_width=True,
+    ).add_rows(df_final_display_con_resumen.drop(columns=['ID']).style.apply(color_cumple, axis=1))
+
 
     st.markdown("---")
     # ----------------------------------------------------------------------
@@ -332,22 +334,18 @@ def main_comparison():
     # ----------------------------------------------------------------------
 
     # Mostrar la conclusión operativa (original, ahora solo texto explicativo)
-    st.subheader("Conclusión Operativa (Original)")
+    st.subheader("Conclusión Operativa (Original K=3)")
 
     if prob_k3_consolidada >= results_k3['UMBRAL_COMPRESION']:
-        st.success(f"**SEÑAL DE ENTRADA FUERTE (K=3):** El riesgo de Alta Volatilidad es bajo. La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, mayor de 0.70. Condición Favorable para estrategias de Theta.")
+        st.success(f"**SEÑAL DE ENTRADA FUERTE (K=3):** La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, mayor de 0.70. Condición Favorable para estrategias de Theta.")
     else:
-        st.warning(f"**RIESGO ACTIVO (K=3):** La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, menor de 0.70. El Régimen de Alta Volatilidad ha tomado peso. Evitar entrar o considerar salir.")
+        st.warning(f"**RIESGO ACTIVO (K=3):** La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, menor de 0.70. Evitar entrar o considerar salir.")
     
     st.markdown("""
     ---
     ### Entendiendo la Diferencia Clave
     
-    El **Modelo K=2** combina toda la volatilidad no-crisis en una única señal de 'Baja', lo que le hace propenso a **falsos positivos**.
-    
-    El **Modelo K=3** descompone la 'Baja' volatilidad en dos estados: 'Baja' (Calma Extrema) y 'Media' (Consolidación). 
-    
-    La **Probabilidad Consolidada (Baja + Media)** del K=3 ofrece una señal de entrada/salida más robusta: solo da luz verde cuando la suma de los dos estados favorables supera el 70%, actuando como un **filtro más estricto contra el ruido** que el K=2 ignora.
+    El **Modelo K=3** descompone la 'Baja' volatilidad en dos estados: 'Baja' y 'Media', ofreciendo una **señal consolidada más robusta** que el modelo K=2.
     """)
 
 
