@@ -87,7 +87,7 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
             if not regla_cumplida:
                 senal_entrada_global_interactiva = False
 
-    # --- Creación de la Tabla de Presentación Final ---
+    # --- Creación de la Tabla de Presentación Final (Cuerpo) ---
     
     # Se incluye la columna 'Activa' para que la función de estilo pueda leer su estado
     df_presentacion = df_config_calc[['Activa', 'Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple', 'ID']].copy()
@@ -98,29 +98,28 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
         res_final = "INACTIVA (0 Reglas Activas)"
         senal_color = "background-color: #AAAAAA; color: black"
     elif senal_entrada_global_interactiva:
-        # Petición: Quitar el texto de la línea final (Semáforo Global)
+        # Petición: Quitar el texto
         res_final = "" 
         senal_color = "background-color: #008000; color: white" # Verde
     else:
-        num_reglas_fallidas = num_reglas_activas - sum(df_config_calc.loc[df_config_calc['Activa'], 'Cumple'] == 'SÍ')
-        res_final = f"SEÑAL DENEGADA (X {num_reglas_fallidas} de {num_reglas_activas} Fallaron)"
+        # Petición: Quitar el texto también para la señal DENEGADA (roja)
+        res_final = "" # <-- VACÍO
         senal_color = "background-color: #8B0000; color: white" # Rojo
         
     # Crear la fila de resumen (Semáforo Global)
     fila_resumen = pd.DataFrame([{
-        'Activa': False, # No tiene sentido que esté activa
+        'Activa': False, 
         'Regla': '🚥 SEMÁFORO GLOBAL HEDGEHOG 🚥', 
         'Operador': 'ALL', 
         'Umbral': '-', 
         'Valor Actual': '-', 
-        'Cumple': res_final,
+        'Cumple': res_final, # <-- Ya está vacío
         'ID': 'FINAL' 
     }])
     
-    df_final_display_con_resumen = pd.concat([df_presentacion, fila_resumen], ignore_index=True)
-    
-    # Guardar el DataFrame final para visualización
-    st.session_state['df_semaforo_final'] = df_final_display_con_resumen
+    # Guardar los DataFrames separados para visualización
+    st.session_state['df_semaforo_body'] = df_presentacion # Las filas de las reglas
+    st.session_state['df_semaforo_footer'] = fila_resumen # La fila final
     st.session_state['senal_color'] = senal_color
 
 
@@ -321,42 +320,59 @@ def main_comparison():
     st.markdown("### Tabla Consolidada de Lógica y Resultado 🚦")
     
     # Mostrar la tabla consolidada solo si ya se ha calculado
-    if 'df_semaforo_final' in st.session_state:
-        df_final_display_con_resumen = st.session_state['df_semaforo_final']
+    if 'df_semaforo_body' in st.session_state:
+        df_body = st.session_state['df_semaforo_body']
+        df_footer = st.session_state['df_semaforo_footer']
         senal_color = st.session_state['senal_color']
         
-        # Función para dar formato de color
-        def color_cumple(row):
+        # 1. Función para dar formato de color del Cuerpo (Body)
+        def color_cumple_body(row):
             styles = pd.Series('', index=row.index)
             
-            # Aplica el color del semáforo global
-            if row['ID'] == 'FINAL':
-                styles[:] = senal_color
-            
-            # Solo aplica color si la regla estaba ACTIVA (la columna 'Activa' todavía existe aquí)
-            elif row['Activa']: 
+            # Solo aplica color si la regla estaba ACTIVA
+            if row['Activa']: 
                 if row['Cumple'] == 'SÍ':
                     styles['Cumple'] = 'background-color: #008000; color: white'
                 else:
                     styles['Cumple'] = 'background-color: #8B0000; color: white'
             
-            # Si no está activa, no aplica ningún estilo
-            
             return styles
 
-        # 💥 CORRECCIÓN: Aplicar el estilo al DataFrame COMPLETO.
-        styled_df = df_final_display_con_resumen.style.apply(color_cumple, axis=1)
+        # 2. Estilizar y MOSTRAR el Cuerpo de la tabla
+        styled_df_body = df_body.style.apply(color_cumple_body, axis=1)
 
-        # Usamos CSS para centrar el texto en las celdas
-        styled_df = styled_df.set_properties(**{'text-align': 'center'}, 
+        styled_df_body = styled_df_body.set_properties(**{'text-align': 'center'}, 
                                             subset=['Operador', 'Umbral', 'Valor Actual', 'Cumple'])
         
-        # La columna 'Activa' se oculta porque no está en 'column_order'
         st.dataframe(
-            styled_df,
+            styled_df_body,
             hide_index=True,
             use_container_width=True,
             # Se omite 'Activa' para que no se muestre
+            column_order=('Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'), 
+            column_config={'ID': st.column_config.Column(disabled=True, width="tiny")} 
+        )
+
+        # 3. AÑADIR ESPACIO Y MOSTRAR EL PIE (FOOTER)
+        st.markdown("<br>", unsafe_allow_html=True) # <-- Espacio de separación
+
+        # Función de estilo para el Pie (Aplica el color global a toda la fila)
+        def color_cumple_footer(row):
+            styles = pd.Series('', index=row.index)
+            styles[:] = senal_color # Aplica el color a todas las celdas de la fila
+            return styles
+        
+        # Eliminamos 'Activa' para el footer ya que no se usa en el estilo (sólo en el body)
+        styled_df_footer = df_footer.drop(columns=['Activa']).style.apply(color_cumple_footer, axis=1)
+        
+        # Centralizar el texto del pie de página
+        styled_df_footer = styled_df_footer.set_properties(**{'text-align': 'center'}, 
+                                            subset=['Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'])
+
+        st.dataframe(
+            styled_df_footer,
+            hide_index=True,
+            use_container_width=True,
             column_order=('Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'), 
             column_config={'ID': st.column_config.Column(disabled=True, width="tiny")} 
         )
