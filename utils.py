@@ -49,20 +49,20 @@ def check_password():
                 "Contraseña", type="password", on_change=password_entered, key="password"
             )
         return False
-
+        
     elif not st.session_state["password_correct"]:
-        # Contraseña incorrecta: Mostrar formulario y error
+        # Contraseña NO correcta: Mostrar formulario y mensaje de error
         with st.sidebar:
             st.text_input("Usuario", on_change=password_entered, key="username")
             st.text_input(
                 "Contraseña", type="password", on_change=password_entered, key="password"
             )
-            st.error("😕 Usuario o Contraseña incorrecta")
+            st.error("😕 Usuario o Contraseña incorrecta") # <-- Mensaje de error clave
         return False
 
     else:
-        # Credenciales correctas
-        return True
+        # Credenciales CORRECTAS. Permitir el acceso.
+        return True # <-- Devuelve True para que home.py ejecute la app
 
 @st.cache_data(ttl=86400)
 def fetch_data():
