@@ -35,8 +35,8 @@ def get_default_config_df(rv5d_ayer_val):
         'Operador': ['==', '>=', '>=', '>=', '>=', '<=', '<'],
         # Umbrales
         'Umbral': ['ON', '0.9000', '0.7500', '0.1500', '0.9500', '0.1000', 'RV_AYER'], 
-        # Activación (R1, R2, R5, R6, R7 en ON. R3, R4 en OFF)
-        'Activa': [True, True, False, False, True, True, True], 
+        # Activación (R7 ahora en OFF por defecto)
+        'Activa': [True, True, False, False, True, True, False], 
         'ID': ['r1_nr_wr', 'r2_k2_70', 'r3_k3_media_75', 'r4_k3_baja_15', 'r5_k3_consol_95', 'r6_rv5d_10', 'r7_rv5d_menor']
     }
     return pd.DataFrame(default_config_data)
@@ -55,7 +55,7 @@ def reset_config_callback(rv5d_ayer_val):
 # ==============================================================================
 
 def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
-    """Calcula el estado de cada regla y el resultado global del Semáforo."""
+    """Calcula el estado de cada regla y el resultado global del Semáforo (Lógica Conjunta AND)."""
     
     df_config_calc = df_config.copy()
     
@@ -91,14 +91,12 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
         
         # Lógica de Cumplimiento
         if row['ID'] == 'r1_nr_wr':
-            # NR/WR: Compara si la señal actual (True/False) cumple con el umbral 'ON'/'OFF'
             if umbral_str == 'ON':
                 regla_cumplida = metrica_actual 
             elif umbral_str == 'OFF':
                 regla_cumplida = not metrica_actual
         
         elif row['ID'] == 'r7_rv5d_menor':
-            # RV_5d HOY vs AYER
             regla_cumplida = metrica_actual < rv5d_ayer
             
         else: # Reglas de probabilidad y RV_5d (FLOAT)
@@ -118,7 +116,7 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
              df_config_calc.loc[index, 'Cumple'] = "INACTIVA"
 
 
-        # Evaluación de la Señal Global
+        # Evaluación de la Señal Global (Lógica Conjunta: AND)
         if row['Activa']:
             num_reglas_activas += 1
             if not regla_cumplida:
@@ -292,7 +290,7 @@ def main_comparison():
     # --- 3. CONFIGURACIÓN DE TODAS LAS REGLAS (DATA EDITOR UNIFICADO) ---
     st.markdown("##### Configuración de Reglas (NR/WR, Volatilidad y Markov)")
 
-    # Botón de Reset AÑADIDO AQUÍ
+    # Botón de Reset
     st.button(
         "⚙️ Resetear a Valores por Defecto", 
         help="Restaura la configuración de reglas a los umbrales predefinidos.", 
@@ -350,7 +348,7 @@ def main_comparison():
         def color_cumple_body(row):
             styles = pd.Series('', index=row.index)
             
-            # Solo aplica color si la regla estaba ACTIVA y no está Inactiva (es decir, fue calculada)
+            # Aplica color si la regla fue calculada (SÍ o NO)
             if row['Cumple'] == 'SÍ':
                 styles['Cumple'] = 'background-color: #008000; color: white'
             elif row['Cumple'] == 'NO':
