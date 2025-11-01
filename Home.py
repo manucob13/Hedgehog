@@ -11,10 +11,14 @@ from utils import (
     markov_calculation_k3
 )
 
+# --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="HEDGEHOG 1.1", layout="wide")
-st.title("🔬 HEDGEHOG 1.1     Modelos de Volatilidad - Markov-Switching K=2-3 - NR/WR")
+
+# --- TÍTULO PRINCIPAL CON ICONO Y TAMAÑO MODIFICADO ---
+# Se utiliza st.markdown y HTML para hacer el icono 🦔 más grande.
+st.markdown("<h1><span style='font-size: 1.5em;'>🦔</span> HEDGEHOG 1.1 Modelos de Volatilidad - Markov-Switching K=2-3 - NR/WR</h1>", unsafe_allow_html=True)
 st.markdown("""
-Esta herramienta ejecuta y compara dos modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
+Esta herramienta ejecuta y compara dos modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
 del S&P 500 y añade la señal de compresión **NR/WR (Narrow Range after Wide Range)** como indicador auxiliar.
 """)
 
