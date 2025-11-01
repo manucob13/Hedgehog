@@ -538,24 +538,25 @@ fig_combined.update_xaxes(showticklabels=False, row=4, col=1)
 # 5. GRÁFICO DE SEÑAL NR/WR (Fila 5)
 # ----------------------------------------------------
 
-fig_combined.add_trace(go.Scatter(
+fig_combined.add_trace(go.Bar(
     x=list(range(len(spx_filtered))),
     y=nr_wr_filtered,
-    mode='lines',
     name='Señal NR/WR', 
-    line=dict(color='#FF6B35', width=2),
-    fill='tozeroy', 
-    fillcolor='rgba(255, 107, 53, 0.3)',
+    marker=dict(
+        color='#FF6B35',
+        line=dict(width=0)
+    ),
     hoverinfo='text',
     text=[f"NR/WR: {'ACTIVA' if s > 0 else 'INACTIVA'}" for s in nr_wr_filtered],
-    showlegend=True 
+    showlegend=True,
+    width=0.8  # Ancho de las barras (0.8 = 80% del espacio disponible)
 ), row=5, col=1)
 
 # Línea de referencia en 0.5 para separar visualmente ACTIVA/INACTIVA
 fig_combined.add_shape(
     type="line",
-    x0=0, y0=0.5,
-    x1=len(spx_filtered) - 1, y1=0.5,
+    x0=-0.5, y0=0.5,
+    x1=len(spx_filtered) - 0.5, y1=0.5,
     line=dict(color="#AAAAAA", width=1, dash="dot"),
     layer="below",
     row=5, col=1
@@ -575,54 +576,7 @@ fig_combined.add_annotation(
     row=5, col=1
 )
 
-fig_combined.update_yaxes(title_text='NR/WR', row=5, col=1, range=[0, 1], tickvals=[0, 1], ticktext=['OFF', 'ON'])
-
-# --- CONFIGURACIÓN FINAL DEL GRÁFICO COMBINADO ---
-fig_combined.update_layout(
-    template='plotly_dark',
-    height=1100, 
-    xaxis_rangeslider_visible=False,
-    hovermode='x unified',
-    plot_bgcolor='#131722', 
-    paper_bgcolor='#131722', 
-    font=dict(color='#AAAAAA'),
-    margin=dict(t=50, b=100, l=60, r=40),
-    showlegend=True,
-    legend=dict(
-        orientation="v",
-        yanchor="top",
-        y=1, 
-        xanchor="left",
-        x=0.01, 
-        bgcolor="rgba(0,0,0,0.5)",
-        bordercolor="rgba(255,255,255,0.1)",
-        borderwidth=1,
-        font=dict(size=10)
-    )
-)
-
-# Configurar el eje X compartido (solo las etiquetas inferiores, ahora en la Fila 5)
-fig_combined.update_xaxes(
-    tickmode='array',
-    tickvals=list(range(len(spx_filtered))),
-    ticktext=date_labels,
-    tickangle=-45,
-    row=5, col=1, 
-    showgrid=False
-)
-
-# Configuraciones adicionales para ejes en tema oscuro
-fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=1, col=1)
-fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=1, col=1)
-fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=2, col=1)
-fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=2, col=1)
-fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=3, col=1)
-fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=3, col=1)
-fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=4, col=1)
-fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=4, col=1)
-fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=5, col=1)
-fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=5, col=1)
-
+fig_combined.update_yaxes(title_text='NR/WR', row=5, col=1, range=[0, 1.05], tickvals=[0, 1], ticktext=['OFF', 'ON'])
 
 st.plotly_chart(fig_combined, use_container_width=True)
 
