@@ -39,7 +39,7 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
 
     df_config_calc['Umbral_Calc'] = df_config_calc['Umbral'].apply(safe_float_convert)
     
-    # 💥 CORRECCIÓN CRUCIAL: Añadir la columna 'Valor Actual' ANTES de usarla
+    # Añadir la columna 'Valor Actual'
     df_config_calc['Valor Actual'] = df_config_calc['ID'].apply(lambda id: 
         (metricas_actuales[id] and '🟢 ACTIVA' or '⚪ INACTIVA') if id == 'r1_nr_wr' else 
         f"{metricas_actuales[id]:.4f}"
@@ -89,19 +89,19 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
 
     # --- Creación de la Tabla de Presentación Final ---
     
-    # Ya tenemos todas las columnas necesarias, incluyendo 'Valor Actual' y 'Cumple'
+    # Solo incluimos las columnas necesarias, OMITIENDO 'Activa' para la visualización final
     df_presentacion = df_config_calc[['Activa', 'Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple', 'ID']].copy()
-
-    # Quitar el texto de la columna 'Activa' si es False
-    df_presentacion['Activa'] = df_presentacion['Activa'].apply(lambda x: '✓' if x else '')
+    
+    # Se añade la columna 'Activa' al DataFrame para que la función de estilo pueda leer su estado
+    # (aunque la columna se omita después en el 'column_order')
     
     # Determinar el resultado global y el color del semáforo
     if num_reglas_activas == 0:
         res_final = "INACTIVA (0 Reglas Activas)"
         senal_color = "background-color: #AAAAAA; color: black"
     elif senal_entrada_global_interactiva:
-        # Simplificación solicitada: Solo "SEÑAL ACTIVA"
-        res_final = "SEÑAL ACTIVA" 
+        # CORRECCIÓN 3: Quitar el texto de la línea final (Semáforo Global)
+        res_final = "" # Dejar vacío para que solo se vea el color
         senal_color = "background-color: #008000; color: white" # Verde
     else:
         num_reglas_fallidas = num_reglas_activas - sum(df_config_calc.loc[df_config_calc['Activa'], 'Cumple'] == 'SÍ')
@@ -110,7 +110,7 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
         
     # Crear la fila de resumen (Semáforo Global)
     fila_resumen = pd.DataFrame([{
-        'Activa': 'TOTAL', 
+        'Activa': False, # No tiene sentido que esté activa
         'Regla': '🚥 SEMÁFORO GLOBAL HEDGEHOG 🚥', 
         'Operador': 'ALL', 
         'Umbral': '-', 
@@ -296,7 +296,6 @@ def main_comparison():
         'ID': None
     }
     
-    # Aquí solo se añade 'Valor Actual' a la versión editable temporal
     df_reglas_editables['Valor Actual'] = df_reglas_editables['ID'].apply(lambda id: f"{metricas_actuales[id]:.4f}")
     
     edited_df_2_7 = st.data_editor(
@@ -332,26 +331,36 @@ def main_comparison():
         def color_cumple(row):
             styles = pd.Series('', index=row.index)
             
+            # Aplica el color del semáforo global
             if row['ID'] == 'FINAL':
                 styles[:] = senal_color
-            elif row['Cumple'] == 'SÍ':
-                styles['Cumple'] = 'background-color: #008000; color: white'
-            else:
-                styles['Cumple'] = 'background-color: #8B0000; color: white'
-                
+            
+            # Solo aplica color si la regla estaba ACTIVA (columna 'Activa' es True/False)
+            elif row['Activa']: 
+                if row['Cumple'] == 'SÍ':
+                    styles['Cumple'] = 'background-color: #008000; color: white'
+                else:
+                    styles['Cumple'] = 'background-color: #8B0000; color: white'
+            
+            # Si no está activa, no aplica ningún estilo (queda en blanco/gris)
+            
             return styles
 
-        styled_df = df_final_display_con_resumen.style.apply(color_cumple, axis=1)
+        # Ocultamos la columna Activa antes de aplicar estilos y visualización
+        df_display = df_final_display_con_resumen.drop(columns=['Activa'])
+        
+        styled_df = df_display.style.apply(color_cumple, axis=1)
 
         # Usamos CSS para centrar el texto en las celdas
         styled_df = styled_df.set_properties(**{'text-align': 'center'}, 
-                                            subset=['Activa', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'])
+                                            subset=['Operador', 'Umbral', 'Valor Actual', 'Cumple'])
         
+        # CORRECCIÓN 1: Se quitó 'Activa' del column_order
         st.dataframe(
             styled_df,
             hide_index=True,
             use_container_width=True,
-            column_order=('Activa', 'Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'),
+            column_order=('Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'),
             column_config={'ID': st.column_config.Column(disabled=True, width="tiny")} 
         )
     else:
