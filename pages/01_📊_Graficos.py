@@ -343,7 +343,7 @@ fig_combined.update_layout(
     template='plotly_dark',
     height=1100, 
     xaxis_rangeslider_visible=False,
-    hovermode='x',
+    hovermode='x unified',  # ← CAMBIO CLAVE: volver a 'x unified'
     plot_bgcolor='#131722', 
     paper_bgcolor='#131722', 
     font=dict(color='#AAAAAA'),
@@ -363,18 +363,20 @@ fig_combined.update_layout(
 )
 
 # --- CONFIGURAR LÍNEA VERTICAL (SPIKE) QUE CRUZA TODOS LOS GRÁFICOS ---
+# La clave es usar 'x unified' en hovermode y configurar los spikes correctamente
 for i in range(1, 6):
     fig_combined.update_xaxes(
         showspikes=True,
-        spikemode='across',
+        spikemode='across',  # La línea cruza horizontalmente cada subplot
         spikesnap='cursor',
-        spikecolor='rgba(255, 255, 255, 0.5)',
+        spikecolor='rgba(255, 255, 255, 0.6)',
         spikethickness=1,
         spikedash='dot',
         row=i, 
         col=1
     )
 
+# Deshabilitar spikes en el eje Y
 for i in range(1, 6):
     fig_combined.update_yaxes(
         showspikes=False,
