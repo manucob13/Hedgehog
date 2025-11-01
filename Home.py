@@ -9,21 +9,16 @@ from utils import (
     calculate_nr_wr_signal,
     calculate_nr_wr_signal_series,
     markov_calculation_k2,
-    markov_calculation_k3
+    markov_calculation_k3,
+    # === AÑADIR LA FUNCIÓN DE AUTENTICACIÓN ===
+    check_password 
 )
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="HEDGEHOG 1.1", layout="wide")
 
-# --- TÍTULO PRINCIPAL CON ICONO Y TAMAÑO MODIFICADO (Erizo) ---
-st.markdown("<h1><span style='font-size: 1.5em;'>🦔</span> HEDGEHOG 1.1 Modelos de Volatilidad - Markov-Switching K=2-3 - NR/WR</h1>", unsafe_allow_html=True)
-st.markdown("""
-Esta herramienta ejecuta y compara dos modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
-del S&P 500 y añade la señal de compresión **NR/WR (Narrow Range after Wide Range)** como indicador auxiliar.
-""")
-
 # ==============================================================================
-# LÓGICA DE CONFIGURACIÓN Y VALORES POR DEFECTO
+# LÓGICA DE CONFIGURACIÓN Y VALORES POR DEFECTO (NO ES NECESARIO TOCAR ESTO)
 # ==============================================================================
 
 def get_default_config_df(rv5d_ayer_val):
@@ -153,10 +148,18 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
 
 
 # ==============================================================================
-# FUNCIÓN PRINCIPAL
+# FUNCIÓN PRINCIPAL (CONTENIDO DE LA APP)
 # ==============================================================================
 
 def main_comparison():
+    
+    # --- TÍTULO PRINCIPAL CON ICONO Y TAMAÑO MODIFICADO (Erizo) ---
+    st.markdown("<h1><span style='font-size: 1.5em;'>🦔</span> HEDGEHOG 1.1 Modelos de Volatilidad - Markov-Switching K=2-3 - NR/WR</h1>", unsafe_allow_html=True)
+    st.markdown("""
+    Esta herramienta ejecuta y compara dos modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
+    del S&P 500 y añade la señal de compresión **NR/WR (Narrow Range after Wide Range)** como indicador auxiliar.
+    """)
+    st.markdown("---")
     
     st.header("1. Carga y Preparación de Datos")
     
@@ -164,7 +167,8 @@ def main_comparison():
     if st.button("🔄 Forzar Actualización (Limpiar Caché de Datos)"):
         st.cache_data.clear()
         for key in list(st.session_state.keys()):
-            if key not in ('config_df', 'dte_front_days', 'dte_back_days'): # Excluir las variables de entrada del punto 5
+            # Excluir las variables de entrada del punto 5 y la configuración
+            if key not in ('config_df', 'dte_front_days', 'dte_back_days', 'password_correct'): 
                 del st.session_state[key]
         st.rerun()
     
@@ -360,7 +364,7 @@ def main_comparison():
         styled_df_body = df_body.style.apply(color_cumple_body, axis=1)
 
         styled_df_body = styled_df_body.set_properties(**{'text-align': 'center'}, 
-                                            subset=['Operador', 'Umbral', 'Valor Actual', 'Cumple'])
+                                     subset=['Operador', 'Umbral', 'Valor Actual', 'Cumple'])
         
         st.dataframe(
             styled_df_body,
@@ -444,5 +448,19 @@ def main_comparison():
     st.dataframe(df_dte, hide_index=True, use_container_width=True)
     st.markdown("---")
     
+# ==============================================================================
+# PUNTO DE ENTRADA PROTEGIDO
+# ==============================================================================
+
 if __name__ == "__main__":
-    main_comparison()
+    
+    # LLAMADA AL LOGIN (Muestra el formulario si es necesario)
+    if check_password():
+        # SI EL LOGIN ES EXITOSO, EJECUTA LA APP PRINCIPAL
+        main_comparison()
+    else:
+        # Esto es solo si quieres que algo se muestre ANTES del login si falla, 
+        # pero con check_password() el formulario de login se muestra en el sidebar
+        # y el resto de la página queda vacío hasta que se loguee.
+        st.title("🔒 Acceso Restringido")
+        st.info("Por favor, introduce tus credenciales en el menú lateral (sidebar) para acceder a la aplicación.")
