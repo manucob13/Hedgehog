@@ -78,7 +78,8 @@ fig_combined = make_subplots(
     rows=5, 
     cols=1, 
     shared_xaxes=True, 
-    vertical_spacing=0.02,
+    # Usamos un espaciado MÍNIMO para reducir el "corte" visual del spike
+    vertical_spacing=0.005, 
     row_heights=[0.45, 0.13, 0.14, 0.14, 0.14],
 )
 
@@ -342,7 +343,8 @@ fig_combined.update_layout(
     template='plotly_dark',
     height=1100, 
     xaxis_rangeslider_visible=False,
-    hovermode='x unified',
+    # MODO UNIFICADO ES CRUCIAL PARA UN SOLO HOVER BOX
+    hovermode='x unified', 
     plot_bgcolor='#131722', 
     paper_bgcolor='#131722', 
     font=dict(color='#AAAAAA'),
@@ -362,10 +364,9 @@ fig_combined.update_layout(
 )
 
 # ----------------------------------------------------------------------------------
-# CONFIGURACIÓN CLAVE PARA EL SPIKE UNIFICADO SIN ROMPER EL LAYOUT
+# CONFIGURACIÓN DE SPIKE - REVERTIDA AL BUCLE ORIGINAL PERO OPTIMIZADA
 # ----------------------------------------------------------------------------------
 
-# 1. Asegurar que los spikes estén habilitados y configurados en todos los ejes
 for i in range(1, 6):
     fig_combined.update_xaxes(
         showspikes=True,
@@ -386,28 +387,6 @@ for i in range(1, 6):
         col=1
     )
     
-# 2. Añadir un eje X fantasma/superpuesto en la parte superior (row=1)
-# y vincularlo al eje X de la fila 5 ('x5'). 
-# Esto fuerza la continuidad del spike desde la posición superior hasta la inferior.
-fig_combined.update_layout(
-    xaxis=dict(
-        domain=[0.0, 1.0], # Mismo ancho que los demás
-        anchor='y1',
-        overlaying='x5', # Clave: Usar las coordenadas del eje X de la fila 5
-        showticklabels=False,
-        showgrid=False,
-        zeroline=False,
-        showspikes=True, # Habilitar spike en este eje fantasma
-        spikemode='across+toaxis',
-        spikesnap='cursor',
-        spikecolor='rgba(255, 255, 255, 0.6)',
-        spikethickness=1,
-        spikedash='dot',
-    ),
-)
-# Nota: La propiedad 'x' en el layout se usa para el primer eje X por defecto (row=1)
-# ----------------------------------------------------------------------------------
-
 # ----------------------------------------------------------------------------------
 # CONFIGURACIONES DE EJE X (Se mantiene el código para la estética)
 # ----------------------------------------------------------------------------------
@@ -425,7 +404,7 @@ fig_combined.update_xaxes(
 # Configuraciones adicionales para ejes en tema oscuro
 fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=1, col=1)
 fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=1, col=1)
-fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=2, col=1) # Corregido: antes tenía update_yaxes
+fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=2, col=1)
 fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=2, col=1)
 fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=3, col=1)
 fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=3, col=1)
