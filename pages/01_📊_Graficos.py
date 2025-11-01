@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+# ... (El código de setup y carga de datos sigue siendo el mismo) ...
 st.set_page_config(page_title="Gráficos - HEDGEHOG", layout="wide")
 st.title("📊 Gráficos de Análisis Técnico Combinados (K=2, K=3, NR/WR)")
 
@@ -112,6 +113,21 @@ fig_combined.add_trace(go.Candlestick(
 
 fig_combined.update_yaxes(title_text='Precio', row=1, col=1)
 fig_combined.update_xaxes(showticklabels=False, row=1, col=1)
+
+# **AQUÍ ESTÁ LA MODIFICACIÓN CLAVE: EL TRAZO FANTASMA**
+# Añade un trace invisible para forzar el anclaje del spike
+fig_combined.add_trace(go.Scatter(
+    x=list(range(len(spx_filtered))),
+    # Puntos Y arbitrarios, solo necesitamos el rango X completo
+    y=[0] * len(spx_filtered), 
+    mode='lines',
+    name='Spike Anchor',
+    hoverinfo='skip',
+    showlegend=False,
+    # Hacemos el color completamente transparente
+    line=dict(color='rgba(0,0,0,0)'),
+    marker=dict(color='rgba(0,0,0,0)')
+), row=1, col=1)
 
 # ----------------------------------------------------
 # 2. GRÁFICO DE VOLATILIDAD REALIZADA (RV_5d) (Fila 2)
@@ -364,32 +380,37 @@ fig_combined.update_layout(
 )
 
 # ----------------------------------------------------------------------------------
-# CONFIGURACIÓN DE SPIKE - LA CLAVE ESTÁ EN EL MODO Y GROSOR
+# CONFIGURACIÓN DE SPIKE Y EJES
 # ----------------------------------------------------------------------------------
 
-for i in range(1, 6):
-    fig_combined.update_xaxes(
-        showspikes=True,
-        # Usamos 'across+toaxis' para asegurar que la línea toque el eje y cruce el plot area
-        spikemode='across+toaxis', 
-        spikesnap='cursor',
-        # Spike ligeramente más oscuro para ocultar el corte en el fondo negro
-        spikecolor='rgba(255, 255, 255, 0.4)',
-        spikethickness=1.5, # Un poco más grueso ayuda a la continuidad visual
-        spikedash='dot',
-        row=i, 
-        col=1
-    )
+# 1. Aplicar la configuración de spike al EJE X DE LA PRIMERA FILA (x1)
+# El trazo fantasma en row=1 asegura que el spike tenga un anclaje de rango completo.
+fig_combined.update_xaxes(
+    showspikes=True,
+    spikemode='across+toaxis',
+    spikesnap='cursor',
+    spikecolor='rgba(255, 255, 255, 0.4)',
+    spikethickness=1.5,
+    spikedash='dot',
+    # Aplicar SOLO al eje de la primera fila.
+    # Los demás subplots lo heredarán o su propio eje x tendrá el spike.
+    # Al estar el trazo fantasma en row=1, este eje se vuelve el "maestro" del spike continuo.
+    row=1, 
+    col=1
+)
 
-    # Deshabilitar spikes Y
-    fig_combined.update_yaxes(
-        showspikes=False,
-        row=i, 
-        col=1
-    )
-    
+# 2. Deshabilitar spikes en los otros ejes X (filas 2 a 5) para evitar conflictos.
+# Solo dejamos activo el spike del eje principal (x1) que tiene el anclaje fantasma.
+for i in range(2, 6):
+    fig_combined.update_xaxes(showspikes=False, row=i, col=1)
+
+
+# 3. Deshabilitar todos los spikes Y
+fig_combined.update_yaxes(showspikes=False)
+
+
 # ----------------------------------------------------------------------------------
-# CONFIGURACIONES DE EJE X (Se mantiene el código para la estética)
+# CONFIGURACIONES DE EJE X (Estética)
 # ----------------------------------------------------------------------------------
 
 # Configurar el eje X compartido (solo las etiquetas del último plot)
