@@ -87,18 +87,21 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
     # --- Creación de la Tabla de Presentación Final ---
     
     # Incluimos 'ID' para que la función color_cumple pueda acceder a ella
-    # Ahora la columna 'Activa' ya tiene los valores True/False correctos de la edición
     df_presentacion = df_config_calc[['Activa', 'Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple', 'ID']].copy()
+
+    # CORRECCIÓN 1: Quitar el texto de la columna 'Activa' si es False
+    df_presentacion['Activa'] = df_presentacion['Activa'].apply(lambda x: '✓' if x else '')
     
     # Determinar el resultado global y el color del semáforo
     if num_reglas_activas == 0:
         res_final = "INACTIVA (0 Reglas Activas)"
         senal_color = "background-color: #AAAAAA; color: black"
     elif senal_entrada_global_interactiva:
-        res_final = f"SEÑAL DE ENTRADA ACTIVA (✓ {num_reglas_activas} Reglas OK)"
+        # CORRECCIÓN 2: Quitar el contador de la señal activa
+        res_final = "SEÑAL ACTIVA" # Texto mínimo para que solo se vea el color
         senal_color = "background-color: #008000; color: white" # Verde
     else:
-        # Se muestra cuántas reglas de las activas fallaron
+        # Mantenemos el conteo para la señal denegada (útil para debug)
         num_reglas_fallidas = num_reglas_activas - sum(df_config_calc.loc[df_config_calc['Activa'], 'Cumple'] == 'SÍ')
         res_final = f"SEÑAL DENEGADA (X {num_reglas_fallidas} de {num_reglas_activas} Fallaron)"
         senal_color = "background-color: #8B0000; color: white" # Rojo
@@ -176,8 +179,6 @@ def main_comparison():
     results_k3 = datos['results_k3']
     nr_wr_signal_on = datos['nr_wr_signal_on']
     
-    # ... (Secciones 1, 2, y 3) ...
-    
     st.dataframe(spx.tail(2))
     st.markdown("---")
 
@@ -204,29 +205,13 @@ def main_comparison():
     prob_k3_consolidada = results_k3['prob_baja'] + results_k3['prob_media']
 
     data_comparativa = {
-        'Métrica': [
-            'Probabilidad Baja (HOY)', 'Probabilidad Media (HOY)', 'Probabilidad Consolidada (Baja + Media)', 
-            'Umbral de Señal de Entrada (70%)', 'Varianza Régimen Baja', 'Varianza Régimen Media', 
-            'Varianza Régimen Alta', 'Umbral RV_5d Estimado (Para el Régimen Baja)'
-        ],
-        'K=2 (Original)': [
-            f"{results_k2['prob_baja']:.4f}", 'N/A (No existe)', f"{results_k2['prob_baja']:.4f}", 
-            f"{results_k2['UMBRAL_COMPRESION']:.2f}", f"{results_k2['varianzas_regimen']['Baja']:.5f}", 
-            'N/A (No existe)', f"{results_k2['varianzas_regimen']['Alta']:.5f}", 
-            f"{results_k2['UMBRAL_RV5D_P_OBJETIVO']:.4f}"
-        ],
-        'K=3 (Propuesto)': [
-            f"{results_k3['prob_baja']:.4f}", f"{results_k3['prob_media']:.4f}", f"**{prob_k3_consolidada:.4f}**", 
-            f"{results_k3['UMBRAL_COMPRESION']:.2f}", f"{results_k3['varianzas_regimen']['Baja']:.5f}", 
-            f"{results_k3['varianzas_regimen']['Media']:.5f}", f"{results_k3['varianzas_regimen']['Alta']:.5f}", 
-            'Determinado por Varianza'
-        ]
+        'Métrica': ['Probabilidad Baja (HOY)', 'Probabilidad Media (HOY)', 'Probabilidad Consolidada (Baja + Media)', 'Umbral de Señal de Entrada (70%)', 'Varianza Régimen Baja', 'Varianza Régimen Media', 'Varianza Régimen Alta', 'Umbral RV_5d Estimado (Para el Régimen Baja)'],
+        'K=2 (Original)': [f"{results_k2['prob_baja']:.4f}", 'N/A (No existe)', f"{results_k2['prob_baja']:.4f}", f"{results_k2['UMBRAL_COMPRESION']:.2f}", f"{results_k2['varianzas_regimen']['Baja']:.5f}", 'N/A (No existe)', f"{results_k2['varianzas_regimen']['Alta']:.5f}", f"{results_k2['UMBRAL_RV5D_P_OBJETIVO']:.4f}"],
+        'K=3 (Propuesto)': [f"{results_k3['prob_baja']:.4f}", f"{results_k3['prob_media']:.4f}", f"**{prob_k3_consolidada:.4f}**", f"{results_k3['UMBRAL_COMPRESION']:.2f}", f"{results_k3['varianzas_regimen']['Baja']:.5f}", f"{results_k3['varianzas_regimen']['Media']:.5f}", f"{results_k3['varianzas_regimen']['Alta']:.5f}", 'Determinado por Varianza']
     }
 
     df_comparativa = pd.DataFrame(data_comparativa)
-
     st.dataframe(df_comparativa, hide_index=True, use_container_width=True)
-
     st.markdown("---")
 
     # ----------------------------------------------------------------------
@@ -331,7 +316,6 @@ def main_comparison():
     
     # BOTÓN DE CÁLCULO EXPLÍCITO
     if st.button("🚀 Recalcular Semáforo Consolidado"):
-        # La función de cálculo ahora utiliza el df_config actualizado en session_state
         calcular_y_mostrar_semaforo(st.session_state['config_df'], metricas_actuales, rv5d_ayer)
     
     st.markdown("### Tabla Consolidada de Lógica y Resultado 🚦")
@@ -359,12 +343,13 @@ def main_comparison():
         # Usamos CSS para centrar el texto en las celdas
         styled_df = styled_df.set_properties(**{'text-align': 'center'}, 
                                             subset=['Activa', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'])
-
+        
         st.dataframe(
             styled_df,
             hide_index=True,
             use_container_width=True,
             column_order=('Activa', 'Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'),
+            # Ocultamos 'ID'
             column_config={'ID': st.column_config.Column(disabled=True, width="tiny")} 
         )
     else:
