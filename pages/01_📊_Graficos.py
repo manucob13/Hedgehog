@@ -50,6 +50,7 @@ spx_filtered = spx_filtered[spx_filtered.index.dayofweek < 5]
 
 # --- PREPARACIÓN DE DATOS PARA GRÁFICO COMBINADO ---
 
+# Etiquetado del eje X
 date_labels = [d.strftime('%b %d') if i % 5 == 0 else '' for i, d in enumerate(spx_filtered.index)]
 date_labels[0] = spx_filtered.index[0].strftime('%b %d')
 date_labels[-1] = spx_filtered.index[-1].strftime('%b %d')
@@ -70,8 +71,8 @@ nr_wr_filtered = nr_wr_series.reindex(spx_filtered.index).fillna(0)
 UMBRAL_ALERTA = 0.50 
 UMBRAL_COMPRESION = results_k2['UMBRAL_COMPRESION']
 
-# Preparar las fechas formateadas para el hover
-fechas_formateadas = spx_filtered.index.strftime('%Y-%m-%d').tolist()
+# Modificación clave: Formato de fecha para el hover (DÍA-MES-AÑO)
+fechas_formateadas = spx_filtered.index.strftime('%d-%m-%Y').tolist()
 
 # --- CREAR SUBPLOTS (5 FILAS) ---
 fig_combined = make_subplots(
@@ -85,6 +86,8 @@ fig_combined = make_subplots(
 # ----------------------------------------------------
 # 1. GRÁFICO DE VELAS JAPONESAS (Fila 1)
 # ----------------------------------------------------
+
+# La lista hover_text_candles usa la nueva variable fechas_formateadas
 hover_text_candles = [
     f"<b>{fecha}</b><br>Open: {o:.2f}<br>High: {h:.2f}<br>Low: {l:.2f}<br>Close: {c:.2f}"
     for fecha, o, h, l, c in zip(
@@ -134,7 +137,7 @@ fig_combined.add_trace(go.Scatter(
     mode='markers',
     marker=dict(size=0.1, color='rgba(0,0,0,0)'),
     name='RV',
-    customdata=[[fecha] for fecha in fechas_formateadas],
+    customdata=[[fecha] for fecha in fechas_formateadas], # Usa fechas_formateadas
     hovertemplate='<b>%{customdata[0]}</b><br>RV: %{y:.2f}%<extra></extra>',
     showlegend=True
 ), row=2, col=1)
@@ -174,7 +177,7 @@ fig_combined.add_trace(go.Scatter(
     line=dict(color='#8A2BE2', width=2),
     fill='tozeroy', 
     fillcolor='rgba(138, 43, 226, 0.3)',
-    customdata=[[fecha] for fecha in fechas_formateadas],
+    customdata=[[fecha] for fecha in fechas_formateadas], # Usa fechas_formateadas
     hovertemplate='<b>%{customdata[0]}</b><br>Prob. Baja K=2: %{y:.4f}<extra></extra>',
     showlegend=True 
 ), row=3, col=1)
@@ -240,7 +243,7 @@ fig_combined.add_trace(go.Scatter(
     line=dict(color='#00FF7F', width=2),
     fill='tozeroy', 
     fillcolor='rgba(0, 255, 127, 0.3)',
-    customdata=[[fecha] for fecha in fechas_formateadas],
+    customdata=[[fecha] for fecha in fechas_formateadas], # Usa fechas_formateadas
     hovertemplate='<b>%{customdata[0]}</b><br>Prob. Consolidada K=3: %{y:.4f}<extra></extra>',
     showlegend=True 
 ), row=4, col=1)
@@ -306,7 +309,7 @@ fig_combined.add_trace(go.Bar(
         color='#FF6B35',
         line=dict(width=0)
     ),
-    customdata=[[fecha, 'ACTIVA' if s > 0 else 'INACTIVA'] for fecha, s in zip(fechas_formateadas, nr_wr_filtered)],
+    customdata=[[fecha, 'ACTIVA' if s > 0 else 'INACTIVA'] for fecha, s in zip(fechas_formateadas, nr_wr_filtered)], # Usa fechas_formateadas
     hovertemplate='<b>%{customdata[0]}</b><br>NR/WR: %{customdata[1]}<extra></extra>',
     showlegend=True,
     width=0.8
@@ -342,7 +345,6 @@ fig_combined.update_layout(
     template='plotly_dark',
     height=1100, 
     xaxis_rangeslider_visible=False,
-    # Configuración de hovermode por defecto (o 'x' como se había dejado estable)
     hovermode='x', 
     plot_bgcolor='#131722', 
     paper_bgcolor='#131722', 
