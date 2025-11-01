@@ -78,6 +78,7 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
             df_config_calc.loc[index, 'Cumple'] = "NO"
 
         # Evaluación de la Señal Global
+        # CRUCIAL: Solo contamos y evaluamos si la columna 'Activa' es True
         if row['Activa']:
             num_reglas_activas += 1
             if not regla_cumplida:
@@ -86,6 +87,7 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
     # --- Creación de la Tabla de Presentación Final ---
     
     # Incluimos 'ID' para que la función color_cumple pueda acceder a ella
+    # Ahora la columna 'Activa' ya tiene los valores True/False correctos de la edición
     df_presentacion = df_config_calc[['Activa', 'Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple', 'ID']].copy()
     
     # Determinar el resultado global y el color del semáforo
@@ -96,7 +98,9 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
         res_final = f"SEÑAL DE ENTRADA ACTIVA (✓ {num_reglas_activas} Reglas OK)"
         senal_color = "background-color: #008000; color: white" # Verde
     else:
-        res_final = f"SEÑAL DE ENTRADA DENEGADA (X {num_reglas_activas} Reglas Fallidas)"
+        # Se muestra cuántas reglas de las activas fallaron
+        num_reglas_fallidas = num_reglas_activas - sum(df_config_calc.loc[df_config_calc['Activa'], 'Cumple'] == 'SÍ')
+        res_final = f"SEÑAL DENEGADA (X {num_reglas_fallidas} de {num_reglas_activas} Fallaron)"
         senal_color = "background-color: #8B0000; color: white" # Rojo
         
     # Crear la fila de resumen (Semáforo Global)
@@ -129,16 +133,13 @@ def main_comparison():
     if st.button("🔄 Forzar Actualización (Limpiar Caché de Datos)"):
         st.cache_data.clear()
         for key in list(st.session_state.keys()):
-            # Limpiamos todo excepto el config_df si existe, ya que lo estamos sobreescribiendo
             if key not in ('config_df'): 
                 del st.session_state[key]
         st.rerun()
     
     # --- VERIFICAR SI YA EXISTEN LOS DATOS EN SESSION_STATE ---
-    # La lógica de carga de datos pesados va aquí (misma que antes)
     if 'datos_calculados' not in st.session_state:
-        # ... (Carga de datos y cálculos de Markov) ...
-        # (Se asume que esta sección funciona y no necesita cambios)
+        
         with st.spinner("Descargando datos históricos y calculando indicadores..."):
             df_raw = fetch_data()
             spx = calculate_indicators(df_raw)
@@ -148,7 +149,6 @@ def main_comparison():
             st.error("❌ Error: No se pudieron preparar los datos para el análisis Markov.")
             return
         
-        # --- EJECUTAR CÁLCULOS PESADOS UNA SOLA VEZ ---
         with st.spinner("Ejecutando modelos Markov K=2 y K=3..."):
             results_k2 = markov_calculation_k2(endog_final, exog_tvtp_final)
             results_k3 = markov_calculation_k3(endog_final, exog_tvtp_final)
@@ -157,15 +157,10 @@ def main_comparison():
             nr_wr_signal_on = calculate_nr_wr_signal(df_raw)
             nr_wr_series = calculate_nr_wr_signal_series(df_raw)
         
-        # --- GUARDAR TODO EN SESSION_STATE ---
         st.session_state['datos_calculados'] = {
-            'df_raw': df_raw,
-            'spx': spx,
-            'endog_final': endog_final,
-            'exog_tvtp_final': exog_tvtp_final,
-            'results_k2': results_k2,
-            'results_k3': results_k3,
-            'nr_wr_signal_on': nr_wr_signal_on,
+            'df_raw': df_raw, 'spx': spx, 'endog_final': endog_final, 
+            'exog_tvtp_final': exog_tvtp_final, 'results_k2': results_k2, 
+            'results_k3': results_k3, 'nr_wr_signal_on': nr_wr_signal_on, 
             'nr_wr_series': nr_wr_series
         }
         st.success("✅ Todos los cálculos completados y guardados en memoria.")
@@ -183,11 +178,9 @@ def main_comparison():
     
     # ... (Secciones 1, 2, y 3) ...
     
-    # --- MOSTRAR VISTA PREVIA (Parte del Punto 1) ---
     st.dataframe(spx.tail(2))
     st.markdown("---")
 
-    # --- INDICADOR NR/WR (Punto 2) ---
     st.header("2. Indicador NR/WR (Narrow Range after Wide Range)")
     
     if nr_wr_signal_on:
@@ -196,10 +189,8 @@ def main_comparison():
         st.info("⚪ **SEÑAL NR/WR:** La compresión de volatilidad está **INACTIVA**. La volatilidad puede ser normal o ya ha explotado.")
     st.markdown("---")
     
-    # --- MODELOS DE MARKOV (Punto 3) ---
     st.header("3. Modelos de Markov")
     
-    # Verificación de resultados
     if 'error' in results_k2:
         st.error(f"❌ Error K=2: {results_k2['error']}")
         return
@@ -210,10 +201,8 @@ def main_comparison():
     st.markdown(f"**Fecha del Último Cálculo:** {endog_final.index[-1].strftime('%Y-%m-%d')}")
     st.markdown("---")
 
-    # Calculo de la probabilidad consolidada K=3
     prob_k3_consolidada = results_k3['prob_baja'] + results_k3['prob_media']
 
-    # Crear DataFrame para la tabla de comparación
     data_comparativa = {
         'Métrica': [
             'Probabilidad Baja (HOY)', 'Probabilidad Media (HOY)', 'Probabilidad Consolidada (Baja + Media)', 
@@ -249,17 +238,9 @@ def main_comparison():
     rv5d_ayer_val = spx["RV_5d"].iloc[-2]
     
     default_config_data = {
-        'Regla': [
-            '1. Señal NR/WR Activa', 
-            '2. Prob. K=2 Baja Vol.', 
-            '3. Prob. K=3 Media Vol.', 
-            '4. Prob. K=3 Baja Vol.', 
-            '5. Prob. K=3 Consolidada', 
-            '6. RV_5d Actual',
-            f'7. RV_5d HOY vs. AYER ({rv5d_ayer_val:.4f})'
-        ],
+        'Regla': ['1. Señal NR/WR Activa', '2. Prob. K=2 Baja Vol.', '3. Prob. K=3 Media Vol.', '4. Prob. K=3 Baja Vol.', '5. Prob. K=3 Consolidada', '6. RV_5d Actual', f'7. RV_5d HOY vs. AYER ({rv5d_ayer_val:.4f})'],
         'Operador': ['==', '>=', '>=', '>=', '>=', '<=', '<'],
-        'Umbral': ['ON', 0.70, 0.75, 0.15, 0.95, 0.10, 'RV_AYER'], # Valor editable
+        'Umbral': ['ON', 0.70, 0.75, 0.15, 0.95, 0.10, 'RV_AYER'], 
         'Activa': [True, True, True, True, True, True, True],
         'ID': ['r1_nr_wr', 'r2_k2_70', 'r3_k3_media_75', 'r4_k3_baja_15', 'r5_k3_consol_95', 'r6_rv5d_10', 'r7_rv5d_menor']
     }
@@ -272,12 +253,9 @@ def main_comparison():
     rv5d_ayer = spx['RV_5d'].iloc[-2]
     
     metricas_actuales = {
-        'r1_nr_wr': nr_wr_signal_on, 
-        'r2_k2_70': results_k2['prob_baja'],
-        'r3_k3_media_75': results_k3['prob_media'],
-        'r4_k3_baja_15': results_k3['prob_baja'],
-        'r5_k3_consol_95': prob_k3_consolidada,
-        'r6_rv5d_10': rv5d_hoy,
+        'r1_nr_wr': nr_wr_signal_on, 'r2_k2_70': results_k2['prob_baja'],
+        'r3_k3_media_75': results_k3['prob_media'], 'r4_k3_baja_15': results_k3['prob_baja'],
+        'r5_k3_consol_95': prob_k3_consolidada, 'r6_rv5d_10': rv5d_hoy,
         'r7_rv5d_menor': rv5d_hoy, 
     }
     
@@ -293,7 +271,6 @@ def main_comparison():
     # --------------------------------------------------------------------------
     st.markdown("##### Regla 1: Señal NR/WR (Selectbox)")
     
-    # Usamos st.columns con tamaños ajustados para hacerlo más pequeño
     col_r1, col_op, col_umbral, col_actual, col_activa = st.columns([4, 1, 2, 2, 1])
     
     with col_r1:
@@ -301,26 +278,19 @@ def main_comparison():
     with col_op:
         st.markdown(df_nr_wr['Operador'])
     with col_umbral:
-        # Selectbox para ON/OFF
         umbral_r1 = st.selectbox(
-            label='Umbral R1',
-            options=['ON', 'OFF'],
+            label='Umbral R1', options=['ON', 'OFF'],
             index=0 if df_nr_wr['Umbral'] == 'ON' else 1,
-            key='umbral_r1_select',
-            label_visibility='collapsed'
+            key='umbral_r1_select', label_visibility='collapsed'
         )
     with col_actual:
         st.markdown(f"<div style='text-align: center; padding-top: 5px;'>**{metricas_actuales['r1_nr_wr'] and '🟢 ACTIVA' or '⚪ INACTIVA'}**</div>", unsafe_allow_html=True)
     with col_activa:
-        # Checkbox ON/OFF
         activa_r1 = st.checkbox(
-            label='Activa R1',
-            value=df_nr_wr['Activa'],
-            key='activa_r1_check',
-            label_visibility='collapsed'
+            label='Activa R1', value=df_nr_wr['Activa'],
+            key='activa_r1_check', label_visibility='collapsed'
         )
         
-    # Actualizar la configuración de la Regla 1 en el DataFrame completo (Persistencia)
     df_config.loc[df_config['ID'] == 'r1_nr_wr', 'Umbral'] = umbral_r1
     df_config.loc[df_config['ID'] == 'r1_nr_wr', 'Activa'] = activa_r1
     
@@ -332,28 +302,25 @@ def main_comparison():
 
     col_config_2_7 = {
         'Regla': st.column_config.TextColumn("Regla (Filtro)", disabled=True),
-        'Operador': st.column_config.TextColumn("Op.", disabled=True, help="Operador lógico"),
-        # Usamos un ancho más pequeño para Umbral
+        'Operador': st.column_config.TextColumn("Op.", disabled=True, width="tiny"),
         'Umbral': st.column_config.NumberColumn("Umbral", format="%.4f", min_value=0.0, max_value=1.0, width="small"),
         'Valor Actual': st.column_config.TextColumn("Valor Actual", disabled=True, width="small"),
-        'Activa': st.column_config.CheckboxColumn("ON/OFF"),
+        'Activa': st.column_config.CheckboxColumn("ON/OFF", width="small"),
         'ID': None
     }
     
-    # Rellenar 'Valor Actual' para las reglas 2-7 antes de mostrar el editor
     df_reglas_editables['Valor Actual'] = df_reglas_editables['ID'].apply(lambda id: f"{metricas_actuales[id]:.4f}")
     
     edited_df_2_7 = st.data_editor(
         df_reglas_editables.drop(columns=['Cumple']), 
         column_config=col_config_2_7,
         hide_index=True,
-        use_container_width=False, # No forzamos el ancho completo
+        use_container_width=False, 
         key='config_editor_2_7'
     )
     
-    # Actualizar la configuración de las Reglas 2-7 en el DataFrame completo (Persistencia)
     df_config.loc[df_config['ID'] != 'r1_nr_wr', ['Umbral', 'Activa']] = edited_df_2_7[['Umbral', 'Activa']].values
-    st.session_state['config_df'] = df_config # Guardar los cambios finales de edición
+    st.session_state['config_df'] = df_config 
     
     
     # --------------------------------------------------------------------------
@@ -364,7 +331,8 @@ def main_comparison():
     
     # BOTÓN DE CÁLCULO EXPLÍCITO
     if st.button("🚀 Recalcular Semáforo Consolidado"):
-        calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer)
+        # La función de cálculo ahora utiliza el df_config actualizado en session_state
+        calcular_y_mostrar_semaforo(st.session_state['config_df'], metricas_actuales, rv5d_ayer)
     
     st.markdown("### Tabla Consolidada de Lógica y Resultado 🚦")
     
@@ -373,13 +341,12 @@ def main_comparison():
         df_final_display_con_resumen = st.session_state['df_semaforo_final']
         senal_color = st.session_state['senal_color']
         
-        # Función para dar formato de color (usa senal_color guardado)
+        # Función para dar formato de color
         def color_cumple(row):
             styles = pd.Series('', index=row.index)
             
             if row['ID'] == 'FINAL':
                 styles[:] = senal_color
-            # Colorear solo la columna 'Cumple' para las reglas individuales
             elif row['Cumple'] == 'SÍ':
                 styles['Cumple'] = 'background-color: #008000; color: white'
             else:
@@ -387,10 +354,9 @@ def main_comparison():
                 
             return styles
 
-        # Aplicar el estilo a la tabla final 
         styled_df = df_final_display_con_resumen.style.apply(color_cumple, axis=1)
 
-        # Usamos CSS para centrar el texto en las celdas (solo para las columnas de datos)
+        # Usamos CSS para centrar el texto en las celdas
         styled_df = styled_df.set_properties(**{'text-align': 'center'}, 
                                             subset=['Activa', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'])
 
@@ -398,7 +364,6 @@ def main_comparison():
             styled_df,
             hide_index=True,
             use_container_width=True,
-            # Ocultamos 'ID' usando column_config
             column_order=('Activa', 'Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'),
             column_config={'ID': st.column_config.Column(disabled=True, width="tiny")} 
         )
@@ -407,10 +372,8 @@ def main_comparison():
 
     st.markdown("---")
     # ----------------------------------------------------------------------
-    # FIN DE LA NUEVA SECCIÓN
-    # ----------------------------------------------------------------------
     
-    # --- SECCIÓN DE CONCLUSIÓN K=3 RESTAURADA ---
+    # --- SECCIÓN DE CONCLUSIÓN K=3 ---
     st.subheader("Conclusión Operativa")
 
     if prob_k3_consolidada >= results_k3['UMBRAL_COMPRESION']:
