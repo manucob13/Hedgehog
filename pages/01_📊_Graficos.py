@@ -85,7 +85,6 @@ fig_combined = make_subplots(
 # ----------------------------------------------------
 # 1. GRÁFICO DE VELAS JAPONESAS (Fila 1)
 # ----------------------------------------------------
-# Para Candlestick, creamos texto personalizado para cada punto
 hover_text_candles = [
     f"<b>{fecha}</b><br>Open: {o:.2f}<br>High: {h:.2f}<br>Low: {l:.2f}<br>Close: {c:.2f}"
     for fecha, o, h, l, c in zip(
@@ -343,7 +342,7 @@ fig_combined.update_layout(
     template='plotly_dark',
     height=1100, 
     xaxis_rangeslider_visible=False,
-    hovermode='x unified',  # ← CAMBIO CLAVE: volver a 'x unified'
+    hovermode='x unified',
     plot_bgcolor='#131722', 
     paper_bgcolor='#131722', 
     font=dict(color='#AAAAAA'),
@@ -363,11 +362,11 @@ fig_combined.update_layout(
 )
 
 # --- CONFIGURAR LÍNEA VERTICAL (SPIKE) QUE CRUZA TODOS LOS GRÁFICOS ---
-# La clave es usar 'x unified' en hovermode y configurar los spikes correctamente
+# Usar paper_ref para que la línea cruce TODOS los subplots verticalmente
 for i in range(1, 6):
     fig_combined.update_xaxes(
         showspikes=True,
-        spikemode='across',  # La línea cruza horizontalmente cada subplot
+        spikemode='across+toaxis',  # across cruza el subplot, toaxis llega hasta el eje
         spikesnap='cursor',
         spikecolor='rgba(255, 255, 255, 0.6)',
         spikethickness=1,
@@ -376,7 +375,6 @@ for i in range(1, 6):
         col=1
     )
 
-# Deshabilitar spikes en el eje Y
 for i in range(1, 6):
     fig_combined.update_yaxes(
         showspikes=False,
@@ -384,7 +382,7 @@ for i in range(1, 6):
         col=1
     )
 
-# Configurar el eje X compartido (solo las etiquetas inferiores, ahora en la Fila 5)
+# Configurar el eje X compartido
 fig_combined.update_xaxes(
     tickmode='array',
     tickvals=list(range(len(spx_filtered))),
