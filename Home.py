@@ -142,14 +142,15 @@ def main_comparison():
     st.markdown("---")
 
     # ----------------------------------------------------------------------
-    # 4. CONFIGURACIÓN DINÁMICA DE SEÑAL Y SEMÁFORO UNIFICADO (CREATIVO)
+    # 4. LÓGICA HEDGEHOG Y SEMÁFORO GLOBAL 🚥 (SOLUCIÓN ROBUSTA)
     # ----------------------------------------------------------------------
     st.header("4. Lógica HEDGEHOG y Semáforo Global 🚥")
 
     # --- 1. Inicializar la lógica de configuración en session_state ---
     rv5d_ayer_val = spx["RV_5d"].iloc[-2]
     
-    default_config_df = pd.DataFrame({
+    # Estructura inicial del DataFrame de configuración
+    default_config_data = {
         'Regla': [
             '1. Señal NR/WR Activa', 
             '2. Prob. K=2 Baja Vol.', 
@@ -163,10 +164,10 @@ def main_comparison():
         'Umbral': ['ON', 0.70, 0.75, 0.15, 0.95, 0.10, 'RV_AYER'], # Valor editable
         'Activa': [True, True, True, True, True, True, True],
         'ID': ['r1_nr_wr', 'r2_k2_70', 'r3_k3_media_75', 'r4_k3_baja_15', 'r5_k3_consol_95', 'r6_rv5d_10', 'r7_rv5d_menor']
-    })
+    }
     
     if 'config_df' not in st.session_state:
-        st.session_state['config_df'] = default_config_df
+        st.session_state['config_df'] = pd.DataFrame(default_config_data)
 
     # --- 2. Extracción de Métricas Clave y Valores ---
     rv5d_hoy = spx['RV_5d'].iloc[-1]
@@ -182,110 +183,92 @@ def main_comparison():
         'r7_rv5d_menor': rv5d_hoy, 
     }
     
-    # --- 3. Pre-procesar el DataFrame para la Interfaz y Lógica ---
-    df_config_display = st.session_state['config_df'].copy()
+    # --- 3. División de Reglas para Manipulación ---
+    df_config = st.session_state['config_df'].copy()
     
-    # Columna que muestra el valor de la métrica que se está comparando
-    df_config_display['Valor Actual'] = df_config_display['ID'].apply(
-        lambda id: "🟢 ACTIVA" if id == 'r1_nr_wr' and metricas_actuales[id] else 
-                   "⚪ INACTIVA" if id == 'r1_nr_wr' else 
-                   f"{metricas_actuales[id]:.4f}"
-    )
+    df_nr_wr = df_config[df_config['ID'] == 'r1_nr_wr'].iloc[0]
+    df_reglas_editables = df_config[df_config['ID'] != 'r1_nr_wr'].reset_index(drop=True)
     
-    df_config_display['Cumple'] = 'NO'
     
-    # --- 4. Definición de Columnas para st.data_editor ---
-    col_config = {
-        'Regla': st.column_config.TextColumn("Regla (Filtro)", disabled=True),
-        'Operador': st.column_config.TextColumn("Op.", disabled=True),
-        'Umbral': st.column_config.TextColumn("Umbral", disabled=False), 
-        'Valor Actual': st.column_config.TextColumn("Valor Actual", disabled=True),
-        'Activa': st.column_config.CheckboxColumn("ON/OFF"),
-        'Cumple': st.column_config.TextColumn("Cumple", disabled=True), # Columna a colorear
-        'ID': None # Ocultar
-    }
-    
-    # Usamos SelectboxColumn para la regla NR/WR
-    if 'r1_nr_wr' in df_config_display['ID'].values:
-        idx_nr_wr = df_config_display.index[df_config_display['ID'] == 'r1_nr_wr'][0]
-        
-        # Sobrescribimos la configuración de columna temporalmente para esta regla
-        # Usamos una columna de texto/número normal para las otras reglas (FLOAT)
-        
-        # En Streamlit, st.data_editor no permite mezclar tipos de inputs por fila
-        # Vamos a usar el truco de la edición por defecto y ajustamos la columna 1 (Umbral)
-        # al tipo de la mayoría (FLOAT/TEXTO) y luego la lógica de validación
-        
-        # Creamos una columna temporal para la regla 1 para forzar el Selectbox
-        temp_df = df_config_display.copy()
-        temp_df.loc[idx_nr_wr, 'Umbral'] = st.column_config.SelectboxColumn(
-            "Umbral",
-            options=['ON', 'OFF'],
-            default=temp_df.loc[idx_nr_wr, 'Umbral']
-        )
-    
-    # --- 5. Mostrar la tabla interactiva y capturar los cambios ---
-    # Usamos el data editor para las 7 reglas (quitamos la regla 1 temporalmente para usar selectbox)
-    df_reglas_editables = df_config_display[df_config_display['ID'] != 'r1_nr_wr'].copy()
-    df_nr_wr = df_config_display[df_config_display['ID'] == 'r1_nr_wr'].copy()
-
-    
-    # Mostrar la regla 1 con Selectbox separada (truco de Streamlit)
+    # --------------------------------------------------------------------------
+    # --- A. CONFIGURACIÓN DE LA REGLA 1 (SELECTBOX) ---
+    # --------------------------------------------------------------------------
     st.markdown("##### Regla 1: Señal NR/WR")
     
-    col_r1, col_op, col_umbral, col_actual, col_cumple, col_activa = st.columns([3, 1, 2, 2, 2, 1])
+    # Creamos las columnas para la visualización de la regla 1
+    col_r1, col_op, col_umbral, col_actual, col_activa = st.columns([4, 1, 2, 2, 1])
     
     with col_r1:
-        st.markdown(df_nr_wr['Regla'].iloc[0])
+        st.markdown(f"**{df_nr_wr['Regla']}**")
     with col_op:
-        st.markdown(df_nr_wr['Operador'].iloc[0])
+        st.markdown(df_nr_wr['Operador'])
     with col_umbral:
+        # Selectbox para ON/OFF
         umbral_r1 = st.selectbox(
-            label=' ',
+            label='Umbral R1',
             options=['ON', 'OFF'],
-            index=0 if df_nr_wr['Umbral'].iloc[0] == 'ON' else 1,
+            index=0 if df_nr_wr['Umbral'] == 'ON' else 1,
             key='umbral_r1_select',
             label_visibility='collapsed'
         )
-        df_nr_wr.loc[idx_nr_wr, 'Umbral'] = umbral_r1
     with col_actual:
-        st.markdown(df_nr_wr['Valor Actual'].iloc[0])
+        # Muestra el valor actual real del indicador NR/WR
+        st.markdown(f"**{metricas_actuales['r1_nr_wr'] and '🟢 ACTIVA' or '⚪ INACTIVA'}**")
     with col_activa:
+        # Checkbox ON/OFF
         activa_r1 = st.checkbox(
-            label=' ',
-            value=df_nr_wr['Activa'].iloc[0],
+            label='Activa R1',
+            value=df_nr_wr['Activa'],
             key='activa_r1_check',
             label_visibility='collapsed'
         )
-        df_nr_wr.loc[idx_nr_wr, 'Activa'] = activa_r1
-
+        
+    # Actualizar la configuración de la Regla 1 en el DataFrame completo
+    df_config.loc[df_config['ID'] == 'r1_nr_wr', 'Umbral'] = umbral_r1
+    df_config.loc[df_config['ID'] == 'r1_nr_wr', 'Activa'] = activa_r1
+    
+    # --------------------------------------------------------------------------
+    # --- B. CONFIGURACIÓN DE REGLAS 2-7 (DATA EDITOR) ---
+    # --------------------------------------------------------------------------
     st.markdown("---")
-    st.markdown("##### Reglas 2-7: Volatilidad y Markov")
+    st.markdown("##### Reglas 2-7: Volatilidad y Markov (Umbral Editable)")
 
-    # Mostrar reglas 2-7 en data_editor
-    col_config_2_7 = {k: v for k, v in col_config.items() if k not in ['ID']}
-    col_config_2_7['Umbral'] = st.column_config.NumberColumn("Umbral", format="%.4f", min_value=0.0, max_value=1.0)
+    col_config_2_7 = {
+        'Regla': st.column_config.TextColumn("Regla (Filtro)", disabled=True),
+        'Operador': st.column_config.TextColumn("Op.", disabled=True),
+        # Umbral como NumberColumn editable para flotantes
+        'Umbral': st.column_config.NumberColumn("Umbral", format="%.4f", min_value=0.0, max_value=1.0),
+        'Valor Actual': st.column_config.TextColumn("Valor Actual", disabled=True),
+        'Activa': st.column_config.CheckboxColumn("ON/OFF"),
+        'ID': None
+    }
+    
+    # Rellenar 'Valor Actual' para las reglas 2-7 antes de mostrar el editor
+    df_reglas_editables['Valor Actual'] = df_reglas_editables['ID'].apply(lambda id: f"{metricas_actuales[id]:.4f}")
     
     edited_df_2_7 = st.data_editor(
-        df_reglas_editables.drop(columns=['ID', 'Cumple']),
+        df_reglas_editables.drop(columns=['Cumple']), # Quitamos Cumple para que se calcule después
         column_config=col_config_2_7,
         hide_index=True,
         use_container_width=True,
         key='config_editor_2_7'
     )
     
-    # Combinar de vuelta la regla 1
-    df_final_config = pd.concat([df_nr_wr.drop(columns=['Cumple']), edited_df_2_7.reset_index(drop=True)], ignore_index=True)
-    st.session_state['config_df'] = df_final_config # Guardar los cambios
+    # Actualizar la configuración de las Reglas 2-7 en el DataFrame completo
+    df_config.loc[df_config['ID'] != 'r1_nr_wr', ['Umbral', 'Activa']] = edited_df_2_7[['Umbral', 'Activa']].values
+    st.session_state['config_df'] = df_config # Guardar los cambios
     
     
-    # --- 6. Recalcular la Señal Global y el Estado 'Cumple' ---
+    # --------------------------------------------------------------------------
+    # --- C. RECALCULAR Y UNIFICAR RESULTADOS (TABLA FINAL Y SEMÁFORO) ---
+    # --------------------------------------------------------------------------
     
     senal_entrada_global_interactiva = True
     num_reglas_activas = 0
-    df_config_final = df_final_config.copy()
-    df_config_final['Cumple'] = 'NO' # Inicializar
-
+    df_config_final = df_config.copy()
+    df_config_final['Cumple'] = 'NO' # Inicializar columna
+    
+    # Itera sobre el DataFrame de configuración (ya actualizado)
     for index, row in df_config_final.iterrows():
         rule_id = row['ID']
         metrica_actual = metricas_actuales[rule_id]
@@ -294,13 +277,13 @@ def main_comparison():
         regla_cumplida = False
         
         # Lógica de Cumplimiento
-        if rule_id == 'r1_nr_wr':
+        if row['ID'] == 'r1_nr_wr':
             if umbral_str == 'ON':
                 regla_cumplida = metrica_actual 
             elif umbral_str == 'OFF':
                 regla_cumplida = not metrica_actual
         
-        elif rule_id == 'r7_rv5d_menor':
+        elif row['ID'] == 'r7_rv5d_menor':
             regla_cumplida = metrica_actual < rv5d_ayer
             
         else: # FLOAT
@@ -311,7 +294,7 @@ def main_comparison():
                 elif operador == '<=':
                     regla_cumplida = metrica_actual <= umbral_float
             except ValueError:
-                regla_cumplida = False
+                regla_cumplida = False # Falla si el umbral no es un número.
 
         # Actualizar columna 'Cumple'
         if regla_cumplida:
@@ -325,10 +308,11 @@ def main_comparison():
             if not regla_cumplida:
                 senal_entrada_global_interactiva = False
 
-    # --- 7. Crear la Tabla de Presentación Final con Semáforo ---
+    # --- 8. Crear la Tabla de Presentación Final con Semáforo ---
     
     df_presentacion = df_config_final[['Activa', 'Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple', 'ID']].copy()
     
+    # Determinar el resultado global y el color del semáforo
     if num_reglas_activas == 0:
         res_final = "INACTIVA (0 Reglas Activas)"
         senal_color = "background-color: #AAAAAA; color: black"
@@ -336,16 +320,16 @@ def main_comparison():
         res_final = f"SEÑAL DE ENTRADA ACTIVA (✓ {num_reglas_activas} Reglas OK)"
         senal_color = "background-color: #008000; color: white" # Verde
     else:
-        res_final = f"SEÑAL DE ENTRADA DENEGADA (X {num_reglas_activas} Reglas)"
+        res_final = f"SEÑAL DE ENTRADA DENEGADA (X {num_reglas_activas} Reglas Fallidas)"
         senal_color = "background-color: #8B0000; color: white" # Rojo
         
     # Crear la fila de resumen (Semáforo Global)
     fila_resumen = pd.DataFrame([{
+        'Activa': 'TOTAL', 
         'Regla': '🚥 SEMÁFORO GLOBAL HEDGEHOG 🚥', 
-        'Operador': '-', 
+        'Operador': 'ALL', 
         'Umbral': '-', 
         'Valor Actual': '-', 
-        'Activa': True, 
         'Cumple': res_final,
         'ID': 'FINAL'
     }])
@@ -367,7 +351,7 @@ def main_comparison():
             
         return styles
 
-    st.markdown("### Evaluación de Condiciones y Señal de Entrada 🎯")
+    st.markdown("### Tabla Consolidada de Lógica y Resultado 🚦")
     
     # Aplicar el estilo a la tabla final
     styled_df = df_final_display_con_resumen.drop(columns=['ID']).style.apply(color_cumple, axis=1)
