@@ -23,6 +23,34 @@ del S&P 500 y añade la señal de compresión **NR/WR (Narrow Range after Wide R
 """)
 
 # ==============================================================================
+# LÓGICA DE CONFIGURACIÓN Y VALORES POR DEFECTO
+# ==============================================================================
+
+def get_default_config_df(rv5d_ayer_val):
+    """Genera el DataFrame de configuración de reglas con los valores por defecto."""
+    
+    # VALORES POR DEFECTO FINALES SOLICITADOS
+    default_config_data = {
+        'Regla': ['1. Señal NR/WR Activa', '2. Prob. K=2 Baja Vol.', '3. Prob. K=3 Media Vol.', '4. Prob. K=3 Baja Vol.', '5. Prob. K=3 Consolidada', '6. RV_5d Actual', f'7. RV_5d HOY vs. AYER ({rv5d_ayer_val:.4f})'],
+        'Operador': ['==', '>=', '>=', '>=', '>=', '<=', '<'],
+        # Umbrales
+        'Umbral': ['ON', '0.9000', '0.7500', '0.1500', '0.9500', '0.1000', 'RV_AYER'], 
+        # Activación (R1, R2, R5, R6, R7 en ON. R3, R4 en OFF)
+        'Activa': [True, True, False, False, True, True, True], 
+        'ID': ['r1_nr_wr', 'r2_k2_70', 'r3_k3_media_75', 'r4_k3_baja_15', 'r5_k3_consol_95', 'r6_rv5d_10', 'r7_rv5d_menor']
+    }
+    return pd.DataFrame(default_config_data)
+
+def reset_config_callback(rv5d_ayer_val):
+    """Callback para el botón de reset: Restaura la configuración de reglas y elimina el semáforo calculado."""
+    st.session_state['config_df'] = get_default_config_df(rv5d_ayer_val)
+    # Eliminar el estado calculado del semáforo para que se fuerce un nuevo cálculo/visualización.
+    for key in ['df_semaforo_body', 'df_semaforo_footer', 'senal_color']:
+        if key in st.session_state:
+            del st.session_state[key]
+    st.rerun()
+
+# ==============================================================================
 # LÓGICA DE CÁLCULO DEL SEMÁFORO (Separada para el botón)
 # ==============================================================================
 
@@ -81,10 +109,14 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
                     regla_cumplida = metrica_actual <= umbral_calc
 
         # Actualizar columna 'Cumple'
-        if regla_cumplida:
-            df_config_calc.loc[index, 'Cumple'] = "SÍ"
+        if row['Activa']: # Solo si la regla está activa
+            if regla_cumplida:
+                df_config_calc.loc[index, 'Cumple'] = "SÍ"
+            else:
+                df_config_calc.loc[index, 'Cumple'] = "NO"
         else:
-            df_config_calc.loc[index, 'Cumple'] = "NO"
+             df_config_calc.loc[index, 'Cumple'] = "INACTIVA"
+
 
         # Evaluación de la Señal Global
         if row['Activa']:
@@ -243,19 +275,8 @@ def main_comparison():
     # --- 1. Inicializar la lógica de configuración en session_state ---
     rv5d_ayer_val = spx["RV_5d"].iloc[-2]
     
-    # VALORES POR DEFECTO ACTUALIZADOS FINALMENTE SEGÚN LA PETICIÓN DEL USUARIO
-    default_config_data = {
-        'Regla': ['1. Señal NR/WR Activa', '2. Prob. K=2 Baja Vol.', '3. Prob. K=3 Media Vol.', '4. Prob. K=3 Baja Vol.', '5. Prob. K=3 Consolidada', '6. RV_5d Actual', f'7. RV_5d HOY vs. AYER ({rv5d_ayer_val:.4f})'],
-        'Operador': ['==', '>=', '>=', '>=', '>=', '<=', '<'],
-        # Umbrales
-        'Umbral': ['ON', '0.9000', '0.7500', '0.1500', '0.9500', '0.1000', 'RV_AYER'], 
-        # Activación (R1, R2, R5, R6, R7 en ON. R3, R4 en OFF)
-        'Activa': [True, True, False, False, True, True, True], 
-        'ID': ['r1_nr_wr', 'r2_k2_70', 'r3_k3_media_75', 'r4_k3_baja_15', 'r5_k3_consol_95', 'r6_rv5d_10', 'r7_rv5d_menor']
-    }
-    
     if 'config_df' not in st.session_state:
-        st.session_state['config_df'] = pd.DataFrame(default_config_data)
+        st.session_state['config_df'] = get_default_config_df(rv5d_ayer_val)
 
     # --- 2. Extracción de Métricas Clave y Valores ---
     rv5d_hoy = spx['RV_5d'].iloc[-1]
@@ -270,6 +291,14 @@ def main_comparison():
     
     # --- 3. CONFIGURACIÓN DE TODAS LAS REGLAS (DATA EDITOR UNIFICADO) ---
     st.markdown("##### Configuración de Reglas (NR/WR, Volatilidad y Markov)")
+
+    # Botón de Reset AÑADIDO AQUÍ
+    st.button(
+        "⚙️ Resetear a Valores por Defecto", 
+        help="Restaura la configuración de reglas a los umbrales predefinidos.", 
+        on_click=reset_config_callback, 
+        args=(rv5d_ayer_val,)
+    )
 
     df_config = st.session_state['config_df'].copy()
     
@@ -321,12 +350,11 @@ def main_comparison():
         def color_cumple_body(row):
             styles = pd.Series('', index=row.index)
             
-            # Solo aplica color si la regla estaba ACTIVA
-            if row['Activa']: 
-                if row['Cumple'] == 'SÍ':
-                    styles['Cumple'] = 'background-color: #008000; color: white'
-                else:
-                    styles['Cumple'] = 'background-color: #8B0000; color: white'
+            # Solo aplica color si la regla estaba ACTIVA y no está Inactiva (es decir, fue calculada)
+            if row['Cumple'] == 'SÍ':
+                styles['Cumple'] = 'background-color: #008000; color: white'
+            elif row['Cumple'] == 'NO':
+                styles['Cumple'] = 'background-color: #8B0000; color: white'
             
             return styles
 
