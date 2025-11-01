@@ -15,7 +15,7 @@ from utils import (
 )
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="HEDGEHOG 1.1", layout="wide")
+st.set_page_config(page_title="KAyMA 1.1", layout="wide")
 
 # ==============================================================================
 # LÓGICA DE CONFIGURACIÓN Y VALORES POR DEFECTO (NO ES NECESARIO TOCAR ESTO)
