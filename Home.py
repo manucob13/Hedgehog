@@ -1,6 +1,7 @@
 # home.py
 import streamlit as st
 import pandas as pd
+from datetime import date, timedelta
 from utils import (
     fetch_data, 
     calculate_indicators, 
@@ -133,7 +134,7 @@ def main_comparison():
     if st.button("🔄 Forzar Actualización (Limpiar Caché de Datos)"):
         st.cache_data.clear()
         for key in list(st.session_state.keys()):
-            if key not in ('config_df'): 
+            if key not in ('config_df', 'dte_front_days', 'dte_back_days'): # Excluir las variables de entrada del punto 5
                 del st.session_state[key]
         st.rerun()
     
@@ -211,7 +212,7 @@ def main_comparison():
     st.dataframe(df_comparativa, hide_index=True, use_container_width=True)
     
     # --------------------------------------------------------------------------
-    # SECCIONES MOVIDAS AQUI (Conclusión Operativa y Entendiendo la Diferencia)
+    # Conclusión Operativa y Entendiendo la Diferencia
     # --------------------------------------------------------------------------
     st.markdown("---")
     st.subheader("Conclusión Operativa")
@@ -243,7 +244,6 @@ def main_comparison():
     rv5d_ayer_val = spx["RV_5d"].iloc[-2]
     
     default_config_data = {
-        # Regla 1 (NR/WR) incluida aquí
         'Regla': ['1. Señal NR/WR Activa', '2. Prob. K=2 Baja Vol.', '3. Prob. K=3 Media Vol.', '4. Prob. K=3 Baja Vol.', '5. Prob. K=3 Consolidada', '6. RV_5d Actual', f'7. RV_5d HOY vs. AYER ({rv5d_ayer_val:.4f})'],
         'Operador': ['==', '>=', '>=', '>=', '>=', '<=', '<'],
         'Umbral': ['ON', 0.70, 0.75, 0.15, 0.95, 0.10, 'RV_AYER'], 
@@ -279,7 +279,6 @@ def main_comparison():
     col_config_all = {
         'Regla': st.column_config.TextColumn("Regla (Filtro)", disabled=True),
         'Operador': st.column_config.TextColumn("Op.", disabled=True, width="tiny"),
-        # Usamos TextColumn para permitir 'ON'/'OFF' y números
         'Umbral': st.column_config.TextColumn("Umbral"), 
         'Valor Actual': st.column_config.TextColumn("Valor Actual", disabled=True, width="small"),
         'Activa': st.column_config.CheckboxColumn("ON/OFF", width="small"),
@@ -361,6 +360,62 @@ def main_comparison():
     st.markdown("---")
     # ----------------------------------------------------------------------
 
+    # ----------------------------------------------------------------------
+    # 5. DTEs
+    # ----------------------------------------------------------------------
+    st.header("5. DTEs (Days To Expiration)")
+    
+    # Inicializar valores de entrada en session_state si no existen
+    if 'dte_front_days' not in st.session_state:
+        st.session_state['dte_front_days'] = 7
+    if 'dte_back_days' not in st.session_state:
+        st.session_state['dte_back_days'] = 30
 
+    # Variables de entrada (en columnas para ser más compactas)
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        dte_front_days = st.number_input(
+            "DTE Front (días)", 
+            min_value=1, 
+            max_value=365, 
+            value=st.session_state['dte_front_days'], 
+            key='dte_front_input'
+        )
+        st.session_state['dte_front_days'] = dte_front_days
+
+    with col2:
+        dte_back_days = st.number_input(
+            "DTE Back (días)", 
+            min_value=1, 
+            max_value=365, 
+            value=st.session_state['dte_back_days'], 
+            key='dte_back_input'
+        )
+        st.session_state['dte_back_days'] = dte_back_days
+        
+    # Cálculo de fechas
+    today = date.today()
+    dte_front_date = today + timedelta(days=dte_front_days)
+    dte_back_date = today + timedelta(days=dte_back_days)
+
+    # Creación de la tabla
+    dte_data = {
+        'Métrica': ['Fecha de Hoy', 'DTE Front (días)', 'DTE Back (días)', 'Fecha DTE Front', 'Fecha DTE Back'],
+        'Valor': [
+            today.strftime('%Y-%m-%d'), 
+            dte_front_days, 
+            dte_back_days, 
+            dte_front_date.strftime('%Y-%m-%d'), 
+            dte_back_date.strftime('%Y-%m-%d')
+        ]
+    }
+    
+    df_dte = pd.DataFrame(dte_data)
+    
+    st.markdown("---")
+    st.dataframe(df_dte, hide_index=True, use_container_width=True)
+    st.markdown("---")
+    
 if __name__ == "__main__":
     main_comparison()
