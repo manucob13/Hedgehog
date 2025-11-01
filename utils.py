@@ -13,23 +13,25 @@ warnings.filterwarnings('ignore')
 # FUNCIONES DE CARGA Y PREPARACIÓN (COMPARTIDAS)
 # ==============================================================================
 
+# utils.py (VERSIÓN FINAL CORREGIDA)
+
+import streamlit as st
+
 def check_password():
     """
     Controla el acceso. Devuelve True si el usuario ingresa las credenciales correctas,
-    y False en caso contrario, mostrando un formulario de login.
+    y False en caso contrario, mostrando un formulario de login (y errores solo tras intento).
     """
     
-    # 1. Intenta obtener las credenciales de st.secrets (inyectadas de forma segura)
+    # 1. Intenta obtener las credenciales de st.secrets
     try:
         credentials = st.secrets["credentials"]
     except KeyError:
-        # Esto ocurrirá hasta que configures los secretos en Streamlit Cloud
         st.error("Error: Las credenciales secretas no están configuradas.")
         return False
 
     def password_entered():
         """Verifica si el usuario y la contraseña introducidos son correctos."""
-        # st.session_state se usa para guardar el estado entre interacciones
         if (st.session_state.get("username") == credentials["username"]
                 and st.session_state.get("password") == credentials["password"]):
             st.session_state["password_correct"] = True
@@ -38,31 +40,27 @@ def check_password():
             del st.session_state["username"]
         else:
             st.session_state["password_correct"] = False
+            # Añadimos un indicador de que ya hubo un intento fallido
+            st.session_state["login_attempted"] = True 
 
-    if "password_correct" not in st.session_state:
-        # Primer intento: Mostrar formulario
-        st.session_state["password_correct"] = False
-        
-        with st.sidebar:
-            st.text_input("Usuario", on_change=password_entered, key="username")
-            st.text_input(
-                "Contraseña", type="password", on_change=password_entered, key="password"
-            )
-        return False
-        
-    elif not st.session_state["password_correct"]:
-        # Contraseña NO correcta: Mostrar formulario y mensaje de error
-        with st.sidebar:
-            st.text_input("Usuario", on_change=password_entered, key="username")
-            st.text_input(
-                "Contraseña", type="password", on_change=password_entered, key="password"
-            )
-            st.error("😕 Usuario o Contraseña incorrecta") # <-- Mensaje de error clave
-        return False
 
-    else:
-        # Credenciales CORRECTAS. Permitir el acceso.
-        return True # <-- Devuelve True para que home.py ejecute la app
+    if st.session_state.get("password_correct", False):
+        # 3. Credenciales correctas: acceso permitido
+        return True
+    
+    # 2. Mostrar formulario en la barra lateral
+    with st.sidebar:
+        st.text_input("Usuario", on_change=password_entered, key="username")
+        st.text_input(
+            "Contraseña", type="password", on_change=password_entered, key="password"
+        )
+        
+        # 4. Mostrar error SOLO si el intento fallido ha ocurrido
+        if st.session_state.get("login_attempted", False):
+            st.error("😕 Usuario o Contraseña incorrecta")
+            
+    # Si el formulario se está mostrando (o el login es incorrecto), el acceso es False
+    return False
 
 @st.cache_data(ttl=86400)
 def fetch_data():
