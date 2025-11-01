@@ -119,15 +119,13 @@ fig_combined.update_xaxes(showticklabels=False, row=1, col=1)
 for i in range(len(spx_filtered) - 1):
     color = '#00B06B' if is_up.iloc[i+1] else '#F13A50'
     
-    # MODIFICACIÓN CLAVE: El eje x2 usa el x5 (que tiene el spike)
     fig_combined.add_trace(go.Scatter(
         x=[i, i+1],
         y=[spx_filtered['RV_5d_pct'].iloc[i], spx_filtered['RV_5d_pct'].iloc[i+1]],
         mode='lines',
         line=dict(color=color, width=2),
         showlegend=False,
-        hoverinfo='skip',
-        xaxis='x2' # Revisa si necesitas esto, pero con el update_traces de abajo debería bastar
+        hoverinfo='skip'
     ), row=2, col=1)
 
 fig_combined.add_trace(go.Scatter(
@@ -344,8 +342,7 @@ fig_combined.update_layout(
     template='plotly_dark',
     height=1100, 
     xaxis_rangeslider_visible=False,
-    # El modo unified asegura que todos los datos de traces se muestren
-    hovermode='x unified', 
+    hovermode='x unified',
     plot_bgcolor='#131722', 
     paper_bgcolor='#131722', 
     font=dict(color='#AAAAAA'),
@@ -365,37 +362,57 @@ fig_combined.update_layout(
 )
 
 # ----------------------------------------------------------------------------------
-# PASO ADICIONAL CLAVE: UNIFICAR TODOS LOS TRACES AL EJE X PRINCIPAL (x5)
-# Esto garantiza que el spike solo tenga una fuente de activación y se dibuje continuo.
+# CONFIGURACIÓN CLAVE PARA EL SPIKE UNIFICADO SIN ROMPER EL LAYOUT
 # ----------------------------------------------------------------------------------
-# Encuentra el nombre del eje X de la fila 5. En un layout 5x1 es 'x5'.
-# Usamos fig.update_traces para enlazar todos los traces a 'x5'.
-fig_combined.update_traces(xaxis='x5')
 
+# 1. Asegurar que los spikes estén habilitados y configurados en todos los ejes
+for i in range(1, 6):
+    fig_combined.update_xaxes(
+        showspikes=True,
+        # 'across' extiende la línea sobre el área de trazado
+        spikemode='across', 
+        spikesnap='cursor',
+        spikecolor='rgba(255, 255, 255, 0.6)',
+        spikethickness=1,
+        spikedash='dot',
+        row=i, 
+        col=1
+    )
 
-# ----------------------------------------------------------------------------------
-# CONFIGURAR EL SPIKE VERTICAL SOLO EN EL EJE PRINCIPAL (x5)
-# Ya no necesitamos iterar por todos los ejes.
-# ----------------------------------------------------------------------------------
-fig_combined.update_xaxes(
-    showspikes=True,
-    # Usamos 'across+toaxis' para asegurar que cruce el plot area
-    spikemode='across+toaxis', 
-    spikesnap='cursor',
-    spikecolor='rgba(255, 255, 255, 0.6)',
-    spikethickness=1,
-    spikedash='dot',
+    # Deshabilitar spikes Y
+    fig_combined.update_yaxes(
+        showspikes=False,
+        row=i, 
+        col=1
+    )
+    
+# 2. Añadir un eje X fantasma/superpuesto en la parte superior (row=1)
+# y vincularlo al eje X de la fila 5 ('x5'). 
+# Esto fuerza la continuidad del spike desde la posición superior hasta la inferior.
+fig_combined.update_layout(
+    xaxis=dict(
+        domain=[0.0, 1.0], # Mismo ancho que los demás
+        anchor='y1',
+        overlaying='x5', # Clave: Usar las coordenadas del eje X de la fila 5
+        showticklabels=False,
+        showgrid=False,
+        zeroline=False,
+        showspikes=True, # Habilitar spike en este eje fantasma
+        spikemode='across+toaxis',
+        spikesnap='cursor',
+        spikecolor='rgba(255, 255, 255, 0.6)',
+        spikethickness=1,
+        spikedash='dot',
+    ),
 )
-
-# Desactivar spikes en Y para evitar líneas horizontales
-fig_combined.update_yaxes(showspikes=False)
-
-
-# ----------------------------------------------------------------------------------
-# CONFIGURACIONES DE EJE X
+# Nota: La propiedad 'x' en el layout se usa para el primer eje X por defecto (row=1)
 # ----------------------------------------------------------------------------------
 
-# Configurar el eje X compartido (solo las etiquetas del último plot, que ahora es el principal)
+# ----------------------------------------------------------------------------------
+# CONFIGURACIONES DE EJE X (Se mantiene el código para la estética)
+# ----------------------------------------------------------------------------------
+
+# Configurar el eje X compartido (solo las etiquetas del último plot)
 fig_combined.update_xaxes(
     tickmode='array',
     tickvals=list(range(len(spx_filtered))),
@@ -408,6 +425,7 @@ fig_combined.update_xaxes(
 # Configuraciones adicionales para ejes en tema oscuro
 fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=1, col=1)
 fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=1, col=1)
+fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=2, col=1) # Corregido: antes tenía update_yaxes
 fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=2, col=1)
 fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=3, col=1)
 fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=3, col=1)
