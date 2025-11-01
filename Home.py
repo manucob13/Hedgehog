@@ -39,11 +39,17 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
 
     df_config_calc['Umbral_Calc'] = df_config_calc['Umbral'].apply(safe_float_convert)
     
+    # 💥 CORRECCIÓN CRUCIAL: Añadir la columna 'Valor Actual' ANTES de usarla
+    df_config_calc['Valor Actual'] = df_config_calc['ID'].apply(lambda id: 
+        (metricas_actuales[id] and '🟢 ACTIVA' or '⚪ INACTIVA') if id == 'r1_nr_wr' else 
+        f"{metricas_actuales[id]:.4f}"
+    )
+
     senal_entrada_global_interactiva = True
     num_reglas_activas = 0
     df_config_calc['Cumple'] = 'NO' # Inicializar columna
     
-    # Itera sobre el DataFrame de configuración
+    # Itera sobre el DataFrame de configuración para calcular el cumplimiento
     for index, row in df_config_calc.iterrows():
         rule_id = row['ID']
         metrica_actual = metricas_actuales[rule_id]
@@ -83,10 +89,10 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
 
     # --- Creación de la Tabla de Presentación Final ---
     
+    # Ya tenemos todas las columnas necesarias, incluyendo 'Valor Actual' y 'Cumple'
     df_presentacion = df_config_calc[['Activa', 'Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple', 'ID']].copy()
 
-    # CORRECCIÓN 1: Quitar el texto de la columna 'Activa' si es False
-    # Si está activa ('True'), muestra un cheque ('✓'). Si no, queda vacío.
+    # Quitar el texto de la columna 'Activa' si es False
     df_presentacion['Activa'] = df_presentacion['Activa'].apply(lambda x: '✓' if x else '')
     
     # Determinar el resultado global y el color del semáforo
@@ -94,11 +100,10 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
         res_final = "INACTIVA (0 Reglas Activas)"
         senal_color = "background-color: #AAAAAA; color: black"
     elif senal_entrada_global_interactiva:
-        # CORRECCIÓN 2: Quitar el contador de la señal activa (solo SEÑAL ACTIVA)
+        # Simplificación solicitada: Solo "SEÑAL ACTIVA"
         res_final = "SEÑAL ACTIVA" 
         senal_color = "background-color: #008000; color: white" # Verde
     else:
-        # Mantenemos el conteo para la señal denegada (útil para debug)
         num_reglas_fallidas = num_reglas_activas - sum(df_config_calc.loc[df_config_calc['Activa'], 'Cumple'] == 'SÍ')
         res_final = f"SEÑAL DENEGADA (X {num_reglas_fallidas} de {num_reglas_activas} Fallaron)"
         senal_color = "background-color: #8B0000; color: white" # Rojo
@@ -291,10 +296,11 @@ def main_comparison():
         'ID': None
     }
     
+    # Aquí solo se añade 'Valor Actual' a la versión editable temporal
     df_reglas_editables['Valor Actual'] = df_reglas_editables['ID'].apply(lambda id: f"{metricas_actuales[id]:.4f}")
     
     edited_df_2_7 = st.data_editor(
-        df_reglas_editables, # <-- CORRECCIÓN: Se eliminó .drop(columns=['Cumple'])
+        df_reglas_editables, 
         column_config=col_config_2_7,
         hide_index=True,
         use_container_width=False, 
