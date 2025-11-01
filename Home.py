@@ -243,11 +243,14 @@ def main_comparison():
     # --- 1. Inicializar la lógica de configuración en session_state ---
     rv5d_ayer_val = spx["RV_5d"].iloc[-2]
     
+    # VALORES POR DEFECTO ACTUALIZADOS SEGÚN LA IMAGEN Y PETICIÓN
     default_config_data = {
         'Regla': ['1. Señal NR/WR Activa', '2. Prob. K=2 Baja Vol.', '3. Prob. K=3 Media Vol.', '4. Prob. K=3 Baja Vol.', '5. Prob. K=3 Consolidada', '6. RV_5d Actual', f'7. RV_5d HOY vs. AYER ({rv5d_ayer_val:.4f})'],
         'Operador': ['==', '>=', '>=', '>=', '>=', '<=', '<'],
-        'Umbral': ['ON', 0.70, 0.75, 0.15, 0.95, 0.10, 'RV_AYER'], 
-        'Activa': [True, True, True, True, True, True, True],
+        # Umbrales
+        'Umbral': ['ON', '0.7000', '0.7500', '0.1500', '0.9500', '0.1000', 'RV_AYER'], 
+        # Activación (Según imagen, Reglas 6 y 7 están desactivadas)
+        'Activa': [True, True, True, True, True, False, False], 
         'ID': ['r1_nr_wr', 'r2_k2_70', 'r3_k3_media_75', 'r4_k3_baja_15', 'r5_k3_consol_95', 'r6_rv5d_10', 'r7_rv5d_menor']
     }
     
@@ -365,13 +368,13 @@ def main_comparison():
     # ----------------------------------------------------------------------
     st.header("5. DTEs (Days To Expiration)")
     
-    # Inicializar valores de entrada en session_state si no existen
+    # Inicializar valores de entrada en session_state con 7 y 14 por defecto
     if 'dte_front_days' not in st.session_state:
         st.session_state['dte_front_days'] = 7
     if 'dte_back_days' not in st.session_state:
-        st.session_state['dte_back_days'] = 30
-
-    # Variables de entrada (en columnas para ser más compactas)
+        st.session_state['dte_back_days'] = 14 # Nuevo valor por defecto
+    
+    # Asegurar que los number_input reflejen los defaults correctos
     col1, col2 = st.columns(2)
     
     with col1:
@@ -399,7 +402,7 @@ def main_comparison():
     dte_front_date = today + timedelta(days=dte_front_days)
     dte_back_date = today + timedelta(days=dte_back_days)
 
-    # Creación de la tabla (Modificada según la petición)
+    # Creación de la tabla
     dte_data = {
         'Métrica': ['Fecha de Hoy', 'DTE FRONT', 'DTE BACK'],
         'Valor': [
