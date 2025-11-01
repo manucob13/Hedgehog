@@ -13,6 +13,57 @@ warnings.filterwarnings('ignore')
 # FUNCIONES DE CARGA Y PREPARACIÓN (COMPARTIDAS)
 # ==============================================================================
 
+def check_password():
+    """
+    Controla el acceso. Devuelve True si el usuario ingresa las credenciales correctas,
+    y False en caso contrario, mostrando un formulario de login.
+    """
+    
+    # 1. Intenta obtener las credenciales de st.secrets (inyectadas de forma segura)
+    try:
+        credentials = st.secrets["credentials"]
+    except KeyError:
+        # Esto ocurrirá hasta que configures los secretos en Streamlit Cloud
+        st.error("Error: Las credenciales secretas no están configuradas.")
+        return False
+
+    def password_entered():
+        """Verifica si el usuario y la contraseña introducidos son correctos."""
+        # st.session_state se usa para guardar el estado entre interacciones
+        if (st.session_state.get("username") == credentials["username"]
+                and st.session_state.get("password") == credentials["password"]):
+            st.session_state["password_correct"] = True
+            # Limpiamos los campos de entrada para mayor seguridad
+            del st.session_state["password"]
+            del st.session_state["username"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        # Primer intento: Mostrar formulario
+        st.session_state["password_correct"] = False
+        
+        with st.sidebar:
+            st.text_input("Usuario", on_change=password_entered, key="username")
+            st.text_input(
+                "Contraseña", type="password", on_change=password_entered, key="password"
+            )
+        return False
+
+    elif not st.session_state["password_correct"]:
+        # Contraseña incorrecta: Mostrar formulario y error
+        with st.sidebar:
+            st.text_input("Usuario", on_change=password_entered, key="username")
+            st.text_input(
+                "Contraseña", type="password", on_change=password_entered, key="password"
+            )
+            st.error("😕 Usuario o Contraseña incorrecta")
+        return False
+
+    else:
+        # Credenciales correctas
+        return True
+
 @st.cache_data(ttl=86400)
 def fetch_data():
     """Descarga datos históricos del ^GSPC (SPX) y ^VIX (VIX)."""
