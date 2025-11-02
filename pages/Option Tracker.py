@@ -1,4 +1,4 @@
-# pages/Option Tracker.py - MONITOREO DE OPCIONES CON SPREADS
+# pages/Option Tracker.py - MONITOREO DE OPCIONES CON SPREADS (FORMATO UNIFICADO)
 import streamlit as st
 import pandas as pd
 from datetime import timedelta, datetime
@@ -586,10 +586,6 @@ def option_tracker_page():
         # Cálculo del P&L Neto Total
         pnl_neto_total = df['PnL_Neto'].apply(lambda x: float(x) if pd.notna(x) else 0).sum()
         
-        # Cálculo del Delta Total (para el color del delta en el metric)
-        pnl_bruto_total = df['PnL_Bruto'].apply(lambda x: float(x) if pd.notna(x) else 0).sum()
-        delta_pnl = pnl_neto_total - pnl_bruto_total if df['PnL_Bruto'].notna().any() else 0 # Delta contra el PnL Bruto, no muy util. Mejor usar un delta fijo
-        
         # Para el color de la métrica:
         delta_color = "normal" if pnl_neto_total >= 0 else "inverse"
         
@@ -626,45 +622,68 @@ def option_tracker_page():
         df_display['Fecha_Entrada'] = pd.to_datetime(df_display['Fecha_Entrada']).dt.strftime('%d/%m/%Y')
         df_display['Fecha_Salida'] = pd.to_datetime(df_display['Fecha_Salida']).dt.strftime('%d/%m/%Y')
         
-        # Formatear columnas numéricas para visualización
-        numeric_cols = ['Strike_1', 'Strike_2', 'Prima_Entrada', 'Comision_Leg1', 'Comision_Leg2', 'Comision',
-                        'Precio_Actual_1', 'Delta_1', 'Theta_1',
-                        'Precio_Actual_2', 'Delta_2', 'Theta_2',
-                        'PnL_Bruto', 'PnL_Neto', 'PnL_Porcentaje']
+        # =================================================================
+        # UNIFICACIÓN DE FORMATO
+        # =================================================================
+        # Rellenar con guiones para operaciones Single Leg en Leg 2
+        cols_to_fill = ['Strike_2', 'Tipo_2', 'Posicion_2']
         
-        for col in numeric_cols:
-            if col in df_display.columns:
+        for col in cols_to_fill:
+            df_display[col] = df_display.apply(
+                lambda row: '-' if row['Estrategia'] == 'Single Leg' else (f"{row[col]:.2f}" if pd.notna(row[col]) and isinstance(row[col], (int, float)) else str(row[col])),
+                axis=1
+            )
+        
+        # Formatear el resto de columnas numéricas
+        numeric_cols_for_format = ['Strike_1', 'Prima_Entrada', 'Comision_Leg1', 'Comision_Leg2', 'Comision',
+                                   'Precio_Actual_1', 'Delta_1', 'Theta_1',
+                                   'Precio_Actual_2', 'Delta_2', 'Theta_2',
+                                   'PnL_Bruto', 'PnL_Neto', 'PnL_Porcentaje']
+        
+        for col in numeric_cols_for_format:
+            # Solo aplicar si la columna no fue ya formateada con el condicional de Spread
+            if col not in cols_to_fill: 
                 df_display[col] = df_display[col].apply(
-                    lambda x: f"{x:.2f}" if pd.notna(x) else "-"
+                    lambda x: f"{x:.2f}" if pd.notna(x) and isinstance(x, (int, float)) else "-"
                 )
+
         
         st.dataframe(
             df_display,
             hide_index=True,
             use_container_width=True,
             column_config={
-                # COLUMNAS CLAVE - VISIBLES
+                # =========================================================
+                # COLUMNAS CLAVE: Visibles para todas las operaciones
+                # =========================================================
                 "ID": st.column_config.NumberColumn("ID", width="small"),
                 "Ticker": st.column_config.TextColumn("🎯 Ticker", width="small"),
                 "Estrategia": st.column_config.TextColumn("📊 Estrategia", width="medium"),
-                "Strike_1": st.column_config.TextColumn("Strike 1", width="small"),
-                "Tipo_1": st.column_config.TextColumn("Tipo 1", width="small"),
-                "Posicion_1": st.column_config.TextColumn("Pos 1", width="small"),
-                "Fecha_Salida": st.column_config.TextColumn("📅 Expiración", width="medium"),
                 "DTE": st.column_config.NumberColumn("DTE", width="small"),
                 "Prima_Entrada": st.column_config.TextColumn("💵 Prima", width="small"),
                 "Comision": st.column_config.TextColumn("💳 ComTotal", width="small"),
                 "PnL_Neto": st.column_config.TextColumn("💰 P&L Neto", width="small"),
                 "PnL_Porcentaje": st.column_config.TextColumn("📊 P&L %", width="small"),
+
+                # =========================================================
+                # DETALLE UNIFICADO (Leg 1 y Leg 2)
+                # =========================================================
+                "Strike_1": st.column_config.TextColumn("Strike 1", width="small"),
+                "Tipo_1": st.column_config.TextColumn("Tipo 1", width="small"),
+                "Posicion_1": st.column_config.TextColumn("Pos 1", width="small"),
                 
-                # COLUMNAS DETALLE - OPCIONALES/VISIBLES PARA CONTEXTO
-                "Strike_2": st.column_config.TextColumn("Strike 2", width="small"),
-                "Tipo_2": st.column_config.TextColumn("Tipo 2", width="small"),
-                "Posicion_2": st.column_config.TextColumn("Pos 2", width="small"),
+                "Strike_2": st.column_config.TextColumn("Strike 2", width="small"), # Será '-' en Single Leg
+                "Tipo_2": st.column_config.TextColumn("Tipo 2", width="small"),     # Será '-' en Single Leg
+                "Posicion_2": st.column_config.TextColumn("Pos 2", width="small"),  # Será '-' en Single Leg
+
+                # Precio actual (P1)
                 "Precio_Actual_1": st.column_config.TextColumn("💰 P1", width="small"),
                 "Delta_1": st.column_config.TextColumn("Δ1", width="small"),
+                "Fecha_Salida": st.column_config.TextColumn("📅 Expiración", width="medium"),
                 
+                # =========================================================
                 # COLUMNAS OCULTAS PARA SIMPLIFICAR EL DETALLE
+                # =========================================================
                 "Fecha_Entrada": "hidden",
                 "Es_Credito": "hidden",
                 "Comision_Leg1": "hidden",
