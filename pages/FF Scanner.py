@@ -1,10 +1,10 @@
-# pages/FF Scanner.py 
+# pages/FF Scanner.py - VERSIÓN CON BOTÓN DE ACTUALIZACIÓN
 
 import streamlit as st
 import pandas as pd
 import requests
 import yfinance as yf
-from datetime import timedelta
+from datetime import timedelta, date, datetime 
 from io import StringIO
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np 
@@ -12,24 +12,28 @@ import os
 import time 
 
 # =========================================================================
-# 0. CONFIGURACIÓN DE LA PÁGINA
+# 0. CONFIGURACIÓN Y VARIABLES
 # =========================================================================
 
 st.set_page_config(page_title="FF Scanner", layout="wide")
 
+# Variables de Schwab (se mantienen, aunque no se usen aún)
+api_key = "n9ydCRbM3Gv5bBAGA1ZvVl6GAqo5IG9So6pMwjO9slvJXEa6"
+app_secret = "DAFletN79meCi4yBYGzlDvlrNcJiISH0HuMuThydxYANTWghMxXxXbrpQOVjsdsx"
+redirect_uri = "https://127.0.0.1" 
+token_path = "schwab_token.json" 
+
 # =========================================================================
-# 1. FUNCIONES AUXILIARES (Validación)
+# 1. FASE DE PREPARACIÓN (Validación de Tickers)
 # =========================================================================
 
 def is_valid_ticker(ticker):
     """Verifica si un ticker es válido usando yfinance."""
     try:
         t = yf.Ticker(ticker)
-        # Intentamos obtener la información de forma eficiente
         fi = getattr(t, "fast_info", None)
         if fi and isinstance(fi, dict) and fi.get('last_price') is not None:
             return ticker
-        # Caída de respaldo si fast_info falla
         info = t.info 
         if isinstance(info, dict) and (info.get('regularMarketPrice') is not None or info.get('previousClose') is not None):
             return ticker
@@ -37,13 +41,10 @@ def is_valid_ticker(ticker):
         return None
     return None
 
-# Usamos st.cache_resource para asegurar que esta tarea costosa se ejecuta 
-# a lo sumo una vez al día (TTL de 24 horas).
+# Usamos st.cache_resource con clear_on_click para permitir la repetición
 @st.cache_resource(ttl=timedelta(hours=24), show_spinner=False)
 def perform_initial_preparation():
-    """
-    Realiza la lectura, descarga y validación en PARALELO de tickers.
-    """
+    """Realiza la lectura, descarga y validación en PARALELO de tickers."""
     st.subheader("1. Preparación y Validación de Tickers")
     
     # Placeholder para mensajes de estado
@@ -51,18 +52,17 @@ def perform_initial_preparation():
     
     # 1.1 Leer Tickers.csv existentes
     status_text.text("1. Leyendo tickers existentes (Tickers.csv)...")
-    
     existing_tickers = set()
     try:
         if os.path.exists('Tickers.csv'):
             df_existing = pd.read_csv('Tickers.csv')
-            # Limpieza y upper case
             existing_tickers = set(df_existing.iloc[:, 0].astype(str).str.upper().str.strip())
             st.info(f"✅ Se encontró 'Tickers.csv'. Leídos **{len(existing_tickers)}** tickers existentes.")
         else:
+            # Ahora que el usuario movió el archivo, este mensaje solo aparecerá si falta
             st.warning("⚠️ Archivo 'Tickers.csv' NO ENCONTRADO en el repositorio. Iniciando con 0 tickers existentes.")
     except Exception as e:
-        st.error(f"❌ Error crítico al leer 'Tickers.csv'. Asegúrate de que el formato CSV es correcto. Error: {e}")
+        st.error(f"❌ Error crítico al leer 'Tickers.csv'. Error: {e}")
         
     # 1.2 Descargar tickers del S&P 500
     status_text.text("2. Descargando lista de tickers del S&P 500 de Wikipedia...")
@@ -71,7 +71,6 @@ def perform_initial_preparation():
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=10)
-        # pd.read_html usa StringIO
         sp500_df = pd.read_html(StringIO(response.text))[0] 
         sp500_tickers = set(sp500_df['Symbol'].astype(str).str.upper().str.strip())
         st.success(f"✅ Obtenidos {len(sp500_tickers)} tickers del S&P 500.")
@@ -82,75 +81,129 @@ def perform_initial_preparation():
     all_tickers = sp500_tickers.union(existing_tickers)
     st.info(f"Total de tickers combinados a validar: **{len(all_tickers)}**")
     
-    # 1.4 Validar en PARALELO (Usando ThreadPoolExecutor)
-    status_text.text(f"3. Validando {len(all_tickers)} tickers con yfinance (esto será rápido gracias a la paralelización)...")
+    # 1.4 Validar en PARALELO
+    status_text.text(f"3. Validando {len(all_tickers)} tickers con yfinance (esto será rápido)...")
     progress_bar = st.progress(0)
     
     valid_tickers = []
     sorted_tickers = sorted(all_tickers)
     
-    # Bucle paralelo
     with ThreadPoolExecutor(max_workers=15) as executor:
         futures = {executor.submit(is_valid_ticker, ticker): ticker for ticker in sorted_tickers}
         
         for i, future in enumerate(futures):
-            # Obtener resultado
             result = future.result()
             if result:
                 valid_tickers.append(result)
-                
-            # Actualizar progreso y estado
             progress_bar.progress((i + 1) / len(sorted_tickers))
             status_text.text(f"3. Validando tickers: {i + 1}/{len(sorted_tickers)} procesados. Válidos encontrados: {len(valid_tickers)}")
 
     progress_bar.empty()
     status_text.empty()
     
-    # --- 1.5 Guardar el CSV actualizado y Mostrar el Resumen ---
-    
+    # 1.5 Guardar y Resumir
     valid_tickers = sorted(set(valid_tickers))
     invalid_tickers = sorted(set(all_tickers) - set(valid_tickers))
 
     try:
-        # Se guarda la lista limpia y ampliada. 
         pd.DataFrame({'Ticker': valid_tickers}).to_csv('Tickers.csv', index=False)
         pd.DataFrame({'Ticker': invalid_tickers}).to_csv('Tickers_invalidos.csv', index=False)
     except Exception as e:
-        st.warning(f"⚠️ No se pudieron guardar Tickers.csv/Tickers_invalidos.csv en el servidor. (Error: {e})")
+        st.warning(f"⚠️ No se pudieron guardar Tickers.csv/Tickers_invalidos.csv. Error: {e}")
 
-    # --- FORMATO DE SALIDA FINAL (Exacto al Jupyter) ---
     valid_count = len(valid_tickers)
     invalid_count = len(invalid_tickers)
 
     st.success(f"✅ Validación de preparación finalizada.")
-    
     st.markdown(f"**✅ {valid_count} tickers válidos guardados en 'Tickers.csv'**")
     st.markdown(f"**🗑️ Eliminados: {invalid_count} inválidos**")
-    
     st.divider() 
     
     return valid_tickers
 
 # =========================================================================
-# 2. FUNCIÓN PRINCIPAL DE LA PÁGINA (FF Scanner)
+# 2. FASE DE ESCANEO (Schwab y Fechas)
+# =========================================================================
+
+def calculate_ff_dates(today):
+    """Calcula las fechas de vencimiento objetivo (DTE 30, 45, 60 días)."""
+    
+    dte_short = 30
+    dte_mid = 45
+    dte_long = 60
+    
+    target_short = today + timedelta(days=dte_short)
+    target_mid = today + timedelta(days=dte_mid)
+    target_long = today + timedelta(days=dte_long)
+
+    st.subheader("2.1 Cálculo de Fechas Forward Factor (FF)")
+    st.markdown(f"""
+    **Fecha de Hoy:** `{today.strftime('%Y-%m-%d')}`
+    * **DTE Mínimo Corto (30 días):** `{target_short.strftime('%Y-%m-%d')}`
+    * **DTE Mínimo Medio (45 días):** `{target_mid.strftime('%Y-%m-%d')}`
+    * **DTE Mínimo Largo (60 días):** `{target_long.strftime('%Y-%m-%d')}`
+    """)
+    
+    return target_short, target_mid, target_long
+
+def scan_options_ff(valid_tickers):
+    """
+    Simula la conexión a Schwab y el escaneo de opciones.
+    (El código real de Schwab iría aquí)
+    """
+    
+    st.subheader("2.2 Escaneo y Cómputo del Factor Forward")
+    
+    if not valid_tickers:
+        st.error("No hay tickers válidos para iniciar el escaneo.")
+        return None
+        
+    today = date.today()
+    calculate_ff_dates(today) # Solo para mostrar el cálculo de fechas
+    
+    st.warning("⚠️ **Conexión a Schwab Pendiente:** Esta sección requiere la implementación de la API de Schwab.")
+    st.info(f"Listo para escanear **{len(valid_tickers)}** tickers.")
+    
+    # La lógica de escaneo y resultados iría aquí...
+
+    return None
+
+# =========================================================================
+# 3. FUNCIÓN PRINCIPAL DE LA PÁGINA (FF Scanner)
 # =========================================================================
 
 def ff_scanner_page():
-    st.title("🛡️ FF Scanner (Preparación de Datos)")
+    st.title("🛡️ FF Scanner (Preparación y Escaneo)")
     st.markdown("---")
     
-    # Ejecutar la fase de preparación
+    # Contenedor para el botón
+    col1, col2 = st.columns([1, 4])
+
+    with col1:
+        # st.cache_resource se borrará al hacer clic en este botón, forzando la re-ejecución
+        st.button("🔄 Actualizar/Validar Tickers", 
+                  type="primary",
+                  help="Borra la caché y fuerza la re-lectura de Tickers.csv y la re-descarga del S&P 500.",
+                  on_click=perform_initial_preparation.clear)
+
+    with col2:
+        st.markdown("_(La validación se ejecuta automáticamente cada 24h, o al hacer clic en el botón)_")
+
+    st.divider()
+
+    # FASE 1: Preparación (Se llama aquí, pero se ejecuta desde la caché, a menos que se borre)
     valid_tickers = perform_initial_preparation()
     
-    # --- Estructura para la fase 2. ESCANER (Pendiente) ---
-    st.subheader("2. Escaneo de Cadenas de Opciones (Siguiente Fase)")
+    st.divider()
+    
+    # FASE 2: Escaneo
     if valid_tickers:
-        st.info(f"El siguiente paso usará los **{len(valid_tickers)}** tickers validados. Aquí agregaremos la lógica de Schwab.")
+        scan_options_ff(valid_tickers)
     else:
-        st.error("No hay tickers válidos para continuar el escaneo. Revisa 'Tickers.csv'.")
+        st.error("No hay tickers válidos para iniciar la Fase 2: Escaneo.")
 
 # =========================================================================
-# 3. EJECUCIÓN DEL SCRIPT
+# 4. EJECUCIÓN DEL SCRIPT
 # =========================================================================
 
 ff_scanner_page()
