@@ -5,8 +5,6 @@ import pandas as pd
 import requests
 import yfinance as yf
 from datetime import timedelta
-from io import StringIO
-from concurrent.futures import ThreadPoolExecutor
 import numpy as np 
 import os 
 
