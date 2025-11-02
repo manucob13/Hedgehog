@@ -10,6 +10,8 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np 
 import os 
 import time 
+
+# === IMPORTAR LA FUNCIÓN DE AUTENTICACIÓN ===
 from utils import check_password
 
 # =========================================================================
@@ -18,10 +20,15 @@ from utils import check_password
 
 st.set_page_config(page_title="FF Scanner", layout="wide")
 
-# Variables de Schwab (se mantienen, aunque no se usen aún)
-api_key = "n9ydCRbM3Gv5bBAGA1ZvVl6GAqo5IG9So6pMwjO9slvJXEa6"
-app_secret = "DAFletN79meCi4yBYGzlDvlrNcJiISH0HuMuThydxYANTWghMxXxXbrpQOVjsdsx"
-redirect_uri = "https://127.0.0.1" 
+# Variables de Schwab (cargadas desde secrets)
+try:
+    api_key = st.secrets["schwab"]["api_key"]
+    app_secret = st.secrets["schwab"]["app_secret"]
+    redirect_uri = st.secrets["schwab"]["redirect_uri"]
+except KeyError as e:
+    st.error(f"❌ Error: Falta configurar los secrets de Schwab. Clave faltante: {e}")
+    st.stop()
+
 token_path = "schwab_token.json" 
 
 # =========================================================================
