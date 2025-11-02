@@ -161,28 +161,110 @@ def get_next_thursday(today=None):
 
 def fechas_section():
     st.subheader("3. Fechas de Entrada y DTE")
+    
+    # Crear un contenedor con estilo
+    with st.container():
+        # Valores por defecto
+        default_fecha = get_next_thursday()
+        default_dte_front = 15
+        default_dte_back = 22
 
-    # Valores por defecto
-    default_fecha = get_next_thursday()
-    default_dte_front = 15
-    default_dte_back = 22
+        # Layout en 3 columnas para los inputs
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            fecha_entrada = st.date_input(
+                "📅 Fecha de Entrada", 
+                value=default_fecha,
+                help="Fecha en la que se realizará la entrada al trade"
+            )
+        
+        with col2:
+            dte_front = st.number_input(
+                "⏱️ DTE Front", 
+                min_value=1, 
+                value=default_dte_front,
+                help="Días hasta expiración de la opción front"
+            )
+        
+        with col3:
+            dte_back = st.number_input(
+                "⏱️ DTE Back", 
+                min_value=1, 
+                value=default_dte_back,
+                help="Días hasta expiración de la opción back"
+            )
 
-    # Inputs
-    fecha_entrada = st.date_input("Fecha de Entrada", value=default_fecha)
-    dte_front = st.number_input("DTE Front", min_value=1, value=default_dte_front)
-    dte_back = st.number_input("DTE Back", min_value=1, value=default_dte_back)
+        st.markdown("---")
 
-    # Cálculo fechas adicionales
-    fecha_dte_front = fecha_entrada + datetime.timedelta(days=int(dte_front))
-    fecha_dte_back = fecha_entrada + datetime.timedelta(days=int(dte_back))
+        # Cálculo fechas adicionales
+        fecha_dte_front = fecha_entrada + datetime.timedelta(days=int(dte_front))
+        fecha_dte_back = fecha_entrada + datetime.timedelta(days=int(dte_back))
 
-    # Crear DataFrame para mostrar en tabla
-    df_fechas = pd.DataFrame({
-        "Concepto": ["Fecha de Entrada", "DTE Front Fecha", "DTE Back Fecha"],
-        "Valor": [fecha_entrada, fecha_dte_front, fecha_dte_back]
-    })
+        # Mostrar resultados en cards usando métricas
+        st.markdown("#### 📊 Resumen de Fechas Calculadas")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric(
+                label="Fecha de Entrada",
+                value=fecha_entrada.strftime("%d/%m/%Y"),
+                help="Fecha seleccionada para realizar la entrada"
+            )
+            st.caption(f"📆 {fecha_entrada.strftime('%A, %d de %B de %Y')}")
+        
+        with col2:
+            dias_hasta_front = (fecha_dte_front - fecha_entrada).days
+            st.metric(
+                label="Expiración Front",
+                value=fecha_dte_front.strftime("%d/%m/%Y"),
+                delta=f"{dias_hasta_front} días",
+                help="Fecha de expiración de la opción front"
+            )
+            st.caption(f"📆 {fecha_dte_front.strftime('%A, %d de %B de %Y')}")
+        
+        with col3:
+            dias_hasta_back = (fecha_dte_back - fecha_entrada).days
+            st.metric(
+                label="Expiración Back",
+                value=fecha_dte_back.strftime("%d/%m/%Y"),
+                delta=f"{dias_hasta_back} días",
+                help="Fecha de expiración de la opción back"
+            )
+            st.caption(f"📆 {fecha_dte_back.strftime('%A, %d de %B de %Y')}")
 
-    st.table(df_fechas)
+        # Tabla adicional con información compacta
+        st.markdown("---")
+        st.markdown("#### 📋 Tabla Resumen")
+        
+        df_fechas = pd.DataFrame({
+            "Concepto": ["Entrada", "Front", "Back"],
+            "Fecha": [
+                fecha_entrada.strftime("%d/%m/%Y"),
+                fecha_dte_front.strftime("%d/%m/%Y"),
+                fecha_dte_back.strftime("%d/%m/%Y")
+            ],
+            "Días desde Entrada": [0, dias_hasta_front, dias_hasta_back],
+            "Día de la Semana": [
+                fecha_entrada.strftime("%A"),
+                fecha_dte_front.strftime("%A"),
+                fecha_dte_back.strftime("%A")
+            ]
+        })
+        
+        # Mostrar tabla sin índice usando HTML personalizado
+        st.dataframe(
+            df_fechas,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Concepto": st.column_config.TextColumn("📌 Concepto", width="medium"),
+                "Fecha": st.column_config.TextColumn("📅 Fecha", width="medium"),
+                "Días desde Entrada": st.column_config.NumberColumn("⏰ Días", width="small"),
+                "Día de la Semana": st.column_config.TextColumn("🗓️ Día", width="medium")
+            }
+        )
 
     return fecha_entrada, dte_front, dte_back, fecha_dte_front, fecha_dte_back
 
