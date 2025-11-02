@@ -11,7 +11,7 @@ import os
 from urllib.parse import urlparse, parse_qs
 from utils import check_password
 
-# **MOVIDO AQUÍ:** Importación global de schwab-py
+# **IMPORTACIÓN GLOBAL:** schwab-py. Si falla aquí, es un problema de instalación/entorno.
 try:
     from schwab.auth import client_from_token_file, SchwabOauth
 except ImportError:
@@ -144,7 +144,7 @@ def connect_to_schwab():
     """
     st.subheader("2. Conexión con Broker Schwab")
     
-    # NOTA: Las importaciones de schwab.auth ahora están al inicio del script.
+    # NOTA: Las importaciones de schwab.auth están al inicio del script.
     
     # Verificar si existe el archivo de token
     if os.path.exists(token_path):
