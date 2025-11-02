@@ -150,9 +150,8 @@ def connect_to_schwab():
         client = easy_client(
             token_path=token_path,
             api_key=api_key,
-            app_secret=app_secret
-            # Se eliminó 'redirect_uri' porque easy_client no lo acepta.
-            # La URI sigue disponible para el flujo de OAuth más adelante.
+            app_secret=app_secret,
+            callback_url=redirect_uri # Se requiere 'callback_url' para esta versión de schwab-py.
         )
     except Exception as e:
         # En caso de un error de inicialización, probablemente por credenciales incorrectas
@@ -185,7 +184,6 @@ def connect_to_schwab():
     st.warning(f"⚠️ No se encontró el archivo de token: `{token_path}`. Inicia la autenticación.")
     
     # Obtener la URL de autorización
-    # Añadimos redirect_uri aquí, donde SÍ lo necesita el objeto oauth
     auth_url = client.oauth.get_oauth_url(redirect_uri=redirect_uri) 
     
     st.markdown("---")
@@ -197,10 +195,10 @@ def connect_to_schwab():
     
     st.info("""
     - Serás redirigido a una URL que **NO carga** (es normal).
-    - Copia **TODA la URL** de la barra de direcciones que comienza con `https://127.0.0.1/?code=...`
+    - **ATENCIÓN:** Copia **TODA la URL** de la barra de direcciones que comienza con `https://127.0.0.1/?code=...` **inmediatamente**. El código expira muy rápido.
     """)
     
-    st.markdown("#### Paso 2: Copiar URL de Callback")
+    st.markdown("#### Paso 2: Copiar URL de Callback y Generar Token")
     callback_url = st.text_input(
         "Pega aquí la URL completa de callback:",
         placeholder="https://127.0.0.1/?code=C0.b2F1dGgyLm...",
@@ -212,15 +210,22 @@ def connect_to_schwab():
             st.error("❌ Por favor, pega la URL de callback completa y correcta.")
         else:
             try:
-                with st.spinner("Generando token..."):
+                with st.spinner("Generando y guardando token..."):
                     # Esto intercambia el código por tokens y los guarda en 'schwab_token.json'
                     client.oauth.from_callback_url(callback_url)
-                    st.success("✅ Token generado y guardado exitosamente!")
-                    st.info("🔄 Recarga la página para verificar la conexión y continuar.")
-                    time.sleep(1) # Pequeña pausa para que el mensaje se vea
-                    st.rerun() 
+                    
+                    # Verificación explícita (MEJORA):
+                    if os.path.exists(token_path):
+                        st.success("✅ Token generado y guardado exitosamente!")
+                        st.info("🔄 Recarga la página para verificar la conexión y continuar.")
+                        time.sleep(1) # Pequeña pausa para que el mensaje se vea
+                        st.rerun() 
+                    else:
+                        st.error(f"❌ Error de guardado: La API respondió, pero el archivo '{token_path}' no se creó.")
+                        
             except Exception as e:
-                st.error(f"❌ Error al generar el token. Asegúrate de que el código no haya expirado: {e}")
+                # Este error es el más probable si el código ha expirado o hubo un error de API (401 Unauthorized, etc.)
+                st.error(f"❌ Error al intentar generar el token (Paso 2). Esto puede ser porque el código de autorización ha expirado o las credenciales (API Key/Secret) son incorrectas. Error detallado: {e}")
     
     return None
 
