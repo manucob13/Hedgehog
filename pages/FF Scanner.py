@@ -1,31 +1,20 @@
-# pages/FF Scanner.py
+# pages/FF Scanner.py - VERSIÓN SIMPLIFICADA
 
 import streamlit as st
 import pandas as pd
 import requests
 import yfinance as yf
-import os
-import time
-from datetime import datetime, timedelta
-from math import sqrt
-import schwab 
-from schwab.auth import easy_client
-from schwab.client import Client
-import json
+from datetime import timedelta
 from io import StringIO
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np 
-
+import os # Necesario para la manipulación de archivos
 
 # =========================================================================
-# 0. VARIABLES Y CONFIGURACIÓN
+# 0. CONFIGURACIÓN DE LA PÁGINA
 # =========================================================================
 
-# Estas variables son requeridas por otras funciones, aunque no se usen en esta fase
-api_key = "n9ydCRbM3Gv5bBAGA1ZvVl6GAqo5IG9So6pMwjO9slvJXEa6"
-app_secret = "DAFletN79meCi4yBYGzlDvlrNcJiISH0HuMuThydxYANTWghMxXxXbrpQOVjsdsx"
-redirect_uri = "https://127.0.0.1"
-token_path = "schwab_token.json"
+st.set_page_config(page_title="FF Scanner", layout="wide")
 
 # =========================================================================
 # 1. FUNCIONES AUXILIARES (Validación)
@@ -62,10 +51,15 @@ def perform_initial_preparation():
     # 1.1 Leer Tickers.csv existentes
     status_text.text("1. Leyendo tickers existentes (Tickers.csv)...")
     try:
-        df_existing = pd.read_csv('Tickers.csv')
-        existing_tickers = set(df_existing.iloc[:, 0].astype(str).str.upper().str.strip())
-    except FileNotFoundError:
+        # Usamos 'rb' para manejar el archivo correctamente si está en Streamlit Cloud
+        if os.path.exists('Tickers.csv'):
+            df_existing = pd.read_csv('Tickers.csv')
+            existing_tickers = set(df_existing.iloc[:, 0].astype(str).str.upper().str.strip())
+        else:
+            existing_tickers = set()
+    except Exception:
         existing_tickers = set()
+        
     st.success(f"✅ Leídos {len(existing_tickers)} tickers existentes.")
 
 
@@ -136,28 +130,23 @@ def perform_initial_preparation():
 # =========================================================================
 
 def ff_scanner_page():
-    st.title("🛡️ FF Scanner")
+    st.title("🛡️ FF Scanner (Preparación de Datos)")
     st.markdown("---")
     
     # Ejecutar la fase de preparación
-    # Esta función está cacheada, por lo que será rápida si ya se ejecutó hoy.
     valid_tickers = perform_initial_preparation()
     
     # --- Estructura para la fase 2. ESCANER (Pendiente) ---
     st.divider()
     st.subheader("2. Escaneo de Cadenas de Opciones (Siguiente Fase)")
     if valid_tickers:
-        st.info(f"El siguiente paso usará los **{len(valid_tickers)}** tickers validados. Continuaremos con la conexión a Schwab y la obtención de opciones.")
+        st.info(f"El siguiente paso usará los **{len(valid_tickers)}** tickers validados. Aquí agregaremos la lógica de Schwab.")
     else:
         st.error("No hay tickers válidos para continuar el escaneo. Revisa 'Tickers.csv'.")
 
 # =========================================================================
-# 3. CONTROL DE ACCESO (main)
+# 3. EJECUCIÓN DEL SCRIPT
 # =========================================================================
 
-# Asegura que la página solo se muestre si el usuario ha iniciado sesión.
-if check_password():
-    ff_scanner_page()
-else:
-    # Si el login falla, la barra lateral de utils.py se encarga del formulario.
-    pass
+# La página se ejecuta directamente sin control de acceso
+ff_scanner_page()
