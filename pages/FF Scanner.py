@@ -1,4 +1,4 @@
-# pages/FF Scanner.py - VERSIÓN SIMPLIFICADA Y CORREGIDA
+# pages/FF Scanner.py - VERSIÓN FINAL DE PREPARACIÓN
 
 import streamlit as st
 import pandas as pd
@@ -8,7 +8,7 @@ from datetime import timedelta
 from io import StringIO
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np 
-import os # Necesario para la manipulación de archivos
+import os 
 
 # =========================================================================
 # 0. CONFIGURACIÓN DE LA PÁGINA
@@ -48,24 +48,24 @@ def perform_initial_preparation():
     # Placeholder para mensajes de estado
     status_text = st.empty()
     
-    # 1.1 Leer Tickers.csv existentes
+    # 1.1 Leer Tickers.csv existentes - CORRECCIÓN DE DEPURACIÓN
     status_text.text("1. Leyendo tickers existentes (Tickers.csv)...")
+    
+    existing_tickers = set()
     try:
         if os.path.exists('Tickers.csv'):
             df_existing = pd.read_csv('Tickers.csv')
             # Limpieza y upper case
             existing_tickers = set(df_existing.iloc[:, 0].astype(str).str.upper().str.strip())
+            st.info(f"✅ Se encontró 'Tickers.csv'. Leídos **{len(existing_tickers)}** tickers existentes.")
         else:
-            existing_tickers = set()
-    except Exception:
-        existing_tickers = set()
+            st.warning("⚠️ Archivo 'Tickers.csv' NO ENCONTRADO en el repositorio. Iniciando con 0 tickers existentes.")
+    except Exception as e:
+        st.error(f"❌ Error crítico al leer 'Tickers.csv'. Asegúrate de que el formato CSV es correcto. Error: {e}")
         
-    st.success(f"✅ Leídos {len(existing_tickers)} tickers existentes.")
-
-
     # 1.2 Descargar tickers del S&P 500
-    # NOTA: Esto ahora funciona gracias a que agregamos 'lxml' a requirements.txt
     status_text.text("2. Descargando lista de tickers del S&P 500 de Wikipedia...")
+    sp500_tickers = set()
     try:
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -75,10 +75,8 @@ def perform_initial_preparation():
         st.success(f"✅ Obtenidos {len(sp500_tickers)} tickers del S&P 500.")
     except Exception as e:
         st.error(f"❌ Error al descargar el S&P 500. Usando solo tickers existentes. Error: {e}")
-        sp500_tickers = set()
 
     # 1.3 Combinar
-    # La unión asegura que tus tickers existentes se mantengan y se añadan los nuevos.
     all_tickers = sp500_tickers.union(existing_tickers)
     st.info(f"Total de tickers combinados a validar: **{len(all_tickers)}**")
     
@@ -105,7 +103,7 @@ def perform_initial_preparation():
     progress_bar.empty()
     status_text.empty()
     
-    # --- 1.5 Guardar el CSV actualizado (Lógica de MANTENIMIENTO y LIMPIEZA) ---
+    # --- 1.5 Guardar el CSV actualizado y Mostrar el Resumen con el Formato deseado ---
     
     # Conjunto de todos los tickers que pasaron la validación
     valid_tickers = sorted(set(valid_tickers))
@@ -114,20 +112,24 @@ def perform_initial_preparation():
     invalid_tickers = sorted(set(all_tickers) - set(valid_tickers))
 
     try:
-        # Se guarda la lista limpia y ampliada. (Mantiene tus 901 si son válidos).
+        # Se guarda la lista limpia y ampliada. 
         pd.DataFrame({'Ticker': valid_tickers}).to_csv('Tickers.csv', index=False)
         pd.DataFrame({'Ticker': invalid_tickers}).to_csv('Tickers_invalidos.csv', index=False)
     except Exception as e:
         st.warning(f"⚠️ No se pudieron guardar Tickers.csv/Tickers_invalidos.csv en el servidor. (Error: {e})")
 
-    st.success("✅ Validación de preparación finalizada.")
-    st.markdown(f"""
-        <p style='font-style: italic;'>
-        **Resumen final:** <br>
-        ✔️ Tickers válidos guardados: **{len(valid_tickers)}** <br>
-        ❌ Tickers inválidos eliminados: **{len(invalid_tickers)}**
-        </p>
-    """, unsafe_allow_html=True)
+    # --- CORRECCIÓN DE FORMATO AQUÍ ---
+    valid_count = len(valid_tickers)
+    invalid_count = len(invalid_tickers)
+
+    st.success(f"✅ Validación de preparación finalizada.")
+    
+    # Imprimimos el resumen con el formato exacto de Jupyter
+    st.markdown(f"**✅ {valid_count} tickers válidos guardados en 'Tickers.csv'**")
+    st.markdown(f"**🗑️ Eliminados: {invalid_count} inválidos**")
+    
+    st.divider() 
+    # ------------------------------------
     
     return valid_tickers
 
@@ -143,7 +145,6 @@ def ff_scanner_page():
     valid_tickers = perform_initial_preparation()
     
     # --- Estructura para la fase 2. ESCANER (Pendiente) ---
-    st.divider()
     st.subheader("2. Escaneo de Cadenas de Opciones (Siguiente Fase)")
     if valid_tickers:
         st.info(f"El siguiente paso usará los **{len(valid_tickers)}** tickers validados. Aquí agregaremos la lógica de Schwab.")
