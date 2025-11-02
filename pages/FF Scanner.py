@@ -1,4 +1,4 @@
-# pages/FF Scanner.py - VERSIÓN SIMPLIFICADA
+# pages/FF Scanner.py - VERSIÓN SIMPLIFICADA Y CORREGIDA
 
 import streamlit as st
 import pandas as pd
@@ -51,9 +51,9 @@ def perform_initial_preparation():
     # 1.1 Leer Tickers.csv existentes
     status_text.text("1. Leyendo tickers existentes (Tickers.csv)...")
     try:
-        # Usamos 'rb' para manejar el archivo correctamente si está en Streamlit Cloud
         if os.path.exists('Tickers.csv'):
             df_existing = pd.read_csv('Tickers.csv')
+            # Limpieza y upper case
             existing_tickers = set(df_existing.iloc[:, 0].astype(str).str.upper().str.strip())
         else:
             existing_tickers = set()
@@ -63,7 +63,8 @@ def perform_initial_preparation():
     st.success(f"✅ Leídos {len(existing_tickers)} tickers existentes.")
 
 
-    # 1.2 Descargar tickers del SP500
+    # 1.2 Descargar tickers del S&P 500
+    # NOTA: Esto ahora funciona gracias a que agregamos 'lxml' a requirements.txt
     status_text.text("2. Descargando lista de tickers del S&P 500 de Wikipedia...")
     try:
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
@@ -77,6 +78,7 @@ def perform_initial_preparation():
         sp500_tickers = set()
 
     # 1.3 Combinar
+    # La unión asegura que tus tickers existentes se mantengan y se añadan los nuevos.
     all_tickers = sp500_tickers.union(existing_tickers)
     st.info(f"Total de tickers combinados a validar: **{len(all_tickers)}**")
     
@@ -87,7 +89,6 @@ def perform_initial_preparation():
     valid_tickers = []
     sorted_tickers = sorted(all_tickers)
     
-    # Adaptación del ThreadPoolExecutor para Streamlit con progreso en vivo
     with ThreadPoolExecutor(max_workers=15) as executor:
         futures = {executor.submit(is_valid_ticker, ticker): ticker for ticker in sorted_tickers}
         
@@ -104,11 +105,16 @@ def perform_initial_preparation():
     progress_bar.empty()
     status_text.empty()
     
-    # --- 1.5 Guardar el CSV actualizado ---
+    # --- 1.5 Guardar el CSV actualizado (Lógica de MANTENIMIENTO y LIMPIEZA) ---
+    
+    # Conjunto de todos los tickers que pasaron la validación
     valid_tickers = sorted(set(valid_tickers))
+    
+    # Los tickers inválidos son los que estaban en el conjunto TOTAL, pero NO en el conjunto FINAL válido.
     invalid_tickers = sorted(set(all_tickers) - set(valid_tickers))
 
     try:
+        # Se guarda la lista limpia y ampliada. (Mantiene tus 901 si son válidos).
         pd.DataFrame({'Ticker': valid_tickers}).to_csv('Tickers.csv', index=False)
         pd.DataFrame({'Ticker': invalid_tickers}).to_csv('Tickers_invalidos.csv', index=False)
     except Exception as e:
@@ -148,5 +154,4 @@ def ff_scanner_page():
 # 3. EJECUCIÓN DEL SCRIPT
 # =========================================================================
 
-# La página se ejecuta directamente sin control de acceso
 ff_scanner_page()
