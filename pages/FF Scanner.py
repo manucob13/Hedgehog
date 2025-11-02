@@ -1,4 +1,4 @@
-# pages/FF Scanner.py - VERSIÓN CON AUTENTICACIÓN Y BOTÓN DE ACTUALIZACIÓN
+# pages/FF Scanner.py - VERSIÓN SIMPLIFICADA: PREPARACIÓN Y CONEXIÓN
 
 import streamlit as st
 import pandas as pd
@@ -7,9 +7,7 @@ import yfinance as yf
 from datetime import timedelta, date, datetime 
 from io import StringIO
 from concurrent.futures import ThreadPoolExecutor
-import numpy as np 
 import os 
-import time 
 from utils import check_password
 
 # =========================================================================
@@ -18,11 +16,16 @@ from utils import check_password
 
 st.set_page_config(page_title="FF Scanner", layout="wide")
 
-# Variables de Schwab (se mantienen, aunque no se usen aún)
-api_key = "n9ydCRbM3Gv5bBAGA1ZvVl6GAqo5IG9So6pMwjO9slvJXEa6"
-app_secret = "DAFletN79meCi4yBYGzlDvlrNcJiISH0HuMuThydxYANTWghMxXxXbrpQOVjsdsx"
-redirect_uri = "https://127.0.0.1" 
-token_path = "schwab_token.json" 
+# Variables de Schwab (cargadas desde secrets)
+try:
+    api_key = st.secrets["schwab"]["api_key"]
+    app_secret = st.secrets["schwab"]["app_secret"]
+    redirect_uri = st.secrets["schwab"]["redirect_uri"]
+except KeyError as e:
+    st.error(f"❌ Error: Falta configurar los secrets de Schwab. Clave faltante: {e}")
+    st.stop()
+
+token_path = "schwab_token.json"
 
 # =========================================================================
 # 1. FASE DE PREPARACIÓN (Validación de Tickers)
@@ -42,13 +45,11 @@ def is_valid_ticker(ticker):
         return None
     return None
 
-# Usamos st.cache_resource con clear_on_click para permitir la repetición
 @st.cache_resource(ttl=timedelta(hours=24), show_spinner=False)
 def perform_initial_preparation():
     """Realiza la lectura, descarga y validación en PARALELO de tickers."""
     st.subheader("1. Preparación y Validación de Tickers")
     
-    # Placeholder para mensajes de estado
     status_text = st.empty()
     
     # 1.1 Leer Tickers.csv existentes
@@ -60,10 +61,9 @@ def perform_initial_preparation():
             existing_tickers = set(df_existing.iloc[:, 0].astype(str).str.upper().str.strip())
             st.info(f"✅ Se encontró 'Tickers.csv'. Leídos **{len(existing_tickers)}** tickers existentes.")
         else:
-            # Ahora que el usuario movió el archivo, este mensaje solo aparecerá si falta
-            st.warning("⚠️ Archivo 'Tickers.csv' NO ENCONTRADO en el repositorio. Iniciando con 0 tickers existentes.")
+            st.warning("⚠️ Archivo 'Tickers.csv' NO ENCONTRADO. Iniciando con 0 tickers existentes.")
     except Exception as e:
-        st.error(f"❌ Error crítico al leer 'Tickers.csv'. Error: {e}")
+        st.error(f"❌ Error al leer 'Tickers.csv'. Error: {e}")
         
     # 1.2 Descargar tickers del S&P 500
     status_text.text("2. Descargando lista de tickers del S&P 500 de Wikipedia...")
@@ -83,7 +83,7 @@ def perform_initial_preparation():
     st.info(f"Total de tickers combinados a validar: **{len(all_tickers)}**")
     
     # 1.4 Validar en PARALELO
-    status_text.text(f"3. Validando {len(all_tickers)} tickers con yfinance (esto será rápido)...")
+    status_text.text(f"3. Validando {len(all_tickers)} tickers con yfinance...")
     progress_bar = st.progress(0)
     
     valid_tickers = []
@@ -97,7 +97,7 @@ def perform_initial_preparation():
             if result:
                 valid_tickers.append(result)
             progress_bar.progress((i + 1) / len(sorted_tickers))
-            status_text.text(f"3. Validando tickers: {i + 1}/{len(sorted_tickers)} procesados. Válidos encontrados: {len(valid_tickers)}")
+            status_text.text(f"3. Validando tickers: {i + 1}/{len(sorted_tickers)} procesados. Válidos: {len(valid_tickers)}")
 
     progress_bar.empty()
     status_text.empty()
@@ -110,54 +110,147 @@ def perform_initial_preparation():
         pd.DataFrame({'Ticker': valid_tickers}).to_csv('Tickers.csv', index=False)
         pd.DataFrame({'Ticker': invalid_tickers}).to_csv('Tickers_invalidos.csv', index=False)
     except Exception as e:
-        st.warning(f"⚠️ No se pudieron guardar Tickers.csv/Tickers_invalidos.csv. Error: {e}")
+        st.warning(f"⚠️ No se pudieron guardar los archivos. Error: {e}")
 
     valid_count = len(valid_tickers)
     invalid_count = len(invalid_tickers)
 
-    st.success(f"✅ Validación de preparación finalizada.")
-    st.markdown(f"**✅ {valid_count} tickers válidos guardados en 'Tickers.csv'**")
-    st.markdown(f"**🗑️ Eliminados: {invalid_count} inválidos**")
+    st.success(f"✅ Validación completada.")
+    st.markdown(f"**✅ {valid_count} tickers válidos | 🗑️ {invalid_count} inválidos**")
     st.divider() 
     
     return valid_tickers
 
 # =========================================================================
-# 2. FUNCIÓN PRINCIPAL DE LA PÁGINA (FF Scanner)
+# 2. CONEXIÓN CON BROKER SCHWAB
+# =========================================================================
+
+def connect_to_schwab():
+    """
+    Intenta conectar con Schwab API.
+    - Si existe el token, lo usa
+    - Si no existe, muestra instrucciones para generarlo
+    """
+    st.subheader("2. Conexión con Broker Schwab")
+    
+    # Verificar si schwab-py está instalado
+    try:
+        from schwab.auth import client_from_token_file
+    except ImportError:
+        st.error("❌ La librería 'schwab-py' no está instalada.")
+        st.code("pip install schwab-py", language="bash")
+        st.stop()
+    
+    # Verificar si existe el archivo de token
+    if os.path.exists(token_path):
+        st.info(f"📄 Archivo de token encontrado: `{token_path}`")
+        
+        try:
+            with st.spinner("🔐 Conectando con Schwab API..."):
+                client = client_from_token_file(
+                    token_path=token_path,
+                    api_key=api_key,
+                    app_secret=app_secret
+                )
+            
+            st.success("✅ Conexión a Schwab API establecida correctamente.")
+            
+            # Verificar con petición de prueba
+            try:
+                test_response = client.get_quote("AAPL")
+                if test_response.status_code == 200:
+                    st.success("✅ Token válido - Conexión verificada.")
+                else:
+                    st.warning(f"⚠️ Respuesta inesperada: {test_response.status_code}")
+            except Exception as e:
+                st.warning(f"⚠️ Error al verificar la conexión: {e}")
+            
+            return client
+            
+        except Exception as e:
+            st.error(f"❌ Error al conectar: {e}")
+            st.warning("⚠️ El token puede haber expirado. Necesitas regenerarlo.")
+            return None
+    
+    else:
+        # El token no existe - mostrar instrucciones
+        st.warning(f"⚠️ No se encontró el archivo de token: `{token_path}`")
+        
+        st.markdown("""
+        ### 📋 Instrucciones para generar el token
+        
+        **Ejecuta este código en tu computadora local** (no en Streamlit Cloud):
+        
+        ```python
+        from schwab.auth import easy_client
+        
+        api_key = "n9ydCRbM3Gv5bBAGA1ZvVl6GAqo5IG9So6pMwjO9slvJXEa6"
+        app_secret = "DAFletN79meCi4yBYGzlDvlrNcJiISH0HuMuThydxYANTWghMxXxXbrpQOVjsdsx"
+        redirect_uri = "https://127.0.0.1"
+        
+        client = easy_client(
+            api_key=api_key,
+            app_secret=app_secret,
+            callback_url=redirect_uri,
+            token_path="schwab_token.json"
+        )
+        
+        print("✅ Token generado en schwab_token.json")
+        ```
+        
+        ### Pasos:
+        1. Ejecuta el código anterior localmente
+        2. Autentícate en el navegador con Schwab
+        3. Copia la URL completa después de autenticarte
+        4. Pégala cuando te lo pida
+        5. Sube `schwab_token.json` a tu repositorio
+        6. Recarga esta página
+        
+        ⚠️ **Nota:** Si tu repositorio es público, añade `schwab_token.json` al `.gitignore`
+        """)
+        
+        return None
+
+# =========================================================================
+# 3. FUNCIÓN PRINCIPAL
 # =========================================================================
 
 def ff_scanner_page():
-    st.title("🛡️ FF Scanner (Preparación y Validación de Tickers)")
+    st.title("🛡️ FF Scanner - Preparación y Conexión")
     st.markdown("---")
     
-    # Contenedor para el botón
+    # Botón de actualización
     col1, col2 = st.columns([1, 4])
-
     with col1:
-        # st.cache_resource se borrará al hacer clic en este botón, forzando la re-ejecución
-        st.button("🔄 Actualizar/Validar Tickers", 
+        st.button("🔄 Actualizar Tickers", 
                   type="primary",
-                  help="Borra la caché y fuerza la re-lectura de Tickers.csv y la re-descarga del S&P 500.",
                   on_click=perform_initial_preparation.clear)
-
     with col2:
-        st.markdown("_(La validación se ejecuta automáticamente cada 24h, o al hacer clic en el botón)_")
+        st.markdown("_(La validación se ejecuta cada 24h o al hacer clic)_")
 
     st.divider()
 
-    # FASE 1: Preparación (Se llama aquí, pero se ejecuta desde la caché, a menos que se borre)
+    # FASE 1: Preparación
     valid_tickers = perform_initial_preparation()
+    
+    st.divider()
+    
+    # FASE 2: Conexión con Schwab
+    client = connect_to_schwab()
+    
+    # Mensaje final
+    if client:
+        st.success(f"🎯 Sistema listo con {len(valid_tickers)} tickers válidos y conexión Schwab activa.")
+    else:
+        st.info("⏳ Completa la conexión con Schwab para continuar.")
 
 # =========================================================================
-# 2. PUNTO DE ENTRADA PROTEGIDO (CON AUTENTICACIÓN)
+# 4. PUNTO DE ENTRADA
 # =========================================================================
 
 if __name__ == "__main__":
-    # LLAMADA AL LOGIN (Muestra el formulario si es necesario)
     if check_password():
-        # SI EL LOGIN ES EXITOSO, EJECUTA LA APP PRINCIPAL
         ff_scanner_page()
     else:
-        # Mensaje cuando no se ha autenticado
         st.title("🔒 Acceso Restringido")
-        st.info("Por favor, introduce tus credenciales en el menú lateral (sidebar) para acceder a la aplicación.")
+        st.info("Por favor, introduce tus credenciales en el menú lateral (sidebar).")
