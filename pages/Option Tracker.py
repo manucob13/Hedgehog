@@ -6,7 +6,7 @@ import os
 import schwab
 from schwab.auth import easy_client
 from schwab.client import Client
-from utils import check_password
+from utils import check_password # Asegúrate de que utils.py esté disponible
 
 # =========================================================================
 # 0. CONFIGURACIÓN
@@ -492,9 +492,9 @@ def option_tracker_page():
                         st.error("❌ Para Spreads debes completar ambos legs")
                     else:
                         if agregar_operacion(ticker, estrategia, strike_1, tipo_1, posicion_1,
-                                           strike_2, tipo_2, posicion_2,
-                                           fecha_entrada, fecha_salida, prima_entrada, es_credito,
-                                           comision_leg1, comision_leg2):
+                                             strike_2, tipo_2, posicion_2,
+                                             fecha_entrada, fecha_salida, prima_entrada, es_credito,
+                                             comision_leg1, comision_leg2):
                             st.success(f"✅ Operación agregada: {ticker} {estrategia} ({'CRÉDITO' if es_credito else 'DÉBITO'})")
                             st.rerun()
                 else:
@@ -506,6 +506,11 @@ def option_tracker_page():
     st.markdown("### 📊 Portfolio Activo")
     
     df = cargar_operaciones()
+    
+    # Lógica para refrescar automáticamente al cargar, si es la primera vez y hay conexión
+    if client and not df.empty and df['Precio_Actual_1'].isna().all():
+        with st.spinner("Cargando datos iniciales desde Schwab..."):
+            df = refrescar_todas_operaciones(client)
     
     if df.empty:
         st.markdown('<div class="info-box">📝 No hay operaciones activas. ¡Agrega tu primera operación arriba!</div>', unsafe_allow_html=True)
@@ -522,14 +527,15 @@ def option_tracker_page():
                     st.rerun()
         
         with col2:
-            if st.button("💾 Descargar CSV", use_container_width=True):
-                csv = df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="📥 Descargar",
-                    data=csv,
-                    file_name=f"option_tracker_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv"
-                )
+            # Botón de Descargar CSV (requiere un pequeño truco para funcionar dentro de un bloque de columnas)
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="💾 Descargar CSV",
+                data=csv,
+                file_name=f"option_tracker_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
         
         with col3:
             if not df.empty and df['Precio_Actual_1'].notna().any():
@@ -548,7 +554,7 @@ def option_tracker_page():
         with col2:
             pnl_neto_total = df['PnL_Neto'].apply(lambda x: float(x) if pd.notna(x) else 0).sum()
             delta_color = "normal" if pnl_neto_total >= 0 else "inverse"
-            st.metric("💰 P&L Neto", f"${pnl_neto_total:.2f}", delta=f"${pnl_neto_total:.2f}", delta_color=delta_color)
+            st.metric("💰 P&L Neto Total", f"${pnl_neto_total:.2f}", delta=f"${pnl_neto_total:.2f}", delta_color=delta_color)
         
         with col3:
             spreads = len(df[df['Estrategia'] == 'Spread'])
@@ -559,11 +565,13 @@ def option_tracker_page():
             st.metric("🎯 Single Legs", singles)
         
         with col5:
-            if pnl_neto_total != 0:
-                avg_pnl_pct = df['PnL_Porcentaje'].apply(lambda x: float(x) if pd.notna(x) else 0).mean()
-                st.metric("📈 Avg P&L %", f"{avg_pnl_pct:.1f}%")
+            prima_total = df['Prima_Entrada'].apply(lambda x: float(x) if pd.notna(x) else 0).sum() * 100
+            if prima_total != 0:
+                pnl_neto_portfolio = df['PnL_Neto'].apply(lambda x: float(x) if pd.notna(x) else 0).sum()
+                pnl_porcentaje_portfolio = (pnl_neto_portfolio / prima_total) * 100
+                st.metric("📈 P&L % Portfolio", f"{pnl_porcentaje_portfolio:.1f}%")
             else:
-                st.metric("📈 Avg P&L %", "0.0%")
+                st.metric("📈 P&L % Portfolio", "0.0%")
         
         st.markdown("---")
         
@@ -576,9 +584,9 @@ def option_tracker_page():
         
         # Formatear columnas numéricas
         numeric_cols = ['Strike_1', 'Strike_2', 'Prima_Entrada', 'Comision_Leg1', 'Comision_Leg2', 'Comision',
-                       'Precio_Actual_1', 'Delta_1', 'Theta_1',
-                       'Precio_Actual_2', 'Delta_2', 'Theta_2',
-                       'PnL_Bruto', 'PnL_Neto', 'PnL_Porcentaje']
+                        'Precio_Actual_1', 'Delta_1', 'Theta_1',
+                        'Precio_Actual_2', 'Delta_2', 'Theta_2',
+                        'PnL_Bruto', 'PnL_Neto', 'PnL_Porcentaje']
         
         for col in numeric_cols:
             if col in df_display.columns:
@@ -591,32 +599,37 @@ def option_tracker_page():
             hide_index=True,
             use_container_width=True,
             column_config={
+                # COLUMNAS CLAVE - VISIBLES
                 "ID": st.column_config.NumberColumn("ID", width="small"),
                 "Ticker": st.column_config.TextColumn("🎯 Ticker", width="small"),
                 "Estrategia": st.column_config.TextColumn("📊 Estrategia", width="medium"),
                 "Strike_1": st.column_config.TextColumn("Strike 1", width="small"),
                 "Tipo_1": st.column_config.TextColumn("Tipo 1", width="small"),
                 "Posicion_1": st.column_config.TextColumn("Pos 1", width="small"),
+                "Fecha_Salida": st.column_config.TextColumn("📅 Expiración", width="medium"),
+                "DTE": st.column_config.NumberColumn("DTE", width="small"),
+                "Prima_Entrada": st.column_config.TextColumn("💵 Prima", width="small"),
+                "Comision": st.column_config.TextColumn("💳 ComTotal", width="small"),
+                "PnL_Neto": st.column_config.TextColumn("💰 P&L Neto", width="small"),
+                "PnL_Porcentaje": st.column_config.TextColumn("📊 P&L %", width="small"),
+                
+                # COLUMNAS DETALLE - OPCIONALES/OCULTAS
                 "Strike_2": st.column_config.TextColumn("Strike 2", width="small"),
                 "Tipo_2": st.column_config.TextColumn("Tipo 2", width="small"),
                 "Posicion_2": st.column_config.TextColumn("Pos 2", width="small"),
-                "Fecha_Entrada": st.column_config.TextColumn("📅 Entrada", width="medium"),
-                "Fecha_Salida": st.column_config.TextColumn("📅 Salida", width="medium"),
-                "DTE": st.column_config.NumberColumn("DTE", width="small"),
-                "Prima_Entrada": st.column_config.TextColumn("💵 Prima", width="small"),
-                "Es_Credito": st.column_config.CheckboxColumn("💰 Créd", width="small"),
-                "Comision_Leg1": st.column_config.TextColumn("💳 Com1", width="small"),
-                "Comision_Leg2": st.column_config.TextColumn("💳 Com2", width="small"),
-                "Comision": st.column_config.TextColumn("💳 ComTotal", width="small"),
                 "Precio_Actual_1": st.column_config.TextColumn("💰 P1", width="small"),
                 "Delta_1": st.column_config.TextColumn("Δ1", width="small"),
-                "Theta_1": st.column_config.TextColumn("Θ1", width="small"),
-                "Precio_Actual_2": st.column_config.TextColumn("💰 P2", width="small"),
-                "Delta_2": st.column_config.TextColumn("Δ2", width="small"),
-                "Theta_2": st.column_config.TextColumn("Θ2", width="small"),
-                "PnL_Bruto": st.column_config.TextColumn("💵 P&L Bruto", width="small"),
-                "PnL_Neto": st.column_config.TextColumn("💰 P&L Neto", width="small"),
-                "PnL_Porcentaje": st.column_config.TextColumn("📊 P&L %", width="small")
+                
+                # COLUMNAS OCULTAS PARA SIMPLIFICAR EL DETALLE
+                "Fecha_Entrada": "hidden",
+                "Es_Credito": "hidden",
+                "Comision_Leg1": "hidden",
+                "Comision_Leg2": "hidden",
+                "PnL_Bruto": "hidden",
+                "Theta_1": "hidden",
+                "Precio_Actual_2": "hidden",
+                "Delta_2": "hidden",
+                "Theta_2": "hidden"
             }
         )
         
