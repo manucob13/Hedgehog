@@ -270,9 +270,9 @@ def main_comparison():
     # --------------------------------------------------------------------------
     
     # ----------------------------------------------------------------------
-    # 1.4 LÓGICA HEDGEHOG Y SEMÁFORO GLOBAL 🚥 (UNIFICADO)
+    # 4 LÓGICA HEDGEHOG Y SEMÁFORO GLOBAL 🚥 (UNIFICADO)
     # ----------------------------------------------------------------------
-    st.header("4. Lógica HEDGEHOG y Semáforo Global 🚥")
+    st.header("1.4 Lógica HEDGEHOG y Semáforo Global 🚥")
 
     # --- 1. Inicializar la lógica de configuración en session_state ---
     rv5d_ayer_val = spx["RV_5d"].iloc[-2]
