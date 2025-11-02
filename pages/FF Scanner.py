@@ -154,7 +154,6 @@ def get_next_thursday(today=None):
     if today is None:
         today = datetime.date.today()
     thursday = today + datetime.timedelta((3 - today.weekday()) % 7)
-    # Si ya pasó jueves, sumamos 7 días
     if thursday <= today:
         thursday += datetime.timedelta(days=7)
     return thursday
@@ -176,13 +175,13 @@ def fechas_section():
     fecha_dte_front = fecha_entrada + datetime.timedelta(days=int(dte_front))
     fecha_dte_back = fecha_entrada + datetime.timedelta(days=int(dte_back))
 
-    # Crear DataFrame para mostrar en tabla
+    # Crear DataFrame para mostrar en tabla sin índice
     df_fechas = pd.DataFrame({
         "Concepto": ["Fecha de Entrada", "DTE Front Fecha", "DTE Back Fecha"],
         "Valor": [fecha_entrada, fecha_dte_front, fecha_dte_back]
     })
 
-    st.table(df_fechas)
+    st.table(df_fechas.style.hide_index())
 
     return fecha_entrada, dte_front, dte_back, fecha_dte_front, fecha_dte_back
 
