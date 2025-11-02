@@ -10,6 +10,9 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np 
 import os 
 import time 
+import schwab
+from schwab.auth import easy_client
+from schwab.client import Client
 from utils import check_password
 
 # =========================================================================
