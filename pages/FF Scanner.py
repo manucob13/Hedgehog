@@ -11,6 +11,16 @@ import os
 from urllib.parse import urlparse, parse_qs
 from utils import check_password
 
+# **MOVIDO AQUÍ:** Importación global de schwab-py
+try:
+    from schwab.auth import client_from_token_file, SchwabOauth
+except ImportError:
+    # Si falla aquí, significa que la instalación falló completamente
+    st.error("❌ La librería 'schwab-py' no pudo ser importada. Revisa tu archivo requirements.txt y la consola de Streamlit Cloud.")
+    st.code("pip install schwab-py", language="bash")
+    st.stop()
+
+
 # =========================================================================
 # 0. CONFIGURACIÓN Y VARIABLES
 # =========================================================================
@@ -134,14 +144,7 @@ def connect_to_schwab():
     """
     st.subheader("2. Conexión con Broker Schwab")
     
-    # Verificar si schwab-py está instalado y obtener las funciones CORRECTAS
-    try:
-        # Importamos solo lo necesario para el flujo manual/token
-        from schwab.auth import client_from_token_file, SchwabOauth
-    except ImportError:
-        st.error("❌ La librería 'schwab-py' no está instalada.")
-        st.code("pip install schwab-py", language="bash")
-        st.stop()
+    # NOTA: Las importaciones de schwab.auth ahora están al inicio del script.
     
     # Verificar si existe el archivo de token
     if os.path.exists(token_path):
@@ -220,7 +223,7 @@ def connect_to_schwab():
             else:
                 try:
                     with st.spinner("Generando token..."):
-                        # Extraer el código de la URL
+                        # Extraer el código de la URL (urlparse y parse_qs están importados al inicio)
                         parsed_url = urlparse(callback_url)
                         code = parse_qs(parsed_url.query).get('code', [None])[0]
                         
