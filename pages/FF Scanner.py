@@ -129,13 +129,13 @@ def connect_to_schwab():
     """
     Intenta conectar con Schwab API.
     - Si existe el token, lo usa
-    - Si no existe, muestra instrucciones para generarlo
+    - Si no existe, muestra proceso de generación manual
     """
     st.subheader("2. Conexión con Broker Schwab")
     
     # Verificar si schwab-py está instalado
     try:
-        from schwab.auth import client_from_token_file
+        from schwab.auth import client_from_token_file, client_from_manual_flow
     except ImportError:
         st.error("❌ La librería 'schwab-py' no está instalada.")
         st.code("pip install schwab-py", language="bash")
@@ -170,44 +170,90 @@ def connect_to_schwab():
         except Exception as e:
             st.error(f"❌ Error al conectar: {e}")
             st.warning("⚠️ El token puede haber expirado. Necesitas regenerarlo.")
+            # Borrar el token inválido
+            if st.button("🗑️ Eliminar token inválido y regenerar"):
+                os.remove(token_path)
+                st.rerun()
             return None
     
     else:
-        # El token no existe - mostrar instrucciones
+        # El token no existe - proceso de generación manual
         st.warning(f"⚠️ No se encontró el archivo de token: `{token_path}`")
         
         st.markdown("""
-        ### 📋 Instrucciones para generar el token
+        ### 🔧 Generación de Token - Proceso Manual
         
-        **Ejecuta este código en tu computadora local** (no en Streamlit Cloud):
+        Como estás en Streamlit Cloud, vamos a generar el token manualmente siguiendo estos pasos:
+        """)
         
-        ```python
-        from schwab.auth import easy_client
+        # Generar la URL de autorización
+        from schwab.auth import client_from_manual_flow
         
-        api_key = "n9ydCRbM3Gv5bBAGA1ZvVl6GAqo5IG9So6pMwjO9slvJXEa6"
-        app_secret = "DAFletN79meCi4yBYGzlDvlrNcJiISH0HuMuThydxYANTWghMxXxXbrpQOVjsdsx"
-        redirect_uri = "https://127.0.0.1"
+        # Paso 1: Mostrar la URL de autorización
+        auth_url = f"https://api.schwabapi.com/v1/oauth/authorize?response_type=code&client_id={api_key}&redirect_uri={redirect_uri}"
         
-        client = easy_client(
-            api_key=api_key,
-            app_secret=app_secret,
-            callback_url=redirect_uri,
-            token_path="schwab_token.json"
+        st.markdown("#### Paso 1: Autorización")
+        st.markdown(f"Haz clic en este enlace para autorizar la aplicación:")
+        st.markdown(f"[🔗 Autorizar con Schwab]({auth_url})")
+        
+        st.info("""
+        - Se abrirá la página de Schwab
+        - Inicia sesión con tus credenciales
+        - Autoriza la aplicación
+        - Serás redirigido a una página que NO carga (es normal)
+        """)
+        
+        # Paso 2: Capturar la URL de callback
+        st.markdown("#### Paso 2: Copiar URL de Callback")
+        st.markdown("""
+        Después de autorizar, tu navegador intentará ir a `https://127.0.0.1/?code=...`
+        
+        La página NO cargará, pero la URL es lo importante. Copia **TODA la URL** de la barra de direcciones.
+        """)
+        
+        callback_url = st.text_input(
+            "Pega aquí la URL completa de callback:",
+            placeholder="https://127.0.0.1/?code=C0.b2F1dGgyLm...",
+            key="callback_url_input"
         )
         
-        print("✅ Token generado en schwab_token.json")
-        ```
-        
-        ### Pasos:
-        1. Ejecuta el código anterior localmente
-        2. Autentícate en el navegador con Schwab
-        3. Copia la URL completa después de autenticarte
-        4. Pégala cuando te lo pida
-        5. Sube `schwab_token.json` a tu repositorio
-        6. Recarga esta página
-        
-        ⚠️ **Nota:** Si tu repositorio es público, añade `schwab_token.json` al `.gitignore`
-        """)
+        # Paso 3: Generar el token
+        if st.button("🔐 Generar Token", type="primary"):
+            if not callback_url or not callback_url.startswith("https://127.0.0.1"):
+                st.error("❌ Por favor, pega la URL de callback completa.")
+            else:
+                try:
+                    with st.spinner("Generando token..."):
+                        # Crear cliente usando el flujo manual
+                        client = client_from_manual_flow(
+                            api_key=api_key,
+                            app_secret=app_secret,
+                            callback_url=redirect_uri,
+                            token_path=token_path,
+                            requested_url=callback_url
+                        )
+                    
+                    st.success("✅ Token generado y guardado exitosamente!")
+                    st.balloons()
+                    
+                    # Verificar que funciona
+                    try:
+                        test_response = client.get_quote("AAPL")
+                        if test_response.status_code == 200:
+                            st.success("✅ Conexión verificada - Token válido.")
+                            st.info("🔄 Recarga la página para continuar.")
+                            return client
+                    except Exception as e:
+                        st.warning(f"⚠️ Token creado pero error al verificar: {e}")
+                    
+                except Exception as e:
+                    st.error(f"❌ Error al generar el token: {e}")
+                    st.markdown("""
+                    **Posibles causas:**
+                    - La URL de callback no es correcta
+                    - El código de autorización ya fue usado (genera uno nuevo)
+                    - Las credenciales API son incorrectas
+                    """)
         
         return None
 
