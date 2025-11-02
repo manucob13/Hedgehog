@@ -1,4 +1,4 @@
-# pages/Option Tracker.py - MONITOREO DE OPCIONES CON SPREADS (FORMATO UNIFICADO)
+# pages/Option Tracker.py - MONITOREO DE OPCIONES CON TARJETAS SIMPLIFICADAS
 import streamlit as st
 import pandas as pd
 from datetime import timedelta, datetime
@@ -69,6 +69,36 @@ st.markdown("""
         padding: 1.5rem;
         color: white;
         margin: 1rem 0;
+    }
+    .op-card {
+        background-color: #2e303c;
+        border-radius: 10px;
+        padding: 15px;
+        margin-bottom: 15px;
+        border-left: 5px solid #1f77b4;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+    }
+    .op-header {
+        display: flex; 
+        justify-content: space-between; 
+        align-items: center; 
+        margin-bottom: 10px;
+        border-bottom: 1px dashed #444;
+        padding-bottom: 5px;
+    }
+    .op-data {
+        display: flex; 
+        justify-content: space-between; 
+        align-items: top; 
+        padding-top: 10px;
+    }
+    .op-item {
+        flex: 1;
+        text-align: center;
+        min-width: 80px;
+    }
+    .op-item:not(:last-child) {
+        border-right: 1px dotted #444;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -373,7 +403,91 @@ def refrescar_todas_operaciones(client):
     return df
 
 # =========================================================================
-# 4. INTERFAZ PRINCIPAL
+# 4. FUNCIONES DE VISUALIZACIÓN
+# =========================================================================
+
+def display_operation_card_v2(row):
+    """Muestra una operación activa con PnL, Delta y Theta en formato de tarjeta."""
+    
+    ticker = row['Ticker']
+    estrategia = row['Estrategia']
+    fecha_entrada = row['Fecha_Entrada'].strftime('%d/%m/%Y')
+    fecha_salida = row['Fecha_Salida'].strftime('%d/%m/%Y')
+    
+    pnl_neto = row['PnL_Neto']
+    delta_1 = row['Delta_1']
+    delta_2 = row['Delta_2']
+    theta_1 = row['Theta_1']
+    theta_2 = row['Theta_2']
+    
+    # 1. Calcular Totales y preparar textos
+    
+    # PnL
+    if pd.isna(pnl_neto):
+        pnl_color = "#f0ad4e" # Naranja para No Data
+        pnl_text = "N/A"
+    elif pnl_neto >= 0:
+        pnl_color = "#5cb85c" # Verde
+        pnl_text = f"${pnl_neto:.2f}"
+    else:
+        pnl_color = "#d9534f" # Rojo
+        pnl_text = f"${pnl_neto:.2f}"
+
+    # Delta Total
+    delta_total = (delta_1 if pd.notna(delta_1) else 0) + (delta_2 if pd.notna(delta_2) else 0)
+    delta_text = f"{delta_total:.2f}" if (pd.notna(delta_1) or pd.notna(delta_2)) else "N/A"
+    
+    # Theta Total
+    theta_total = (theta_1 if pd.notna(theta_1) else 0) + (theta_2 if pd.notna(theta_2) else 0)
+    theta_text = f"{theta_total:.2f}" if (pd.notna(theta_1) or pd.notna(theta_2)) else "N/A"
+    
+    # 2. Construir la descripción breve de la estrategia
+    strike_1 = f"{row['Strike_1']:.2f}"
+    tipo_1 = row['Tipo_1'][0] # C o P
+    
+    brief_description = f"{strike_1}{tipo_1}"
+    if estrategia == "Spread" and pd.notna(row['Strike_2']):
+        strike_2 = f"{row['Strike_2']:.2f}"
+        tipo_2 = row['Tipo_2'][0]
+        brief_description = f"{strike_1}{tipo_1}/{strike_2}{tipo_2}"
+
+    # 3. Estructura HTML de la Tarjeta
+    st.markdown(f"""
+    <div class="op-card">
+        <div class="op-header">
+            <h4 style="color: white; margin: 0; font-size: 1.5rem;">
+                {row['ID']} - <strong>{ticker}</strong> ({estrategia} - {brief_description})
+            </h4>
+            <span style="font-size: 0.9rem; color: #ccc;">DTE: <strong>{row['DTE']}</strong></span>
+        </div>
+        
+        <div class="op-data">
+            <div class="op-item">
+                <span style="color: #aaa; font-size: 0.8rem;">Fecha Entrada</span><br>
+                <strong style="color: white; font-size: 1rem;">{fecha_entrada}</strong>
+            </div>
+            <div class="op-item">
+                <span style="color: #aaa; font-size: 0.8rem;">Fecha Salida</span><br>
+                <strong style="color: white; font-size: 1rem;">{fecha_salida}</strong>
+            </div>
+            <div class="op-item">
+                <span style="color: #aaa; font-size: 0.8rem;">💰 P&L Neto</span><br>
+                <strong style="color: {pnl_color}; font-size: 1.2rem;">{pnl_text}</strong>
+            </div>
+            <div class="op-item">
+                <span style="color: #aaa; font-size: 0.8rem;">Δ Total</span><br>
+                <strong style="color: white; font-size: 1.2rem;">{delta_text}</strong>
+            </div>
+            <div class="op-item" style="border-right: none;">
+                <span style="color: #aaa; font-size: 0.8rem;">Θ Total</span><br>
+                <strong style="color: white; font-size: 1.2rem;">{theta_text}</strong>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# =========================================================================
+# 5. INTERFAZ PRINCIPAL
 # =========================================================================
 
 def option_tracker_page():
@@ -400,7 +514,7 @@ def option_tracker_page():
     # SECCIÓN 1: AGREGAR NUEVA OPERACIÓN
     st.markdown("### ➕ Nueva Operación")
     
-    with st.expander("📝 Formulario de entrada", expanded=True):
+    with st.expander("📝 Formulario de entrada", expanded=False): # Cambiado a collapsed para ahorrar espacio
         # Primero seleccionar estrategia para condicionar el resto
         estrategia = st.selectbox("📊 Estrategia", ["Single Leg", "Spread"], key="estrategia_select")
         
@@ -565,7 +679,7 @@ def option_tracker_page():
             # Botón de Descargar CSV
             csv = df.to_csv(index=False).encode('utf-8')
             st.download_button(
-                label="💾 Descargar CSV",
+                label="💾 Descargar CSV (Backup)",
                 data=csv,
                 file_name=f"option_tracker_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv",
@@ -574,7 +688,7 @@ def option_tracker_page():
         
         with col3:
             if not df.empty and df['PnL_Neto'].notna().any():
-                st.info(f"📅 Actualizado: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+                st.info(f"📅 Última actualización: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
         
         st.markdown("---")
         
@@ -597,13 +711,15 @@ def option_tracker_page():
                       delta=f"{pnl_neto_total:.2f}", delta_color=delta_color)
         
         with col3:
-            spreads = len(df[df['Estrategia'] == 'Spread'])
-            st.metric("📐 Spreads", spreads)
-        
+            # Delta Agregado
+            delta_agregado = df['Delta_1'].fillna(0).sum() + df['Delta_2'].fillna(0).sum()
+            st.metric("Δ Portfolio", f"{delta_agregado:.2f}")
+
         with col4:
-            singles = len(df[df['Estrategia'] == 'Single Leg'])
-            st.metric("🎯 Single Legs", singles)
-        
+            # Theta Agregado
+            theta_agregado = df['Theta_1'].fillna(0).sum() + df['Theta_2'].fillna(0).sum()
+            st.metric("Θ Portfolio", f"{theta_agregado:.2f}")
+
         with col5:
             prima_total_invertida = df['Prima_Entrada'].apply(lambda x: float(x) if pd.notna(x) else 0).sum() * 100
             if prima_total_invertida != 0:
@@ -615,86 +731,15 @@ def option_tracker_page():
         
         st.markdown("---")
         
-        # Tabla de operaciones
-        st.markdown("#### 📋 Detalle de Operaciones")
+        # =========================================================================
+        # SECCIÓN DE TARJETAS DE OPERACIONES (El formato solicitado)
+        # =========================================================================
         
-        df_display = df.copy()
-        df_display['Fecha_Entrada'] = pd.to_datetime(df_display['Fecha_Entrada']).dt.strftime('%d/%m/%Y')
-        df_display['Fecha_Salida'] = pd.to_datetime(df_display['Fecha_Salida']).dt.strftime('%d/%m/%Y')
+        st.markdown("### 📋 Detalle de Operaciones")
         
-        # =================================================================
-        # UNIFICACIÓN DE FORMATO
-        # =================================================================
-        # Rellenar con guiones para operaciones Single Leg en Leg 2
-        cols_to_fill = ['Strike_2', 'Tipo_2', 'Posicion_2']
-        
-        for col in cols_to_fill:
-            df_display[col] = df_display.apply(
-                lambda row: '-' if row['Estrategia'] == 'Single Leg' else (f"{row[col]:.2f}" if pd.notna(row[col]) and isinstance(row[col], (int, float)) else str(row[col])),
-                axis=1
-            )
-        
-        # Formatear el resto de columnas numéricas
-        numeric_cols_for_format = ['Strike_1', 'Prima_Entrada', 'Comision_Leg1', 'Comision_Leg2', 'Comision',
-                                   'Precio_Actual_1', 'Delta_1', 'Theta_1',
-                                   'Precio_Actual_2', 'Delta_2', 'Theta_2',
-                                   'PnL_Bruto', 'PnL_Neto', 'PnL_Porcentaje']
-        
-        for col in numeric_cols_for_format:
-            # Solo aplicar si la columna no fue ya formateada con el condicional de Spread
-            if col not in cols_to_fill: 
-                df_display[col] = df_display[col].apply(
-                    lambda x: f"{x:.2f}" if pd.notna(x) and isinstance(x, (int, float)) else "-"
-                )
-
-        
-        st.dataframe(
-            df_display,
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                # =========================================================
-                # COLUMNAS CLAVE: Visibles para todas las operaciones
-                # =========================================================
-                "ID": st.column_config.NumberColumn("ID", width="small"),
-                "Ticker": st.column_config.TextColumn("🎯 Ticker", width="small"),
-                "Estrategia": st.column_config.TextColumn("📊 Estrategia", width="medium"),
-                "DTE": st.column_config.NumberColumn("DTE", width="small"),
-                "Prima_Entrada": st.column_config.TextColumn("💵 Prima", width="small"),
-                "Comision": st.column_config.TextColumn("💳 ComTotal", width="small"),
-                "PnL_Neto": st.column_config.TextColumn("💰 P&L Neto", width="small"),
-                "PnL_Porcentaje": st.column_config.TextColumn("📊 P&L %", width="small"),
-
-                # =========================================================
-                # DETALLE UNIFICADO (Leg 1 y Leg 2)
-                # =========================================================
-                "Strike_1": st.column_config.TextColumn("Strike 1", width="small"),
-                "Tipo_1": st.column_config.TextColumn("Tipo 1", width="small"),
-                "Posicion_1": st.column_config.TextColumn("Pos 1", width="small"),
-                
-                "Strike_2": st.column_config.TextColumn("Strike 2", width="small"), # Será '-' en Single Leg
-                "Tipo_2": st.column_config.TextColumn("Tipo 2", width="small"),     # Será '-' en Single Leg
-                "Posicion_2": st.column_config.TextColumn("Pos 2", width="small"),  # Será '-' en Single Leg
-
-                # Precio actual (P1)
-                "Precio_Actual_1": st.column_config.TextColumn("💰 P1", width="small"),
-                "Delta_1": st.column_config.TextColumn("Δ1", width="small"),
-                "Fecha_Salida": st.column_config.TextColumn("📅 Expiración", width="medium"),
-                
-                # =========================================================
-                # COLUMNAS OCULTAS PARA SIMPLIFICAR EL DETALLE
-                # =========================================================
-                "Fecha_Entrada": "hidden",
-                "Es_Credito": "hidden",
-                "Comision_Leg1": "hidden",
-                "Comision_Leg2": "hidden",
-                "PnL_Bruto": "hidden",
-                "Theta_1": "hidden",
-                "Precio_Actual_2": "hidden",
-                "Delta_2": "hidden",
-                "Theta_2": "hidden"
-            }
-        )
+        # Iterar sobre cada operación y mostrarla como una Tarjeta (Card)
+        for _, row in df.iterrows():
+            display_operation_card_v2(row)
         
         st.markdown("---")
         
@@ -724,7 +769,7 @@ def option_tracker_page():
                         st.error(f"❌ No existe ID {id_eliminar}")
 
 # =========================================================================
-# 5. PUNTO DE ENTRADA
+# 6. PUNTO DE ENTRADA
 # =========================================================================
 
 if __name__ == "__main__":
