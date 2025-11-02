@@ -6,7 +6,7 @@ import os
 import schwab
 from schwab.auth import easy_client
 from schwab.client import Client
-from utils import check_password 
+from utils import check_password 
 
 # =========================================================================
 # 0. CONFIGURACIÓN
@@ -62,35 +62,41 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================================
-# 1. CONEXIÓN SCHWAB
+# 1. CONEXIÓN SCHWAB (CORREGIDO con st.cache_resource)
 # =========================================================================
 
+@st.cache_resource(ttl=timedelta(hours=4), show_spinner=False)
 def connect_to_schwab():
-    """Conecta con Schwab usando token existente"""
+    """Conecta con Schwab usando token existente y cachea el cliente."""
     if not api_key:
         st.warning("⚠️ Configuración de secrets de Schwab incompleta.")
         return None
     
     if not os.path.exists(token_path):
+        # NOTA: En un entorno real de Streamlit Cloud, el token_path debe ser una ruta persistente o usar Streamlit Secrets
         st.error("❌ No se encontró 'schwab_token.json'. Genera el token primero.")
         return None
 
     try:
         # La función easy_client solo funciona si el schwab-api está instalado
-        if 'schwab.auth' in globals() and hasattr(schwab.auth, 'easy_client'):
-            client = easy_client(
-                api_key=api_key,
-                app_secret=app_secret,
-                callback_url=redirect_uri,
-                token_path=token_path
-            )
+        if hasattr(schwab.auth, 'easy_client'):
+            # Usar st.spinner DENTRO de la función cacheada puede ser problemático
+            # pero es la única manera de mostrar el estado de carga inicial.
+            with st.spinner("🔌 Conectando con Schwab..."):
+                client = easy_client(
+                    api_key=api_key,
+                    app_secret=app_secret,
+                    callback_url=redirect_uri,
+                    token_path=token_path
+                )
+                
+                # Prueba de conexión
+                test_response = client.get_quote("AAPL")
+                if hasattr(test_response, "status_code") and test_response.status_code != 200:
+                    raise Exception(f"Respuesta inesperada: {test_response.status_code}")
             
-            # Prueba de conexión
-            test_response = client.get_quote("AAPL")
-            if hasattr(test_response, "status_code") and test_response.status_code != 200:
-                raise Exception(f"Respuesta inesperada: {test_response.status_code}")
-            
-            return client
+                st.success("✅ Conexión con Schwab exitosa.")
+                return client
         else:
             st.error("❌ Las clases/funciones de Schwab no están disponibles. Asegúrate de tener la librería instalada.")
             return None
@@ -380,15 +386,12 @@ def option_tracker_page():
     
     st.markdown("---")
     
-    # Conexión Schwab
-    if 'schwab_client_tracker' not in st.session_state:
-        with st.spinner("🔌 Conectando con Schwab..."):
-            st.session_state.schwab_client_tracker = connect_to_schwab()
-    
-    client = st.session_state.schwab_client_tracker
+    # Conexión Schwab (Llamada a la función cacheada)
+    client = connect_to_schwab()
     
     if client:
-        st.markdown('<div class="success-box">✅ <strong>Conexión activa</strong> con Schwab API</div>', unsafe_allow_html=True)
+        # Se elimina el mensaje de éxito de la conexión aquí porque ya está en la función cacheada.
+        pass 
     else:
         st.error("❌ No hay conexión con Schwab o la configuración es incorrecta. Funciones limitadas.")
     
@@ -624,26 +627,26 @@ def option_tracker_page():
         df_display = df.copy()
 
         # 2. Formatear campos numéricos y de texto para la visualización final
-        df_display['P&L Neto'] = df_display['PnL_Neto'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "N/A")
-        df_display['P&L %'] = df_display['PnL_Porcentaje'].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A")
+        # Eliminamos el formateo de string aquí para permitir la coloración con st.dataframe
+        df_display['P&L Neto Valor'] = df_display['PnL_Neto']
+        df_display['P&L % Valor'] = df_display['PnL_Porcentaje']
         
         # Calcular Delta y Theta Total solo para mostrar
-        # Nos aseguramos de manejar correctamente el 'N/A'
         delta_total_calc = df_display['Delta_1'].fillna(0) + df_display['Delta_2'].fillna(0)
         theta_total_calc = df_display['Theta_1'].fillna(0) + df_display['Theta_2'].fillna(0)
 
-        # Usar una función para aplicar el formato con N/A si ambos legs son NaN
-        def format_greeks(row, greek_col, total_calc):
+        # Creación de columnas de valores numéricos para greeks (para la columna final)
+        def get_greek_total(row, greek_col, total_calc):
             if pd.isna(row[greek_col+'_1']) and pd.isna(row[greek_col+'_2']):
-                return "N/A"
+                return np.nan # Usar NaN para indicar que no hay datos
             else:
-                return f"{total_calc[row.name]:.2f}"
-                
-        df_display['Δ Total'] = df_display.apply(
-            lambda row: format_greeks(row, 'Delta', delta_total_calc), axis=1
+                return total_calc[row.name]
+
+        df_display['Δ Total Valor'] = df_display.apply(
+            lambda row: get_greek_total(row, 'Delta', delta_total_calc), axis=1
         )
-        df_display['Θ Total'] = df_display.apply(
-            lambda row: format_greeks(row, 'Theta', theta_total_calc), axis=1
+        df_display['Θ Total Valor'] = df_display.apply(
+            lambda row: get_greek_total(row, 'Theta', theta_total_calc), axis=1
         )
 
         
@@ -667,10 +670,10 @@ def option_tracker_page():
             'Estrategia Detalle',
             'Fecha_Entrada',
             'Fecha_Salida',
-            'P&L Neto',
-            'P&L %',
-            'Δ Total',
-            'Θ Total',
+            'P&L Neto Valor',
+            'P&L % Valor',
+            'Δ Total Valor',
+            'Θ Total Valor',
             'Prima_Entrada',
             'Comision'
         ]
@@ -679,11 +682,49 @@ def option_tracker_page():
             'Fecha_Entrada': 'Fch. Entrada',
             'Fecha_Salida': 'Fch. Salida',
             'Prima_Entrada': 'Prima',
-            'Comision': 'Comis.'
+            'Comision': 'Comis.',
+            'P&L Neto Valor': '💰 P&L Neto',
+            'P&L % Valor': '📈 P&L %',
+            'Δ Total Valor': 'Δ Total',
+            'Θ Total Valor': 'Θ Total'
         })
+        
+        # 4. Mostrar el DataFrame CON FORMATO DE COLORACIÓN
+        
+        def highlight_pnl(s):
+            """Colorea celdas de P&L: Verde para positivo, Rojo para negativo, Gris para N/A"""
+            if pd.isna(s):
+                return ['background-color: #333333' if col == '💰 P&L Neto' or col == '📈 P&L %' else '' for col in s.index]
+            
+            is_neto = s.index.get_loc('💰 P&L Neto')
+            is_porc = s.index.get_loc('📈 P&L %')
+            
+            styles = []
+            for i, val in enumerate(s):
+                if (i == is_neto or i == is_porc) and pd.notna(val):
+                    if val > 0:
+                        styles.append('color: #26a69a; font-weight: bold') # Verde
+                    elif val < 0:
+                        styles.append('color: #ef5350; font-weight: bold') # Rojo
+                    else:
+                        styles.append('color: white')
+                else:
+                    styles.append('color: white')
+            return styles
 
-        # 4. Mostrar el DataFrame
-        st.dataframe(df_final, use_container_width=True)
+        st.dataframe(
+            df_final.style.apply(
+                highlight_pnl, axis=1
+            ).format({
+                '💰 P&L Neto': '${:.2f}',
+                '📈 P&L %': '{:.1f}%',
+                'Δ Total': '{:.2f}',
+                'Θ Total': '{:.2f}',
+                'Prima': '{:.2f}',
+                'Comis.': '{:.2f}'
+            }, na_rep='N/A'),
+            use_container_width=True
+        )
         
         st.markdown("---")
         
