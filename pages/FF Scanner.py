@@ -224,13 +224,22 @@ def connect_to_schwab():
             else:
                 try:
                     with st.spinner("Generando token..."):
-                        # Crear cliente usando el flujo manual
+                        # Extraer el código de la URL
+                        from urllib.parse import urlparse, parse_qs
+                        parsed_url = urlparse(callback_url)
+                        code = parse_qs(parsed_url.query).get('code', [None])[0]
+                        
+                        if not code:
+                            st.error("❌ No se pudo extraer el código de autorización de la URL.")
+                            st.stop()
+                        
+                        # Crear cliente usando el flujo manual con el código
                         client = client_from_manual_flow(
                             api_key=api_key,
                             app_secret=app_secret,
                             callback_url=redirect_uri,
                             token_path=token_path,
-                            requested_url=callback_url
+                            code=code
                         )
                     
                     st.success("✅ Token generado y guardado exitosamente!")
