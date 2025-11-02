@@ -9,6 +9,8 @@ plotly
 statsmodels
 scikit-learn
 lxml
+os
+
 
 
 
