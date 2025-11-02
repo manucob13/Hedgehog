@@ -150,8 +150,9 @@ def connect_to_schwab():
         client = easy_client(
             token_path=token_path,
             api_key=api_key,
-            app_secret=app_secret,
-            redirect_uri=redirect_uri
+            app_secret=app_secret
+            # Se eliminó 'redirect_uri' porque easy_client no lo acepta.
+            # La URI sigue disponible para el flujo de OAuth más adelante.
         )
     except Exception as e:
         # En caso de un error de inicialización, probablemente por credenciales incorrectas
@@ -184,8 +185,8 @@ def connect_to_schwab():
     st.warning(f"⚠️ No se encontró el archivo de token: `{token_path}`. Inicia la autenticación.")
     
     # Obtener la URL de autorización
-    # Como client se creó arriba, client.oauth está disponible.
-    auth_url = client.oauth.get_oauth_url() 
+    # Añadimos redirect_uri aquí, donde SÍ lo necesita el objeto oauth
+    auth_url = client.oauth.get_oauth_url(redirect_uri=redirect_uri) 
     
     st.markdown("---")
     st.markdown("### 🔧 Generación de Token - Proceso Manual")
