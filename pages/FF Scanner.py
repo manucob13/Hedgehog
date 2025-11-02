@@ -29,11 +29,10 @@ def check_password():
     """
     Controla si el usuario ha iniciado sesión.
     Si la contraseña es correcta, devuelve True. En caso contrario, muestra
-    un formulario de inicio de sesión y devuelve False.
+    un formulario de inicio de sesión en el SIDEBAR y devuelve False.
     """
 
     # --- Configuración de Credenciales ---
-    # NOTA: Reemplaza estos valores con tus credenciales reales.
     CORRECT_USERNAME = "usuario_ff"
     CORRECT_PASSWORD = "password_ff_2025"
 
@@ -52,20 +51,27 @@ def check_password():
     if "password_correct" in st.session_state and st.session_state["password_correct"]:
         return True
 
-    # 2. Si no está autenticado, muestra el formulario de login
+    # 2. Si no está autenticado, muestra el formulario en el SIDEBAR
     if "password_correct" not in st.session_state or not st.session_state["password_correct"]:
-        st.title("🛡️ Acceso Restringido - FF Scanner")
         
-        # El formulario se mostrará hasta que la contraseña sea correcta
-        with st.form("login"):
+        # Mostrar el formulario en el sidebar
+        st.sidebar.title("🛡️ Acceso Requerido")
+        st.sidebar.markdown("---")
+        
+        # El formulario se mostrará en el sidebar hasta que la contraseña sea correcta
+        with st.sidebar.form("login"):
             st.text_input("Usuario", key="username")
             st.text_input("Contraseña", type="password", key="password")
             st.form_submit_button("Entrar", on_click=password_entered)
         
         # Muestra un mensaje de error si el intento fue incorrecto
         if "password_correct" in st.session_state and not st.session_state["password_correct"]:
-            st.error("❌ Usuario o contraseña incorrectos.")
-        
+            st.sidebar.error("❌ Usuario o contraseña incorrectos.")
+            
+        # Muestra un mensaje en el área principal indicando la restricción
+        st.title("Acceso a FF Scanner Restringido")
+        st.info("Por favor, inicia sesión usando el formulario en el panel lateral.")
+
         return False
 
 
