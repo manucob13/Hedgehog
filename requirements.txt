@@ -8,6 +8,9 @@ matplotlib
 plotly
 statsmodels
 scikit-learn
+lxml
+schwab
+
 
 
 
