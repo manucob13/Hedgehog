@@ -10,16 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 import os
 from urllib.parse import urlparse, parse_qs
 from utils import check_password
-
-# **IMPORTACIÓN GLOBAL:** schwab-py. Si falla aquí, es un problema de instalación/entorno.
-try:
-    from schwab.auth import client_from_token_file, SchwabOauth
-except ImportError:
-    # Si falla aquí, significa que la instalación falló completamente
-    st.error("❌ La librería 'schwab-py' no pudo ser importada. Revisa tu archivo requirements.txt y la consola de Streamlit Cloud.")
-    st.code("pip install schwab-py", language="bash")
-    st.stop()
-
+from schwab.auth import client_from_token_file, SchwabOauth 
 
 # =========================================================================
 # 0. CONFIGURACIÓN Y VARIABLES
