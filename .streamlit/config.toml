@@ -1,0 +1,6 @@
+[server]
+runOnSave = false
+stopOnExit = true
+
+[global]
+runner="bash setup.sh"
