@@ -105,14 +105,15 @@ def cargar_operaciones():
         df['Fecha_Entrada'] = pd.to_datetime(df['Fecha_Entrada']).dt.date
         
         # Compatibilidad con CSV antiguo que no tiene Fecha_Salida
-        if 'Fecha_Salida' in df.columns:
-            df['Fecha_Salida'] = pd.to_datetime(df['Fecha_Salida']).dt.date
-        else:
+        if 'Fecha_Salida' not in df.columns:
             # Migrar desde DTE a Fecha_Salida
-            df['Fecha_Salida'] = df.apply(
-                lambda row: row['Fecha_Entrada'] + timedelta(days=int(row['DTE'])), 
-                axis=1
-            )
+            fechas_salida = []
+            for _, row in df.iterrows():
+                fecha_salida = row['Fecha_Entrada'] + timedelta(days=int(row['DTE']))
+                fechas_salida.append(fecha_salida)
+            df['Fecha_Salida'] = fechas_salida
+        else:
+            df['Fecha_Salida'] = pd.to_datetime(df['Fecha_Salida']).dt.date
         
         # Añadir columnas de comisión si no existen
         if 'Comision_Leg1' not in df.columns:
