@@ -1,12 +1,15 @@
-# pages/FF Scanner.py - VERSIÓN FINAL DE PREPARACIÓN
+# pages/FF Scanner.py 
 
 import streamlit as st
 import pandas as pd
 import requests
 import yfinance as yf
 from datetime import timedelta
+from io import StringIO
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np 
 import os 
+import time 
 
 # =========================================================================
 # 0. CONFIGURACIÓN DE LA PÁGINA
@@ -39,14 +42,14 @@ def is_valid_ticker(ticker):
 @st.cache_resource(ttl=timedelta(hours=24), show_spinner=False)
 def perform_initial_preparation():
     """
-    Realiza la lectura, descarga y validación en paralelo de tickers.
+    Realiza la lectura, descarga y validación en PARALELO de tickers.
     """
     st.subheader("1. Preparación y Validación de Tickers")
     
     # Placeholder para mensajes de estado
     status_text = st.empty()
     
-    # 1.1 Leer Tickers.csv existentes - CORRECCIÓN DE DEPURACIÓN
+    # 1.1 Leer Tickers.csv existentes
     status_text.text("1. Leyendo tickers existentes (Tickers.csv)...")
     
     existing_tickers = set()
@@ -68,7 +71,8 @@ def perform_initial_preparation():
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=10)
-        sp500_df = pd.read_html(StringIO(response.text))[0]
+        # pd.read_html usa StringIO
+        sp500_df = pd.read_html(StringIO(response.text))[0] 
         sp500_tickers = set(sp500_df['Symbol'].astype(str).str.upper().str.strip())
         st.success(f"✅ Obtenidos {len(sp500_tickers)} tickers del S&P 500.")
     except Exception as e:
@@ -78,13 +82,14 @@ def perform_initial_preparation():
     all_tickers = sp500_tickers.union(existing_tickers)
     st.info(f"Total de tickers combinados a validar: **{len(all_tickers)}**")
     
-    # 1.4 Validar en paralelo
-    status_text.text(f"3. Validando {len(all_tickers)} tickers con yfinance (esto puede tardar varios minutos)...")
+    # 1.4 Validar en PARALELO (Usando ThreadPoolExecutor)
+    status_text.text(f"3. Validando {len(all_tickers)} tickers con yfinance (esto será rápido gracias a la paralelización)...")
     progress_bar = st.progress(0)
     
     valid_tickers = []
     sorted_tickers = sorted(all_tickers)
     
+    # Bucle paralelo
     with ThreadPoolExecutor(max_workers=15) as executor:
         futures = {executor.submit(is_valid_ticker, ticker): ticker for ticker in sorted_tickers}
         
@@ -101,12 +106,9 @@ def perform_initial_preparation():
     progress_bar.empty()
     status_text.empty()
     
-    # --- 1.5 Guardar el CSV actualizado y Mostrar el Resumen con el Formato deseado ---
+    # --- 1.5 Guardar el CSV actualizado y Mostrar el Resumen ---
     
-    # Conjunto de todos los tickers que pasaron la validación
     valid_tickers = sorted(set(valid_tickers))
-    
-    # Los tickers inválidos son los que estaban en el conjunto TOTAL, pero NO en el conjunto FINAL válido.
     invalid_tickers = sorted(set(all_tickers) - set(valid_tickers))
 
     try:
@@ -116,18 +118,16 @@ def perform_initial_preparation():
     except Exception as e:
         st.warning(f"⚠️ No se pudieron guardar Tickers.csv/Tickers_invalidos.csv en el servidor. (Error: {e})")
 
-    # --- CORRECCIÓN DE FORMATO AQUÍ ---
+    # --- FORMATO DE SALIDA FINAL (Exacto al Jupyter) ---
     valid_count = len(valid_tickers)
     invalid_count = len(invalid_tickers)
 
     st.success(f"✅ Validación de preparación finalizada.")
     
-    # Imprimimos el resumen con el formato exacto de Jupyter
     st.markdown(f"**✅ {valid_count} tickers válidos guardados en 'Tickers.csv'**")
     st.markdown(f"**🗑️ Eliminados: {invalid_count} inválidos**")
     
     st.divider() 
-    # ------------------------------------
     
     return valid_tickers
 
