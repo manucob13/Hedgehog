@@ -1,4 +1,4 @@
-# pages/FF Scanner.py - VERSIÓN CON AUTENTICACIÓN Y BOTÓN DE ACTUALIZACIÓN
+# pages/FF Scanner.py - VERSIÓN CON AUTENTICACIÓN Y CONEXIÓN SCHWAB
 
 import streamlit as st
 import pandas as pd
@@ -10,10 +10,12 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np 
 import os 
 import time 
+# Importaciones que SÍ funcionan:
 import schwab
 from schwab.auth import easy_client
 from schwab.client import Client
 from utils import check_password
+from urllib.parse import urlparse, parse_qs # Necesario para procesar la URL de callback
 
 # =========================================================================
 # 0. CONFIGURACIÓN Y VARIABLES
@@ -21,10 +23,16 @@ from utils import check_password
 
 st.set_page_config(page_title="FF Scanner", layout="wide")
 
-# Variables de Schwab (se mantienen, aunque no se usen aún)
-api_key = "n9ydCRbM3Gv5bBAGA1ZvVl6GAqo5IG9So6pMwjO9slvJXEa6"
-app_secret = "DAFletN79meCi4yBYGzlDvlrNcJiISH0HuMuThydxYANTWghMxXxXbrpQOVjsdsx"
-redirect_uri = "https://127.0.0.1" 
+# **IMPORTANTE:** Cargar variables de Schwab desde st.secrets
+try:
+    api_key = st.secrets["schwab"]["api_key"]
+    app_secret = st.secrets["schwab"]["app_secret"]
+    redirect_uri = st.secrets["schwab"]["redirect_uri"] 
+except KeyError as e:
+    st.error(f"❌ Error: Falta configurar los secrets de Schwab. Clave faltante: {e}. Asegúrate de que tienes [schwab] en secrets.toml")
+    st.stop()
+
+# Ruta local del token
 token_path = "schwab_token.json" 
 
 # =========================================================================
@@ -126,18 +134,107 @@ def perform_initial_preparation():
     return valid_tickers
 
 # =========================================================================
-# 2. FUNCIÓN PRINCIPAL DE LA PÁGINA (FF Scanner)
+# 2. CONEXIÓN CON BROKER SCHWAB (LÓGICA CORREGIDA con easy_client)
+# =========================================================================
+
+def connect_to_schwab():
+    """
+    Intenta conectar con Schwab API usando el método easy_client
+    que maneja el flujo de token y la ruta del archivo.
+    """
+    st.subheader("2. Conexión con Broker Schwab")
+    
+    # 1. Inicializar el cliente usando easy_client
+    try:
+        # easy_client intentará cargar el token existente.
+        client = easy_client(
+            token_path=token_path,
+            api_key=api_key,
+            app_secret=app_secret,
+            redirect_uri=redirect_uri
+        )
+    except Exception as e:
+        # En caso de un error de inicialización, probablemente por credenciales incorrectas
+        st.error(f"❌ Error crítico al inicializar el cliente Schwab: {e}")
+        st.info("Revisa que `api_key` y `app_secret` sean correctos en tus secretos de Streamlit.")
+        return None
+
+    # 2. Verificar la existencia del token y la validez de la conexión
+    if os.path.exists(token_path):
+        st.info(f"📄 Archivo de token encontrado: `{token_path}`. Verificando conexión...")
+        try:
+            # Prueba de conexión simple
+            test_response = client.get_quote("AAPL")
+            if test_response.status_code == 200:
+                st.success("✅ Conexión a Schwab API verificada: Token ACTIVO.")
+                return client
+            else:
+                # Si el estado no es 200, el token puede ser inválido o haber expirado
+                raise Exception(f"Respuesta API inesperada: {test_response.status_code}")
+                
+        except Exception as e:
+            st.error(f"❌ Error al usar el token existente: {e}")
+            st.warning("⚠️ El token puede haber expirado. Por favor, regenera el token.")
+            if st.button("🗑️ Eliminar token y regenerar", key="delete_token"):
+                os.remove(token_path)
+                st.rerun()
+            return None
+
+    # 3. Si NO existe el token, mostrar el proceso de autenticación manual
+    st.warning(f"⚠️ No se encontró el archivo de token: `{token_path}`. Inicia la autenticación.")
+    
+    # Obtener la URL de autorización
+    # Como client se creó arriba, client.oauth está disponible.
+    auth_url = client.oauth.get_oauth_url() 
+    
+    st.markdown("---")
+    st.markdown("### 🔧 Generación de Token - Proceso Manual")
+    
+    st.markdown("#### Paso 1: Autorización")
+    st.markdown(f"Haz clic en este enlace para autorizar la aplicación:")
+    st.markdown(f"[🔗 Autorizar con Schwab]({auth_url})")
+    
+    st.info("""
+    - Serás redirigido a una URL que **NO carga** (es normal).
+    - Copia **TODA la URL** de la barra de direcciones que comienza con `https://127.0.0.1/?code=...`
+    """)
+    
+    st.markdown("#### Paso 2: Copiar URL de Callback")
+    callback_url = st.text_input(
+        "Pega aquí la URL completa de callback:",
+        placeholder="https://127.0.0.1/?code=C0.b2F1dGgyLm...",
+        key="callback_url_input"
+    )
+    
+    if st.button("🔐 Generar Token y Conectar", type="primary", key="generate_token"):
+        if not callback_url or not callback_url.startswith("https://127.0.0.1"):
+            st.error("❌ Por favor, pega la URL de callback completa y correcta.")
+        else:
+            try:
+                with st.spinner("Generando token..."):
+                    # Esto intercambia el código por tokens y los guarda en 'schwab_token.json'
+                    client.oauth.from_callback_url(callback_url)
+                    st.success("✅ Token generado y guardado exitosamente!")
+                    st.info("🔄 Recarga la página para verificar la conexión y continuar.")
+                    time.sleep(1) # Pequeña pausa para que el mensaje se vea
+                    st.rerun() 
+            except Exception as e:
+                st.error(f"❌ Error al generar el token. Asegúrate de que el código no haya expirado: {e}")
+    
+    return None
+
+# =========================================================================
+# 3. FUNCIÓN PRINCIPAL DE LA PÁGINA (FF Scanner)
 # =========================================================================
 
 def ff_scanner_page():
-    st.title("🛡️ FF Scanner (Preparación y Validación de Tickers)")
+    st.title("🛡️ FF Scanner - Módulos de Preparación y Conexión")
     st.markdown("---")
     
-    # Contenedor para el botón
+    # Contenedor para el botón de validación de tickers
     col1, col2 = st.columns([1, 4])
 
     with col1:
-        # st.cache_resource se borrará al hacer clic en este botón, forzando la re-ejecución
         st.button("🔄 Actualizar/Validar Tickers", 
                   type="primary",
                   help="Borra la caché y fuerza la re-lectura de Tickers.csv y la re-descarga del S&P 500.",
@@ -148,11 +245,23 @@ def ff_scanner_page():
 
     st.divider()
 
-    # FASE 1: Preparación (Se llama aquí, pero se ejecuta desde la caché, a menos que se borre)
+    # FASE 1: Preparación
     valid_tickers = perform_initial_preparation()
+    
+    st.divider()
+    
+    # FASE 2: Conexión con Schwab
+    schwab_client = connect_to_schwab()
+    
+    # Mensaje final
+    if schwab_client:
+        st.success(f"🎯 Sistema listo con {len(valid_tickers)} tickers válidos y conexión Schwab activa.")
+    else:
+        st.info("⏳ Completa la conexión con Schwab para activar las funciones de trading.")
+
 
 # =========================================================================
-# 2. PUNTO DE ENTRADA PROTEGIDO (CON AUTENTICACIÓN)
+# 4. PUNTO DE ENTRADA PROTEGIDO (CON AUTENTICACIÓN)
 # =========================================================================
 
 if __name__ == "__main__":
