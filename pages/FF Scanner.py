@@ -388,15 +388,37 @@ def ff_scanner_page():
     # FASE 2: Escaneo (solo si hay tickers válidos)
     if valid_tickers:
         try:
-            # Importar schwab
-            from schwab.auth import easy_client
-            
-            with st.spinner("🔐 Conectando con Schwab API..."):
+            # Verificar si existe el token
+            if not os.path.exists(token_path):
+                st.error(f"❌ No se encontró el archivo de token: `{token_path}`")
+                st.info("""
+                **Para generar el token:**
+                
+                1. Ejecuta este código localmente (en tu computadora):
+                ```python
+                from schwab.auth import easy_client
+                
                 client = easy_client(
+                    api_key="tu_api_key",
+                    app_secret="tu_app_secret",
+                    callback_url="https://127.0.0.1",
+                    token_path="schwab_token.json"
+                )
+                ```
+                2. Completa la autenticación en el navegador
+                3. Sube el archivo `schwab_token.json` generado a tu repositorio
+                """)
+                st.stop()
+            
+            # Importar schwab
+            from schwab.auth import client_from_token_file
+            
+            with st.spinner("🔐 Conectando con Schwab API usando token existente..."):
+                # Usar el token existente en lugar de easy_client
+                client = client_from_token_file(
+                    token_path=token_path,
                     api_key=api_key,
-                    app_secret=app_secret,
-                    callback_url=redirect_uri,
-                    token_path=token_path
+                    app_secret=app_secret
                 )
             
             st.success("✅ Conexión a Schwab API establecida.")
@@ -406,9 +428,12 @@ def ff_scanner_page():
             
         except ImportError:
             st.error("❌ La librería 'schwab-py' no está instalada. Instálala con: `pip install schwab-py`")
+        except FileNotFoundError:
+            st.error(f"❌ No se encontró el archivo de token: `{token_path}`")
+            st.info("Asegúrate de haber generado el token y subirlo al repositorio.")
         except Exception as e:
             st.error(f"❌ Error al conectar con Schwab API: {e}")
-            st.info("💡 Asegúrate de haber configurado correctamente los secrets y el token.")
+            st.info("💡 Verifica que el token sea válido y no haya expirado.")
     else:
         st.error("❌ No hay tickers válidos para iniciar el escaneo.")
 
