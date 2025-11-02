@@ -176,7 +176,8 @@ def fechas_section():
             fecha_entrada = st.date_input(
                 "📅 Fecha de Entrada", 
                 value=default_fecha,
-                help="Fecha en la que se realizará la entrada al trade"
+                help="Fecha en la que se realizará la entrada al trade",
+                format="DD/MM/YYYY"
             )
         
         with col2:
@@ -390,7 +391,7 @@ def obtener_mid_price(client, ticker, fecha, strike):
     try:
         response = client.get_option_chain(ticker)
         if response.status_code != 200:
-            return None, None, None
+            return None
         
         opciones = response.json()
         call_map = opciones.get('callExpDateMap', {})
@@ -409,20 +410,18 @@ def obtener_mid_price(client, ticker, fecha, strike):
                     # Calcular mid price
                     if bid and ask and bid > 0 and ask > 0:
                         mid_price = (bid + ask) / 2
-                        return bid, ask, mid_price
+                        return mid_price
         
-        return None, None, None
+        return None
     except Exception as e:
-        return None, None, None
+        return None
 
 def procesar_ticker_precios(args):
     """Función helper para paralelizar paso 3"""
     client, ticker, fecha_front, strike = args
-    bid, ask, mid_price = obtener_mid_price(client, ticker, fecha_front, float(strike))
+    mid_price = obtener_mid_price(client, ticker, fecha_front, float(strike))
     return {
         'ticker': ticker,
-        'bid': bid if bid else None,
-        'ask': ask if ask else None,
         'mid_price': mid_price if mid_price else None
     }
 
@@ -522,8 +521,8 @@ def ejecutar_escaneo(client, tickers, fecha_entrada, dte_front_days, dte_back_da
         progress_bar.empty()
         return None
     
-    # PASO 3: Obtener precios (Bid/Ask/Mid) (PARALELO)
-    status_container.info("💰 Paso 3/5: Obteniendo precios (Bid/Ask/Mid) (paralelo)...")
+    # PASO 3: Obtener precios (Mid Price solo) (PARALELO)
+    status_container.info("💰 Paso 3/5: Obteniendo precios Mid (paralelo)...")
     
     args_list = [(client, row['Ticker'], fecha_dte_front, row['Strike']) 
                  for _, row in df_operar.iterrows()]
@@ -535,16 +534,13 @@ def ejecutar_escaneo(client, tickers, fecha_entrada, dte_front_days, dte_back_da
             precios_results.append(future.result())
             progress_bar.progress((i + 1) / len(futures))
     
-    df_operar.insert(5, 'Bid', [r['bid'] for r in precios_results])
-    df_operar.insert(6, 'Ask', [r['ask'] for r in precios_results])
-    df_operar.insert(7, 'MID_Price', [f"{r['mid_price']:.2f}" if r['mid_price'] else "N/A" for r in precios_results])
+    df_operar.insert(5, 'MID_Price', [f"{r['mid_price']:.2f}" if r['mid_price'] else "N/A" for r in precios_results])
     status_container.success("✅ Paso 3 completado: Precios obtenidos")
     
-    # PASO 4: Verificar earnings (PARALELO)
+    # PASO 4: Verificar earnings (PARALELO) - desde fecha_entrada hasta fecha_dte_back
     status_container.info("📅 Paso 4/5: Verificando earnings (paralelo)...")
-    hoy = datetime.now().date()
     
-    args_list = [(row['Ticker'], hoy, fecha_dte_back) for _, row in df_operar.iterrows()]
+    args_list = [(row['Ticker'], fecha_entrada, fecha_dte_back) for _, row in df_operar.iterrows()]
     
     earnings_flags = []
     with ThreadPoolExecutor(max_workers=15) as executor:
@@ -552,13 +548,19 @@ def ejecutar_escaneo(client, tickers, fecha_entrada, dte_front_days, dte_back_da
         for i, future in enumerate(futures):
             has_earnings = future.result()
             earnings_flags.append(has_earnings)
-            if has_earnings:
-                df_operar.iloc[i, df_operar.columns.get_loc('Operar')] = False
             progress_bar.progress((i + 1) / len(futures))
     
-    operar_index = df_operar.columns.get_loc('Operar')
-    df_operar.insert(operar_index, 'Earnings', earnings_flags)
-    status_container.success("✅ Paso 4 completado: Earnings verificados")
+    # Filtrar directamente los que tienen earnings (no los guardamos)
+    df_operar['Earnings_temp'] = earnings_flags
+    df_operar = df_operar[df_operar['Earnings_temp'] == False].copy()
+    df_operar = df_operar.drop(columns=['Earnings_temp'])
+    
+    status_container.success(f"✅ Paso 4 completado: {len(df_operar)} tickers sin earnings")
+    
+    if df_operar.empty:
+        status_container.warning("⚠️ No hay tickers sin earnings en el período")
+        progress_bar.empty()
+        return None
     
     # PASO 5: Obtener volúmenes (PARALELO)
     status_container.info("📊 Paso 5/5: Obteniendo volúmenes de opciones (paralelo)...")
@@ -576,14 +578,21 @@ def ejecutar_escaneo(client, tickers, fecha_entrada, dte_front_days, dte_back_da
     df_operar['Vol'] = volumenes
     status_container.success("✅ Paso 5 completado: Volúmenes obtenidos")
     
-    # Filtrar solo los que NO tienen earnings y ordenar por volumen
-    df_final = df_operar[df_operar['Earnings'] == False].copy()
+    # Filtrar por volumen >= 1000
+    df_final = df_operar[df_operar['Vol'] >= 1000].copy()
+    
+    if df_final.empty:
+        status_container.warning("⚠️ No hay tickers con volumen >= 1000")
+        progress_bar.empty()
+        return None
+    
+    # Ordenar por volumen descendente
     df_final = df_final.sort_values('Vol', ascending=False)
     
-    # Reorganizar columnas
-    columnas = [col for col in df_final.columns if col not in ['Vol', 'Operar']]
-    columnas.extend(['Vol', 'Operar'])
-    df_final = df_final[columnas]
+    # Reorganizar columnas - quitar Operar
+    columnas_finales = ['Ticker', 'DTE_Pair', 'DTE_Front', 'DTE_Back', 'Precio', 'MID_Price', 
+                        'Strike', 'IV_F (%)', 'IV_B (%)', 'FF (%)', 'Market', 'Banda_FF', 'Vol']
+    df_final = df_final[columnas_finales]
     df_final = df_final.reset_index(drop=True)
     
     progress_bar.empty()
@@ -619,18 +628,23 @@ def mostrar_resultados(df_resultados):
     
     st.markdown("---")
     
+    # Convertir fechas a formato DD/MM/YYYY para display
+    df_display = df_resultados.copy()
+    df_display['DTE_Front'] = pd.to_datetime(df_display['DTE_Front']).dt.strftime('%d/%m/%Y')
+    df_display['DTE_Back'] = pd.to_datetime(df_display['DTE_Back']).dt.strftime('%d/%m/%Y')
+    
     # Tabla de resultados
     st.markdown("#### 📋 Tabla de Operaciones Recomendadas")
     st.dataframe(
-        df_resultados,
+        df_display,
         hide_index=True,
         use_container_width=True,
         column_config={
             "Ticker": st.column_config.TextColumn("🎯 Ticker", width="small"),
             "DTE_Pair": st.column_config.TextColumn("📅 DTE", width="small"),
+            "DTE_Front": st.column_config.TextColumn("📅 Front", width="medium"),
+            "DTE_Back": st.column_config.TextColumn("📅 Back", width="medium"),
             "Precio": st.column_config.TextColumn("💵 Precio", width="small"),
-            "Bid": st.column_config.NumberColumn("📉 Bid", width="small", format="%.2f"),
-            "Ask": st.column_config.NumberColumn("📈 Ask", width="small", format="%.2f"),
             "MID_Price": st.column_config.TextColumn("💰 Mid", width="small"),
             "Strike": st.column_config.TextColumn("🎯 Strike", width="small"),
             "IV_F (%)": st.column_config.TextColumn("📊 IV Front", width="small"),
@@ -638,9 +652,7 @@ def mostrar_resultados(df_resultados):
             "FF (%)": st.column_config.TextColumn("🔥 FF", width="small"),
             "Market": st.column_config.TextColumn("📈 Market", width="medium"),
             "Banda_FF": st.column_config.TextColumn("🎯 Banda", width="small"),
-            "Earnings": st.column_config.CheckboxColumn("📅 Earn", width="small"),
-            "Vol": st.column_config.NumberColumn("📊 Vol", width="small", format="%d"),
-            "Operar": st.column_config.CheckboxColumn("✅ Operar", width="small")
+            "Vol": st.column_config.NumberColumn("📊 Vol", width="small", format="%d")
         }
     )
     
