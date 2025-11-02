@@ -10,6 +10,8 @@ statsmodels
 scikit-learn
 lxml
 schwab-py
+tqdm
+
 
 
 
