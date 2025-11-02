@@ -1,0 +1,3 @@
+build-essential
+libffi-dev
+python3-dev
