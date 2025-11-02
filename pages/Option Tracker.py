@@ -1,4 +1,4 @@
-# pages/Option Tracker.py - MONITOREO DE OPCIONES CON TARJETAS SIMPLIFICADAS (CORRECCIÓN FINAL CSS INLINE)
+# pages/Option Tracker.py - MONITOREO DE OPCIONES CON TARJETAS SIMPLIFICADAS (CORRECCIÓN FINAL BORDER-LEFT)
 import streamlit as st
 import pandas as pd
 from datetime import timedelta, datetime
@@ -96,11 +96,7 @@ st.markdown("""
         flex: 1;
         text-align: center;
         min-width: 80px;
-        /* Se elimina el border-right de aquí para forzarlo en el HTML */
-    }
-    /* Se mantiene la definición de op-item:last-child para limpieza, aunque el inline tiene prioridad */
-    .op-item:last-child {
-        border-right: none !important;
+        /* Se elimina todo CSS de borde de aquí para evitar conflictos */
     }
 </style>
 """, unsafe_allow_html=True)
@@ -453,9 +449,9 @@ def display_operation_card_v2(row):
         tipo_2 = row['Tipo_2'][0]
         brief_description = f"{strike_1}{tipo_1}/{strike_2}{tipo_2}"
 
-    # 3. Estructura HTML de la Tarjeta (INYECCIÓN DE BORDES FORZADA)
-    # Definimos el estilo del borde, que se aplicará 4 veces
-    border_style = "border-right: 1px dotted #444;" 
+    # 3. Estructura HTML de la Tarjeta (INYECCIÓN DE BORDES FORZADA con BORDER-LEFT)
+    # Estilo del borde izquierdo para todos menos el primero
+    border_style = "border-left: 1px dotted #444;" 
     
     st.markdown(f"""
     <div class="op-card">
@@ -467,7 +463,7 @@ def display_operation_card_v2(row):
         </div>
         
         <div class="op-data">
-            <div class="op-item" style="{border_style}"> 
+            <div class="op-item"> 
                 <span style="color: #aaa; font-size: 0.8rem;">Fecha Entrada</span><br>
                 <strong style="color: white; font-size: 1rem;">{fecha_entrada}</strong>
             </div>
@@ -483,7 +479,7 @@ def display_operation_card_v2(row):
                 <span style="color: #aaa; font-size: 0.8rem;">Δ Total</span><br>
                 <strong style="color: white; font-size: 1.2rem;">{delta_text}</strong>
             </div>
-            <div class="op-item"> 
+            <div class="op-item" style="{border_style}"> 
                 <span style="color: #aaa; font-size: 0.8rem;">Θ Total</span><br>
                 <strong style="color: white; font-size: 1.2rem;">{theta_text}</strong>
             </div>
