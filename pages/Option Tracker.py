@@ -3,27 +3,10 @@ import streamlit as st
 import pandas as pd
 from datetime import timedelta, datetime
 import os
-# Importaciones de Schwab (asumiendo que las librerías están instaladas)
-try:
-    import schwab
-    from schwab.auth import easy_client
-    from schwab.client import Client
-except ImportError:
-    st.error("❌ Las librerías de Schwab (schwab, schwab-api) no están instaladas.")
-    # Clases/funciones dummy para evitar errores si Schwab no está instalado
-    class Client:
-        def get_option_chain(self, ticker): return type('obj', (object,), {'status_code': 404, 'json': lambda: {}})()
-        def get_quote(self, ticker): return type('obj', (object,), {'status_code': 404})()
-    def easy_client(*args, **kwargs): return None
-
-
-# Asume que check_password se encuentra en un archivo utils.py
-try:
-    from utils import check_password 
-except ImportError:
-    # Definición dummy si no existe utils.py (solo para que el código corra)
-    def check_password():
-        return True 
+import schwab
+from schwab.auth import easy_client
+from schwab.client import Client
+from utils import check_password 
 
 # =========================================================================
 # 0. CONFIGURACIÓN
