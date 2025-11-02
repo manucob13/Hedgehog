@@ -102,23 +102,33 @@ def cargar_operaciones():
     """Carga operaciones desde CSV"""
     if os.path.exists(TRACKER_CSV):
         df = pd.read_csv(TRACKER_CSV)
-        df['Fecha_Entrada'] = pd.to_datetime(df['Fecha_Entrada']).dt.date
+        
+        # Convertir fechas
+        if 'Fecha_Entrada' in df.columns:
+            df['Fecha_Entrada'] = pd.to_datetime(df['Fecha_Entrada']).dt.date
         
         # Compatibilidad con CSV antiguo que no tiene Fecha_Salida
-        if 'Fecha_Salida' not in df.columns:
-            # Migrar desde DTE a Fecha_Salida
+        if 'Fecha_Salida' not in df.columns and 'DTE' in df.columns:
             fechas_salida = []
             for _, row in df.iterrows():
                 fecha_salida = row['Fecha_Entrada'] + timedelta(days=int(row['DTE']))
                 fechas_salida.append(fecha_salida)
             df['Fecha_Salida'] = fechas_salida
-        else:
+        elif 'Fecha_Salida' in df.columns:
             df['Fecha_Salida'] = pd.to_datetime(df['Fecha_Salida']).dt.date
         
+        # Migrar Prima_Entrada si existe con valores negativos
+        if 'Prima_Entrada' in df.columns:
+            if 'Es_Credito' not in df.columns:
+                df['Es_Credito'] = df['Prima_Entrada'].apply(lambda x: x < 0 if pd.notna(x) else True)
+                # Normalizar Prima_Entrada a valores absolutos
+                df['Prima_Entrada'] = df['Prima_Entrada'].abs()
+        else:
+            # Si no existe Prima_Entrada, crear columnas vacías
+            df['Prima_Entrada'] = 0.0
+            df['Es_Credito'] = True
+        
         # Añadir columnas de comisión si no existen
-        if 'Es_Credito' not in df.columns:
-            # Migrar: si Prima_Entrada < 0, es crédito
-            df['Es_Credito'] = df['Prima_Entrada'].apply(lambda x: x < 0 if pd.notna(x) else True)
         if 'Comision_Leg1' not in df.columns:
             df['Comision_Leg1'] = 0.65
         if 'Comision_Leg2' not in df.columns:
@@ -360,21 +370,21 @@ def option_tracker_page():
     st.markdown("### ➕ Nueva Operación")
     
     with st.expander("📝 Formulario de entrada", expanded=True):
+        # Primero seleccionar estrategia para condicionar el resto
+        estrategia = st.selectbox("📊 Estrategia", ["Single Leg", "Spread"], key="estrategia_select")
+        
         with st.form("form_nueva_operacion", clear_on_submit=True):
             # Información básica
             st.markdown("#### 📋 Información Básica")
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3 = st.columns(3)
             
             with col1:
                 ticker = st.text_input("🎯 Ticker", placeholder="AAPL", help="Símbolo del activo")
             
             with col2:
-                estrategia = st.selectbox("📊 Estrategia", ["Single Leg", "Spread"])
-            
-            with col3:
                 es_credito = st.checkbox("💰 Es Crédito", value=True, help="Marca si recibiste crédito (vendiste). Desmarca si pagaste débito (compraste)")
             
-            with col4:
+            with col3:
                 tipo_comision = st.selectbox("💳 Tipo Comisión", ["Por Leg", "Total"])
             
             st.markdown("---")
@@ -405,13 +415,13 @@ def option_tracker_page():
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                strike_1 = st.number_input("Strike 1", min_value=0.0, step=0.5, format="%.2f", key="strike_1")
+                strike_1 = st.number_input("Strike 1", min_value=0.0, step=0.5, format="%.2f")
             
             with col2:
-                tipo_1 = st.selectbox("Tipo 1", ["CALL", "PUT"], key="tipo_1")
+                tipo_1 = st.selectbox("Tipo 1", ["CALL", "PUT"])
             
             with col3:
-                posicion_1 = st.selectbox("Posición 1", ["LONG", "SHORT"], key="pos_1")
+                posicion_1 = st.selectbox("Posición 1", ["LONG", "SHORT"])
             
             # LEG 2 (solo si es Spread)
             strike_2 = None
@@ -423,13 +433,13 @@ def option_tracker_page():
                 col1, col2, col3 = st.columns(3)
                 
                 with col1:
-                    strike_2 = st.number_input("Strike 2", min_value=0.0, step=0.5, format="%.2f", key="strike_2")
+                    strike_2 = st.number_input("Strike 2", min_value=0.0, step=0.5, format="%.2f")
                 
                 with col2:
-                    tipo_2 = st.selectbox("Tipo 2", ["CALL", "PUT"], key="tipo_2")
+                    tipo_2 = st.selectbox("Tipo 2", ["CALL", "PUT"], index=0)
                 
                 with col3:
-                    posicion_2 = st.selectbox("Posición 2", ["LONG", "SHORT"], key="pos_2")
+                    posicion_2 = st.selectbox("Posición 2", ["LONG", "SHORT"], index=0 if posicion_1 == "SHORT" else 1)
             
             st.markdown("---")
             
