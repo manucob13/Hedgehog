@@ -154,14 +154,14 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
 def main_comparison():
     
     # --- TÍTULO PRINCIPAL CON ICONO Y TAMAÑO MODIFICADO (Erizo) ---
-    st.markdown("<h1><span style='font-size: 1.5em;'>🦔</span> HEDGEHOG 1.1 Modelos de Volatilidad - Markov-Switching K=2-3 - NR/WR</h1>", unsafe_allow_html=True)
+    st.markdown("<h1><span style='font-size: 1.5em;'>🦔</span> 1. HEDGEHOG v 1.1 Modelos de Volatilidad - Markov-Switching K=2-3 - NR/WR</h1>", unsafe_allow_html=True)
     st.markdown("""
     Esta herramienta ejecuta y compara dos modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
     del S&P 500 y añade la señal de compresión **NR/WR (Narrow Range after Wide Range)** como indicador auxiliar.
     """)
     st.markdown("---")
     
-    st.header("1. Carga y Preparación de Datos")
+    st.header("1.1 Carga y Preparación de Datos")
     
     # BOTÓN PARA FORZAR LA ACTUALIZACIÓN
     if st.button("🔄 Forzar Actualización (Limpiar Caché de Datos)"):
@@ -214,7 +214,7 @@ def main_comparison():
     st.dataframe(spx.tail(2))
     st.markdown("---")
 
-    st.header("2. Indicador NR/WR (Narrow Range after Wide Range)")
+    st.header("1.2 Indicador NR/WR (Narrow Range after Wide Range)")
     
     if nr_wr_signal_on:
         st.success("🟢 **SEÑAL NR/WR:** La compresión de volatilidad está **ACTIVA**. Alta probabilidad de ruptura inminente.")
@@ -222,7 +222,7 @@ def main_comparison():
         st.info("⚪ **SEÑAL NR/WR:** La compresión de volatilidad está **INACTIVA**. La volatilidad puede ser normal o ya ha explotado.")
     st.markdown("---")
     
-    st.header("3. Modelos de Markov")
+    st.header("1.3 Modelos de Markov")
     
     if 'error' in results_k2:
         st.error(f"❌ Error K=2: {results_k2['error']}")
@@ -270,7 +270,7 @@ def main_comparison():
     # --------------------------------------------------------------------------
     
     # ----------------------------------------------------------------------
-    # 4. LÓGICA HEDGEHOG Y SEMÁFORO GLOBAL 🚥 (UNIFICADO)
+    # 1.4 LÓGICA HEDGEHOG Y SEMÁFORO GLOBAL 🚥 (UNIFICADO)
     # ----------------------------------------------------------------------
     st.header("4. Lógica HEDGEHOG y Semáforo Global 🚥")
 
@@ -396,7 +396,7 @@ def main_comparison():
     # ----------------------------------------------------------------------
     # 5. DTEs
     # ----------------------------------------------------------------------
-    st.header("5. DTEs (Days To Expiration)")
+    st.header("1.5 DTEs (Days To Expiration)")
     
     # Inicializar valores de entrada en session_state con 7 y 14 por defecto
     if 'dte_front_days' not in st.session_state:
