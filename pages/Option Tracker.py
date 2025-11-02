@@ -1,4 +1,4 @@
-# pages/Option Tracker.py - MONITOREO DE OPCIONES CON TARJETAS SIMPLIFICADAS (CORRECCIÓN CSS)
+# pages/Option Tracker.py - MONITOREO DE OPCIONES CON TARJETAS SIMPLIFICADAS (CORRECCIÓN FINAL CSS)
 import streamlit as st
 import pandas as pd
 from datetime import timedelta, datetime
@@ -96,10 +96,12 @@ st.markdown("""
         flex: 1;
         text-align: center;
         min-width: 80px;
-    }
-    /* CORRECCIÓN: Asegura que el separador se aplique a todos excepto al último */
-    .op-item:not(:last-child) {
+        /* CORRECCIÓN FINAL: Aplicar el borde a todos */
         border-right: 1px dotted #444; 
+    }
+    /* Eliminar el borde del ÚLTIMO elemento usando la pseudoclase, que ahora debería funcionar */
+    .op-item:last-child {
+        border-right: none;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -452,7 +454,7 @@ def display_operation_card_v2(row):
         tipo_2 = row['Tipo_2'][0]
         brief_description = f"{strike_1}{tipo_1}/{strike_2}{tipo_2}"
 
-    # 3. Estructura HTML de la Tarjeta (Líneas divisorias corregidas)
+    # 3. Estructura HTML de la Tarjeta (Se eliminó el estilo inline redundante 'border-right: none;')
     st.markdown(f"""
     <div class="op-card">
         <div class="op-header">
