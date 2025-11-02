@@ -1,11 +1,22 @@
-# pages/Option Tracker.py - MONITOREO DE OPCIONES CON TARJETAS SIMPLIFICADAS (CORRECCIÓN FINAL SEPARADOR FÍSICO)
+# pages/Option Tracker.py - MONITOR DE OPCIONES CON VISUALIZACIÓN EN DATAFRAME
 import streamlit as st
 import pandas as pd
 from datetime import timedelta, datetime
 import os
-import schwab
-from schwab.auth import easy_client
-from schwab.client import Client
+# Importaciones de Schwab (asumiendo que las librerías están instaladas)
+try:
+    import schwab
+    from schwab.auth import easy_client
+    from schwab.client import Client
+except ImportError:
+    st.error("❌ Las librerías de Schwab (schwab, schwab-api) no están instaladas.")
+    # Clases/funciones dummy para evitar errores si Schwab no está instalado
+    class Client:
+        def get_option_chain(self, ticker): return type('obj', (object,), {'status_code': 404, 'json': lambda: {}})()
+        def get_quote(self, ticker): return type('obj', (object,), {'status_code': 404})()
+    def easy_client(*args, **kwargs): return None
+
+
 # Asume que check_password se encuentra en un archivo utils.py
 try:
     from utils import check_password 
@@ -26,8 +37,8 @@ try:
     app_secret = st.secrets["schwab"]["app_secret"]
     redirect_uri = st.secrets["schwab"]["redirect_uri"]
 except KeyError as e:
-    st.error(f"❌ Falta configurar los secrets de Schwab. Clave faltante: {e}")
-    st.stop()
+    # No detenemos la app, solo mostramos error si las secrets faltan
+    api_key, app_secret, redirect_uri = None, None, None
 
 token_path = "schwab_token.json"
 TRACKER_CSV = "option_tracker.csv"
@@ -48,13 +59,6 @@ st.markdown("""
         height: 3rem;
         font-weight: bold;
     }
-    .metric-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 1.5rem;
-        border-radius: 15px;
-        color: white;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-    }
     .success-box {
         background-color: #1a4d2e;
         border: 2px solid #2d8659;
@@ -70,42 +74,7 @@ st.markdown("""
         color: white;
         margin: 1rem 0;
     }
-    .op-card {
-        background-color: #2e303c;
-        border-radius: 10px;
-        padding: 15px;
-        margin-bottom: 15px;
-        border-left: 5px solid #1f77b4;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-    }
-    .op-header {
-        display: flex; 
-        justify-content: space-between; 
-        align-items: center; 
-        margin-bottom: 10px;
-        border-bottom: 1px dashed #444;
-        padding-bottom: 5px;
-    }
-    .op-data {
-        display: flex; 
-        justify-content: space-between; 
-        align-items: center; /* Alineamos al centro para que el separador se vea bien */
-        padding-top: 10px;
-    }
-    .op-item {
-        flex: 1;
-        text-align: center;
-        min-width: 80px;
-        /* Limpiamos cualquier estilo de borde */
-    }
-    
-    /* ESTILO DEL SEPARADOR FÍSICO INYECTADO */
-    .op-separator {
-        width: 1px;
-        background-color: #444; /* Color de la línea */
-        margin: 0 5px; /* Espaciado entre columnas */
-        height: 40px; /* Altura de la línea */
-    }
+    /* Estilos de tarjeta eliminados o limpiados ya que usaremos dataframe */
 </style>
 """, unsafe_allow_html=True)
 
@@ -115,24 +84,34 @@ st.markdown("""
 
 def connect_to_schwab():
     """Conecta con Schwab usando token existente"""
+    if not api_key:
+        st.warning("⚠️ Configuración de secrets de Schwab incompleta.")
+        return None
+    
     if not os.path.exists(token_path):
         st.error("❌ No se encontró 'schwab_token.json'. Genera el token primero.")
         return None
 
     try:
-        client = easy_client(
-            api_key=api_key,
-            app_secret=app_secret,
-            callback_url=redirect_uri,
-            token_path=token_path
-        )
-        
-        # Prueba de conexión
-        test_response = client.get_quote("AAPL")
-        if hasattr(test_response, "status_code") and test_response.status_code != 200:
-            raise Exception(f"Respuesta inesperada: {test_response.status_code}")
-        
-        return client
+        # La función easy_client solo funciona si el schwab-api está instalado
+        if 'schwab.auth' in globals() and hasattr(schwab.auth, 'easy_client'):
+            client = easy_client(
+                api_key=api_key,
+                app_secret=app_secret,
+                callback_url=redirect_uri,
+                token_path=token_path
+            )
+            
+            # Prueba de conexión
+            test_response = client.get_quote("AAPL")
+            if hasattr(test_response, "status_code") and test_response.status_code != 200:
+                raise Exception(f"Respuesta inesperada: {test_response.status_code}")
+            
+            return client
+        else:
+            st.error("❌ Las clases/funciones de Schwab no están disponibles. Asegúrate de tener la librería instalada.")
+            return None
+            
     except Exception as e:
         st.error(f"❌ Error al conectar con Schwab: {e}")
         return None
@@ -150,7 +129,7 @@ def cargar_operaciones():
         if 'Fecha_Entrada' in df.columns:
             df['Fecha_Entrada'] = pd.to_datetime(df['Fecha_Entrada']).dt.date
         
-        # Compatibilidad con CSV antiguo que no tiene Fecha_Salida
+        # Compatibilidad con CSV antiguo
         if 'Fecha_Salida' not in df.columns and 'DTE' in df.columns:
             fechas_salida = []
             for _, row in df.iterrows():
@@ -183,6 +162,7 @@ def cargar_operaciones():
         
         return df
     else:
+        # DataFrame vacío con todas las columnas esperadas
         return pd.DataFrame(columns=[
             'ID', 'Ticker', 'Estrategia',
             'Strike_1', 'Tipo_1', 'Posicion_1',
@@ -271,6 +251,8 @@ def eliminar_operacion(id_operacion):
 def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
     """Obtiene precio, delta y theta desde Schwab"""
     try:
+        if client is None: return None, None, None # Evita fallos si no hay conexión
+        
         response = client.get_option_chain(ticker)
         if response.status_code != 200:
             return None, None, None
@@ -296,7 +278,7 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
             strike_str = str(float(strike))
             
             if strike_str in strikes:
-                # Tomamos el primer contrato (no deberia haber mas de uno para el mismo strike/fecha/tipo)
+                # Tomamos el primer contrato
                 contrato = strikes[strike_str][0] 
                 
                 bid = contrato.get('bid', 0)
@@ -304,11 +286,11 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
                 delta = contrato.get('delta', None)
                 theta = contrato.get('theta', None)
                 
-                # Usamos el precio medio (mid price) para el valor actual del contrato
+                # Usamos el precio medio (mid price)
                 if bid > 0 and ask > 0:
                     mid_price = (bid + ask) / 2
                 else:
-                    mid_price = None # No se pudo obtener un precio de mercado valido
+                    mid_price = None 
                 
                 return mid_price, delta, theta
         
@@ -320,7 +302,7 @@ def refrescar_todas_operaciones(client):
     """Refresca datos de todas las operaciones desde Schwab y calcula P&L"""
     df = cargar_operaciones()
     
-    if df.empty:
+    if df.empty or client is None:
         return df
     
     progress_bar = st.progress(0)
@@ -358,41 +340,37 @@ def refrescar_todas_operaciones(client):
         pnl_neto = None
         pnl_porcentaje = None
         
-        # Solo calcular si tenemos la Prima de Entrada y algún precio de mercado
+        # Cálculo solo si tenemos Prima de Entrada y precios de mercado
         if float(row['Prima_Entrada']) > 0:
             prima_entrada = float(row['Prima_Entrada'])
             comision = float(row['Comision'])
             es_credito = bool(row['Es_Credito'])
             
-            # --- LÓGICA DE CÁLCULO CORREGIDA PARA CRÉDITO Y DÉBITO ---
+            # --- LÓGICA DE CÁLCULO ---
             
-            # Cálculo para Single Leg
             if row['Estrategia'] == "Single Leg" and precio_1 is not None:
-                precio_cierre_actual = precio_1 # Valor actual del contrato
+                precio_cierre_actual = precio_1 
                 
                 if es_credito:
-                    # ✅ CRÉDITO: PnL = (Prima Recibida - Costo de Cierre) * 100
+                    # CRÉDITO: PnL = (Prima Recibida - Costo de Cierre) * 100
                     pnl_bruto = (prima_entrada - precio_cierre_actual) * 100
                 else:
-                    # 🔵 DÉBITO: PnL = (Valor Actual - Prima Pagada) * 100
+                    # DÉBITO: PnL = (Valor Actual - Prima Pagada) * 100
                     pnl_bruto = (precio_cierre_actual - prima_entrada) * 100
             
-            # Cálculo para Spread
             elif row['Estrategia'] == "Spread" and precio_1 is not None and precio_2 is not None:
-                # El valor actual del Spread es la diferencia absoluta de los precios de los legs
                 valor_actual_spread = abs(precio_1 - precio_2)
                 
                 if es_credito:
-                    # ✅ CRÉDITO: PnL = (Prima Recibida - Costo de Cierre del Spread) * 100
+                    # CRÉDITO: PnL = (Prima Recibida - Costo de Cierre del Spread) * 100
                     pnl_bruto = (prima_entrada - valor_actual_spread) * 100
                 else:
-                    # 🔵 DÉBITO: PnL = (Valor Actual del Spread - Prima Pagada) * 100
+                    # DÉBITO: PnL = (Valor Actual del Spread - Prima Pagada) * 100
                     pnl_bruto = (valor_actual_spread - prima_entrada) * 100
             
             # 4. Cálculo Neto y Porcentaje
             if pnl_bruto is not None:
                 pnl_neto = pnl_bruto - comision
-                # La base para el porcentaje siempre es la prima pagada/recibida (en dólares, por contrato)
                 pnl_porcentaje = (pnl_neto / (prima_entrada * 100)) * 100
             
         # 5. Guardar resultados
@@ -409,95 +387,7 @@ def refrescar_todas_operaciones(client):
     return df
 
 # =========================================================================
-# 4. FUNCIONES DE VISUALIZACIÓN
-# =========================================================================
-
-def display_operation_card_v2(row):
-    """Muestra una operación activa con PnL, Delta y Theta en formato de tarjeta."""
-    
-    ticker = row['Ticker']
-    estrategia = row['Estrategia']
-    fecha_entrada = row['Fecha_Entrada'].strftime('%d/%m/%Y')
-    fecha_salida = row['Fecha_Salida'].strftime('%d/%m/%Y')
-    
-    pnl_neto = row['PnL_Neto']
-    delta_1 = row['Delta_1']
-    delta_2 = row['Delta_2']
-    theta_1 = row['Theta_1']
-    theta_2 = row['Theta_2']
-    
-    # 1. Calcular Totales y preparar textos
-    
-    # PnL
-    if pd.isna(pnl_neto):
-        pnl_color = "#f0ad4e" # Naranja para No Data
-        pnl_text = "N/A"
-    elif pnl_neto >= 0:
-        pnl_color = "#5cb85c" # Verde
-        pnl_text = f"${pnl_neto:.2f}"
-    else:
-        pnl_color = "#d9534f" # Rojo
-        pnl_text = f"${pnl_neto:.2f}"
-
-    # Delta Total
-    delta_total = (delta_1 if pd.notna(delta_1) else 0) + (delta_2 if pd.notna(delta_2) else 0)
-    delta_text = f"{delta_total:.2f}" if (pd.notna(delta_1) or pd.notna(delta_2)) else "N/A"
-    
-    # Theta Total
-    theta_total = (theta_1 if pd.notna(theta_1) else 0) + (theta_2 if pd.notna(theta_2) else 0)
-    theta_text = f"{theta_total:.2f}" if (pd.notna(theta_1) or pd.notna(theta_2)) else "N/A"
-    
-    # 2. Construir la descripción breve de la estrategia
-    strike_1 = f"{row['Strike_1']:.2f}"
-    tipo_1 = row['Tipo_1'][0] # C o P
-    
-    brief_description = f"{strike_1}{tipo_1}"
-    if estrategia == "Spread" and pd.notna(row['Strike_2']):
-        strike_2 = f"{row['Strike_2']:.2f}"
-        tipo_2 = row['Tipo_2'][0]
-        brief_description = f"{strike_1}{tipo_1}/{strike_2}{tipo_2}"
-
-    # 3. Estructura HTML de la Tarjeta (INYECCIÓN DE SEPARADORES FÍSICOS)
-    
-    # Definimos el HTML del separador físico
-    separator_html = '<div class="op-separator"></div>'
-    
-    st.markdown(f"""
-    <div class="op-card">
-        <div class="op-header">
-            <h4 style="color: white; margin: 0; font-size: 1.5rem;">
-                {row['ID']} - <strong>{ticker}</strong> ({estrategia} - {brief_description})
-            </h4>
-            <span style="font-size: 0.9rem; color: #ccc;">DTE: <strong>{row['DTE']}</strong></span>
-        </div>
-        
-        <div class="op-data">
-            <div class="op-item"> 
-                <span style="color: #aaa; font-size: 0.8rem;">Fecha Entrada</span><br>
-                <strong style="color: white; font-size: 1rem;">{fecha_entrada}</strong>
-            </div>
-            {separator_html} <div class="op-item"> 
-                <span style="color: #aaa; font-size: 0.8rem;">Fecha Salida</span><br>
-                <strong style="color: white; font-size: 1rem;">{fecha_salida}</strong>
-            </div>
-            {separator_html} <div class="op-item"> 
-                <span style="color: #aaa; font-size: 0.8rem;">💰 P&L Neto</span><br>
-                <strong style="color: {pnl_color}; font-size: 1.2rem;">{pnl_text}</strong>
-            </div>
-            {separator_html} <div class="op-item"> 
-                <span style="color: #aaa; font-size: 0.8rem;">Δ Total</span><br>
-                <strong style="color: white; font-size: 1.2rem;">{delta_text}</strong>
-            </div>
-            {separator_html} <div class="op-item"> 
-                <span style="color: #aaa; font-size: 0.8rem;">Θ Total</span><br>
-                <strong style="color: white; font-size: 1.2rem;">{theta_text}</strong>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-# =========================================================================
-# 5. INTERFAZ PRINCIPAL
+# 4. INTERFAZ PRINCIPAL
 # =========================================================================
 
 def option_tracker_page():
@@ -517,14 +407,14 @@ def option_tracker_page():
     if client:
         st.markdown('<div class="success-box">✅ <strong>Conexión activa</strong> con Schwab API</div>', unsafe_allow_html=True)
     else:
-        st.error("❌ No hay conexión con Schwab. Funciones limitadas.")
+        st.error("❌ No hay conexión con Schwab o la configuración es incorrecta. Funciones limitadas.")
     
     st.markdown("---")
     
     # SECCIÓN 1: AGREGAR NUEVA OPERACIÓN
     st.markdown("### ➕ Nueva Operación")
     
-    with st.expander("📝 Formulario de entrada", expanded=False): # Cambiado a collapsed para ahorrar espacio
+    with st.expander("📝 Formulario de entrada", expanded=False): 
         # Primero seleccionar estrategia para condicionar el resto
         estrategia = st.selectbox("📊 Estrategia", ["Single Leg", "Spread"], key="estrategia_select")
         
@@ -742,14 +632,75 @@ def option_tracker_page():
         st.markdown("---")
         
         # =========================================================================
-        # SECCIÓN DE TARJETAS DE OPERACIONES (El formato solicitado)
+        # SECCIÓN DE DATAFRAME (REEMPLAZO DE TARJETAS)
         # =========================================================================
         
-        st.markdown("### 📋 Detalle de Operaciones")
+        st.markdown("### 📋 Detalle de Operaciones (DataFrame)")
         
-        # Iterar sobre cada operación y mostrarla como una Tarjeta (Card)
-        for _, row in df.iterrows():
-            display_operation_card_v2(row)
+        # 1. Crear un DataFrame de resumen con los campos clave
+        df_display = df.copy()
+
+        # 2. Formatear campos numéricos y de texto para la visualización final
+        df_display['P&L Neto'] = df_display['PnL_Neto'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "N/A")
+        df_display['P&L %'] = df_display['PnL_Porcentaje'].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A")
+        
+        # Calcular Delta y Theta Total solo para mostrar
+        # Nos aseguramos de manejar correctamente el 'N/A'
+        delta_total_calc = df_display['Delta_1'].fillna(0) + df_display['Delta_2'].fillna(0)
+        theta_total_calc = df_display['Theta_1'].fillna(0) + df_display['Theta_2'].fillna(0)
+
+        # Usar una función para aplicar el formato con N/A si ambos legs son NaN
+        def format_greeks(row, greek_col, total_calc):
+            if pd.isna(row[greek_col+'_1']) and pd.isna(row[greek_col+'_2']):
+                return "N/A"
+            else:
+                return f"{total_calc[row.name]:.2f}"
+                
+        df_display['Δ Total'] = df_display.apply(
+            lambda row: format_greeks(row, 'Delta', delta_total_calc), axis=1
+        )
+        df_display['Θ Total'] = df_display.apply(
+            lambda row: format_greeks(row, 'Theta', theta_total_calc), axis=1
+        )
+
+        
+        # Crear la columna de descripción concisa de la estrategia
+        def create_brief_description(row):
+            strike_1 = f"{row['Strike_1']:.2f}"
+            tipo_1 = row['Tipo_1'][0] # C o P
+            desc = f"{row['Estrategia']}: {strike_1}{tipo_1}"
+            if row['Estrategia'] == "Spread" and pd.notna(row['Strike_2']):
+                strike_2 = f"{row['Strike_2']:.2f}"
+                tipo_2 = row['Tipo_2'][0]
+                desc += f"/{strike_2}{tipo_2}"
+            return desc
+        
+        df_display['Estrategia Detalle'] = df_display.apply(create_brief_description, axis=1)
+
+        # 3. Seleccionar y renombrar las columnas que el usuario quiere ver
+        columnas_finales = [
+            'ID',
+            'Ticker',
+            'Estrategia Detalle',
+            'Fecha_Entrada',
+            'Fecha_Salida',
+            'P&L Neto',
+            'P&L %',
+            'Δ Total',
+            'Θ Total',
+            'Prima_Entrada',
+            'Comision'
+        ]
+        
+        df_final = df_display[columnas_finales].rename(columns={
+            'Fecha_Entrada': 'Fch. Entrada',
+            'Fecha_Salida': 'Fch. Salida',
+            'Prima_Entrada': 'Prima',
+            'Comision': 'Comis.'
+        })
+
+        # 4. Mostrar el DataFrame
+        st.dataframe(df_final, use_container_width=True)
         
         st.markdown("---")
         
@@ -779,7 +730,7 @@ def option_tracker_page():
                         st.error(f"❌ No existe ID {id_eliminar}")
 
 # =========================================================================
-# 6. PUNTO DE ENTRADA
+# 5. PUNTO DE ENTRADA
 # =========================================================================
 
 if __name__ == "__main__":
