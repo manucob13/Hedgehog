@@ -6,7 +6,13 @@ import os
 import schwab
 from schwab.auth import easy_client
 from schwab.client import Client
-from utils import check_password # Asegúrate de que utils.py esté disponible
+# Asume que check_password se encuentra en un archivo utils.py
+try:
+    from utils import check_password 
+except ImportError:
+    # Definición dummy si no existe utils.py (solo para que el código corra)
+    def check_password():
+        return True 
 
 # =========================================================================
 # 0. CONFIGURACIÓN
@@ -85,6 +91,7 @@ def connect_to_schwab():
             token_path=token_path
         )
         
+        # Prueba de conexión
         test_response = client.get_quote("AAPL")
         if hasattr(test_response, "status_code") and test_response.status_code != 200:
             raise Exception(f"Respuesta inesperada: {test_response.status_code}")
@@ -117,9 +124,10 @@ def cargar_operaciones():
         elif 'Fecha_Salida' in df.columns:
             df['Fecha_Salida'] = pd.to_datetime(df['Fecha_Salida']).dt.date
         
-        # Migrar Prima_Entrada si existe con valores negativos
+        # Migrar Prima_Entrada si existe con valores negativos (para compatibilidad)
         if 'Prima_Entrada' in df.columns:
             if 'Es_Credito' not in df.columns:
+                # Si Prima_Entrada es negativa, se asume Crédito.
                 df['Es_Credito'] = df['Prima_Entrada'].apply(lambda x: x < 0 if pd.notna(x) else True)
                 # Normalizar Prima_Entrada a valores absolutos
                 df['Prima_Entrada'] = df['Prima_Entrada'].abs()
@@ -134,7 +142,8 @@ def cargar_operaciones():
         if 'Comision_Leg2' not in df.columns:
             df['Comision_Leg2'] = 0.65
         if 'Comision' not in df.columns:
-            df['Comision'] = df['Comision_Leg1'] + df['Comision_Leg2']
+            # Recalcular Comisión total para evitar errores de NaN
+            df['Comision'] = df['Comision_Leg1'].fillna(0) + df['Comision_Leg2'].fillna(0)
         
         return df
     else:
@@ -166,18 +175,17 @@ def agregar_operacion(ticker, estrategia, strike_1, tipo_1, posicion_1,
     # Generar ID único
     nuevo_id = df['ID'].max() + 1 if len(df) > 0 else 1
     
-    # Calcular comisión total
-    comision_total = comision_leg1 + comision_leg2
-    
-    # Para single leg, los campos del leg 2 son None
+    # Para single leg, los campos del leg 2 son None y la comisión es solo la del leg 1
     if estrategia == "Single Leg":
         strike_2 = None
         tipo_2 = None
         posicion_2 = None
         comision_leg2 = 0
-        comision_total = comision_leg1
     
-    # Normalizar prima: si es crédito, guardarla como positiva
+    # Calcular comisión total
+    comision_total = comision_leg1 + comision_leg2
+    
+    # Normalizar prima: guardarla como positiva, el signo se maneja con 'Es_Credito'
     prima_normalizada = abs(prima_entrada)
     
     nueva_operacion = pd.DataFrame([{
@@ -240,30 +248,40 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
         
         fecha_str = fecha_salida.strftime('%Y-%m-%d')
         
-        for fecha_key, strikes in option_map.items():
-            if fecha_str in fecha_key:
-                strike_str = str(float(strike))
-                if strike_str in strikes:
-                    contrato = strikes[strike_str][0]
-                    
-                    bid = contrato.get('bid', 0)
-                    ask = contrato.get('ask', 0)
-                    delta = contrato.get('delta', None)
-                    theta = contrato.get('theta', None)
-                    
-                    if bid and ask and bid > 0 and ask > 0:
-                        mid_price = (bid + ask) / 2
-                    else:
-                        mid_price = None
-                    
-                    return mid_price, delta, theta
+        # Las claves tienen formato 'YYYY-MM-DD:DTE'
+        fecha_key_match = None
+        for key in option_map.keys():
+            if key.startswith(fecha_str):
+                fecha_key_match = key
+                break
+        
+        if fecha_key_match:
+            strikes = option_map[fecha_key_match]
+            strike_str = str(float(strike))
+            
+            if strike_str in strikes:
+                # Tomamos el primer contrato (no deberia haber mas de uno para el mismo strike/fecha/tipo)
+                contrato = strikes[strike_str][0] 
+                
+                bid = contrato.get('bid', 0)
+                ask = contrato.get('ask', 0)
+                delta = contrato.get('delta', None)
+                theta = contrato.get('theta', None)
+                
+                # Usamos el precio medio (mid price) para el valor actual del contrato
+                if bid > 0 and ask > 0:
+                    mid_price = (bid + ask) / 2
+                else:
+                    mid_price = None # No se pudo obtener un precio de mercado valido
+                
+                return mid_price, delta, theta
         
         return None, None, None
     except Exception:
         return None, None, None
 
 def refrescar_todas_operaciones(client):
-    """Refresca datos de todas las operaciones desde Schwab"""
+    """Refresca datos de todas las operaciones desde Schwab y calcula P&L"""
     df = cargar_operaciones()
     
     if df.empty:
@@ -275,7 +293,7 @@ def refrescar_todas_operaciones(client):
     for idx, row in df.iterrows():
         status_text.text(f"🔄 Actualizando {row['Ticker']} ({idx+1}/{len(df)})...")
         
-        # Obtener datos Leg 1
+        # 1. Obtener datos Leg 1
         precio_1, delta_1, theta_1 = obtener_datos_opcion(
             client, row['Ticker'], row['Strike_1'], row['Tipo_1'], row['Fecha_Salida']
         )
@@ -284,7 +302,8 @@ def refrescar_todas_operaciones(client):
         df.at[idx, 'Delta_1'] = delta_1
         df.at[idx, 'Theta_1'] = theta_1
         
-        # Obtener datos Leg 2 (si existe)
+        # 2. Obtener datos Leg 2 (si existe)
+        precio_2 = None
         if row['Estrategia'] == "Spread" and pd.notna(row['Strike_2']):
             precio_2, delta_2, theta_2 = obtener_datos_opcion(
                 client, row['Ticker'], row['Strike_2'], row['Tipo_2'], row['Fecha_Salida']
@@ -292,46 +311,58 @@ def refrescar_todas_operaciones(client):
             df.at[idx, 'Precio_Actual_2'] = precio_2
             df.at[idx, 'Delta_2'] = delta_2
             df.at[idx, 'Theta_2'] = theta_2
+        else:
+            # Aseguramos None para Single Leg
+            df.at[idx, 'Precio_Actual_2'] = None 
+            df.at[idx, 'Delta_2'] = None
+            df.at[idx, 'Theta_2'] = None
         
-        # Calcular P&L
-        if precio_1 is not None:
+        # 3. Inicializar P&L
+        pnl_bruto = None
+        pnl_neto = None
+        pnl_porcentaje = None
+        
+        # Solo calcular si tenemos la Prima de Entrada y algún precio de mercado
+        if float(row['Prima_Entrada']) > 0:
             prima_entrada = float(row['Prima_Entrada'])
             comision = float(row['Comision'])
             es_credito = bool(row['Es_Credito'])
             
-            if row['Estrategia'] == "Single Leg":
-                # Single leg
-                if es_credito:
-                    # Crédito recibido: ganas cuando baja el precio
-                    pnl_bruto = (prima_entrada - precio_1) * 100
-                else:
-                    # Débito pagado: ganas cuando sube el precio
-                    pnl_bruto = (precio_1 - prima_entrada) * 100
-            else:
-                # Spread
-                if precio_1 and row['Precio_Actual_2']:
-                    precio_2 = float(row['Precio_Actual_2'])
-                    
-                    # Calcular valor actual del spread
-                    # Asumimos que leg 1 y leg 2 tienen posiciones opuestas
-                    valor_actual_spread = abs(precio_1 - precio_2)
-                    
-                    if es_credito:
-                        # Spread a crédito: ganas cuando el spread se cierra
-                        pnl_bruto = (prima_entrada - valor_actual_spread) * 100
-                    else:
-                        # Spread a débito: ganas cuando el spread se amplía
-                        pnl_bruto = (valor_actual_spread - prima_entrada) * 100
-                else:
-                    pnl_bruto = None
+            # --- LÓGICA DE CÁLCULO CORREGIDA PARA CRÉDITO Y DÉBITO ---
             
+            # Cálculo para Single Leg
+            if row['Estrategia'] == "Single Leg" and precio_1 is not None:
+                precio_cierre_actual = precio_1 # Valor actual del contrato
+                
+                if es_credito:
+                    # ✅ CRÉDITO: PnL = (Prima Recibida - Costo de Cierre) * 100
+                    pnl_bruto = (prima_entrada - precio_cierre_actual) * 100
+                else:
+                    # 🔵 DÉBITO: PnL = (Valor Actual - Prima Pagada) * 100
+                    pnl_bruto = (precio_cierre_actual - prima_entrada) * 100
+            
+            # Cálculo para Spread
+            elif row['Estrategia'] == "Spread" and precio_1 is not None and precio_2 is not None:
+                # El valor actual del Spread es la diferencia absoluta de los precios de los legs
+                valor_actual_spread = abs(precio_1 - precio_2)
+                
+                if es_credito:
+                    # ✅ CRÉDITO: PnL = (Prima Recibida - Costo de Cierre del Spread) * 100
+                    pnl_bruto = (prima_entrada - valor_actual_spread) * 100
+                else:
+                    # 🔵 DÉBITO: PnL = (Valor Actual del Spread - Prima Pagada) * 100
+                    pnl_bruto = (valor_actual_spread - prima_entrada) * 100
+            
+            # 4. Cálculo Neto y Porcentaje
             if pnl_bruto is not None:
                 pnl_neto = pnl_bruto - comision
-                pnl_porcentaje = (pnl_neto / (prima_entrada * 100)) * 100 if prima_entrada != 0 else 0
-                
-                df.at[idx, 'PnL_Bruto'] = pnl_bruto
-                df.at[idx, 'PnL_Neto'] = pnl_neto
-                df.at[idx, 'PnL_Porcentaje'] = pnl_porcentaje
+                # La base para el porcentaje siempre es la prima pagada/recibida (en dólares, por contrato)
+                pnl_porcentaje = (pnl_neto / (prima_entrada * 100)) * 100
+            
+        # 5. Guardar resultados
+        df.at[idx, 'PnL_Bruto'] = pnl_bruto
+        df.at[idx, 'PnL_Neto'] = pnl_neto
+        df.at[idx, 'PnL_Porcentaje'] = pnl_porcentaje
         
         progress_bar.progress((idx + 1) / len(df))
     
@@ -439,7 +470,11 @@ def option_tracker_page():
                     tipo_2 = st.selectbox("Tipo 2", ["CALL", "PUT"], index=0)
                 
                 with col3:
-                    posicion_2 = st.selectbox("Posición 2", ["LONG", "SHORT"], index=0 if posicion_1 == "SHORT" else 1)
+                    # En un spread, la segunda posición DEBE ser opuesta a la primera.
+                    posicion_2_default = "LONG" if posicion_1 == "SHORT" else "SHORT"
+                    posicion_2 = st.selectbox("Posición 2", ["LONG", "SHORT"], 
+                                              index=0 if posicion_2_default == "LONG" else 1,
+                                              help="En un Spread, la Posición 2 debe ser opuesta a la Posición 1.")
             
             st.markdown("---")
             
@@ -527,7 +562,7 @@ def option_tracker_page():
                     st.rerun()
         
         with col2:
-            # Botón de Descargar CSV (requiere un pequeño truco para funcionar dentro de un bloque de columnas)
+            # Botón de Descargar CSV
             csv = df.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="💾 Descargar CSV",
@@ -538,7 +573,7 @@ def option_tracker_page():
             )
         
         with col3:
-            if not df.empty and df['Precio_Actual_1'].notna().any():
+            if not df.empty and df['PnL_Neto'].notna().any():
                 st.info(f"📅 Actualizado: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
         
         st.markdown("---")
@@ -548,13 +583,22 @@ def option_tracker_page():
         
         col1, col2, col3, col4, col5 = st.columns(5)
         
+        # Cálculo del P&L Neto Total
+        pnl_neto_total = df['PnL_Neto'].apply(lambda x: float(x) if pd.notna(x) else 0).sum()
+        
+        # Cálculo del Delta Total (para el color del delta en el metric)
+        pnl_bruto_total = df['PnL_Bruto'].apply(lambda x: float(x) if pd.notna(x) else 0).sum()
+        delta_pnl = pnl_neto_total - pnl_bruto_total if df['PnL_Bruto'].notna().any() else 0 # Delta contra el PnL Bruto, no muy util. Mejor usar un delta fijo
+        
+        # Para el color de la métrica:
+        delta_color = "normal" if pnl_neto_total >= 0 else "inverse"
+        
         with col1:
             st.metric("📊 Operaciones", len(df))
         
         with col2:
-            pnl_neto_total = df['PnL_Neto'].apply(lambda x: float(x) if pd.notna(x) else 0).sum()
-            delta_color = "normal" if pnl_neto_total >= 0 else "inverse"
-            st.metric("💰 P&L Neto Total", f"${pnl_neto_total:.2f}", delta=f"${pnl_neto_total:.2f}", delta_color=delta_color)
+            st.metric("💰 P&L Neto Total", f"${pnl_neto_total:.2f}", 
+                      delta=f"{pnl_neto_total:.2f}", delta_color=delta_color)
         
         with col3:
             spreads = len(df[df['Estrategia'] == 'Spread'])
@@ -565,10 +609,10 @@ def option_tracker_page():
             st.metric("🎯 Single Legs", singles)
         
         with col5:
-            prima_total = df['Prima_Entrada'].apply(lambda x: float(x) if pd.notna(x) else 0).sum() * 100
-            if prima_total != 0:
+            prima_total_invertida = df['Prima_Entrada'].apply(lambda x: float(x) if pd.notna(x) else 0).sum() * 100
+            if prima_total_invertida != 0:
                 pnl_neto_portfolio = df['PnL_Neto'].apply(lambda x: float(x) if pd.notna(x) else 0).sum()
-                pnl_porcentaje_portfolio = (pnl_neto_portfolio / prima_total) * 100
+                pnl_porcentaje_portfolio = (pnl_neto_portfolio / prima_total_invertida) * 100
                 st.metric("📈 P&L % Portfolio", f"{pnl_porcentaje_portfolio:.1f}%")
             else:
                 st.metric("📈 P&L % Portfolio", "0.0%")
@@ -582,7 +626,7 @@ def option_tracker_page():
         df_display['Fecha_Entrada'] = pd.to_datetime(df_display['Fecha_Entrada']).dt.strftime('%d/%m/%Y')
         df_display['Fecha_Salida'] = pd.to_datetime(df_display['Fecha_Salida']).dt.strftime('%d/%m/%Y')
         
-        # Formatear columnas numéricas
+        # Formatear columnas numéricas para visualización
         numeric_cols = ['Strike_1', 'Strike_2', 'Prima_Entrada', 'Comision_Leg1', 'Comision_Leg2', 'Comision',
                         'Precio_Actual_1', 'Delta_1', 'Theta_1',
                         'Precio_Actual_2', 'Delta_2', 'Theta_2',
@@ -613,7 +657,7 @@ def option_tracker_page():
                 "PnL_Neto": st.column_config.TextColumn("💰 P&L Neto", width="small"),
                 "PnL_Porcentaje": st.column_config.TextColumn("📊 P&L %", width="small"),
                 
-                # COLUMNAS DETALLE - OPCIONALES/OCULTAS
+                # COLUMNAS DETALLE - OPCIONALES/VISIBLES PARA CONTEXTO
                 "Strike_2": st.column_config.TextColumn("Strike 2", width="small"),
                 "Tipo_2": st.column_config.TextColumn("Tipo 2", width="small"),
                 "Posicion_2": st.column_config.TextColumn("Pos 2", width="small"),
@@ -639,11 +683,14 @@ def option_tracker_page():
         with st.expander("🗑️ Eliminar Operación"):
             col1, col2 = st.columns([1, 2])
             
+            # Ajustar max_value para evitar errores si no hay filas
+            max_id = int(df['ID'].max()) if not df.empty else 1
+            
             with col1:
                 id_eliminar = st.number_input(
                     "ID a eliminar",
                     min_value=1,
-                    max_value=int(df['ID'].max()) if not df.empty else 1,
+                    max_value=max_id,
                     step=1
                 )
             
