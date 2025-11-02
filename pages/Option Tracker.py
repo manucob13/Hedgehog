@@ -1,4 +1,4 @@
-# pages/Option Tracker.py - MONITOREO DE OPCIONES CON TARJETAS SIMPLIFICADAS (CORRECCIÓN FINAL CSS)
+# pages/Option Tracker.py - MONITOREO DE OPCIONES CON TARJETAS SIMPLIFICADAS (CORRECCIÓN FINAL CSS INLINE)
 import streamlit as st
 import pandas as pd
 from datetime import timedelta, datetime
@@ -96,12 +96,11 @@ st.markdown("""
         flex: 1;
         text-align: center;
         min-width: 80px;
-        /* CORRECCIÓN FINAL: Aplicar el borde a todos */
-        border-right: 1px dotted #444; 
+        /* Se elimina el border-right de aquí para forzarlo en el HTML */
     }
-    /* Eliminar el borde del ÚLTIMO elemento usando la pseudoclase, que ahora debería funcionar */
+    /* Se mantiene la definición de op-item:last-child para limpieza, aunque el inline tiene prioridad */
     .op-item:last-child {
-        border-right: none;
+        border-right: none !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -454,7 +453,10 @@ def display_operation_card_v2(row):
         tipo_2 = row['Tipo_2'][0]
         brief_description = f"{strike_1}{tipo_1}/{strike_2}{tipo_2}"
 
-    # 3. Estructura HTML de la Tarjeta (Se eliminó el estilo inline redundante 'border-right: none;')
+    # 3. Estructura HTML de la Tarjeta (INYECCIÓN DE BORDES FORZADA)
+    # Definimos el estilo del borde, que se aplicará 4 veces
+    border_style = "border-right: 1px dotted #444;" 
+    
     st.markdown(f"""
     <div class="op-card">
         <div class="op-header">
@@ -465,23 +467,23 @@ def display_operation_card_v2(row):
         </div>
         
         <div class="op-data">
-            <div class="op-item">
+            <div class="op-item" style="{border_style}"> 
                 <span style="color: #aaa; font-size: 0.8rem;">Fecha Entrada</span><br>
                 <strong style="color: white; font-size: 1rem;">{fecha_entrada}</strong>
             </div>
-            <div class="op-item">
+            <div class="op-item" style="{border_style}"> 
                 <span style="color: #aaa; font-size: 0.8rem;">Fecha Salida</span><br>
                 <strong style="color: white; font-size: 1rem;">{fecha_salida}</strong>
             </div>
-            <div class="op-item">
+            <div class="op-item" style="{border_style}"> 
                 <span style="color: #aaa; font-size: 0.8rem;">💰 P&L Neto</span><br>
                 <strong style="color: {pnl_color}; font-size: 1.2rem;">{pnl_text}</strong>
             </div>
-            <div class="op-item">
+            <div class="op-item" style="{border_style}"> 
                 <span style="color: #aaa; font-size: 0.8rem;">Δ Total</span><br>
                 <strong style="color: white; font-size: 1.2rem;">{delta_text}</strong>
             </div>
-            <div class="op-item">
+            <div class="op-item"> 
                 <span style="color: #aaa; font-size: 0.8rem;">Θ Total</span><br>
                 <strong style="color: white; font-size: 1.2rem;">{theta_text}</strong>
             </div>
