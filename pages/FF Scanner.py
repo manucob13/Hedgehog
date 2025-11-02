@@ -13,7 +13,6 @@ import schwab
 from schwab.auth import easy_client
 from schwab.client import Client
 from utils import check_password
-from urllib.parse import urlparse, parse_qs
 
 # =========================================================================
 # 0. CONFIGURACIÓN Y VARIABLES
@@ -110,15 +109,19 @@ def perform_initial_preparation():
     return valid_tickers
 
 # =========================================================================
-# 2. CONEXIÓN CON BROKER SCHWAB
+# 2. CONEXIÓN CON BROKER SCHWAB (solo usa token existente)
 # =========================================================================
 
 def connect_to_schwab():
     """
     Usa el token existente si está disponible.
-    Si no existe, ofrece un flujo manual de autenticación.
+    No abre flujo OAuth ni usa puerto; solo valida token.json.
     """
     st.subheader("2. Conexión con Broker Schwab")
+
+    if not os.path.exists(token_path):
+        st.error("❌ No se encontró 'schwab_token.json'. Genera el token desde tu notebook local antes de usar esta página.")
+        return None
 
     try:
         client = easy_client(
@@ -127,54 +130,19 @@ def connect_to_schwab():
             callback_url=redirect_uri,
             token_path=token_path
         )
+
+        # Verificar token
+        test_response = client.get_quote("AAPL")
+        if hasattr(test_response, "status_code") and test_response.status_code != 200:
+            raise Exception(f"Respuesta inesperada: {test_response.status_code}")
+
+        st.success("✅ Conexión con Schwab verificada (token activo).")
+        return client
+
     except Exception as e:
         st.error(f"❌ Error al inicializar Schwab Client: {e}")
+        st.warning("⚠️ Si el error persiste, elimina el archivo 'schwab_token.json' y vuelve a generarlo desde tu entorno local.")
         return None
-
-    # Si ya existe token, probarlo
-    if os.path.exists(token_path):
-        try:
-            test_response = client.get_quote("AAPL")
-            if test_response.status_code == 200:
-                st.success("✅ Conexión a Schwab verificada (token activo).")
-                return client
-            else:
-                raise Exception(f"Respuesta inesperada: {test_response.status_code}")
-        except Exception as e:
-            st.warning(f"⚠️ El token puede haber expirado: {e}")
-            if st.button("🗑️ Eliminar token y regenerar", key="regen"):
-                os.remove(token_path)
-                st.rerun()
-            return None
-
-    # Si no hay token, autenticación manual
-    st.warning("⚠️ No se encontró un token. Genera uno nuevo desde la URL de autorización.")
-
-    try:
-        auth_url = client.oauth.get_oauth_url(redirect_uri=redirect_uri)
-        st.markdown(f"[🔗 Autorizar con Schwab]({auth_url})")
-    except Exception as e:
-        st.error(f"❌ Error al generar URL de autorización: {e}")
-        return None
-
-    callback_url = st.text_input("Pega aquí la URL completa del callback:", key="cb_url")
-
-    if st.button("🔐 Generar Token y Conectar", type="primary"):
-        if not callback_url.startswith("https://127.0.0.1"):
-            st.error("❌ Pega la URL completa que inicia con https://127.0.0.1/?code=")
-        else:
-            try:
-                with st.spinner("Generando token..."):
-                    client.oauth.from_callback_url(callback_url)
-                    if os.path.exists(token_path):
-                        st.success("✅ Token guardado exitosamente. Recarga para continuar.")
-                        time.sleep(1)
-                        st.rerun()
-                    else:
-                        st.error("❌ La API respondió, pero el archivo de token no se creó.")
-            except Exception as e:
-                st.error(f"❌ Error al generar token: {e}")
-    return None
 
 # =========================================================================
 # 3. FUNCIÓN PRINCIPAL
@@ -201,7 +169,7 @@ def ff_scanner_page():
     if schwab_client:
         st.success(f"🎯 Sistema listo con {len(valid_tickers)} tickers válidos y conexión Schwab activa.")
     else:
-        st.info("⏳ Completa la conexión con Schwab para activar funciones de trading.")
+        st.info("⏳ Conecta tu token Schwab para activar funciones de trading.")
 
 # =========================================================================
 # 4. PUNTO DE ENTRADA PROTEGIDO
