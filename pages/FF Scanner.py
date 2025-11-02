@@ -1,4 +1,4 @@
-# pages/FF Scanner.py - VERSIÓN CON BOTÓN DE ACTUALIZACIÓN
+# pages/FF Scanner.py - VERSIÓN CON AUTENTICACIÓN Y BOTÓN DE ACTUALIZACIÓN
 
 import streamlit as st
 import pandas as pd
@@ -10,6 +10,9 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np 
 import os 
 import time 
+
+# === IMPORTAR LA FUNCIÓN DE AUTENTICACIÓN ===
+from utils import check_password
 
 # =========================================================================
 # 0. CONFIGURACIÓN Y VARIABLES
@@ -122,58 +125,11 @@ def perform_initial_preparation():
     return valid_tickers
 
 # =========================================================================
-# 2. FASE DE ESCANEO (Schwab y Fechas)
-# =========================================================================
-
-def calculate_ff_dates(today):
-    """Calcula las fechas de vencimiento objetivo (DTE 30, 45, 60 días)."""
-    
-    dte_short = 30
-    dte_mid = 45
-    dte_long = 60
-    
-    target_short = today + timedelta(days=dte_short)
-    target_mid = today + timedelta(days=dte_mid)
-    target_long = today + timedelta(days=dte_long)
-
-    st.subheader("2.1 Cálculo de Fechas Forward Factor (FF)")
-    st.markdown(f"""
-    **Fecha de Hoy:** `{today.strftime('%Y-%m-%d')}`
-    * **DTE Mínimo Corto (30 días):** `{target_short.strftime('%Y-%m-%d')}`
-    * **DTE Mínimo Medio (45 días):** `{target_mid.strftime('%Y-%m-%d')}`
-    * **DTE Mínimo Largo (60 días):** `{target_long.strftime('%Y-%m-%d')}`
-    """)
-    
-    return target_short, target_mid, target_long
-
-def scan_options_ff(valid_tickers):
-    """
-    Simula la conexión a Schwab y el escaneo de opciones.
-    (El código real de Schwab iría aquí)
-    """
-    
-    st.subheader("2.2 Escaneo y Cómputo del Factor Forward")
-    
-    if not valid_tickers:
-        st.error("No hay tickers válidos para iniciar el escaneo.")
-        return None
-        
-    today = date.today()
-    calculate_ff_dates(today) # Solo para mostrar el cálculo de fechas
-    
-    st.warning("⚠️ **Conexión a Schwab Pendiente:** Esta sección requiere la implementación de la API de Schwab.")
-    st.info(f"Listo para escanear **{len(valid_tickers)}** tickers.")
-    
-    # La lógica de escaneo y resultados iría aquí...
-
-    return None
-
-# =========================================================================
-# 3. FUNCIÓN PRINCIPAL DE LA PÁGINA (FF Scanner)
+# 2. FUNCIÓN PRINCIPAL DE LA PÁGINA (FF Scanner)
 # =========================================================================
 
 def ff_scanner_page():
-    st.title("🛡️ FF Scanner (Preparación y Escaneo)")
+    st.title("🛡️ FF Scanner (Preparación y Validación de Tickers)")
     st.markdown("---")
     
     # Contenedor para el botón
@@ -193,17 +149,17 @@ def ff_scanner_page():
 
     # FASE 1: Preparación (Se llama aquí, pero se ejecuta desde la caché, a menos que se borre)
     valid_tickers = perform_initial_preparation()
-    
-    st.divider()
-    
-    # FASE 2: Escaneo
-    if valid_tickers:
-        scan_options_ff(valid_tickers)
+
+# =========================================================================
+# 2. PUNTO DE ENTRADA PROTEGIDO (CON AUTENTICACIÓN)
+# =========================================================================
+
+if __name__ == "__main__":
+    # LLAMADA AL LOGIN (Muestra el formulario si es necesario)
+    if check_password():
+        # SI EL LOGIN ES EXITOSO, EJECUTA LA APP PRINCIPAL
+        ff_scanner_page()
     else:
-        st.error("No hay tickers válidos para iniciar la Fase 2: Escaneo.")
-
-# =========================================================================
-# 4. EJECUCIÓN DEL SCRIPT
-# =========================================================================
-
-ff_scanner_page()
+        # Mensaje cuando no se ha autenticado
+        st.title("🔒 Acceso Restringido")
+        st.info("Por favor, introduce tus credenciales en el menú lateral (sidebar) para acceder a la aplicación.")
