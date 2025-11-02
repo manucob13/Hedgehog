@@ -1,4 +1,4 @@
-# pages/FF Scanner.py - VERSIÓN COMPLETA CON ESCANEO
+# pages/FF Scanner.py - VERSIÓN COMPLETA CON ESCANEO PARALELO
 import streamlit as st
 import pandas as pd
 import requests
@@ -10,7 +10,6 @@ import numpy as np
 import os
 import time
 from math import sqrt
-from tqdm import tqdm
 import schwab
 from schwab.auth import easy_client
 from schwab.client import Client
@@ -270,7 +269,7 @@ def fechas_section():
     return fecha_entrada, dte_front, dte_back, fecha_dte_front, fecha_dte_back
 
 # =========================================================================
-# 4. CÁLCULOS Y ESCANEO
+# 4. CÁLCULOS Y ESCANEO (PARALELO)
 # =========================================================================
 
 def obtener_strike_valido(client, ticker, fecha_front, fecha_back):
@@ -324,6 +323,26 @@ def obtener_strike_valido(client, ticker, fecha_front, fecha_back):
         return None, None, None, None
     except Exception as e:
         return None, None, None, None
+
+def procesar_ticker_ivs(args):
+    """Función helper para paralelizar paso 1"""
+    client, ticker, fecha_front, fecha_back, dte_front_days, dte_back_days = args
+    precio_atm, strike_atm, iv_front, iv_back = obtener_strike_valido(
+        client, ticker, fecha_front, fecha_back
+    )
+    
+    if precio_atm and strike_atm:
+        return {
+            'Ticker': ticker,
+            'DTE_Pair': f"{dte_front_days}-{dte_back_days}",
+            'DTE_Front': fecha_front,
+            'DTE_Back': fecha_back,
+            'Precio': f"{precio_atm:.2f}",
+            'Strike': f"{strike_atm:.2f}",
+            'IV_F (%)': f"{iv_front:.2f}",
+            'IV_B (%)': f"{iv_back:.2f}",
+        }
+    return None
 
 def calculate_ff_metrics(row, dte_front_days, dte_back_days):
     """Calcula FF, Market, Banda y Operar"""
@@ -396,6 +415,17 @@ def obtener_mid_price(client, ticker, fecha, strike):
     except Exception as e:
         return None, None, None
 
+def procesar_ticker_precios(args):
+    """Función helper para paralelizar paso 3"""
+    client, ticker, fecha_front, strike = args
+    bid, ask, mid_price = obtener_mid_price(client, ticker, fecha_front, float(strike))
+    return {
+        'ticker': ticker,
+        'bid': bid if bid else None,
+        'ask': ask if ask else None,
+        'mid_price': mid_price if mid_price else None
+    }
+
 def check_earnings(ticker_symbol, fecha_inicio, fecha_fin):
     """Verifica si hay earnings entre fecha_inicio y fecha_fin"""
     try:
@@ -409,6 +439,11 @@ def check_earnings(ticker_symbol, fecha_inicio, fecha_fin):
         return False
     except Exception:
         return False
+
+def procesar_ticker_earnings(args):
+    """Función helper para paralelizar paso 4"""
+    ticker_symbol, fecha_inicio, fecha_fin = args
+    return check_earnings(ticker_symbol, fecha_inicio, fecha_fin)
 
 def obtener_volumen_opciones(ticker_symbol, fecha_front, fecha_back):
     """Obtiene volumen total de opciones (calls + puts) para ambas fechas"""
@@ -430,44 +465,42 @@ def obtener_volumen_opciones(ticker_symbol, fecha_front, fecha_back):
     except Exception:
         return 0
 
+def procesar_ticker_volumen(args):
+    """Función helper para paralelizar paso 5"""
+    ticker_symbol, fecha_front, fecha_back = args
+    return obtener_volumen_opciones(ticker_symbol, fecha_front, fecha_back)
+
 def ejecutar_escaneo(client, tickers, fecha_entrada, dte_front_days, dte_back_days, fecha_dte_front, fecha_dte_back):
-    """Ejecuta el escaneo completo de todos los tickers"""
+    """Ejecuta el escaneo completo de todos los tickers EN PARALELO"""
     
     # Contenedores para mostrar progreso
     status_container = st.empty()
     progress_bar = st.progress(0)
     
-    # PASO 1: Obtener IVs y strikes
-    status_container.info("📊 Paso 1/5: Obteniendo IVs y strikes ATM...")
-    resultados = []
+    # PASO 1: Obtener IVs y strikes (PARALELO)
+    status_container.info("📊 Paso 1/5: Obteniendo IVs y strikes ATM (paralelo)...")
     
-    for i, ticker in enumerate(tickers):
-        precio_atm, strike_atm, iv_front, iv_back = obtener_strike_valido(
-            client, ticker, fecha_dte_front, fecha_dte_back
-        )
-        
-        if precio_atm and strike_atm:
-            resultados.append({
-                'Ticker': ticker,
-                'DTE_Pair': f"{dte_front_days}-{dte_back_days}",
-                'DTE_Front': fecha_dte_front,
-                'DTE_Back': fecha_dte_back,
-                'Precio': f"{precio_atm:.2f}",
-                'Strike': f"{strike_atm:.2f}",
-                'IV_F (%)': f"{iv_front:.2f}",
-                'IV_B (%)': f"{iv_back:.2f}",
-            })
-        
-        progress_bar.progress((i + 1) / len(tickers))
+    args_list = [(client, ticker, fecha_dte_front, fecha_dte_back, dte_front_days, dte_back_days) 
+                 for ticker in tickers]
+    
+    resultados = []
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        futures = [executor.submit(procesar_ticker_ivs, args) for args in args_list]
+        for i, future in enumerate(futures):
+            result = future.result()
+            if result:
+                resultados.append(result)
+            progress_bar.progress((i + 1) / len(futures))
     
     if not resultados:
         status_container.error("❌ No se encontraron tickers con datos válidos")
+        progress_bar.empty()
         return None
     
     df = pd.DataFrame(resultados)
     status_container.success(f"✅ Paso 1 completado: {len(df)} tickers con datos válidos")
     
-    # PASO 2: Calcular FF y métricas
+    # PASO 2: Calcular FF y métricas (LOCAL, rápido)
     status_container.info("🧮 Paso 2/5: Calculando Factor Forward y métricas...")
     df[['FF_calc', 'Market_calc', 'Banda_FF_calc', 'Operar_calc']] = df.apply(
         lambda row: pd.Series(calculate_ff_metrics(row, dte_front_days, dte_back_days)),
@@ -486,54 +519,59 @@ def ejecutar_escaneo(client, tickers, fecha_entrada, dte_front_days, dte_back_da
     
     if df_operar.empty:
         status_container.warning("⚠️ No hay tickers que cumplan las condiciones de trading")
+        progress_bar.empty()
         return None
     
-    # PASO 3: Obtener precios (Bid/Ask/Mid)
-    status_container.info("💰 Paso 3/5: Obteniendo precios (Bid/Ask/Mid)...")
-    bids, asks, mid_prices = [], [], []
+    # PASO 3: Obtener precios (Bid/Ask/Mid) (PARALELO)
+    status_container.info("💰 Paso 3/5: Obteniendo precios (Bid/Ask/Mid) (paralelo)...")
     
-    for i, (idx, row) in enumerate(df_operar.iterrows()):
-        bid, ask, mid_price = obtener_mid_price(
-            client, row['Ticker'], fecha_dte_front, float(row['Strike'])
-        )
-        bids.append(bid if bid else None)
-        asks.append(ask if ask else None)
-        mid_prices.append(mid_price if mid_price else None)
-        progress_bar.progress((i + 1) / len(df_operar))
+    args_list = [(client, row['Ticker'], fecha_dte_front, row['Strike']) 
+                 for _, row in df_operar.iterrows()]
     
-    df_operar.insert(5, 'Bid', bids)
-    df_operar.insert(6, 'Ask', asks)
-    df_operar.insert(7, 'MID_Price', [f"{mp:.2f}" if mp else "N/A" for mp in mid_prices])
+    precios_results = []
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        futures = [executor.submit(procesar_ticker_precios, args) for args in args_list]
+        for i, future in enumerate(futures):
+            precios_results.append(future.result())
+            progress_bar.progress((i + 1) / len(futures))
+    
+    df_operar.insert(5, 'Bid', [r['bid'] for r in precios_results])
+    df_operar.insert(6, 'Ask', [r['ask'] for r in precios_results])
+    df_operar.insert(7, 'MID_Price', [f"{r['mid_price']:.2f}" if r['mid_price'] else "N/A" for r in precios_results])
     status_container.success("✅ Paso 3 completado: Precios obtenidos")
     
-    # PASO 4: Verificar earnings
-    status_container.info("📅 Paso 4/5: Verificando earnings...")
+    # PASO 4: Verificar earnings (PARALELO)
+    status_container.info("📅 Paso 4/5: Verificando earnings (paralelo)...")
     hoy = datetime.now().date()
-    earnings_flags = []
     
-    for i, (idx, row) in enumerate(df_operar.iterrows()):
-        has_earnings = check_earnings(row['Ticker'], hoy, fecha_dte_back)
-        earnings_flags.append(has_earnings)
-        if has_earnings:
-            df_operar.at[idx, 'Operar'] = False
-        progress_bar.progress((i + 1) / len(df_operar))
+    args_list = [(row['Ticker'], hoy, fecha_dte_back) for _, row in df_operar.iterrows()]
+    
+    earnings_flags = []
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        futures = [executor.submit(procesar_ticker_earnings, args) for args in args_list]
+        for i, future in enumerate(futures):
+            has_earnings = future.result()
+            earnings_flags.append(has_earnings)
+            if has_earnings:
+                df_operar.iloc[i, df_operar.columns.get_loc('Operar')] = False
+            progress_bar.progress((i + 1) / len(futures))
     
     operar_index = df_operar.columns.get_loc('Operar')
     df_operar.insert(operar_index, 'Earnings', earnings_flags)
     status_container.success("✅ Paso 4 completado: Earnings verificados")
     
-    # PASO 5: Obtener volúmenes
-    status_container.info("📊 Paso 5/5: Obteniendo volúmenes de opciones...")
-    volumenes = []
+    # PASO 5: Obtener volúmenes (PARALELO)
+    status_container.info("📊 Paso 5/5: Obteniendo volúmenes de opciones (paralelo)...")
     
-    for i, (idx, row) in enumerate(df_operar.iterrows()):
-        vol = obtener_volumen_opciones(
-            row['Ticker'],
-            fecha_dte_front.strftime('%Y-%m-%d'),
-            fecha_dte_back.strftime('%Y-%m-%d')
-        )
-        volumenes.append(vol)
-        progress_bar.progress((i + 1) / len(df_operar))
+    args_list = [(row['Ticker'], fecha_dte_front.strftime('%Y-%m-%d'), fecha_dte_back.strftime('%Y-%m-%d')) 
+                 for _, row in df_operar.iterrows()]
+    
+    volumenes = []
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        futures = [executor.submit(procesar_ticker_volumen, args) for args in args_list]
+        for i, future in enumerate(futures):
+            volumenes.append(future.result())
+            progress_bar.progress((i + 1) / len(futures))
     
     df_operar['Vol'] = volumenes
     status_container.success("✅ Paso 5 completado: Volúmenes obtenidos")
@@ -665,8 +703,8 @@ def ff_scanner_page():
     if schwab_client is None:
         st.error("❌ Necesitas conectar con Schwab antes de ejecutar el escaneo")
     else:
-        st.info(f"📊 Tickers listos para escanear: **{len(valid_tickers)}**")
-        st.warning("⚠️ El escaneo puede tardar varios minutos dependiendo del número de tickers.")
+        st.info(f"📊 Tickers listos para escanear: **{len(valid_tickers)}** | 🚀 Modo: **Paralelo (15 hilos)**")
+        st.warning("⚠️ El escaneo tardará 2-4 minutos. **No cambies de página durante el proceso.**")
         
         col1, col2 = st.columns([1, 3])
         with col1:
@@ -676,7 +714,8 @@ def ff_scanner_page():
                 st.success(f"✅ Último escaneo: {len(st.session_state.df_resultados)} resultados")
         
         if ejecutar_btn:
-            with st.spinner("Ejecutando escaneo..."):
+            start_time = time.time()
+            with st.spinner("Ejecutando escaneo paralelo..."):
                 df_resultados = ejecutar_escaneo(
                     schwab_client,
                     valid_tickers,
@@ -688,11 +727,13 @@ def ff_scanner_page():
                 )
                 st.session_state.df_resultados = df_resultados
                 
-                if df_resultados is not None and not df_resultados.empty:
-                    st.balloons()
-                    st.success(f"🎉 Escaneo completado exitosamente con {len(df_resultados)} operaciones válidas")
-                else:
-                    st.warning("⚠️ No se encontraron operaciones que cumplan los criterios")
+            elapsed_time = time.time() - start_time
+            
+            if df_resultados is not None and not df_resultados.empty:
+                st.balloons()
+                st.success(f"🎉 Escaneo completado en {elapsed_time:.1f} segundos con {len(df_resultados)} operaciones válidas")
+            else:
+                st.warning("⚠️ No se encontraron operaciones que cumplan los criterios")
 
     # --- Punto 5: Resultados ---
     st.divider()
