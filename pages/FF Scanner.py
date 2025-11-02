@@ -10,8 +10,6 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np 
 import os 
 import time 
-
-# === IMPORTAR LA FUNCIÓN DE AUTENTICACIÓN ===
 from utils import check_password
 
 # =========================================================================
