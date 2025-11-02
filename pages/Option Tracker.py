@@ -116,6 +116,9 @@ def cargar_operaciones():
             df['Fecha_Salida'] = pd.to_datetime(df['Fecha_Salida']).dt.date
         
         # Añadir columnas de comisión si no existen
+        if 'Es_Credito' not in df.columns:
+            # Migrar: si Prima_Entrada < 0, es crédito
+            df['Es_Credito'] = df['Prima_Entrada'].apply(lambda x: x < 0 if pd.notna(x) else True)
         if 'Comision_Leg1' not in df.columns:
             df['Comision_Leg1'] = 0.65
         if 'Comision_Leg2' not in df.columns:
@@ -130,7 +133,7 @@ def cargar_operaciones():
             'Strike_1', 'Tipo_1', 'Posicion_1',
             'Strike_2', 'Tipo_2', 'Posicion_2',
             'Fecha_Entrada', 'Fecha_Salida', 'DTE',
-            'Prima_Entrada', 'Comision_Leg1', 'Comision_Leg2', 'Comision',
+            'Prima_Entrada', 'Es_Credito', 'Comision_Leg1', 'Comision_Leg2', 'Comision',
             'Precio_Actual_1', 'Delta_1', 'Theta_1',
             'Precio_Actual_2', 'Delta_2', 'Theta_2',
             'PnL_Bruto', 'PnL_Neto', 'PnL_Porcentaje'
@@ -142,7 +145,8 @@ def guardar_operaciones(df):
 
 def agregar_operacion(ticker, estrategia, strike_1, tipo_1, posicion_1,
                       strike_2, tipo_2, posicion_2,
-                      fecha_entrada, fecha_salida, prima_entrada, comision_leg1, comision_leg2):
+                      fecha_entrada, fecha_salida, prima_entrada, es_credito, 
+                      comision_leg1, comision_leg2):
     """Agrega una nueva operación"""
     df = cargar_operaciones()
     
@@ -163,6 +167,9 @@ def agregar_operacion(ticker, estrategia, strike_1, tipo_1, posicion_1,
         comision_leg2 = 0
         comision_total = comision_leg1
     
+    # Normalizar prima: si es crédito, guardarla como positiva
+    prima_normalizada = abs(prima_entrada)
+    
     nueva_operacion = pd.DataFrame([{
         'ID': nuevo_id,
         'Ticker': ticker.upper(),
@@ -176,7 +183,8 @@ def agregar_operacion(ticker, estrategia, strike_1, tipo_1, posicion_1,
         'Fecha_Entrada': fecha_entrada,
         'Fecha_Salida': fecha_salida,
         'DTE': dte,
-        'Prima_Entrada': prima_entrada,
+        'Prima_Entrada': prima_normalizada,
+        'Es_Credito': es_credito,
         'Comision_Leg1': comision_leg1,
         'Comision_Leg2': comision_leg2,
         'Comision': comision_total,
@@ -279,34 +287,37 @@ def refrescar_todas_operaciones(client):
         if precio_1 is not None:
             prima_entrada = float(row['Prima_Entrada'])
             comision = float(row['Comision'])
+            es_credito = bool(row['Es_Credito'])
             
             if row['Estrategia'] == "Single Leg":
                 # Single leg
-                if row['Posicion_1'] == 'SHORT':
-                    # Crédito: prima_entrada negativa, ganas cuando baja
-                    pnl_bruto = (abs(prima_entrada) - precio_1) * 100
-                else:  # LONG
-                    # Débito: prima_entrada positiva, ganas cuando sube
-                    pnl_bruto = (precio_1 - abs(prima_entrada)) * 100
+                if es_credito:
+                    # Crédito recibido: ganas cuando baja el precio
+                    pnl_bruto = (prima_entrada - precio_1) * 100
+                else:
+                    # Débito pagado: ganas cuando sube el precio
+                    pnl_bruto = (precio_1 - prima_entrada) * 100
             else:
                 # Spread
                 if precio_1 and row['Precio_Actual_2']:
                     precio_2 = float(row['Precio_Actual_2'])
                     
                     # Calcular valor actual del spread
-                    if row['Posicion_1'] == 'SHORT':
-                        valor_actual_spread = precio_1 - precio_2
-                    else:
-                        valor_actual_spread = precio_2 - precio_1
+                    # Asumimos que leg 1 y leg 2 tienen posiciones opuestas
+                    valor_actual_spread = abs(precio_1 - precio_2)
                     
-                    # P&L: prima entrada (con signo) - valor actual
-                    pnl_bruto = (abs(prima_entrada) - valor_actual_spread) * 100
+                    if es_credito:
+                        # Spread a crédito: ganas cuando el spread se cierra
+                        pnl_bruto = (prima_entrada - valor_actual_spread) * 100
+                    else:
+                        # Spread a débito: ganas cuando el spread se amplía
+                        pnl_bruto = (valor_actual_spread - prima_entrada) * 100
                 else:
                     pnl_bruto = None
             
             if pnl_bruto is not None:
                 pnl_neto = pnl_bruto - comision
-                pnl_porcentaje = (pnl_neto / (abs(prima_entrada) * 100)) * 100 if prima_entrada != 0 else 0
+                pnl_porcentaje = (pnl_neto / (prima_entrada * 100)) * 100 if prima_entrada != 0 else 0
                 
                 df.at[idx, 'PnL_Bruto'] = pnl_bruto
                 df.at[idx, 'PnL_Neto'] = pnl_neto
@@ -352,7 +363,7 @@ def option_tracker_page():
         with st.form("form_nueva_operacion", clear_on_submit=True):
             # Información básica
             st.markdown("#### 📋 Información Básica")
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
             
             with col1:
                 ticker = st.text_input("🎯 Ticker", placeholder="AAPL", help="Símbolo del activo")
@@ -361,7 +372,31 @@ def option_tracker_page():
                 estrategia = st.selectbox("📊 Estrategia", ["Single Leg", "Spread"])
             
             with col3:
-                comision_leg1 = st.number_input("💵 Comisión Leg 1 ($)", min_value=0.0, value=0.65, step=0.01, format="%.2f")
+                es_credito = st.checkbox("💰 Es Crédito", value=True, help="Marca si recibiste crédito (vendiste). Desmarca si pagaste débito (compraste)")
+            
+            with col4:
+                tipo_comision = st.selectbox("💳 Tipo Comisión", ["Por Leg", "Total"])
+            
+            st.markdown("---")
+            
+            # Comisiones según tipo
+            if tipo_comision == "Total":
+                comision_total_input = st.number_input("💵 Comisión Total ($)", min_value=0.0, value=1.30, step=0.01, format="%.2f")
+                if estrategia == "Spread":
+                    comision_leg1 = comision_total_input / 2
+                    comision_leg2 = comision_total_input / 2
+                else:
+                    comision_leg1 = comision_total_input
+                    comision_leg2 = 0
+            else:
+                col1, col2 = st.columns(2)
+                with col1:
+                    comision_leg1 = st.number_input("💵 Comisión Leg 1 ($)", min_value=0.0, value=0.65, step=0.01, format="%.2f")
+                with col2:
+                    if estrategia == "Spread":
+                        comision_leg2 = st.number_input("💵 Comisión Leg 2 ($)", min_value=0.0, value=0.65, step=0.01, format="%.2f")
+                    else:
+                        comision_leg2 = 0
             
             st.markdown("---")
             
@@ -382,11 +417,10 @@ def option_tracker_page():
             strike_2 = None
             tipo_2 = None
             posicion_2 = None
-            comision_leg2 = 0
             
             if estrategia == "Spread":
                 st.markdown("#### 🎯 Leg 2")
-                col1, col2, col3, col4 = st.columns(4)
+                col1, col2, col3 = st.columns(3)
                 
                 with col1:
                     strike_2 = st.number_input("Strike 2", min_value=0.0, step=0.5, format="%.2f", key="strike_2")
@@ -396,9 +430,6 @@ def option_tracker_page():
                 
                 with col3:
                     posicion_2 = st.selectbox("Posición 2", ["LONG", "SHORT"], key="pos_2")
-                
-                with col4:
-                    comision_leg2 = st.number_input("💵 Comisión Leg 2 ($)", min_value=0.0, value=0.65, step=0.01, format="%.2f", key="com_leg2")
             
             st.markdown("---")
             
@@ -422,13 +453,13 @@ def option_tracker_page():
             
             with col3:
                 prima_entrada = st.number_input(
-                    "Prima Entrada ($)", 
-                    min_value=-1000.0,
+                    "Prima ($)", 
+                    min_value=0.0,
                     max_value=1000.0,
                     value=0.0,
                     step=0.01, 
                     format="%.2f",
-                    help="Negativo = Crédito recibido, Positivo = Débito pagado"
+                    help="Monto de la prima (siempre positivo). Usa el checkbox 'Es Crédito' para indicar si es crédito o débito"
                 )
             
             # Calcular DTE automáticamente
@@ -452,8 +483,9 @@ def option_tracker_page():
                     else:
                         if agregar_operacion(ticker, estrategia, strike_1, tipo_1, posicion_1,
                                            strike_2, tipo_2, posicion_2,
-                                           fecha_entrada, fecha_salida, prima_entrada, comision_leg1, comision_leg2):
-                            st.success(f"✅ Operación agregada exitosamente: {ticker} {estrategia}")
+                                           fecha_entrada, fecha_salida, prima_entrada, es_credito,
+                                           comision_leg1, comision_leg2):
+                            st.success(f"✅ Operación agregada: {ticker} {estrategia} ({'CRÉDITO' if es_credito else 'DÉBITO'})")
                             st.rerun()
                 else:
                     st.error("❌ Completa todos los campos obligatorios")
@@ -562,6 +594,7 @@ def option_tracker_page():
                 "Fecha_Salida": st.column_config.TextColumn("📅 Salida", width="medium"),
                 "DTE": st.column_config.NumberColumn("DTE", width="small"),
                 "Prima_Entrada": st.column_config.TextColumn("💵 Prima", width="small"),
+                "Es_Credito": st.column_config.CheckboxColumn("💰 Créd", width="small"),
                 "Comision_Leg1": st.column_config.TextColumn("💳 Com1", width="small"),
                 "Comision_Leg2": st.column_config.TextColumn("💳 Com2", width="small"),
                 "Comision": st.column_config.TextColumn("💳 ComTotal", width="small"),
