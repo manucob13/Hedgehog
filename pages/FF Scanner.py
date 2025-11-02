@@ -110,43 +110,6 @@ def perform_initial_preparation():
     return valid_tickers
 
 # =========================================================================
-# 3. FECHAS DE ENTRADA Y DTE
-# =========================================================================
-
-def get_next_thursday(today=None):
-    """Devuelve el jueves de esta semana o el próximo si ya pasó."""
-    if today is None:
-        today = datetime.date.today()
-    thursday = today + datetime.timedelta((3 - today.weekday()) % 7)
-    # Si ya pasó jueves, sumamos 7 días
-    if thursday <= today:
-        thursday += datetime.timedelta(days=7)
-    return thursday
-
-def fechas_section():
-    st.subheader("3. Fechas de Entrada y DTE")
-
-    # Valores por defecto
-    default_fecha = get_next_thursday()
-    default_dte_front = 15
-    default_dte_back = 22
-
-    # Inputs
-    fecha_entrada = st.date_input("Fecha de Entrada", value=default_fecha)
-    dte_front = st.number_input("DTE Front", min_value=1, value=default_dte_front)
-    dte_back = st.number_input("DTE Back", min_value=1, value=default_dte_back)
-
-    # Cálculo fechas adicionales
-    fecha_dte_front = fecha_entrada + datetime.timedelta(days=int(dte_front))
-    fecha_dte_back = fecha_entrada + datetime.timedelta(days=int(dte_back))
-
-    # Mostrar resultados
-    st.markdown(f"- **DTE Front Fecha:** {fecha_dte_front}")
-    st.markdown(f"- **DTE Back Fecha:** {fecha_dte_back}")
-
-    return fecha_entrada, dte_front, dte_back, fecha_dte_front, fecha_dte_back
-
-# =========================================================================
 # 2. CONEXIÓN CON BROKER SCHWAB (solo usa token existente)
 # =========================================================================
 
@@ -183,6 +146,47 @@ def connect_to_schwab():
         return None
 
 # =========================================================================
+# 3. FECHAS DE ENTRADA Y DTE (después de conectar al broker)
+# =========================================================================
+
+def get_next_thursday(today=None):
+    """Devuelve el jueves de esta semana o el próximo si ya pasó."""
+    if today is None:
+        today = datetime.date.today()
+    thursday = today + datetime.timedelta((3 - today.weekday()) % 7)
+    # Si ya pasó jueves, sumamos 7 días
+    if thursday <= today:
+        thursday += datetime.timedelta(days=7)
+    return thursday
+
+def fechas_section():
+    st.subheader("3. Fechas de Entrada y DTE")
+
+    # Valores por defecto
+    default_fecha = get_next_thursday()
+    default_dte_front = 15
+    default_dte_back = 22
+
+    # Inputs
+    fecha_entrada = st.date_input("Fecha de Entrada", value=default_fecha)
+    dte_front = st.number_input("DTE Front", min_value=1, value=default_dte_front)
+    dte_back = st.number_input("DTE Back", min_value=1, value=default_dte_back)
+
+    # Cálculo fechas adicionales
+    fecha_dte_front = fecha_entrada + datetime.timedelta(days=int(dte_front))
+    fecha_dte_back = fecha_entrada + datetime.timedelta(days=int(dte_back))
+
+    # Crear DataFrame para mostrar en tabla
+    df_fechas = pd.DataFrame({
+        "Concepto": ["Fecha de Entrada", "DTE Front Fecha", "DTE Back Fecha"],
+        "Valor": [fecha_entrada, fecha_dte_front, fecha_dte_back]
+    })
+
+    st.table(df_fechas)
+
+    return fecha_entrada, dte_front, dte_back, fecha_dte_front, fecha_dte_back
+
+# =========================================================================
 # 4. FUNCIÓN PRINCIPAL
 # =========================================================================
 
@@ -202,13 +206,13 @@ def ff_scanner_page():
     st.divider()
     valid_tickers = perform_initial_preparation()
 
-    # --- Punto 3: Fechas ---
-    st.divider()
-    fecha_entrada, dte_front, dte_back, fecha_dte_front, fecha_dte_back = fechas_section()
-
     # --- Punto 2: Conexión Schwab ---
     st.divider()
     schwab_client = connect_to_schwab()
+
+    # --- Punto 3: Fechas (después de conectar al broker) ---
+    st.divider()
+    fecha_entrada, dte_front, dte_back, fecha_dte_front, fecha_dte_back = fechas_section()
 
     if schwab_client:
         st.success(f"🎯 Sistema listo con {len(valid_tickers)} tickers válidos y conexión Schwab activa.")
@@ -225,4 +229,3 @@ if __name__ == "__main__":
     else:
         st.title("🔒 Acceso Restringido")
         st.info("Introduce tus credenciales en el menú lateral para acceder.")
-
