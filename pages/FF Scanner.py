@@ -1,15 +1,13 @@
-# pages/FF Scanner.py - VERSIÓN CON BOTÓN DE ACTUALIZACIÓN
-
 import streamlit as st
 import pandas as pd
 import requests
 import yfinance as yf
-from datetime import timedelta, date, datetime 
+from datetime import timedelta, date, datetime
 from io import StringIO
 from concurrent.futures import ThreadPoolExecutor
-import numpy as np 
-import os 
-import time 
+import numpy as np
+import os
+import time
 
 # =========================================================================
 # 0. CONFIGURACIÓN Y VARIABLES
@@ -17,11 +15,59 @@ import time
 
 st.set_page_config(page_title="FF Scanner", layout="wide")
 
-# Variables de Schwab (se mantienen, aunque no se usen aún)
-api_key = "n9ydCRbM3Gv5bBAGA1ZvVl6GAqo5IG9So6pMwjO9slvJXEa6"
-app_secret = "DAFletN79meCi4yBYGzlDvlrNcJiISH0HuMuThydxYANTWghMxXxXbrpQOVjsdsx"
-redirect_uri = "https://127.0.0.1" 
+# Variables de Schwab (se dejan vacías hasta que se implemente la conexión real)
+api_key = "" # DEJAR VACÍO: La clave real debe cargarse de st.secrets
+app_secret = "" # DEJAR VACÍO: El secreto real debe cargarse de st.secrets
+redirect_uri = "" # DEJAR VACÍO: URI de redirección real para OAuth
 token_path = "schwab_token.json" 
+
+# =========================================================================
+# FUNCIÓN DE AUTENTICACIÓN
+# =========================================================================
+
+def check_password():
+    """
+    Controla si el usuario ha iniciado sesión.
+    Si la contraseña es correcta, devuelve True. En caso contrario, muestra
+    un formulario de inicio de sesión y devuelve False.
+    """
+
+    # --- Configuración de Credenciales ---
+    # NOTA: Reemplaza estos valores con tus credenciales reales.
+    CORRECT_USERNAME = "usuario_ff"
+    CORRECT_PASSWORD = "password_ff_2025"
+
+    def password_entered():
+        """Verifica si la contraseña introducida es correcta."""
+        if (st.session_state["username"] == CORRECT_USERNAME) and \
+           (st.session_state["password"] == CORRECT_PASSWORD):
+            st.session_state["password_correct"] = True
+            # Eliminar claves temporales
+            del st.session_state["password"]
+            del st.session_state["username"]
+        else:
+            st.session_state["password_correct"] = False
+
+    # 1. Si ya está autenticado, devuelve True
+    if "password_correct" in st.session_state and st.session_state["password_correct"]:
+        return True
+
+    # 2. Si no está autenticado, muestra el formulario de login
+    if "password_correct" not in st.session_state or not st.session_state["password_correct"]:
+        st.title("🛡️ Acceso Restringido - FF Scanner")
+        
+        # El formulario se mostrará hasta que la contraseña sea correcta
+        with st.form("login"):
+            st.text_input("Usuario", key="username")
+            st.text_input("Contraseña", type="password", key="password")
+            st.form_submit_button("Entrar", on_click=password_entered)
+        
+        # Muestra un mensaje de error si el intento fue incorrecto
+        if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+            st.error("❌ Usuario o contraseña incorrectos.")
+        
+        return False
+
 
 # =========================================================================
 # 1. FASE DE PREPARACIÓN (Validación de Tickers)
@@ -34,7 +80,7 @@ def is_valid_ticker(ticker):
         fi = getattr(t, "fast_info", None)
         if fi and isinstance(fi, dict) and fi.get('last_price') is not None:
             return ticker
-        info = t.info 
+        info = t.info
         if isinstance(info, dict) and (info.get('regularMarketPrice') is not None or info.get('previousClose') is not None):
             return ticker
     except Exception:
@@ -46,10 +92,10 @@ def is_valid_ticker(ticker):
 def perform_initial_preparation():
     """Realiza la lectura, descarga y validación en PARALELO de tickers."""
     st.subheader("1. Preparación y Validación de Tickers")
-    
+
     # Placeholder para mensajes de estado
     status_text = st.empty()
-    
+
     # 1.1 Leer Tickers.csv existentes
     status_text.text("1. Leyendo tickers existentes (Tickers.csv)...")
     existing_tickers = set()
@@ -63,7 +109,7 @@ def perform_initial_preparation():
             st.warning("⚠️ Archivo 'Tickers.csv' NO ENCONTRADO en el repositorio. Iniciando con 0 tickers existentes.")
     except Exception as e:
         st.error(f"❌ Error crítico al leer 'Tickers.csv'. Error: {e}")
-        
+
     # 1.2 Descargar tickers del S&P 500
     status_text.text("2. Descargando lista de tickers del S&P 500 de Wikipedia...")
     sp500_tickers = set()
@@ -71,7 +117,7 @@ def perform_initial_preparation():
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=10)
-        sp500_df = pd.read_html(StringIO(response.text))[0] 
+        sp500_df = pd.read_html(StringIO(response.text))[0]
         sp500_tickers = set(sp500_df['Symbol'].astype(str).str.upper().str.strip())
         st.success(f"✅ Obtenidos {len(sp500_tickers)} tickers del S&P 500.")
     except Exception as e:
@@ -80,17 +126,17 @@ def perform_initial_preparation():
     # 1.3 Combinar
     all_tickers = sp500_tickers.union(existing_tickers)
     st.info(f"Total de tickers combinados a validar: **{len(all_tickers)}**")
-    
+
     # 1.4 Validar en PARALELO
     status_text.text(f"3. Validando {len(all_tickers)} tickers con yfinance (esto será rápido)...")
     progress_bar = st.progress(0)
-    
+
     valid_tickers = []
     sorted_tickers = sorted(all_tickers)
-    
+
     with ThreadPoolExecutor(max_workers=15) as executor:
         futures = {executor.submit(is_valid_ticker, ticker): ticker for ticker in sorted_tickers}
-        
+
         for i, future in enumerate(futures):
             result = future.result()
             if result:
@@ -100,7 +146,7 @@ def perform_initial_preparation():
 
     progress_bar.empty()
     status_text.empty()
-    
+
     # 1.5 Guardar y Resumir
     valid_tickers = sorted(set(valid_tickers))
     invalid_tickers = sorted(set(all_tickers) - set(valid_tickers))
@@ -117,8 +163,8 @@ def perform_initial_preparation():
     st.success(f"✅ Validación de preparación finalizada.")
     st.markdown(f"**✅ {valid_count} tickers válidos guardados en 'Tickers.csv'**")
     st.markdown(f"**🗑️ Eliminados: {invalid_count} inválidos**")
-    st.divider() 
-    
+    st.divider()
+
     return valid_tickers
 
 # =========================================================================
@@ -127,11 +173,11 @@ def perform_initial_preparation():
 
 def calculate_ff_dates(today):
     """Calcula las fechas de vencimiento objetivo (DTE 30, 45, 60 días)."""
-    
+
     dte_short = 30
     dte_mid = 45
     dte_long = 60
-    
+
     target_short = today + timedelta(days=dte_short)
     target_mid = today + timedelta(days=dte_mid)
     target_long = today + timedelta(days=dte_long)
@@ -143,7 +189,7 @@ def calculate_ff_dates(today):
     * **DTE Mínimo Medio (45 días):** `{target_mid.strftime('%Y-%m-%d')}`
     * **DTE Mínimo Largo (60 días):** `{target_long.strftime('%Y-%m-%d')}`
     """)
-    
+
     return target_short, target_mid, target_long
 
 def scan_options_ff(valid_tickers):
@@ -151,19 +197,19 @@ def scan_options_ff(valid_tickers):
     Simula la conexión a Schwab y el escaneo de opciones.
     (El código real de Schwab iría aquí)
     """
-    
+
     st.subheader("2.2 Escaneo y Cómputo del Factor Forward")
-    
+
     if not valid_tickers:
         st.error("No hay tickers válidos para iniciar el escaneo.")
         return None
-        
+
     today = date.today()
     calculate_ff_dates(today) # Solo para mostrar el cálculo de fechas
-    
+
     st.warning("⚠️ **Conexión a Schwab Pendiente:** Esta sección requiere la implementación de la API de Schwab.")
     st.info(f"Listo para escanear **{len(valid_tickers)}** tickers.")
-    
+
     # La lógica de escaneo y resultados iría aquí...
 
     return None
@@ -175,13 +221,13 @@ def scan_options_ff(valid_tickers):
 def ff_scanner_page():
     st.title("🛡️ FF Scanner (Preparación y Escaneo)")
     st.markdown("---")
-    
+
     # Contenedor para el botón
     col1, col2 = st.columns([1, 4])
 
     with col1:
         # st.cache_resource se borrará al hacer clic en este botón, forzando la re-ejecución
-        st.button("🔄 Actualizar/Validar Tickers", 
+        st.button("🔄 Actualizar/Validar Tickers",
                   type="primary",
                   help="Borra la caché y fuerza la re-lectura de Tickers.csv y la re-descarga del S&P 500.",
                   on_click=perform_initial_preparation.clear)
@@ -193,9 +239,9 @@ def ff_scanner_page():
 
     # FASE 1: Preparación (Se llama aquí, pero se ejecuta desde la caché, a menos que se borre)
     valid_tickers = perform_initial_preparation()
-    
+
     st.divider()
-    
+
     # FASE 2: Escaneo
     if valid_tickers:
         scan_options_ff(valid_tickers)
@@ -203,7 +249,8 @@ def ff_scanner_page():
         st.error("No hay tickers válidos para iniciar la Fase 2: Escaneo.")
 
 # =========================================================================
-# 4. EJECUCIÓN DEL SCRIPT
+# 4. EJECUCIÓN DEL SCRIPT (CONDICIONAL)
 # =========================================================================
 
-ff_scanner_page()
+if check_password():
+    ff_scanner_page()
