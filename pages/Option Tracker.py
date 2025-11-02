@@ -1,4 +1,4 @@
-# pages/Option Tracker.py - MONITOREO DE OPCIONES CON TARJETAS SIMPLIFICADAS
+# pages/Option Tracker.py - MONITOREO DE OPCIONES CON TARJETAS SIMPLIFICADAS (CORRECCIÓN CSS)
 import streamlit as st
 import pandas as pd
 from datetime import timedelta, datetime
@@ -97,8 +97,9 @@ st.markdown("""
         text-align: center;
         min-width: 80px;
     }
+    /* CORRECCIÓN: Asegura que el separador se aplique a todos excepto al último */
     .op-item:not(:last-child) {
-        border-right: 1px dotted #444;
+        border-right: 1px dotted #444; 
     }
 </style>
 """, unsafe_allow_html=True)
@@ -451,7 +452,7 @@ def display_operation_card_v2(row):
         tipo_2 = row['Tipo_2'][0]
         brief_description = f"{strike_1}{tipo_1}/{strike_2}{tipo_2}"
 
-    # 3. Estructura HTML de la Tarjeta
+    # 3. Estructura HTML de la Tarjeta (Líneas divisorias corregidas)
     st.markdown(f"""
     <div class="op-card">
         <div class="op-header">
@@ -478,7 +479,7 @@ def display_operation_card_v2(row):
                 <span style="color: #aaa; font-size: 0.8rem;">Δ Total</span><br>
                 <strong style="color: white; font-size: 1.2rem;">{delta_text}</strong>
             </div>
-            <div class="op-item" style="border-right: none;">
+            <div class="op-item">
                 <span style="color: #aaa; font-size: 0.8rem;">Θ Total</span><br>
                 <strong style="color: white; font-size: 1.2rem;">{theta_text}</strong>
             </div>
