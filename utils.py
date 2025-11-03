@@ -67,7 +67,7 @@ def check_password():
 def fetch_data():
     """Descarga datos históricos del ^GSPC (SPX) y ^VIX (VIX)."""
     start = "2010-01-01" 
-    end = datetime.now()
+    end = datetime.now() + timedelta(days=1) 
 
     spx = yf.download("^GSPC", start=start, end=end, auto_adjust=False, multi_level_index=False, progress=False)
     vix = yf.download("^VIX", start=start, end=end, auto_adjust=False, multi_level_index=False, progress=False)
