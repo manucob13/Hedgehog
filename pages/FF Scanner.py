@@ -444,30 +444,55 @@ def procesar_ticker_earnings(args):
     ticker_symbol, fecha_inicio, fecha_fin = args
     return check_earnings(ticker_symbol, fecha_inicio, fecha_fin)
 
-def obtener_volumen_opciones(ticker_symbol, fecha_front, fecha_back):
-    """Obtiene volumen total de opciones (calls + puts) para ambas fechas"""
+def obtener_volumen_opciones_30dias(ticker_symbol):
+    """
+    Obtiene volumen promedio de opciones (calls + puts) de los últimos 30 días.
+    Usa todas las fechas de expiración disponibles.
+    """
     try:
         ticker = yf.Ticker(ticker_symbol)
         
-        # Obtener chains de opciones
-        chain_front = ticker.option_chain(fecha_front)
-        chain_back = ticker.option_chain(fecha_back)
+        # Obtener todas las fechas de expiración disponibles
+        expiration_dates = ticker.options
         
-        # Sumar volumen de calls y puts para ambas fechas
-        vol_front_calls = chain_front.calls['volume'].fillna(0).sum()
-        vol_front_puts = chain_front.puts['volume'].fillna(0).sum()
-        vol_back_calls = chain_back.calls['volume'].fillna(0).sum()
-        vol_back_puts = chain_back.puts['volume'].fillna(0).sum()
+        if not expiration_dates:
+            return 0
         
-        total_volume = vol_front_calls + vol_front_puts + vol_back_calls + vol_back_puts
+        total_volume = 0
+        fecha_actual = datetime.now().date()
+        
+        # Iterar sobre todas las fechas de expiración
+        for exp_date_str in expiration_dates:
+            try:
+                # Convertir fecha de expiración a date object
+                exp_date = datetime.strptime(exp_date_str, '%Y-%m-%d').date()
+                
+                # Solo considerar opciones que expiran en los próximos 30 días o menos
+                dias_hasta_expiracion = (exp_date - fecha_actual).days
+                
+                if 0 <= dias_hasta_expiracion <= 30:
+                    # Obtener chain de opciones para esta fecha
+                    chain = ticker.option_chain(exp_date_str)
+                    
+                    # Sumar volumen de calls y puts
+                    vol_calls = chain.calls['volume'].fillna(0).sum()
+                    vol_puts = chain.puts['volume'].fillna(0).sum()
+                    
+                    total_volume += vol_calls + vol_puts
+                    
+            except Exception:
+                # Si falla una fecha específica, continuar con la siguiente
+                continue
+        
         return int(total_volume)
+        
     except Exception:
         return 0
 
 def procesar_ticker_volumen(args):
     """Función helper para paralelizar paso 5"""
-    ticker_symbol, fecha_front, fecha_back = args
-    return obtener_volumen_opciones(ticker_symbol, fecha_front, fecha_back)
+    ticker_symbol = args
+    return obtener_volumen_opciones_30dias(ticker_symbol)
 
 def ejecutar_escaneo(client, tickers, fecha_entrada, dte_front_days, dte_back_days, fecha_dte_front, fecha_dte_back):
     """Ejecuta el escaneo completo de todos los tickers EN PARALELO"""
@@ -562,36 +587,35 @@ def ejecutar_escaneo(client, tickers, fecha_entrada, dte_front_days, dte_back_da
         progress_bar.empty()
         return None
     
-    # PASO 5: Obtener volúmenes (PARALELO)
-    status_container.info("📊 Paso 5/5: Obteniendo volúmenes de opciones (paralelo)...")
+    # PASO 5: Obtener volúmenes de últimos 30 días (PARALELO)
+    status_container.info("📊 Paso 5/5: Obteniendo volúmenes de opciones (últimos 30 días, paralelo)...")
     
-    args_list = [(row['Ticker'], fecha_dte_front.strftime('%Y-%m-%d'), fecha_dte_back.strftime('%Y-%m-%d')) 
-                 for _, row in df_operar.iterrows()]
+    args_list = [row['Ticker'] for _, row in df_operar.iterrows()]
     
     volumenes = []
     with ThreadPoolExecutor(max_workers=15) as executor:
-        futures = [executor.submit(procesar_ticker_volumen, args) for args in args_list]
+        futures = [executor.submit(procesar_ticker_volumen, ticker) for ticker in args_list]
         for i, future in enumerate(futures):
             volumenes.append(future.result())
             progress_bar.progress((i + 1) / len(futures))
     
-    df_operar['Vol'] = volumenes
-    status_container.success("✅ Paso 5 completado: Volúmenes obtenidos")
+    df_operar['Vol_30d'] = volumenes
+    status_container.success("✅ Paso 5 completado: Volúmenes de 30 días obtenidos")
     
     # Filtrar por volumen >= 1000
-    df_final = df_operar[df_operar['Vol'] >= 1000].copy()
+    df_final = df_operar[df_operar['Vol_30d'] >= 1000].copy()
     
     if df_final.empty:
-        status_container.warning("⚠️ No hay tickers con volumen >= 1000")
+        status_container.warning("⚠️ No hay tickers con volumen >= 1000 en últimos 30 días")
         progress_bar.empty()
         return None
     
     # Ordenar por volumen descendente
-    df_final = df_final.sort_values('Vol', ascending=False)
+    df_final = df_final.sort_values('Vol_30d', ascending=False)
     
     # Reorganizar columnas - quitar Operar
     columnas_finales = ['Ticker', 'DTE_Pair', 'DTE_Front', 'DTE_Back', 'Precio', 'MID_Price', 
-                        'Strike', 'IV_F (%)', 'IV_B (%)', 'FF (%)', 'Market', 'Banda_FF', 'Vol']
+                        'Strike', 'IV_F (%)', 'IV_B (%)', 'FF (%)', 'Market', 'Banda_FF', 'Vol_30d']
     df_final = df_final[columnas_finales]
     df_final = df_final.reset_index(drop=True)
     
@@ -623,8 +647,8 @@ def mostrar_resultados(df_resultados):
         contango_count = (df_resultados['Market'] == 'CONTANGO').sum()
         st.metric("📈 Contango", contango_count)
     with col4:
-        total_vol = df_resultados['Vol'].sum()
-        st.metric("📊 Volumen Total", f"{total_vol:,}")
+        total_vol = df_resultados['Vol_30d'].sum()
+        st.metric("📊 Vol. Total (30d)", f"{total_vol:,}")
     
     st.markdown("---")
     
@@ -652,7 +676,7 @@ def mostrar_resultados(df_resultados):
             "FF (%)": st.column_config.TextColumn("🔥 FF", width="small"),
             "Market": st.column_config.TextColumn("📈 Market", width="medium"),
             "Banda_FF": st.column_config.TextColumn("🎯 Banda", width="small"),
-            "Vol": st.column_config.NumberColumn("📊 Vol", width="small", format="%d")
+            "Vol_30d": st.column_config.NumberColumn("📊 Vol 30d", width="small", format="%d")
         }
     )
     
@@ -717,6 +741,7 @@ def ff_scanner_page():
     else:
         st.info(f"📊 Tickers listos para escanear: **{len(valid_tickers)}** | 🚀 Modo: **Paralelo (15 hilos)**")
         st.warning("⚠️ El escaneo tardará 2-4 minutos. **No cambies de página durante el proceso.**")
+        st.info("📊 **Nuevo**: El volumen se calcula sobre las opciones de los últimos 30 días")
         
         col1, col2 = st.columns([1, 3])
         with col1:
