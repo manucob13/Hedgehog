@@ -636,6 +636,10 @@ def mostrar_resultados(df_resultados):
         st.warning("⚠️ No hay resultados para mostrar. Ejecuta el escaneo primero.")
         return
     
+    # Compatibilidad con resultados antiguos: renombrar 'Vol' a 'Vol_30d' si existe
+    if 'Vol' in df_resultados.columns and 'Vol_30d' not in df_resultados.columns:
+        df_resultados = df_resultados.rename(columns={'Vol': 'Vol_30d'})
+    
     # Métricas resumen
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -743,12 +747,17 @@ def ff_scanner_page():
         st.warning("⚠️ El escaneo tardará 2-4 minutos. **No cambies de página durante el proceso.**")
         st.info("📊 **Nuevo**: El volumen se calcula sobre las opciones de los últimos 30 días")
         
-        col1, col2 = st.columns([1, 3])
+        col1, col2, col3 = st.columns([1, 2, 1])
         with col1:
             ejecutar_btn = st.button("🚀 Ejecutar Escaneo Completo", type="primary", use_container_width=True)
         with col2:
             if 'df_resultados' in st.session_state and st.session_state.df_resultados is not None:
                 st.success(f"✅ Último escaneo: {len(st.session_state.df_resultados)} resultados")
+        with col3:
+            if st.button("🗑️ Limpiar Resultados", use_container_width=True):
+                if 'df_resultados' in st.session_state:
+                    del st.session_state.df_resultados
+                st.rerun()
         
         if ejecutar_btn:
             start_time = time.time()
