@@ -1,4 +1,4 @@
-# pages/FF Scanner.py - VERSIÓN COMPLETA Y CORREGIDA (SOLUCIÓN VALIDACIÓN CERO TICKERS)
+# pages/FF Scanner.py - VERSIÓN COMPLETA Y CORREGIDA (PROTECCIÓN DE TICKERS.CSV)
 import streamlit as st
 import pandas as pd
 import requests
@@ -32,6 +32,8 @@ except KeyError as e:
 
 # Ruta local del token
 token_path = "schwab_token.json"
+# Nombre del archivo que contiene tu lista COMPLETA de tickers
+TICKERS_SOURCE_FILE = 'Tickers.csv' 
 
 # =========================================================================
 # 1. PREPARACIÓN DE TICKERS
@@ -57,22 +59,26 @@ def is_valid_ticker(ticker):
     return None
 
 
-# --- Eliminado @st.cache_resource ---
 def perform_initial_preparation():
     st.subheader("1. Preparación y Validación de Tickers")
 
     status_text = st.empty()
 
-    # 1.1 Leer tickers existentes (si los hay)
+    # 1.1 Leer Tickers existentes (la fuente original)
     existing_tickers = set()
-    if os.path.exists('Tickers.csv'):
-        df_existing = pd.read_csv('Tickers.csv')
-        existing_tickers = set(df_existing.iloc[:, 0].astype(str).str.upper().str.strip())
-        st.info(f"✅ 'Tickers.csv' encontrado con {len(existing_tickers)} tickers.")
+    if os.path.exists(TICKERS_SOURCE_FILE):
+        try:
+            # USAMOS ILOC[:, 0] POR SI EL CSV TIENE MÁS COLUMNAS ACCIDENTALES
+            df_existing = pd.read_csv(TICKERS_SOURCE_FILE)
+            existing_tickers = set(df_existing.iloc[:, 0].astype(str).str.upper().str.strip())
+            st.info(f"✅ '{TICKERS_SOURCE_FILE}' encontrado con {len(existing_tickers)} tickers.")
+        except Exception as e:
+            st.error(f"❌ Error al leer {TICKERS_SOURCE_FILE}: {e}")
+            existing_tickers = set()
     else:
-        st.warning("⚠️ 'Tickers.csv' no encontrado. Iniciando desde cero.")
+        st.warning(f"⚠️ '{TICKERS_SOURCE_FILE}' no encontrado. Iniciando solo con S&P 500.")
 
-    # 1.2 Descargar tickers del S&P 500
+    # 1.2 Descargar tickers del S&P 500 (Base de datos complementaria)
     try:
         status_text.text("Descargando lista del S&P 500...")
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
@@ -84,6 +90,7 @@ def perform_initial_preparation():
         st.error(f"❌ Error al descargar el S&P 500: {e}")
         sp500_tickers = set()
 
+    # Combinar todas las fuentes
     all_tickers = sp500_tickers.union(existing_tickers)
     st.info(f"Validando {len(all_tickers)} tickers con yfinance...")
 
@@ -91,36 +98,40 @@ def perform_initial_preparation():
     valid_tickers = []
     sorted_tickers = sorted(all_tickers)
 
-    # Validación en paralelo (usando tu lógica de mapeo con ThreadPoolExecutor)
+    # Validación en paralelo
     with ThreadPoolExecutor(max_workers=15) as executor:
         futures = {executor.submit(is_valid_ticker, t): t for t in sorted_tickers}
-        # Iterar sobre los resultados de forma ordenada para la barra de progreso
         for i, future in enumerate(futures):
             result = future.result()
             if result:
                 valid_tickers.append(result)
-            progress_bar.progress((i + 1) / len(sorted_tickers)) # Mantiene la barra de progreso
+            progress_bar.progress((i + 1) / len(sorted_tickers)) 
 
     progress_bar.empty()
 
     valid_tickers = sorted(set(valid_tickers))
-    invalid_tickers = sorted(set(all_tickers) - set(valid_tickers))
     
-    # --- Guardar los CSV ---
+    # === CAMBIO CRÍTICO: NO SOBRESCRIBIR TICKERS.CSV ===
+    # Solo guardamos los tickers inválidos si el usuario quiere revisarlos
+    invalid_tickers = sorted(set(all_tickers) - set(valid_tickers))
     try:
-        pd.DataFrame({'Ticker': valid_tickers}).to_csv('Tickers.csv', index=False)
+        # Renombrado a Tickers_VAL_CACHE.csv para guardar la lista validada si es necesario,
+        # pero NUNCA sobrescribiendo Tickers.csv (la fuente original).
+        pd.DataFrame({'Ticker': valid_tickers}).to_csv('Tickers_VAL_CACHE.csv', index=False)
         pd.DataFrame({'Ticker': invalid_tickers}).to_csv('Tickers_invalidos.csv', index=False)
     except Exception as e:
-        st.warning(f"⚠️ No se pudieron guardar los CSV: {e}")
+        st.warning(f"⚠️ No se pudieron guardar los CSV de caché: {e}")
+    # =================================================
 
     st.success(f"✅ Validación finalizada con {len(valid_tickers)} tickers válidos.")
     st.divider()
 
+    # Devolvemos la lista limpia, pero la fuente original está a salvo
     return valid_tickers
 
 # =========================================================================
 # 2. CONEXIÓN CON BROKER SCHWAB (solo usa token existente)
-# ... (El resto del código sigue siendo el mismo) ...
+# ... (El resto del código es el mismo, ya que no era la fuente del error) ...
 # =========================================================================
 
 def connect_to_schwab():
@@ -700,14 +711,14 @@ def ff_scanner_page():
     # --- Punto 1: Preparación de Tickers ---
     col1, col2 = st.columns([1, 4])
     with col1:
-        # Se mantiene el botón para forzar la ejecución ya que eliminamos la caché automática
+        # Se mantiene el botón para forzar la ejecución
         st.button("🔄 Actualizar/Validar Tickers", type="primary",
-                  help="Borra la caché y fuerza la re-lectura de Tickers.csv") # Se eliminó el on_click.clear
+                  help="Fuerza la re-ejecución del proceso de validación.", key="update_tickers_btn")
     with col2:
-        st.markdown("_(Ahora el proceso siempre se ejecuta al cargar la página o al pulsar el botón.)_")
+        st.markdown("_(El proceso de validación se ejecuta siempre al cargar la página o al pulsar el botón.)_")
 
     st.divider()
-    # La ejecución ahora no está en un on_click, sino que ocurre siempre.
+    # Ejecutamos la validación
     valid_tickers = perform_initial_preparation() 
 
     # --- Punto 2: Conexión Schwab ---
@@ -751,7 +762,7 @@ def ff_scanner_page():
             if 'df_resultados' in st.session_state and st.session_state.df_resultados is not None:
                 st.success(f"✅ Último escaneo: {len(st.session_state.df_resultados)} resultados (Top 5)")
         with col3:
-            if st.button("🗑️ Limpiar Resultados", use_container_width=True):
+            if st.button("🗑️ Limpiar Resultados", use_container_width=True, key="clear_results_btn"):
                 if 'df_resultados' in st.session_state:
                     del st.session_state.df_resultados
                 st.rerun()
