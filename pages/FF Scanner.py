@@ -1,4 +1,4 @@
-# pages/FF Scanner.py - VERSIÓN COMPLETA Y OPTIMIZADA
+# pages/FF Scanner.py - VERSIÓN COMPLETA Y CORREGIDA (SOLUCIÓN VALIDACIÓN CERO TICKERS)
 import streamlit as st
 import pandas as pd
 import requests
@@ -38,23 +38,26 @@ token_path = "schwab_token.json"
 # =========================================================================
 
 def is_valid_ticker(ticker):
-    """Verifica si un ticker es válido y negociable usando yfinance."""
+    """
+    Verifica si un ticker es válido y negociable usando yfinance (lógica original de Jupyter).
+    """
     try:
         t = yf.Ticker(ticker)
-        # Intento de acceso a fast_info para cotizaciones rápidas
         fi = getattr(t, "fast_info", None)
+        # fast_info es más rápido y suficiente
         if fi and isinstance(fi, dict) and fi.get('last_price') is not None:
             return ticker
-        # Acceso a info si fast_info falla
         info = t.info
+        # Comprobación de precio de mercado o precio de cierre anterior
         if isinstance(info, dict) and (info.get('regularMarketPrice') is not None or info.get('previousClose') is not None):
             return ticker
     except Exception:
+        # Fallo de yfinance (ticker inválido, sin datos, etc.)
         return None
     return None
 
 
-@st.cache_resource(ttl=timedelta(hours=24), show_spinner=False)
+# --- Eliminado @st.cache_resource ---
 def perform_initial_preparation():
     st.subheader("1. Preparación y Validación de Tickers")
 
@@ -88,20 +91,22 @@ def perform_initial_preparation():
     valid_tickers = []
     sorted_tickers = sorted(all_tickers)
 
-    # Validación en paralelo (aumenta la velocidad)
+    # Validación en paralelo (usando tu lógica de mapeo con ThreadPoolExecutor)
     with ThreadPoolExecutor(max_workers=15) as executor:
         futures = {executor.submit(is_valid_ticker, t): t for t in sorted_tickers}
+        # Iterar sobre los resultados de forma ordenada para la barra de progreso
         for i, future in enumerate(futures):
             result = future.result()
             if result:
                 valid_tickers.append(result)
-            progress_bar.progress((i + 1) / len(sorted_tickers))
+            progress_bar.progress((i + 1) / len(sorted_tickers)) # Mantiene la barra de progreso
 
     progress_bar.empty()
 
     valid_tickers = sorted(set(valid_tickers))
     invalid_tickers = sorted(set(all_tickers) - set(valid_tickers))
-
+    
+    # --- Guardar los CSV ---
     try:
         pd.DataFrame({'Ticker': valid_tickers}).to_csv('Tickers.csv', index=False)
         pd.DataFrame({'Ticker': invalid_tickers}).to_csv('Tickers_invalidos.csv', index=False)
@@ -115,6 +120,7 @@ def perform_initial_preparation():
 
 # =========================================================================
 # 2. CONEXIÓN CON BROKER SCHWAB (solo usa token existente)
+# ... (El resto del código sigue siendo el mismo) ...
 # =========================================================================
 
 def connect_to_schwab():
@@ -694,14 +700,15 @@ def ff_scanner_page():
     # --- Punto 1: Preparación de Tickers ---
     col1, col2 = st.columns([1, 4])
     with col1:
+        # Se mantiene el botón para forzar la ejecución ya que eliminamos la caché automática
         st.button("🔄 Actualizar/Validar Tickers", type="primary",
-                  help="Borra la caché y fuerza la re-lectura de Tickers.csv",
-                  on_click=perform_initial_preparation.clear)
+                  help="Borra la caché y fuerza la re-lectura de Tickers.csv") # Se eliminó el on_click.clear
     with col2:
-        st.markdown("_(Se valida automáticamente cada 24h o al pulsar el botón.)_")
+        st.markdown("_(Ahora el proceso siempre se ejecuta al cargar la página o al pulsar el botón.)_")
 
     st.divider()
-    valid_tickers = perform_initial_preparation()
+    # La ejecución ahora no está en un on_click, sino que ocurre siempre.
+    valid_tickers = perform_initial_preparation() 
 
     # --- Punto 2: Conexión Schwab ---
     st.divider()
@@ -739,7 +746,7 @@ def ff_scanner_page():
         
         col1, col2, col3 = st.columns([1, 2, 1])
         with col1:
-            ejecutar_btn = st.button("🚀 Ejecutar Escaneo Completo", type="primary", use_container_width=True)
+            ejecutar_btn = st.button("🚀 Ejecutar Escaneo Completo", type="primary", use_container_width=True, key="exec_scan_btn")
         with col2:
             if 'df_resultados' in st.session_state and st.session_state.df_resultados is not None:
                 st.success(f"✅ Último escaneo: {len(st.session_state.df_resultados)} resultados (Top 5)")
