@@ -1,4 +1,4 @@
-# pages/Option Tracker.py - MONITOR DE OPCIONES CON VISUALIZACIÓN EN DATAFRAME
+# pages/Option Tracker.py - MONITOR DE OPCIONES CON CORRECCIONES
 import streamlit as st
 import pandas as pd
 from datetime import timedelta, datetime
@@ -61,7 +61,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================================
-# 1. CONEXIÓN SCHWAB (CORREGIDA - IGUAL QUE FF SCANNER)
+# 1. CONEXIÓN SCHWAB
 # =========================================================================
 
 def connect_to_schwab():
@@ -261,8 +261,39 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
     except Exception:
         return None, None, None
 
+# =========================================================================
+# 4. CÁLCULO DE P&L CORREGIDO
+# =========================================================================
+
+def calcular_pnl_correcto(prima_entrada, precio_cierre_actual, es_credito, comision):
+    """
+    Calcula P&L correctamente según el tipo de operación.
+    
+    Para CRÉDITOS (es_credito = True):
+    - Recibiste prima al abrir (ingreso)
+    - Precio actual es lo que pagarías para cerrar
+    - P&L = (Prima Recibida - Precio Cierre) * 100 - Comisión
+    - Si precio cierre < prima → P&L positivo (ganancia)
+    
+    Para DÉBITOS (es_credito = False):
+    - Pagaste prima al abrir (egreso)
+    - Precio actual es lo que recibirías al cerrar
+    - P&L = (Precio Cierre - Prima Pagada) * 100 - Comisión
+    - Si precio cierre > prima → P&L positivo (ganancia)
+    """
+    if es_credito:
+        # CRÉDITO: Ganancia cuando el precio de cierre es menor que la prima recibida
+        pnl_bruto = (prima_entrada - precio_cierre_actual) * 100
+    else:
+        # DÉBITO: Ganancia cuando el precio de cierre es mayor que la prima pagada
+        pnl_bruto = (precio_cierre_actual - prima_entrada) * 100
+    
+    pnl_neto = pnl_bruto - comision
+    
+    return pnl_bruto, pnl_neto
+
 def refrescar_todas_operaciones(client):
-    """Refresca datos de todas las operaciones desde Schwab y calcula P&L"""
+    """Refresca datos de todas las operaciones desde Schwab y calcula P&L CORREGIDO"""
     df = cargar_operaciones()
     
     if df.empty or client is None:
@@ -274,6 +305,7 @@ def refrescar_todas_operaciones(client):
     for idx, row in df.iterrows():
         status_text.text(f"🔄 Actualizando {row['Ticker']} ({idx+1}/{len(df)})...")
         
+        # Obtener datos del Leg 1
         precio_1, delta_1, theta_1 = obtener_datos_opcion(
             client, row['Ticker'], row['Strike_1'], row['Tipo_1'], row['Fecha_Salida']
         )
@@ -282,6 +314,7 @@ def refrescar_todas_operaciones(client):
         df.at[idx, 'Delta_1'] = delta_1
         df.at[idx, 'Theta_1'] = theta_1
         
+        # Obtener datos del Leg 2 si es Spread
         precio_2 = None
         if row['Estrategia'] == "Spread" and pd.notna(row['Strike_2']):
             precio_2, delta_2, theta_2 = obtener_datos_opcion(
@@ -295,6 +328,7 @@ def refrescar_todas_operaciones(client):
             df.at[idx, 'Delta_2'] = None
             df.at[idx, 'Theta_2'] = None
         
+        # ===== CÁLCULO DE P&L CORREGIDO =====
         pnl_bruto = None
         pnl_neto = None
         pnl_porcentaje = None
@@ -305,25 +339,26 @@ def refrescar_todas_operaciones(client):
             es_credito = bool(row['Es_Credito'])
             
             if row['Estrategia'] == "Single Leg" and precio_1 is not None:
-                precio_cierre_actual = precio_1 
-                
-                if es_credito:
-                    pnl_bruto = (prima_entrada - precio_cierre_actual) * 100
-                else:
-                    pnl_bruto = (precio_cierre_actual - prima_entrada) * 100
+                # Single Leg: usar precio actual directamente
+                pnl_bruto, pnl_neto = calcular_pnl_correcto(
+                    prima_entrada, precio_1, es_credito, comision
+                )
             
             elif row['Estrategia'] == "Spread" and precio_1 is not None and precio_2 is not None:
+                # Spread: calcular el valor actual del spread
+                # Valor del spread = diferencia entre los precios de ambas opciones
                 valor_actual_spread = abs(precio_1 - precio_2)
                 
-                if es_credito:
-                    pnl_bruto = (prima_entrada - valor_actual_spread) * 100
-                else:
-                    pnl_bruto = (valor_actual_spread - prima_entrada) * 100
+                pnl_bruto, pnl_neto = calcular_pnl_correcto(
+                    prima_entrada, valor_actual_spread, es_credito, comision
+                )
             
-            if pnl_bruto is not None:
-                pnl_neto = pnl_bruto - comision
-                pnl_porcentaje = (pnl_neto / (prima_entrada * 100)) * 100
-            
+            # Calcular porcentaje
+            if pnl_neto is not None:
+                prima_total_invertida = prima_entrada * 100
+                if prima_total_invertida != 0:
+                    pnl_porcentaje = (pnl_neto / prima_total_invertida) * 100
+        
         df.at[idx, 'PnL_Bruto'] = pnl_bruto
         df.at[idx, 'PnL_Neto'] = pnl_neto
         df.at[idx, 'PnL_Porcentaje'] = pnl_porcentaje
@@ -337,7 +372,91 @@ def refrescar_todas_operaciones(client):
     return df
 
 # =========================================================================
-# 4. INTERFAZ PRINCIPAL
+# 5. EXPANDIR SPREADS EN LEGS
+# =========================================================================
+
+def expandir_operaciones_en_legs(df):
+    """
+    Expande cada spread en múltiples filas (una por leg).
+    Los Single Legs se mantienen como están.
+    """
+    if df.empty:
+        return df
+    
+    filas_expandidas = []
+    
+    for idx, row in df.iterrows():
+        if row['Estrategia'] == "Single Leg":
+            # Single Leg: mantener como está, agregar ID_Original y Leg_Num
+            row_copy = row.copy()
+            row_copy['ID_Original'] = row['ID']
+            row_copy['Leg_Num'] = 1
+            
+            # Crear descripción del leg
+            strike = f"{row['Strike_1']:.2f}"
+            tipo = row['Tipo_1'][0]  # C o P
+            posicion = row['Posicion_1']
+            row_copy['Leg_Descripcion'] = f"{posicion} {strike}{tipo}"
+            
+            filas_expandidas.append(row_copy)
+        
+        else:  # Spread
+            # Calcular valores totales para distribuir
+            pnl_neto_total = float(row['PnL_Neto']) if pd.notna(row['PnL_Neto']) else 0
+            prima_total = float(row['Prima_Entrada'])
+            comision_total = float(row['Comision'])
+            delta_total = float(row['Delta_1'] or 0) + float(row['Delta_2'] or 0)
+            theta_total = float(row['Theta_1'] or 0) + float(row['Theta_2'] or 0)
+            
+            # Distribuir proporcionalmente (50/50 para simplificar)
+            pnl_por_leg = pnl_neto_total / 2
+            prima_por_leg = prima_total / 2
+            comision_por_leg = comision_total / 2
+            delta_por_leg = delta_total / 2
+            theta_por_leg = theta_total / 2
+            
+            # Calcular P&L % por leg
+            pnl_porcentaje_leg = None
+            if prima_por_leg * 100 != 0:
+                pnl_porcentaje_leg = (pnl_por_leg / (prima_por_leg * 100)) * 100
+            
+            # LEG 1
+            row_leg1 = row.copy()
+            row_leg1['ID_Original'] = row['ID']
+            row_leg1['Leg_Num'] = 1
+            strike_1 = f"{row['Strike_1']:.2f}"
+            tipo_1 = row['Tipo_1'][0]
+            posicion_1 = row['Posicion_1']
+            row_leg1['Leg_Descripcion'] = f"{posicion_1} {strike_1}{tipo_1}"
+            row_leg1['Prima_Entrada'] = prima_por_leg
+            row_leg1['Comision'] = comision_por_leg
+            row_leg1['PnL_Neto'] = pnl_por_leg
+            row_leg1['PnL_Porcentaje'] = pnl_porcentaje_leg
+            row_leg1['Delta_Total_Display'] = delta_por_leg
+            row_leg1['Theta_Total_Display'] = theta_por_leg
+            filas_expandidas.append(row_leg1)
+            
+            # LEG 2
+            row_leg2 = row.copy()
+            row_leg2['ID_Original'] = row['ID']
+            row_leg2['Leg_Num'] = 2
+            strike_2 = f"{row['Strike_2']:.2f}"
+            tipo_2 = row['Tipo_2'][0]
+            posicion_2 = row['Posicion_2']
+            row_leg2['Leg_Descripcion'] = f"{posicion_2} {strike_2}{tipo_2}"
+            row_leg2['Prima_Entrada'] = prima_por_leg
+            row_leg2['Comision'] = comision_por_leg
+            row_leg2['PnL_Neto'] = pnl_por_leg
+            row_leg2['PnL_Porcentaje'] = pnl_porcentaje_leg
+            row_leg2['Delta_Total_Display'] = delta_por_leg
+            row_leg2['Theta_Total_Display'] = theta_por_leg
+            filas_expandidas.append(row_leg2)
+    
+    df_expandido = pd.DataFrame(filas_expandidas)
+    return df_expandido
+
+# =========================================================================
+# 6. INTERFAZ PRINCIPAL
 # =========================================================================
 
 def option_tracker_page():
@@ -530,6 +649,7 @@ def option_tracker_page():
         
         st.markdown("---")
         
+        # RESUMEN DEL PORTFOLIO (sin expandir para totales correctos)
         st.markdown("#### 💼 Resumen del Portfolio")
         
         col1, col2, col3, col4, col5 = st.columns(5)
@@ -563,63 +683,123 @@ def option_tracker_page():
         
         st.markdown("---")
         
+        # EXPANDIR OPERACIONES EN LEGS PARA DISPLAY
         st.markdown("### 📋 Detalle de Operaciones (DataFrame)")
         
-        df_display = df.copy()
+        df_expandido = expandir_operaciones_en_legs(df)
+        df_display = df_expandido.copy()
 
+        # Formatear columnas para display
         df_display['P&L Neto'] = df_display['PnL_Neto'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "N/A")
         df_display['P&L %'] = df_display['PnL_Porcentaje'].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A")
         
-        delta_total_calc = df_display['Delta_1'].fillna(0) + df_display['Delta_2'].fillna(0)
-        theta_total_calc = df_display['Theta_1'].fillna(0) + df_display['Theta_2'].fillna(0)
-
-        def format_greeks(row, greek_prefix, total_calc):
-            if pd.isna(row[f'{greek_prefix}_1']) and pd.isna(row[f'{greek_prefix}_2']):
-                return "N/A"
+        # Para Single Legs, usar las griegas originales
+        # Para Spreads, usar las griegas distribuidas
+        def format_delta(row):
+            if pd.notna(row.get('Delta_Total_Display')):
+                return f"{row['Delta_Total_Display']:.2f}"
+            elif pd.notna(row['Delta_1']) and pd.notna(row['Delta_2']):
+                total = row['Delta_1'] + row['Delta_2']
+                return f"{total:.2f}"
+            elif pd.notna(row['Delta_1']):
+                return f"{row['Delta_1']:.2f}"
             else:
-                return f"{total_calc[row.name]:.2f}"
-                
-        df_display['Δ Total'] = df_display.apply(
-            lambda row: format_greeks(row, 'Delta', delta_total_calc), axis=1
-        )
-        df_display['Θ Total'] = df_display.apply(
-            lambda row: format_greeks(row, 'Theta', theta_total_calc), axis=1
-        )
+                return "N/A"
         
-        def create_brief_description(row):
-            strike_1 = f"{row['Strike_1']:.2f}"
-            tipo_1 = row['Tipo_1'][0]
-            desc = f"{row['Estrategia']}: {strike_1}{tipo_1}"
-            if row['Estrategia'] == "Spread" and pd.notna(row['Strike_2']):
-                strike_2 = f"{row['Strike_2']:.2f}"
-                tipo_2 = row['Tipo_2'][0]
-                desc += f"/{strike_2}{tipo_2}"
-            return desc
+        def format_theta(row):
+            if pd.notna(row.get('Theta_Total_Display')):
+                return f"{row['Theta_Total_Display']:.2f}"
+            elif pd.notna(row['Theta_1']) and pd.notna(row['Theta_2']):
+                total = row['Theta_1'] + row['Theta_2']
+                return f"{total:.2f}"
+            elif pd.notna(row['Theta_1']):
+                return f"{row['Theta_1']:.2f}"
+            else:
+                return "N/A"
         
-        df_display['Estrategia Detalle'] = df_display.apply(create_brief_description, axis=1)
+        df_display['Δ Total'] = df_display.apply(format_delta, axis=1)
+        df_display['Θ Total'] = df_display.apply(format_theta, axis=1)
+        
+        # Formatear Prima y Comisión
+        df_display['Prima'] = df_display['Prima_Entrada'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "$0.00")
+        df_display['Comis.'] = df_display['Comision'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "$0.00")
+        
+        # Formatear fechas
+        df_display['Fch. Entrada'] = df_display['Fecha_Entrada'].apply(lambda x: x.strftime('%d/%m/%Y') if pd.notna(x) else '')
+        df_display['Fch. Salida'] = df_display['Fecha_Salida'].apply(lambda x: x.strftime('%d/%m/%Y') if pd.notna(x) else '')
 
+        # Seleccionar columnas finales
         columnas_finales = [
-            'ID',
+            'ID_Original',
+            'Leg_Num',
             'Ticker',
-            'Estrategia Detalle',
-            'Fecha_Entrada',
-            'Fecha_Salida',
+            'Leg_Descripcion',
+            'Fch. Entrada',
+            'Fch. Salida',
             'P&L Neto',
             'P&L %',
             'Δ Total',
             'Θ Total',
-            'Prima_Entrada',
-            'Comision'
+            'Prima',
+            'Comis.'
         ]
         
         df_final = df_display[columnas_finales].rename(columns={
-            'Fecha_Entrada': 'Fch. Entrada',
-            'Fecha_Salida': 'Fch. Salida',
-            'Prima_Entrada': 'Prima',
-            'Comision': 'Comis.'
+            'ID_Original': 'ID',
+            'Leg_Num': 'Leg',
+            'Leg_Descripcion': 'Estrategia Detalle'
         })
 
-        st.dataframe(df_final, use_container_width=True)
+        st.dataframe(
+            df_final,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "ID": st.column_config.NumberColumn("ID", width="small"),
+                "Leg": st.column_config.NumberColumn("Leg", width="small"),
+                "Ticker": st.column_config.TextColumn("🎯 Ticker", width="small"),
+                "Estrategia Detalle": st.column_config.TextColumn("📊 Estrategia", width="medium"),
+                "Fch. Entrada": st.column_config.TextColumn("📅 Entrada", width="small"),
+                "Fch. Salida": st.column_config.TextColumn("📅 Salida", width="small"),
+                "P&L Neto": st.column_config.TextColumn("💵 P&L", width="small"),
+                "P&L %": st.column_config.TextColumn("📈 P&L %", width="small"),
+                "Δ Total": st.column_config.TextColumn("📊 Delta", width="small"),
+                "Θ Total": st.column_config.TextColumn("⏱️ Theta", width="small"),
+                "Prima": st.column_config.TextColumn("💰 Prima", width="small"),
+                "Comis.": st.column_config.TextColumn("💳 Comis", width="small")
+            }
+        )
+        
+        st.markdown("---")
+        
+        # Información sobre el cálculo
+        with st.expander("ℹ️ Información sobre Cálculos de P&L"):
+            st.markdown("""
+            ### 📊 Cálculo de P&L Corregido
+            
+            **Para CRÉDITOS (recibiste prima al abrir):**
+            - ✅ P&L = (Prima Recibida - Precio Cierre Actual) × 100 - Comisión
+            - Si el precio de cierre es **menor** que la prima recibida → **Ganancia** 💰
+            - Ejemplo: Prima $2.10, Precio Actual $0.06 → P&L = ($2.10 - $0.06) × 100 - $0.68 = **+$203.32**
+            
+            **Para DÉBITOS (pagaste prima al abrir):**
+            - ✅ P&L = (Precio Cierre Actual - Prima Pagada) × 100 - Comisión
+            - Si el precio de cierre es **mayor** que la prima pagada → **Ganancia** 💰
+            - Ejemplo: Prima $1.50, Precio Actual $1.80 → P&L = ($1.80 - $1.50) × 100 - $0.68 = **+$29.32**
+            
+            **Para SPREADS:**
+            - Se calcula el valor actual del spread como la diferencia entre ambos legs
+            - Se aplica la misma lógica de crédito/débito sobre el valor del spread
+            - En la tabla expandida, cada leg muestra el 50% del P&L total
+            
+            ### 📋 Visualización de Legs
+            
+            - **Single Leg**: Aparece en 1 fila con toda la información
+            - **Spread**: Aparece en 2 filas, una por cada leg
+              - Cada fila muestra strike, tipo (C/P) y posición (LONG/SHORT)
+              - Las métricas (P&L, Delta, Theta, Prima, Comisión) se distribuyen 50/50
+              - El resumen del portfolio agrupa correctamente por ID para no duplicar
+            """)
         
         st.markdown("---")
         
@@ -647,7 +827,7 @@ def option_tracker_page():
                         st.error(f"❌ No existe ID {id_eliminar}")
 
 # =========================================================================
-# 5. PUNTO DE ENTRADA
+# 7. PUNTO DE ENTRADA
 # =========================================================================
 
 if __name__ == "__main__":
@@ -656,15 +836,3 @@ if __name__ == "__main__":
     else:
         st.title("🔒 Acceso Restringido")
         st.info("Introduce tus credenciales en el menú lateral para acceder.")
-
-
-
-
-
-
-
-
-
-
-
-
