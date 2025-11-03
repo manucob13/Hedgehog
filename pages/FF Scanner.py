@@ -1,4 +1,4 @@
-# pages/FF Scanner.py - VERSIÓN COMPLETA CON ESCANEO PARALELO
+# pages/FF Scanner.py - VERSIÓN COMPLETA Y OPTIMIZADA
 import streamlit as st
 import pandas as pd
 import requests
@@ -38,11 +38,14 @@ token_path = "schwab_token.json"
 # =========================================================================
 
 def is_valid_ticker(ticker):
+    """Verifica si un ticker es válido y negociable usando yfinance."""
     try:
         t = yf.Ticker(ticker)
+        # Intento de acceso a fast_info para cotizaciones rápidas
         fi = getattr(t, "fast_info", None)
         if fi and isinstance(fi, dict) and fi.get('last_price') is not None:
             return ticker
+        # Acceso a info si fast_info falla
         info = t.info
         if isinstance(info, dict) and (info.get('regularMarketPrice') is not None or info.get('previousClose') is not None):
             return ticker
@@ -57,7 +60,7 @@ def perform_initial_preparation():
 
     status_text = st.empty()
 
-    # 1.1 Leer tickers existentes
+    # 1.1 Leer tickers existentes (si los hay)
     existing_tickers = set()
     if os.path.exists('Tickers.csv'):
         df_existing = pd.read_csv('Tickers.csv')
@@ -85,6 +88,7 @@ def perform_initial_preparation():
     valid_tickers = []
     sorted_tickers = sorted(all_tickers)
 
+    # Validación en paralelo (aumenta la velocidad)
     with ThreadPoolExecutor(max_workers=15) as executor:
         futures = {executor.submit(is_valid_ticker, t): t for t in sorted_tickers}
         for i, future in enumerate(futures):
@@ -114,10 +118,7 @@ def perform_initial_preparation():
 # =========================================================================
 
 def connect_to_schwab():
-    """
-    Usa el token existente si está disponible.
-    No abre flujo OAuth ni usa puerto; solo valida token.json.
-    """
+    """Conecta usando el token existente."""
     st.subheader("2. Conexión con Broker Schwab")
 
     if not os.path.exists(token_path):
@@ -132,7 +133,7 @@ def connect_to_schwab():
             token_path=token_path
         )
 
-        # Verificar token
+        # Verificar token con una cotización de prueba
         test_response = client.get_quote("AAPL")
         if hasattr(test_response, "status_code") and test_response.status_code != 200:
             raise Exception(f"Respuesta inesperada: {test_response.status_code}")
@@ -146,7 +147,7 @@ def connect_to_schwab():
         return None
 
 # =========================================================================
-# 3. FECHAS DE ENTRADA Y DTE (después de conectar al broker)
+# 3. FECHAS DE ENTRADA Y DTE
 # =========================================================================
 
 def get_next_thursday(today=None):
@@ -162,14 +163,12 @@ def get_next_thursday(today=None):
 def fechas_section():
     st.subheader("3. Fechas de Entrada y DTE")
     
-    # Crear un contenedor con estilo
     with st.container():
         # Valores por defecto
         default_fecha = get_next_thursday()
         default_dte_front = 15
         default_dte_back = 22
 
-        # Layout en 3 columnas para los inputs
         col1, col2, col3 = st.columns(3)
         
         with col1:
@@ -202,7 +201,6 @@ def fechas_section():
         fecha_dte_front = fecha_entrada + timedelta(days=int(dte_front))
         fecha_dte_back = fecha_entrada + timedelta(days=int(dte_back))
 
-        # Mostrar resultados en cards usando métricas
         st.markdown("#### 📊 Resumen de Fechas Calculadas")
         
         col1, col2, col3 = st.columns(3)
@@ -235,7 +233,6 @@ def fechas_section():
             )
             st.caption(f"📆 {fecha_dte_back.strftime('%A, %d de %B de %Y')}")
 
-        # Tabla adicional con información compacta
         st.markdown("---")
         st.markdown("#### 📋 Tabla Resumen")
         
@@ -254,7 +251,6 @@ def fechas_section():
             ]
         })
         
-        # Mostrar tabla sin índice usando HTML personalizado
         st.dataframe(
             df_fechas,
             hide_index=True,
@@ -326,7 +322,7 @@ def obtener_strike_valido(client, ticker, fecha_front, fecha_back):
         return None, None, None, None
 
 def procesar_ticker_ivs(args):
-    """Función helper para paralelizar paso 1"""
+    """Función helper para paralelizar: Obtiene IVs y Strike ATM."""
     client, ticker, fecha_front, fecha_back, dte_front_days, dte_back_days = args
     precio_atm, strike_atm, iv_front, iv_back = obtener_strike_valido(
         client, ticker, fecha_front, fecha_back
@@ -387,7 +383,7 @@ def calculate_ff_metrics(row, dte_front_days, dte_back_days):
     return ff * 100, market, banda, operar
 
 def obtener_mid_price(client, ticker, fecha, strike):
-    """Obtiene bid, ask y calcula mid price para un strike específico"""
+    """Obtiene mid price para un strike específico"""
     try:
         response = client.get_option_chain(ticker)
         if response.status_code != 200:
@@ -417,7 +413,7 @@ def obtener_mid_price(client, ticker, fecha, strike):
         return None
 
 def procesar_ticker_precios(args):
-    """Función helper para paralelizar paso 3"""
+    """Función helper para paralelizar: Obtiene Mid Price."""
     client, ticker, fecha_front, strike = args
     mid_price = obtener_mid_price(client, ticker, fecha_front, float(strike))
     return {
@@ -440,7 +436,7 @@ def check_earnings(ticker_symbol, fecha_inicio, fecha_fin):
         return False
 
 def procesar_ticker_earnings(args):
-    """Función helper para paralelizar paso 4"""
+    """Función helper para paralelizar: Verifica Earnings."""
     ticker_symbol, fecha_inicio, fecha_fin = args
     return check_earnings(ticker_symbol, fecha_inicio, fecha_fin)
 
@@ -451,8 +447,6 @@ def obtener_volumen_opciones_ultimo_dia(ticker_symbol):
     """
     try:
         ticker = yf.Ticker(ticker_symbol)
-        
-        # Obtener todas las fechas de expiración disponibles
         expiration_dates = ticker.options
         
         if not expiration_dates:
@@ -460,21 +454,18 @@ def obtener_volumen_opciones_ultimo_dia(ticker_symbol):
         
         total_volume = 0
         
-        # Iterar sobre todas las fechas de expiración
         for exp_date_str in expiration_dates:
             try:
                 # Obtener chain de opciones para esta fecha
                 chain = ticker.option_chain(exp_date_str)
                 
                 # Sumar el volumen del último día (columna 'volume') de calls y puts
-                # Se usa .fillna(0) para evitar NaNs en la suma.
                 vol_calls = chain.calls['volume'].fillna(0).sum()
                 vol_puts = chain.puts['volume'].fillna(0).sum()
                 
                 total_volume += vol_calls + vol_puts
                 
             except Exception:
-                # Si falla una fecha específica, continuar con la siguiente
                 continue
         
         return int(total_volume)
@@ -483,7 +474,7 @@ def obtener_volumen_opciones_ultimo_dia(ticker_symbol):
         return 0
 
 def procesar_ticker_volumen(args):
-    """Función helper para paralelizar paso 5"""
+    """Función helper para paralelizar: Obtiene Volumen del Último Día."""
     ticker_symbol = args
     return obtener_volumen_opciones_ultimo_dia(ticker_symbol)
 
@@ -595,15 +586,14 @@ def ejecutar_escaneo(client, tickers, fecha_entrada, dte_front_days, dte_back_da
     df_operar['Vol_Ult_Dia'] = volumenes
     status_container.success("✅ Paso 5 completado: Volúmenes del último día obtenidos")
     
-    # --- MODIFICACIÓN CLAVE: FILTRO Y LÍMITE DE RESULTADOS ---
+    # --- MODIFICACIÓN CLAVE: TOP 5 POR VOLUMEN ---
     
-    # 1. Quitar el filtro de volumen (df_operar['Vol_Ult_Dia'] >= 1000 ya no se aplica)
     df_final = df_operar.copy()
 
-    # 2. Ordenar por volumen descendente
+    # Ordenar por volumen descendente
     df_final = df_final.sort_values('Vol_Ult_Dia', ascending=False)
     
-    # 3. Limitar a los 5 primeros
+    # Limitar a los 5 primeros (Top 5)
     df_final = df_final.head(5)
     
     if df_final.empty:
@@ -634,7 +624,6 @@ def mostrar_resultados(df_resultados):
         st.warning("⚠️ No hay resultados para mostrar. Ejecuta el escaneo primero.")
         return
     
-    # Estandarización de columna de volumen para display
     volumen_col_name = 'Vol_Ult_Dia'
     
     # Métricas resumen
@@ -642,7 +631,6 @@ def mostrar_resultados(df_resultados):
     with col1:
         st.metric("🎯 Operaciones Válidas", len(df_resultados))
     with col2:
-        # Usar mean() solo si hay datos, sino 0
         avg_ff = df_resultados['FF (%)'].apply(lambda x: float(x) if x else 0).mean() if not df_resultados.empty else 0
         st.metric("📊 FF Promedio", f"{avg_ff:.2f}%")
     with col3:
@@ -747,7 +735,7 @@ def ff_scanner_page():
     else:
         st.info(f"📊 Tickers listos para escanear: **{len(valid_tickers)}** | 🚀 Modo: **Paralelo (15 hilos)**")
         st.warning("⚠️ El escaneo tardará 2-4 minutos. **No cambies de página durante el proceso.**")
-        st.info("🎯 **Resultado**: El escaneo ahora devuelve el **Top 5** de tickers con mayor volumen que cumplen los criterios de FF y Earnings.") # Mensaje actualizado
+        st.info("🎯 **Resultado**: El escaneo devuelve el **Top 5** de tickers con mayor volumen que cumplen los criterios de FF y Earnings.")
         
         col1, col2, col3 = st.columns([1, 2, 1])
         with col1:
@@ -779,7 +767,7 @@ def ff_scanner_page():
             
             if df_resultados is not None and not df_resultados.empty:
                 st.balloons()
-                st.success(f"🎉 Escaneo completado en {elapsed_time:.1f} segundos. **Mostrando los {len(df_resultados)} tickers con mayor volumen**.") # Mensaje actualizado
+                st.success(f"🎉 Escaneo completado en {elapsed_time:.1f} segundos. **Mostrando los {len(df_resultados)} tickers con mayor volumen**.")
             else:
                 st.warning("⚠️ No se encontraron operaciones que cumplan los criterios (Contango 25-35% y sin Earnings).")
 
