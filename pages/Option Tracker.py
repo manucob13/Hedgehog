@@ -1,4 +1,4 @@
-# pages/Option Tracker.py - MONITOR DE OPCIONES CON CORRECCIÓN DE COMISIÓN TOTAL
+# pages/Option Tracker.py - CON PERSISTENCIA EN GITHUB
 import streamlit as st
 import pandas as pd
 from datetime import timedelta, datetime
@@ -6,7 +6,11 @@ import os
 import schwab
 from schwab.auth import easy_client
 from schwab.client import Client
-from utils import check_password 
+from utils import check_password
+import base64
+import requests
+import json
+from io import StringIO
 
 # =========================================================================
 # 0. CONFIGURACIÓN
@@ -23,8 +27,18 @@ except KeyError as e:
     st.error(f"❌ Falta configurar los secrets de Schwab. Clave faltante: {e}")
     api_key, app_secret, redirect_uri = None, None, None
 
+# Cargar variables de GitHub desde secrets
+try:
+    GITHUB_TOKEN = st.secrets["github"]["token"]
+    GITHUB_REPO_OWNER = st.secrets["github"]["repo_owner"]
+    GITHUB_REPO_NAME = st.secrets["github"]["repo_name"]
+    GITHUB_BRANCH = st.secrets["github"]["branch"]
+    GITHUB_FILE_PATH = "data/option_tracker.csv"
+except KeyError as e:
+    st.error(f"❌ Falta configurar los secrets de GitHub. Clave faltante: {e}")
+    GITHUB_TOKEN = None
+
 token_path = "schwab_token.json"
-TRACKER_CSV = "option_tracker.csv"
 
 # Estilos CSS personalizados para modo oscuro
 st.markdown("""
@@ -61,14 +75,77 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================================
-# 1. CONEXIÓN SCHWAB
+# 1. FUNCIONES DE GITHUB API
+# =========================================================================
+
+def get_github_file(file_path):
+    """Descarga un archivo desde GitHub"""
+    if not GITHUB_TOKEN:
+        return None, None
+    
+    url = f"https://api.github.com/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/contents/{file_path}"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
+        if response.status_code == 200:
+            content = response.json()
+            file_content = base64.b64decode(content['content']).decode('utf-8')
+            return file_content, content['sha']
+        elif response.status_code == 404:
+            return None, None
+        else:
+            st.error(f"Error al descargar desde GitHub: {response.status_code}")
+            return None, None
+    except Exception as e:
+        st.error(f"Error al conectar con GitHub: {e}")
+        return None, None
+
+def update_github_file(file_path, content, sha=None):
+    """Actualiza o crea un archivo en GitHub"""
+    if not GITHUB_TOKEN:
+        st.error("❌ No hay token de GitHub configurado")
+        return False
+    
+    url = f"https://api.github.com/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/contents/{file_path}"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    
+    # Convertir contenido a base64
+    content_bytes = content.encode('utf-8')
+    content_base64 = base64.b64encode(content_bytes).decode('utf-8')
+    
+    data = {
+        "message": f"Update {file_path} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "content": content_base64,
+        "branch": GITHUB_BRANCH
+    }
+    
+    if sha:
+        data["sha"] = sha
+    
+    try:
+        response = requests.put(url, headers=headers, json=data)
+        if response.status_code in [200, 201]:
+            return True
+        else:
+            st.error(f"Error al guardar en GitHub: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        st.error(f"Error al conectar con GitHub: {e}")
+        return False
+
+# =========================================================================
+# 2. CONEXIÓN SCHWAB
 # =========================================================================
 
 def connect_to_schwab():
-    """
-    Usa el token existente si está disponible.
-    No abre flujo OAuth ni usa puerto; solo valida token.json.
-    """
+    """Usa el token existente si está disponible"""
     if not os.path.exists(token_path):
         st.error("❌ No se encontró 'schwab_token.json'. Genera el token desde tu notebook local antes de usar esta página.")
         return None
@@ -81,7 +158,6 @@ def connect_to_schwab():
             token_path=token_path
         )
 
-        # Verificar token
         test_response = client.get_quote("AAPL")
         if hasattr(test_response, "status_code") and test_response.status_code != 200:
             raise Exception(f"Respuesta inesperada: {test_response.status_code}")
@@ -94,61 +170,84 @@ def connect_to_schwab():
         return None
 
 # =========================================================================
-# 2. FUNCIONES DE DATOS
+# 3. FUNCIONES DE DATOS CON GITHUB
 # =========================================================================
 
 def cargar_operaciones():
-    """Carga operaciones desde CSV"""
-    if os.path.exists(TRACKER_CSV):
-        df = pd.read_csv(TRACKER_CSV)
-        
-        # Convertir fechas
-        if 'Fecha_Entrada' in df.columns:
-            df['Fecha_Entrada'] = pd.to_datetime(df['Fecha_Entrada']).dt.date
-        
-        # Compatibilidad con CSV antiguo
-        if 'Fecha_Salida' not in df.columns and 'DTE' in df.columns:
-            fechas_salida = []
-            for _, row in df.iterrows():
-                fecha_salida = row['Fecha_Entrada'] + timedelta(days=int(row['DTE']))
-                fechas_salida.append(fecha_salida)
-            df['Fecha_Salida'] = fechas_salida
-        elif 'Fecha_Salida' in df.columns:
-            df['Fecha_Salida'] = pd.to_datetime(df['Fecha_Salida']).dt.date
-        
-        # Migrar Prima_Entrada si existe con valores negativos (para compatibilidad)
-        if 'Prima_Entrada' in df.columns:
-            if 'Es_Credito' not in df.columns:
-                df['Es_Credito'] = df['Prima_Entrada'].apply(lambda x: x < 0 if pd.notna(x) else True)
-                df['Prima_Entrada'] = df['Prima_Entrada'].abs()
-        else:
-            df['Prima_Entrada'] = 0.0
-            df['Es_Credito'] = True
-        
-        # Añadir columnas de comisión si no existen
-        if 'Comision_Leg1' not in df.columns:
-            df['Comision_Leg1'] = 0.65
-        if 'Comision_Leg2' not in df.columns:
-            df['Comision_Leg2'] = 0.65
-        if 'Comision' not in df.columns:
-            df['Comision'] = df['Comision_Leg1'].fillna(0) + df['Comision_Leg2'].fillna(0)
-        
-        return df
+    """Carga operaciones desde GitHub"""
+    file_content, sha = get_github_file(GITHUB_FILE_PATH)
+    
+    if file_content:
+        try:
+            df = pd.read_csv(StringIO(file_content))
+            
+            # Convertir fechas
+            if 'Fecha_Entrada' in df.columns:
+                df['Fecha_Entrada'] = pd.to_datetime(df['Fecha_Entrada']).dt.date
+            
+            if 'Fecha_Salida' not in df.columns and 'DTE' in df.columns:
+                fechas_salida = []
+                for _, row in df.iterrows():
+                    fecha_salida = row['Fecha_Entrada'] + timedelta(days=int(row['DTE']))
+                    fechas_salida.append(fecha_salida)
+                df['Fecha_Salida'] = fechas_salida
+            elif 'Fecha_Salida' in df.columns:
+                df['Fecha_Salida'] = pd.to_datetime(df['Fecha_Salida']).dt.date
+            
+            if 'Prima_Entrada' in df.columns:
+                if 'Es_Credito' not in df.columns:
+                    df['Es_Credito'] = df['Prima_Entrada'].apply(lambda x: x < 0 if pd.notna(x) else True)
+                    df['Prima_Entrada'] = df['Prima_Entrada'].abs()
+            else:
+                df['Prima_Entrada'] = 0.0
+                df['Es_Credito'] = True
+            
+            if 'Comision_Leg1' not in df.columns:
+                df['Comision_Leg1'] = 0.65
+            if 'Comision_Leg2' not in df.columns:
+                df['Comision_Leg2'] = 0.65
+            if 'Comision' not in df.columns:
+                df['Comision'] = df['Comision_Leg1'].fillna(0) + df['Comision_Leg2'].fillna(0)
+            
+            # Guardar el SHA para futuras actualizaciones
+            st.session_state['csv_sha'] = sha
+            
+            return df
+        except Exception as e:
+            st.error(f"Error al procesar CSV desde GitHub: {e}")
+            return crear_dataframe_vacio()
     else:
-        return pd.DataFrame(columns=[
-            'ID', 'Ticker', 'Estrategia',
-            'Strike_1', 'Tipo_1', 'Posicion_1',
-            'Strike_2', 'Tipo_2', 'Posicion_2',
-            'Fecha_Entrada', 'Fecha_Salida', 'DTE',
-            'Prima_Entrada', 'Es_Credito', 'Comision_Leg1', 'Comision_Leg2', 'Comision',
-            'Precio_Actual_1', 'Delta_1', 'Theta_1',
-            'Precio_Actual_2', 'Delta_2', 'Theta_2',
-            'PnL_Bruto', 'PnL_Neto', 'PnL_Porcentaje'
-        ])
+        # Crear DataFrame vacío si no existe el archivo
+        st.session_state['csv_sha'] = None
+        return crear_dataframe_vacio()
+
+def crear_dataframe_vacio():
+    """Crea un DataFrame vacío con las columnas necesarias"""
+    return pd.DataFrame(columns=[
+        'ID', 'Ticker', 'Estrategia',
+        'Strike_1', 'Tipo_1', 'Posicion_1',
+        'Strike_2', 'Tipo_2', 'Posicion_2',
+        'Fecha_Entrada', 'Fecha_Salida', 'DTE',
+        'Prima_Entrada', 'Es_Credito', 'Comision_Leg1', 'Comision_Leg2', 'Comision',
+        'Precio_Actual_1', 'Delta_1', 'Theta_1',
+        'Precio_Actual_2', 'Delta_2', 'Theta_2',
+        'PnL_Bruto', 'PnL_Neto', 'PnL_Porcentaje'
+    ])
 
 def guardar_operaciones(df):
-    """Guarda operaciones en CSV"""
-    df.to_csv(TRACKER_CSV, index=False)
+    """Guarda operaciones en GitHub"""
+    csv_content = df.to_csv(index=False)
+    sha = st.session_state.get('csv_sha', None)
+    
+    success = update_github_file(GITHUB_FILE_PATH, csv_content, sha)
+    
+    if success:
+        # Actualizar el SHA después de guardar
+        file_content, new_sha = get_github_file(GITHUB_FILE_PATH)
+        if new_sha:
+            st.session_state['csv_sha'] = new_sha
+    
+    return success
 
 def agregar_operacion(ticker, estrategia, strike_1, tipo_1, posicion_1,
                       strike_2, tipo_2, posicion_2,
@@ -199,18 +298,16 @@ def agregar_operacion(ticker, estrategia, strike_1, tipo_1, posicion_1,
     }])
     
     df = pd.concat([df, nueva_operacion], ignore_index=True)
-    guardar_operaciones(df)
-    return True
+    return guardar_operaciones(df)
 
 def eliminar_operacion(id_operacion):
     """Elimina una operación por ID"""
     df = cargar_operaciones()
     df = df[df['ID'] != id_operacion]
-    guardar_operaciones(df)
-    return True
+    return guardar_operaciones(df)
 
 # =========================================================================
-# 3. OBTENER DATOS DE SCHWAB
+# 4. OBTENER DATOS DE SCHWAB
 # =========================================================================
 
 def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
@@ -262,30 +359,14 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
         return None, None, None
 
 # =========================================================================
-# 4. CÁLCULO DE P&L CORREGIDO
+# 5. CÁLCULO DE P&L CORREGIDO
 # =========================================================================
 
 def calcular_pnl_correcto(prima_entrada, precio_cierre_actual, es_credito, comision):
-    """
-    Calcula P&L correctamente según el tipo de operación.
-    
-    Para CRÉDITOS (es_credito = True):
-    - Recibiste prima al abrir (ingreso)
-    - Precio actual es lo que pagarías para cerrar
-    - P&L = (Prima Recibida - Precio Cierre) * 100 - Comisión
-    - Si precio cierre < prima → P&L positivo (ganancia)
-    
-    Para DÉBITOS (es_credito = False):
-    - Pagaste prima al abrir (egreso)
-    - Precio actual es lo que recibirías al cerrar
-    - P&L = (Precio Cierre - Prima Pagada) * 100 - Comisión
-    - Si precio cierre > prima → P&L positivo (ganancia)
-    """
+    """Calcula P&L correctamente según el tipo de operación"""
     if es_credito:
-        # CRÉDITO: Ganancia cuando el precio de cierre es menor que la prima recibida
         pnl_bruto = (prima_entrada - precio_cierre_actual) * 100
     else:
-        # DÉBITO: Ganancia cuando el precio de cierre es mayor que la prima pagada
         pnl_bruto = (precio_cierre_actual - prima_entrada) * 100
     
     pnl_neto = pnl_bruto - comision
@@ -293,7 +374,7 @@ def calcular_pnl_correcto(prima_entrada, precio_cierre_actual, es_credito, comis
     return pnl_bruto, pnl_neto
 
 def refrescar_todas_operaciones(client):
-    """Refresca datos de todas las operaciones desde Schwab y calcula P&L CORREGIDO"""
+    """Refresca datos de todas las operaciones desde Schwab y calcula P&L"""
     df = cargar_operaciones()
     
     if df.empty or client is None:
@@ -328,7 +409,7 @@ def refrescar_todas_operaciones(client):
             df.at[idx, 'Delta_2'] = None
             df.at[idx, 'Theta_2'] = None
         
-        # ===== CÁLCULO DE P&L CORREGIDO =====
+        # Cálculo de P&L
         pnl_bruto = None
         pnl_neto = None
         pnl_porcentaje = None
@@ -339,21 +420,16 @@ def refrescar_todas_operaciones(client):
             es_credito = bool(row['Es_Credito'])
             
             if row['Estrategia'] == "Single Leg" and precio_1 is not None:
-                # Single Leg: usar precio actual directamente
                 pnl_bruto, pnl_neto = calcular_pnl_correcto(
                     prima_entrada, precio_1, es_credito, comision
                 )
             
             elif row['Estrategia'] == "Spread" and precio_1 is not None and precio_2 is not None:
-                # Spread: calcular el valor actual del spread
-                # Valor del spread = diferencia entre los precios de ambas opciones
                 valor_actual_spread = abs(precio_1 - precio_2)
-                
                 pnl_bruto, pnl_neto = calcular_pnl_correcto(
                     prima_entrada, valor_actual_spread, es_credito, comision
                 )
             
-            # Calcular porcentaje
             if pnl_neto is not None:
                 prima_total_invertida = prima_entrada * 100
                 if prima_total_invertida != 0:
@@ -372,14 +448,11 @@ def refrescar_todas_operaciones(client):
     return df
 
 # =========================================================================
-# 5. EXPANDIR SPREADS EN LEGS
+# 6. EXPANDIR SPREADS EN LEGS
 # =========================================================================
 
 def expandir_operaciones_en_legs(df):
-    """
-    Expande cada spread en múltiples filas (una por leg).
-    Los Single Legs se mantienen como están.
-    """
+    """Expande cada spread en múltiples filas (una por leg)"""
     if df.empty:
         return df
     
@@ -387,35 +460,30 @@ def expandir_operaciones_en_legs(df):
     
     for idx, row in df.iterrows():
         if row['Estrategia'] == "Single Leg":
-            # Single Leg: mantener como está, agregar ID_Original y Leg_Num
             row_copy = row.copy()
             row_copy['ID_Original'] = row['ID']
             row_copy['Leg_Num'] = 1
             
-            # Crear descripción del leg
             strike = f"{row['Strike_1']:.2f}"
-            tipo = row['Tipo_1'][0]  # C o P
+            tipo = row['Tipo_1'][0]
             posicion = row['Posicion_1']
             row_copy['Leg_Descripcion'] = f"{posicion} {strike}{tipo}"
             
             filas_expandidas.append(row_copy)
         
         else:  # Spread
-            # Calcular valores totales para distribuir
             pnl_neto_total = float(row['PnL_Neto']) if pd.notna(row['PnL_Neto']) else 0
             prima_total = float(row['Prima_Entrada'])
             comision_total = float(row['Comision'])
             delta_total = float(row['Delta_1'] or 0) + float(row['Delta_2'] or 0)
             theta_total = float(row['Theta_1'] or 0) + float(row['Theta_2'] or 0)
             
-            # Distribuir proporcionalmente (50/50 para simplificar)
             pnl_por_leg = pnl_neto_total / 2
             prima_por_leg = prima_total / 2
             comision_por_leg = comision_total / 2
             delta_por_leg = delta_total / 2
             theta_por_leg = theta_total / 2
             
-            # Calcular P&L % por leg
             pnl_porcentaje_leg = None
             if prima_por_leg * 100 != 0:
                 pnl_porcentaje_leg = (pnl_por_leg / (prima_por_leg * 100)) * 100
@@ -456,7 +524,7 @@ def expandir_operaciones_en_legs(df):
     return df_expandido
 
 # =========================================================================
-# 6. INTERFAZ PRINCIPAL
+# 7. INTERFAZ PRINCIPAL
 # =========================================================================
 
 def option_tracker_page():
@@ -477,13 +545,19 @@ def option_tracker_page():
     else:
         st.error("❌ No hay conexión con Schwab. Verifica que 'schwab_token.json' existe y es válido.")
     
+    # Verificar conexión GitHub
+    if GITHUB_TOKEN:
+        st.markdown('<div class="success-box">✅ <strong>Persistencia activada</strong> en GitHub</div>', unsafe_allow_html=True)
+    else:
+        st.warning("⚠️ No hay conexión con GitHub. Los datos no se guardarán permanentemente.")
+    
     st.markdown("---")
     
     # SECCIÓN 1: AGREGAR NUEVA OPERACIÓN
     st.markdown("### ➕ Nueva Operación")
     
     with st.expander("📝 Formulario de entrada", expanded=False):
-        # ===== SELECTORES FUERA DEL FORMULARIO PARA REACTIVIDAD INMEDIATA =====
+        # Selectores fuera del formulario
         st.markdown("#### 📋 Información Básica")
         col1, col2 = st.columns(2)
         
@@ -503,7 +577,7 @@ def option_tracker_page():
         
         st.markdown("---")
         
-        # ===== FORMULARIO =====
+        # Formulario
         with st.form("form_nueva_operacion", clear_on_submit=True):
             col1, col2 = st.columns(2)
             
@@ -515,7 +589,7 @@ def option_tracker_page():
             
             st.markdown("---")
             
-            # ===== COMISIONES CON LÓGICA CORREGIDA =====
+            # Comisiones
             if tipo_comision == "Total":
                 comision_total_input = st.number_input(
                     "💵 Comisión Total ($)", 
@@ -523,10 +597,10 @@ def option_tracker_page():
                     value=1.30 if estrategia == "Spread" else 0.65, 
                     step=0.01, 
                     format="%.2f",
+                    key="comision_total_input",
                     help="Comisión total de toda la operación (apertura + cierre)"
                 )
                 if estrategia == "Spread":
-                    # Dividir la comisión total entre los dos legs
                     comision_leg1 = comision_total_input / 2
                     comision_leg2 = comision_total_input / 2
                 else:
@@ -536,11 +610,32 @@ def option_tracker_page():
                 if estrategia == "Spread":
                     col1, col2 = st.columns(2)
                     with col1:
-                        comision_leg1 = st.number_input("💵 Comisión Leg 1 ($)", min_value=0.0, value=0.65, step=0.01, format="%.2f")
+                        comision_leg1 = st.number_input(
+                            "💵 Comisión Leg 1 ($)", 
+                            min_value=0.0, 
+                            value=0.65, 
+                            step=0.01, 
+                            format="%.2f",
+                            key="comision_leg1_input"
+                        )
                     with col2:
-                        comision_leg2 = st.number_input("💵 Comisión Leg 2 ($)", min_value=0.0, value=0.65, step=0.01, format="%.2f")
+                        comision_leg2 = st.number_input(
+                            "💵 Comisión Leg 2 ($)", 
+                            min_value=0.0, 
+                            value=0.65, 
+                            step=0.01, 
+                            format="%.2f",
+                            key="comision_leg2_input"
+                        )
                 else:  # Single Leg
-                    comision_leg1 = st.number_input("💵 Comisión ($)", min_value=0.0, value=0.65, step=0.01, format="%.2f")
+                    comision_leg1 = st.number_input(
+                        "💵 Comisión ($)", 
+                        min_value=0.0, 
+                        value=0.65, 
+                        step=0.01, 
+                        format="%.2f",
+                        key="comision_single_input"
+                    )
                     comision_leg2 = 0
             
             st.markdown("---")
@@ -607,10 +702,10 @@ def option_tracker_page():
                     help="Monto de la prima (siempre positivo). Usa el checkbox 'Es Crédito' para indicar si es crédito o débito"
                 )
             
-            # ===== INFO BOXES CON CÁLCULO CORRECTO =====
+            # Info boxes
             if fecha_salida and fecha_entrada:
                 dte_calculado = (fecha_salida - fecha_entrada).days
-                # CORRECCIÓN: Si es "Total", mostrar el valor ingresado, no la suma de legs
+                
                 if tipo_comision == "Total":
                     comision_total_display = comision_total_input
                 else:
@@ -631,12 +726,15 @@ def option_tracker_page():
                     if estrategia == "Spread" and (not strike_2 or strike_2 <= 0):
                         st.error("❌ Para Spreads debes completar ambos legs")
                     else:
-                        if agregar_operacion(ticker, estrategia, strike_1, tipo_1, posicion_1,
-                                             strike_2, tipo_2, posicion_2,
-                                             fecha_entrada, fecha_salida, prima_entrada, es_credito,
-                                             comision_leg1, comision_leg2):
-                            st.success(f"✅ Operación agregada: {ticker} {estrategia} ({'CRÉDITO' if es_credito else 'DÉBITO'})")
-                            st.rerun()
+                        with st.spinner("💾 Guardando en GitHub..."):
+                            if agregar_operacion(ticker, estrategia, strike_1, tipo_1, posicion_1,
+                                                 strike_2, tipo_2, posicion_2,
+                                                 fecha_entrada, fecha_salida, prima_entrada, es_credito,
+                                                 comision_leg1, comision_leg2):
+                                st.success(f"✅ Operación agregada y guardada: {ticker} {estrategia} ({'CRÉDITO' if es_credito else 'DÉBITO'})")
+                                st.rerun()
+                            else:
+                                st.error("❌ Error al guardar en GitHub")
                 else:
                     st.error("❌ Completa todos los campos obligatorios")
     
@@ -661,7 +759,7 @@ def option_tracker_page():
                 if client:
                     with st.spinner("Actualizando desde Schwab..."):
                         df = refrescar_todas_operaciones(client)
-                    st.success("✅ Datos actualizados")
+                    st.success("✅ Datos actualizados y guardados en GitHub")
                     st.rerun()
         
         with col2:
@@ -680,7 +778,7 @@ def option_tracker_page():
         
         st.markdown("---")
         
-        # RESUMEN DEL PORTFOLIO (sin expandir para totales correctos)
+        # RESUMEN DEL PORTFOLIO
         st.markdown("#### 💼 Resumen del Portfolio")
         
         col1, col2, col3, col4, col5 = st.columns(5)
@@ -714,18 +812,15 @@ def option_tracker_page():
         
         st.markdown("---")
         
-        # EXPANDIR OPERACIONES EN LEGS PARA DISPLAY
+        # DETALLE DE OPERACIONES
         st.markdown("### 📋 Detalle de Operaciones (DataFrame)")
         
         df_expandido = expandir_operaciones_en_legs(df)
         df_display = df_expandido.copy()
 
-        # Formatear columnas para display
         df_display['P&L Neto'] = df_display['PnL_Neto'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "N/A")
         df_display['P&L %'] = df_display['PnL_Porcentaje'].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A")
         
-        # Para Single Legs, usar las griegas originales
-        # Para Spreads, usar las griegas distribuidas
         def format_delta(row):
             if pd.notna(row.get('Delta_Total_Display')):
                 return f"{row['Delta_Total_Display']:.2f}"
@@ -751,15 +846,12 @@ def option_tracker_page():
         df_display['Δ Total'] = df_display.apply(format_delta, axis=1)
         df_display['Θ Total'] = df_display.apply(format_theta, axis=1)
         
-        # Formatear Prima y Comisión
         df_display['Prima'] = df_display['Prima_Entrada'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "$0.00")
         df_display['Comis.'] = df_display['Comision'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "$0.00")
         
-        # Formatear fechas
         df_display['Fch. Entrada'] = df_display['Fecha_Entrada'].apply(lambda x: x.strftime('%d/%m/%Y') if pd.notna(x) else '')
         df_display['Fch. Salida'] = df_display['Fecha_Salida'].apply(lambda x: x.strftime('%d/%m/%Y') if pd.notna(x) else '')
 
-        # Seleccionar columnas finales
         columnas_finales = [
             'ID_Original',
             'Leg_Num',
@@ -803,7 +895,7 @@ def option_tracker_page():
         
         st.markdown("---")
         
-        # Información sobre el cálculo
+        # Información sobre cálculos
         with st.expander("ℹ️ Información sobre Cálculos de P&L"):
             st.markdown("""
             ### 📊 Cálculo de P&L Corregido
@@ -830,10 +922,18 @@ def option_tracker_page():
               - Cada fila muestra strike, tipo (C/P) y posición (LONG/SHORT)
               - Las métricas (P&L, Delta, Theta, Prima, Comisión) se distribuyen 50/50
               - El resumen del portfolio agrupa correctamente por ID para no duplicar
+            
+            ### 💾 Persistencia de Datos
+            
+            - **Todos los datos se guardan automáticamente en GitHub**
+            - Puedes cerrar y volver a abrir la app sin perder información
+            - El archivo se actualiza en `data/option_tracker.csv` en tu repositorio
+            - Cada cambio crea un commit automático con timestamp
             """)
         
         st.markdown("---")
         
+        # Eliminar operación
         with st.expander("🗑️ Eliminar Operación"):
             col1, col2 = st.columns([1, 2])
             
@@ -851,14 +951,17 @@ def option_tracker_page():
                 if st.button("🗑️ Confirmar Eliminación", type="secondary", use_container_width=True):
                     if id_eliminar in df['ID'].values:
                         operacion = df[df['ID'] == id_eliminar].iloc[0]
-                        if eliminar_operacion(id_eliminar):
-                            st.success(f"✅ Eliminada: {operacion['Ticker']} - {operacion['Estrategia']}")
-                            st.rerun()
+                        with st.spinner("🗑️ Eliminando de GitHub..."):
+                            if eliminar_operacion(id_eliminar):
+                                st.success(f"✅ Eliminada y guardado en GitHub: {operacion['Ticker']} - {operacion['Estrategia']}")
+                                st.rerun()
+                            else:
+                                st.error("❌ Error al guardar cambios en GitHub")
                     else:
                         st.error(f"❌ No existe ID {id_eliminar}")
 
 # =========================================================================
-# 7. PUNTO DE ENTRADA
+# 8. PUNTO DE ENTRADA
 # =========================================================================
 
 if __name__ == "__main__":
