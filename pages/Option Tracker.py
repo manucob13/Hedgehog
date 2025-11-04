@@ -1,4 +1,4 @@
-# pages/Option Tracker.py - CON PERSISTENCIA EN GITHUB
+# pages/Option Tracker.py - CON PERSISTENCIA EN GITHUB Y CORRECCIONES
 import streamlit as st
 import pandas as pd
 from datetime import timedelta, datetime
@@ -11,6 +11,7 @@ import base64
 import requests
 import json
 from io import StringIO
+import time
 
 # =========================================================================
 # 0. CONFIGURACIÓN
@@ -78,7 +79,7 @@ st.markdown("""
 # 1. FUNCIONES DE GITHUB API
 # =========================================================================
 
-def get_github_file(file_path):
+def get_github_file(file_path, force_refresh=False):
     """Descarga un archivo desde GitHub"""
     if not GITHUB_TOKEN:
         return None, None
@@ -89,8 +90,13 @@ def get_github_file(file_path):
         "Accept": "application/vnd.github.v3+json"
     }
     
+    # Añadir timestamp para forzar actualización y evitar caché
+    params = {"ref": GITHUB_BRANCH}
+    if force_refresh:
+        params["_t"] = str(time.time())
+    
     try:
-        response = requests.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
+        response = requests.get(url, headers=headers, params=params)
         if response.status_code == 200:
             content = response.json()
             file_content = base64.b64decode(content['content']).decode('utf-8')
@@ -173,9 +179,9 @@ def connect_to_schwab():
 # 3. FUNCIONES DE DATOS CON GITHUB
 # =========================================================================
 
-def cargar_operaciones():
+def cargar_operaciones(force_refresh=False):
     """Carga operaciones desde GitHub"""
-    file_content, sha = get_github_file(GITHUB_FILE_PATH)
+    file_content, sha = get_github_file(GITHUB_FILE_PATH, force_refresh=force_refresh)
     
     if file_content:
         try:
@@ -242,8 +248,10 @@ def guardar_operaciones(df):
     success = update_github_file(GITHUB_FILE_PATH, csv_content, sha)
     
     if success:
-        # Actualizar el SHA después de guardar
-        file_content, new_sha = get_github_file(GITHUB_FILE_PATH)
+        # Esperar un momento para que GitHub procese el archivo
+        time.sleep(0.5)
+        # Actualizar el SHA después de guardar con refresh forzado
+        file_content, new_sha = get_github_file(GITHUB_FILE_PATH, force_refresh=True)
         if new_sha:
             st.session_state['csv_sha'] = new_sha
     
@@ -375,7 +383,7 @@ def calcular_pnl_correcto(prima_entrada, precio_cierre_actual, es_credito, comis
 
 def refrescar_todas_operaciones(client):
     """Refresca datos de todas las operaciones desde Schwab y calcula P&L"""
-    df = cargar_operaciones()
+    df = cargar_operaciones(force_refresh=True)
     
     if df.empty or client is None:
         return df
@@ -556,7 +564,19 @@ def option_tracker_page():
     # SECCIÓN 1: AGREGAR NUEVA OPERACIÓN
     st.markdown("### ➕ Nueva Operación")
     
-    with st.expander("📝 Formulario de entrada", expanded=False):
+    # Inicializar estado del expander si no existe
+    if 'expander_state' not in st.session_state:
+        st.session_state.expander_state = False
+    
+    # CORRECCIÓN 1: Mantener el expander abierto con estado persistente
+    with st.expander("📝 Formulario de entrada", expanded=st.session_state.expander_state):
+        # Botón para abrir/cerrar manualmente
+        col_toggle1, col_toggle2 = st.columns([1, 5])
+        with col_toggle1:
+            if st.button("🔽 Cerrar" if st.session_state.expander_state else "🔼 Abrir", key="toggle_expander"):
+                st.session_state.expander_state = not st.session_state.expander_state
+                st.rerun()
+        
         # Selectores fuera del formulario
         st.markdown("#### 📋 Información Básica")
         col1, col2 = st.columns(2)
@@ -732,6 +752,10 @@ def option_tracker_page():
                                                  fecha_entrada, fecha_salida, prima_entrada, es_credito,
                                                  comision_leg1, comision_leg2):
                                 st.success(f"✅ Operación agregada y guardada: {ticker} {estrategia} ({'CRÉDITO' if es_credito else 'DÉBITO'})")
+                                # CORRECCIÓN 2: Forzar recarga inmediata después de agregar
+                                st.session_state['force_reload'] = True
+                                st.session_state.expander_state = False  # Cerrar expander después de agregar
+                                time.sleep(0.5)  # Dar tiempo a GitHub
                                 st.rerun()
                             else:
                                 st.error("❌ Error al guardar en GitHub")
@@ -743,7 +767,11 @@ def option_tracker_page():
     # SECCIÓN 2: OPERACIONES ACTIVAS
     st.markdown("### 📊 Portfolio Activo")
     
-    df = cargar_operaciones()
+    # CORRECCIÓN 2: Forzar recarga si se acaba de agregar una operación
+    force_reload = st.session_state.get('force_reload', False)
+    df = cargar_operaciones(force_refresh=force_reload)
+    if force_reload:
+        st.session_state['force_reload'] = False
     
     if client and not df.empty and df['Precio_Actual_1'].isna().all():
         with st.spinner("Cargando datos iniciales desde Schwab..."):
@@ -954,6 +982,8 @@ def option_tracker_page():
                         with st.spinner("🗑️ Eliminando de GitHub..."):
                             if eliminar_operacion(id_eliminar):
                                 st.success(f"✅ Eliminada y guardado en GitHub: {operacion['Ticker']} - {operacion['Estrategia']}")
+                                st.session_state['force_reload'] = True
+                                time.sleep(0.5)
                                 st.rerun()
                             else:
                                 st.error("❌ Error al guardar cambios en GitHub")
