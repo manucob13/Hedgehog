@@ -1,4 +1,4 @@
-# pages/Option Tracker.py - MONITOR DE OPCIONES CON CORRECCIONES
+# pages/Option Tracker.py - MONITOR DE OPCIONES CON CORRECCIONES DINÁMICAS
 import streamlit as st
 import pandas as pd
 from datetime import timedelta, datetime
@@ -482,30 +482,48 @@ def option_tracker_page():
     # SECCIÓN 1: AGREGAR NUEVA OPERACIÓN
     st.markdown("### ➕ Nueva Operación")
     
-    with st.expander("📝 Formulario de entrada", expanded=False): 
+    with st.expander("📝 Formulario de entrada", expanded=False):
+        # ===== SELECTORES FUERA DEL FORMULARIO PARA REACTIVIDAD INMEDIATA =====
+        st.markdown("#### 📋 Información Básica")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            estrategia = st.selectbox(
+                "📊 Estrategia", 
+                ["Single Leg", "Spread"], 
+                key="estrategia_selector"
+            )
+        
+        with col2:
+            tipo_comision = st.selectbox(
+                "💳 Tipo Comisión", 
+                ["Por Leg", "Total"],
+                key="tipo_comision_selector"
+            )
+        
+        st.markdown("---")
+        
+        # ===== FORMULARIO =====
         with st.form("form_nueva_operacion", clear_on_submit=True):
-            st.markdown("#### 📋 Información Básica")
             col1, col2 = st.columns(2)
             
             with col1:
                 ticker = st.text_input("🎯 Ticker", placeholder="AAPL", help="Símbolo del activo")
             
             with col2:
-                estrategia = st.selectbox("📊 Estrategia", ["Single Leg", "Spread"], key="estrategia_form")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
                 es_credito = st.checkbox("💰 Es Crédito", value=True, help="Marca si recibiste crédito (vendiste). Desmarca si pagaste débito (compraste)")
-            
-            with col2:
-                tipo_comision = st.selectbox("💳 Tipo Comisión", ["Por Leg", "Total"])
             
             st.markdown("---")
             
-            # COMISIONES CON LÓGICA DINÁMICA CORREGIDA
+            # COMISIONES CON LÓGICA DINÁMICA CORRECTA
             if tipo_comision == "Total":
-                comision_total_input = st.number_input("💵 Comisión Total ($)", min_value=0.0, value=1.30, step=0.01, format="%.2f")
+                comision_total_input = st.number_input(
+                    "💵 Comisión Total ($)", 
+                    min_value=0.0, 
+                    value=1.30 if estrategia == "Spread" else 0.65, 
+                    step=0.01, 
+                    format="%.2f"
+                )
                 if estrategia == "Spread":
                     comision_leg1 = comision_total_input / 2
                     comision_leg2 = comision_total_input / 2
