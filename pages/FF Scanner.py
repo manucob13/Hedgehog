@@ -34,80 +34,37 @@ except KeyError as e:
 token_path = "schwab_token.json"
 
 # =========================================================================
-# 1. PREPARACIÓN DE TICKERS
+# 1. PREPARACIÓN DE TICKERS (SIMPLIFICADA - SOLO LECTURA)
 # =========================================================================
-
-def is_valid_ticker(ticker):
-    try:
-        t = yf.Ticker(ticker)
-        fi = getattr(t, "fast_info", None)
-        if fi and isinstance(fi, dict) and fi.get('last_price') is not None:
-            return ticker
-        info = t.info
-        if isinstance(info, dict) and (info.get('regularMarketPrice') is not None or info.get('previousClose') is not None):
-            return ticker
-    except Exception:
-        return None
-    return None
-
 
 @st.cache_resource(ttl=timedelta(hours=24), show_spinner=False)
 def perform_initial_preparation():
-    st.subheader("1. Preparación y Validación de Tickers")
+    st.subheader("1. Preparación de Tickers")
 
     status_text = st.empty()
 
-    # 1.1 Leer tickers existentes
-    existing_tickers = set()
+    # Leer tickers del archivo CSV
     if os.path.exists('Tickers.csv'):
-        df_existing = pd.read_csv('Tickers.csv')
-        existing_tickers = set(df_existing.iloc[:, 0].astype(str).str.upper().str.strip())
-        st.info(f"✅ 'Tickers.csv' encontrado con {len(existing_tickers)} tickers.")
+        try:
+            df_tickers = pd.read_csv('Tickers.csv')
+            tickers = df_tickers.iloc[:, 0].astype(str).str.upper().str.strip().tolist()
+            tickers = sorted(set(tickers))  # Eliminar duplicados y ordenar
+            
+            st.success(f"✅ 'Tickers.csv' encontrado con {len(tickers)} tickers.")
+            st.info("ℹ️ Los tickers se usan directamente sin validación adicional.")
+            
+            status_text.empty()
+            st.divider()
+            
+            return tickers
+            
+        except Exception as e:
+            st.error(f"❌ Error al leer 'Tickers.csv': {e}")
+            st.stop()
     else:
-        st.warning("⚠️ 'Tickers.csv' no encontrado. Iniciando desde cero.")
-
-    # 1.2 Descargar tickers del S&P 500
-    try:
-        status_text.text("Descargando lista del S&P 500...")
-        url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
-        sp500_df = pd.read_html(StringIO(response.text))[0]
-        sp500_tickers = set(sp500_df['Symbol'].astype(str).str.upper().str.strip())
-        st.success(f"✅ Obtenidos {len(sp500_tickers)} tickers del S&P 500.")
-    except Exception as e:
-        st.error(f"❌ Error al descargar el S&P 500: {e}")
-        sp500_tickers = set()
-
-    all_tickers = sp500_tickers.union(existing_tickers)
-    st.info(f"Validando {len(all_tickers)} tickers con yfinance...")
-
-    progress_bar = st.progress(0)
-    valid_tickers = []
-    sorted_tickers = sorted(all_tickers)
-
-    with ThreadPoolExecutor(max_workers=15) as executor:
-        futures = {executor.submit(is_valid_ticker, t): t for t in sorted_tickers}
-        for i, future in enumerate(futures):
-            result = future.result()
-            if result:
-                valid_tickers.append(result)
-            progress_bar.progress((i + 1) / len(sorted_tickers))
-
-    progress_bar.empty()
-
-    valid_tickers = sorted(set(valid_tickers))
-    invalid_tickers = sorted(set(all_tickers) - set(valid_tickers))
-
-    try:
-        pd.DataFrame({'Ticker': valid_tickers}).to_csv('Tickers.csv', index=False)
-        pd.DataFrame({'Ticker': invalid_tickers}).to_csv('Tickers_invalidos.csv', index=False)
-    except Exception as e:
-        st.warning(f"⚠️ No se pudieron guardar los CSV: {e}")
-
-    st.success(f"✅ Validación finalizada con {len(valid_tickers)} tickers válidos.")
-    st.divider()
-
-    return valid_tickers
+        st.error("❌ 'Tickers.csv' no encontrado en el directorio raíz.")
+        st.info("📝 Crea un archivo 'Tickers.csv' con una columna de tickers (uno por línea)")
+        st.stop()
 
 # =========================================================================
 # 2. CONEXIÓN CON BROKER SCHWAB (solo usa token existente)
@@ -704,11 +661,11 @@ def ff_scanner_page():
     # --- Punto 1: Preparación de Tickers ---
     col1, col2 = st.columns([1, 4])
     with col1:
-        st.button("🔄 Actualizar/Validar Tickers", type="primary",
-                  help="Borra la caché y fuerza la re-lectura de Tickers.csv",
+        st.button("🔄 Recargar Tickers", type="primary",
+                  help="Borra la caché y recarga Tickers.csv",
                   on_click=perform_initial_preparation.clear)
     with col2:
-        st.markdown("_(Se valida automáticamente cada 24h o al pulsar el botón.)_")
+        st.markdown("_(Los tickers se cargan desde Tickers.csv sin validación.)_")
 
     st.divider()
     valid_tickers = perform_initial_preparation()
