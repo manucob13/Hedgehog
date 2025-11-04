@@ -1,0 +1,1 @@
+ID,Ticker,Estrategia,Strike_1,Tipo_1,Posicion_1,Strike_2,Tipo_2,Posicion_2,Fecha_Entrada,Fecha_Salida,DTE,Prima_Entrada,Es_Credito,Comision_Leg1,Comision_Leg2,Comision,Precio_Actual_1,Delta_1,Theta_1,Precio_Actual_2,Delta_2,Theta_2,PnL_Bruto,PnL_Neto,PnL_Porcentaje
