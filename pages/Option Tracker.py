@@ -483,23 +483,27 @@ def option_tracker_page():
     st.markdown("### ➕ Nueva Operación")
     
     with st.expander("📝 Formulario de entrada", expanded=False): 
-        estrategia = st.selectbox("📊 Estrategia", ["Single Leg", "Spread"], key="estrategia_select")
-        
         with st.form("form_nueva_operacion", clear_on_submit=True):
             st.markdown("#### 📋 Información Básica")
-            col1, col2, col3 = st.columns(3)
+            col1, col2 = st.columns(2)
             
             with col1:
                 ticker = st.text_input("🎯 Ticker", placeholder="AAPL", help="Símbolo del activo")
             
             with col2:
+                estrategia = st.selectbox("📊 Estrategia", ["Single Leg", "Spread"], key="estrategia_form")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
                 es_credito = st.checkbox("💰 Es Crédito", value=True, help="Marca si recibiste crédito (vendiste). Desmarca si pagaste débito (compraste)")
             
-            with col3:
+            with col2:
                 tipo_comision = st.selectbox("💳 Tipo Comisión", ["Por Leg", "Total"])
             
             st.markdown("---")
             
+            # COMISIONES CON LÓGICA DINÁMICA CORREGIDA
             if tipo_comision == "Total":
                 comision_total_input = st.number_input("💵 Comisión Total ($)", min_value=0.0, value=1.30, step=0.01, format="%.2f")
                 if estrategia == "Spread":
@@ -508,15 +512,16 @@ def option_tracker_page():
                 else:
                     comision_leg1 = comision_total_input
                     comision_leg2 = 0
-            else:
-                col1, col2 = st.columns(2)
-                with col1:
-                    comision_leg1 = st.number_input("💵 Comisión Leg 1 ($)", min_value=0.0, value=0.65, step=0.01, format="%.2f")
-                with col2:
-                    if estrategia == "Spread":
+            else:  # Por Leg
+                if estrategia == "Spread":
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        comision_leg1 = st.number_input("💵 Comisión Leg 1 ($)", min_value=0.0, value=0.65, step=0.01, format="%.2f")
+                    with col2:
                         comision_leg2 = st.number_input("💵 Comisión Leg 2 ($)", min_value=0.0, value=0.65, step=0.01, format="%.2f")
-                    else:
-                        comision_leg2 = 0
+                else:  # Single Leg
+                    comision_leg1 = st.number_input("💵 Comisión ($)", min_value=0.0, value=0.65, step=0.01, format="%.2f")
+                    comision_leg2 = 0
             
             st.markdown("---")
             
@@ -584,7 +589,7 @@ def option_tracker_page():
             
             if fecha_salida and fecha_entrada:
                 dte_calculado = (fecha_salida - fecha_entrada).days
-                comision_total_display = comision_leg1 + (comision_leg2 if estrategia == "Spread" else 0)
+                comision_total_display = comision_leg1 + comision_leg2
                 col1, col2 = st.columns(2)
                 with col1:
                     st.info(f"📊 DTE Calculado: **{dte_calculado} días**")
