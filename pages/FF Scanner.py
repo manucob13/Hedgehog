@@ -1,4 +1,4 @@
-# pages/FF Scanner.py - VERSIÓN COMPLETA CON ESCANEO PARALELO
+# pages/FF Scanner.py - VERSIÓN CON VOLUMEN DESDE SCHWAB Y TOP 5 POR VOLUMEN
 import streamlit as st
 import pandas as pd
 import requests
