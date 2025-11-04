@@ -401,55 +401,39 @@ def procesar_ticker_earnings(args):
     ticker_symbol, fecha_inicio, fecha_fin = args
     return check_earnings(ticker_symbol, fecha_inicio, fecha_fin)
 
-def obtener_volumen_opciones_30dias(ticker_symbol):
+def obtener_volumen_schwab(client, ticker_symbol):
     """
-    Obtiene volumen promedio de opciones (calls + puts) de los últimos 30 días.
-    Usa todas las fechas de expiración disponibles.
+    Obtiene el volumen del ticker usando Schwab API.
+    Devuelve el volumen del día actual o del último día disponible si el mercado está cerrado.
     """
     try:
-        ticker = yf.Ticker(ticker_symbol)
+        response = client.get_quote(ticker_symbol)
         
-        # Obtener todas las fechas de expiración disponibles
-        expiration_dates = ticker.options
-        
-        if not expiration_dates:
+        if response.status_code != 200:
             return 0
         
-        total_volume = 0
-        fecha_actual = datetime.now().date()
+        data = response.json()
         
-        # Iterar sobre todas las fechas de expiración
-        for exp_date_str in expiration_dates:
-            try:
-                # Convertir fecha de expiración a date object
-                exp_date = datetime.strptime(exp_date_str, '%Y-%m-%d').date()
-                
-                # Solo considerar opciones que expiran en los próximos 30 días o menos
-                dias_hasta_expiracion = (exp_date - fecha_actual).days
-                
-                if 0 <= dias_hasta_expiracion <= 30:
-                    # Obtener chain de opciones para esta fecha
-                    chain = ticker.option_chain(exp_date_str)
-                    
-                    # Sumar volumen de calls y puts
-                    vol_calls = chain.calls['volume'].fillna(0).sum()
-                    vol_puts = chain.puts['volume'].fillna(0).sum()
-                    
-                    total_volume += vol_calls + vol_puts
-                    
-            except Exception:
-                # Si falla una fecha específica, continuar con la siguiente
-                continue
+        # El formato de respuesta de Schwab incluye el símbolo como clave
+        if ticker_symbol in data:
+            quote_data = data[ticker_symbol].get('quote', {})
+            volumen = quote_data.get('totalVolume', 0)
+            
+            # Si el volumen es 0 o None, intentar obtener del último día de trading
+            if not volumen or volumen == 0:
+                volumen = quote_data.get('lastSize', 0)
+            
+            return int(volumen) if volumen else 0
         
-        return int(total_volume)
+        return 0
         
-    except Exception:
+    except Exception as e:
         return 0
 
 def procesar_ticker_volumen(args):
     """Función helper para paralelizar paso 5"""
-    ticker_symbol = args
-    return obtener_volumen_opciones_30dias(ticker_symbol)
+    client, ticker_symbol = args
+    return obtener_volumen_schwab(client, ticker_symbol)
 
 def ejecutar_escaneo(client, tickers, fecha_entrada, dte_front_days, dte_back_days, fecha_dte_front, fecha_dte_back):
     """Ejecuta el escaneo completo de todos los tickers EN PARALELO"""
@@ -544,40 +528,40 @@ def ejecutar_escaneo(client, tickers, fecha_entrada, dte_front_days, dte_back_da
         progress_bar.empty()
         return None
     
-    # PASO 5: Obtener volúmenes de últimos 30 días (PARALELO)
-    status_container.info("📊 Paso 5/5: Obteniendo volúmenes de opciones (últimos 30 días, paralelo)...")
+    # PASO 5: Obtener volúmenes del día/último día con Schwab (PARALELO)
+    status_container.info("📊 Paso 5/5: Obteniendo volúmenes de acciones (Schwab API, paralelo)...")
     
-    args_list = [row['Ticker'] for _, row in df_operar.iterrows()]
+    args_list = [(client, row['Ticker']) for _, row in df_operar.iterrows()]
     
     volumenes = []
     with ThreadPoolExecutor(max_workers=15) as executor:
-        futures = [executor.submit(procesar_ticker_volumen, ticker) for ticker in args_list]
+        futures = [executor.submit(procesar_ticker_volumen, args) for args in args_list]
         for i, future in enumerate(futures):
             volumenes.append(future.result())
             progress_bar.progress((i + 1) / len(futures))
     
-    df_operar['Vol_30d'] = volumenes
-    status_container.success("✅ Paso 5 completado: Volúmenes de 30 días obtenidos")
+    df_operar['Volumen'] = volumenes
+    status_container.success("✅ Paso 5 completado: Volúmenes obtenidos")
     
-    # Filtrar por volumen >= 1000
-    df_final = df_operar[df_operar['Vol_30d'] >= 1000].copy()
+    # Ordenar por volumen descendente y tomar solo top 5
+    df_final = df_operar.sort_values('Volumen', ascending=False).head(5).copy()
     
     if df_final.empty:
-        status_container.warning("⚠️ No hay tickers con volumen >= 1000 en últimos 30 días")
+        status_container.warning("⚠️ No hay tickers con volumen válido")
         progress_bar.empty()
         return None
     
-    # Ordenar por volumen descendente
-    df_final = df_final.sort_values('Vol_30d', ascending=False)
-    
     # Reorganizar columnas - quitar Operar
     columnas_finales = ['Ticker', 'DTE_Pair', 'DTE_Front', 'DTE_Back', 'Precio', 'MID_Price', 
-                        'Strike', 'IV_F (%)', 'IV_B (%)', 'FF (%)', 'Market', 'Banda_FF', 'Vol_30d']
+                        'Strike', 'IV_F (%)', 'IV_B (%)', 'FF (%)', 'Market', 'Banda_FF', 'Volumen']
     df_final = df_final[columnas_finales]
     df_final = df_final.reset_index(drop=True)
     
+    # Agregar columna de ranking
+    df_final.insert(0, 'Rank', range(1, len(df_final) + 1))
+    
     progress_bar.empty()
-    status_container.success(f"🎉 Escaneo completado: {len(df_final)} operaciones válidas encontradas")
+    status_container.success(f"🎉 Escaneo completado: Top {len(df_final)} operaciones por volumen")
     
     return df_final
 
@@ -593,14 +577,10 @@ def mostrar_resultados(df_resultados):
         st.warning("⚠️ No hay resultados para mostrar. Ejecuta el escaneo primero.")
         return
     
-    # Compatibilidad con resultados antiguos: renombrar 'Vol' a 'Vol_30d' si existe
-    if 'Vol' in df_resultados.columns and 'Vol_30d' not in df_resultados.columns:
-        df_resultados = df_resultados.rename(columns={'Vol': 'Vol_30d'})
-    
     # Métricas resumen
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("🎯 Operaciones Válidas", len(df_resultados))
+        st.metric("🏆 Top Operaciones", len(df_resultados))
     with col2:
         avg_ff = df_resultados['FF (%)'].apply(lambda x: float(x) if x else 0).mean()
         st.metric("📊 FF Promedio", f"{avg_ff:.2f}%")
@@ -608,8 +588,8 @@ def mostrar_resultados(df_resultados):
         contango_count = (df_resultados['Market'] == 'CONTANGO').sum()
         st.metric("📈 Contango", contango_count)
     with col4:
-        total_vol = df_resultados['Vol_30d'].sum()
-        st.metric("📊 Vol. Total (30d)", f"{total_vol:,}")
+        total_vol = df_resultados['Volumen'].sum()
+        st.metric("📊 Vol. Total", f"{total_vol:,.0f}")
     
     st.markdown("---")
     
@@ -619,12 +599,13 @@ def mostrar_resultados(df_resultados):
     df_display['DTE_Back'] = pd.to_datetime(df_display['DTE_Back']).dt.strftime('%d/%m/%Y')
     
     # Tabla de resultados
-    st.markdown("#### 📋 Tabla de Operaciones Recomendadas")
+    st.markdown("#### 🏆 Top 5 Operaciones por Volumen")
     st.dataframe(
         df_display,
         hide_index=True,
         use_container_width=True,
         column_config={
+            "Rank": st.column_config.NumberColumn("🏅 Rank", width="small"),
             "Ticker": st.column_config.TextColumn("🎯 Ticker", width="small"),
             "DTE_Pair": st.column_config.TextColumn("📅 DTE", width="small"),
             "DTE_Front": st.column_config.TextColumn("📅 Front", width="medium"),
@@ -637,7 +618,7 @@ def mostrar_resultados(df_resultados):
             "FF (%)": st.column_config.TextColumn("🔥 FF", width="small"),
             "Market": st.column_config.TextColumn("📈 Market", width="medium"),
             "Banda_FF": st.column_config.TextColumn("🎯 Banda", width="small"),
-            "Vol_30d": st.column_config.NumberColumn("📊 Vol 30d", width="small", format="%d")
+            "Volumen": st.column_config.NumberColumn("📊 Volumen", width="medium", format="%d")
         }
     )
     
@@ -646,7 +627,7 @@ def mostrar_resultados(df_resultados):
     st.download_button(
         label="📥 Descargar Resultados (CSV)",
         data=csv,
-        file_name=f"ff_scanner_resultados_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        file_name=f"ff_scanner_top5_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
         mime="text/csv"
     )
 
@@ -702,7 +683,7 @@ def ff_scanner_page():
     else:
         st.info(f"📊 Tickers listos para escanear: **{len(valid_tickers)}** | 🚀 Modo: **Paralelo (15 hilos)**")
         st.warning("⚠️ El escaneo tardará 2-4 minutos. **No cambies de página durante el proceso.**")
-        st.info("📊 **Nuevo**: El volumen se calcula sobre las opciones de los últimos 30 días")
+        st.info("📊 **Nuevo**: Volumen obtenido de Schwab API (día actual o último disponible) - Solo Top 5 por volumen")
         
         col1, col2, col3 = st.columns([1, 2, 1])
         with col1:
@@ -734,7 +715,7 @@ def ff_scanner_page():
             
             if df_resultados is not None and not df_resultados.empty:
                 st.balloons()
-                st.success(f"🎉 Escaneo completado en {elapsed_time:.1f} segundos con {len(df_resultados)} operaciones válidas")
+                st.success(f"🎉 Escaneo completado en {elapsed_time:.1f} segundos - Top {len(df_resultados)} operaciones por volumen")
             else:
                 st.warning("⚠️ No se encontraron operaciones que cumplan los criterios")
 
