@@ -1,4 +1,4 @@
-# pages/Option Tracker.py - MONITOR DE OPCIONES CON CORRECCIONES DINÁMICAS
+# pages/Option Tracker.py - MONITOR DE OPCIONES CON CORRECCIÓN DE COMISIÓN TOTAL
 import streamlit as st
 import pandas as pd
 from datetime import timedelta, datetime
@@ -515,16 +515,18 @@ def option_tracker_page():
             
             st.markdown("---")
             
-            # COMISIONES CON LÓGICA DINÁMICA CORRECTA
+            # ===== COMISIONES CON LÓGICA CORREGIDA =====
             if tipo_comision == "Total":
                 comision_total_input = st.number_input(
                     "💵 Comisión Total ($)", 
                     min_value=0.0, 
                     value=1.30 if estrategia == "Spread" else 0.65, 
                     step=0.01, 
-                    format="%.2f"
+                    format="%.2f",
+                    help="Comisión total de toda la operación (apertura + cierre)"
                 )
                 if estrategia == "Spread":
+                    # Dividir la comisión total entre los dos legs
                     comision_leg1 = comision_total_input / 2
                     comision_leg2 = comision_total_input / 2
                 else:
@@ -605,9 +607,15 @@ def option_tracker_page():
                     help="Monto de la prima (siempre positivo). Usa el checkbox 'Es Crédito' para indicar si es crédito o débito"
                 )
             
+            # ===== INFO BOXES CON CÁLCULO CORRECTO =====
             if fecha_salida and fecha_entrada:
                 dte_calculado = (fecha_salida - fecha_entrada).days
-                comision_total_display = comision_leg1 + comision_leg2
+                # CORRECCIÓN: Si es "Total", mostrar el valor ingresado, no la suma de legs
+                if tipo_comision == "Total":
+                    comision_total_display = comision_total_input
+                else:
+                    comision_total_display = comision_leg1 + comision_leg2
+                
                 col1, col2 = st.columns(2)
                 with col1:
                     st.info(f"📊 DTE Calculado: **{dte_calculado} días**")
