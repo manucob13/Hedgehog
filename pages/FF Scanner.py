@@ -1,4 +1,4 @@
-# pages/FF Scanner.py - VERSIÓN CON VOLUMEN DESDE SCHWAB Y TOP 5 POR VOLUMEN
+# pages/FF Scanner.py - VERSIÓN CON VOLUMEN DESDE SCHWAB (CON RESPALDO YAHOO)
 import streamlit as st
 import pandas as pd
 import requests
@@ -14,6 +14,7 @@ import schwab
 from schwab.auth import easy_client
 from schwab.client import Client
 from utils import check_password
+import json
 
 # =========================================================================
 # 0. CONFIGURACIÓN Y VARIABLES
@@ -403,29 +404,63 @@ def procesar_ticker_earnings(args):
 
 def obtener_volumen_schwab(client, ticker_symbol):
     """
-    Obtiene el volumen del ticker usando Schwab API.
-    Devuelve el volumen del día actual o del último día disponible si el mercado está cerrado.
+    Obtiene el volumen del ticker usando Schwab API con respaldo de Yahoo Finance.
+    Prioriza Schwab, pero usa Yahoo si no hay datos disponibles.
     """
+    # MÉTODO 1: Intentar con Schwab primero
     try:
         response = client.get_quote(ticker_symbol)
         
-        if response.status_code != 200:
-            return 0
-        
-        data = response.json()
-        
-        # El formato de respuesta de Schwab incluye el símbolo como clave
-        if ticker_symbol in data:
-            quote_data = data[ticker_symbol].get('quote', {})
-            volumen = quote_data.get('totalVolume', 0)
+        if response.status_code == 200:
+            data = response.json()
             
-            # Si el volumen es 0 o None, intentar obtener del último día de trading
-            if not volumen or volumen == 0:
-                volumen = quote_data.get('lastSize', 0)
-            
-            return int(volumen) if volumen else 0
+            # Explorar diferentes estructuras posibles de Schwab
+            if ticker_symbol in data:
+                ticker_data = data[ticker_symbol]
+                
+                # Intentar múltiples campos posibles
+                volumen = None
+                
+                # Opción 1: quote.totalVolume
+                quote = ticker_data.get('quote', {})
+                volumen = quote.get('totalVolume') or quote.get('volume')
+                
+                # Opción 2: quote.regularMarketVolume
+                if not volumen or volumen == 0:
+                    volumen = quote.get('regularMarketVolume')
+                
+                # Opción 3: fundamental.avgVolume (volumen promedio)
+                if not volumen or volumen == 0:
+                    fundamental = ticker_data.get('fundamental', {})
+                    volumen = fundamental.get('avgVolume')
+                
+                # Opción 4: reference.totalVolume
+                if not volumen or volumen == 0:
+                    reference = ticker_data.get('reference', {})
+                    volumen = reference.get('totalVolume')
+                
+                # Si encontramos volumen válido en Schwab, retornarlo
+                if volumen and volumen > 0:
+                    return int(volumen)
+    
+    except Exception as e:
+        pass  # Si falla Schwab, continuar con Yahoo Finance
+    
+    # MÉTODO 2: Respaldo con Yahoo Finance
+    try:
+        ticker_yf = yf.Ticker(ticker_symbol)
         
-        return 0
+        # Intentar obtener del info
+        info = ticker_yf.info
+        volumen = info.get('volume') or info.get('regularMarketVolume') or info.get('averageVolume')
+        
+        # Si no hay en info, intentar con history
+        if not volumen or volumen == 0:
+            hist = ticker_yf.history(period='1d')
+            if not hist.empty and 'Volume' in hist.columns:
+                volumen = hist['Volume'].iloc[-1]
+        
+        return int(volumen) if volumen and volumen > 0 else 0
         
     except Exception as e:
         return 0
@@ -528,8 +563,8 @@ def ejecutar_escaneo(client, tickers, fecha_entrada, dte_front_days, dte_back_da
         progress_bar.empty()
         return None
     
-    # PASO 5: Obtener volúmenes del día/último día con Schwab (PARALELO)
-    status_container.info("📊 Paso 5/5: Obteniendo volúmenes de acciones (Schwab API, paralelo)...")
+    # PASO 5: Obtener volúmenes (Schwab + respaldo Yahoo Finance) (PARALELO)
+    status_container.info("📊 Paso 5/5: Obteniendo volúmenes (Schwab API + respaldo Yahoo, paralelo)...")
     
     args_list = [(client, row['Ticker']) for _, row in df_operar.iterrows()]
     
@@ -683,7 +718,7 @@ def ff_scanner_page():
     else:
         st.info(f"📊 Tickers listos para escanear: **{len(valid_tickers)}** | 🚀 Modo: **Paralelo (15 hilos)**")
         st.warning("⚠️ El escaneo tardará 2-4 minutos. **No cambies de página durante el proceso.**")
-        st.info("📊 **Nuevo**: Volumen obtenido de Schwab API (día actual o último disponible) - Solo Top 5 por volumen")
+        st.info("📊 **Sistema híbrido**: Volumen de Schwab API con respaldo de Yahoo Finance - Solo Top 5 por volumen")
         
         col1, col2, col3 = st.columns([1, 2, 1])
         with col1:
