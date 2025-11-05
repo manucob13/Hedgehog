@@ -120,8 +120,7 @@ def get_options_data_schwab(client, ticker):
         # Obtener cadena de opciones
         options_response = client.get_option_chain(
             formatted_ticker,
-            contract_type=Client.Options.ContractType.ALL,
-            include_quotes=True
+            contract_type=Client.Options.ContractType.ALL
         )
         
         if options_response.status_code != 200:
