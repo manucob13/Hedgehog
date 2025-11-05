@@ -8,6 +8,9 @@ from scipy.stats import norm
 from utils import check_password
 import schwab
 from schwab.auth import easy_client
+from schwab.client import Client
+from utils import check_password
+import json
 import os
 
 # =========================================================================
