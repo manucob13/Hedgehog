@@ -124,11 +124,10 @@ def get_options_data_schwab(client, ticker):
         to_date = date.today() + timedelta(days=45)
         
         # Obtener cadena de opciones con FILTROS MÍNIMOS
-        # Removemos parámetros que causan error
         options_response = client.get_option_chain(
             formatted_ticker,
             contract_type=Client.Options.ContractType.ALL,
-            strike_count=40,  # Limita strikes arriba/abajo del ATM
+            strike_count=40,
             include_underlying_quote=False,
             strategy=Client.Options.Strategy.SINGLE,
             from_date=from_date,
@@ -163,9 +162,8 @@ def process_schwab_options(options_data, spot_price):
         for strike, contracts in strikes.items():
             contract = contracts[0]
             
-            # Extraer volatilidad (puede venir como decimal o porcentaje)
             call_iv = contract.get('volatility', 0)
-            if call_iv > 2:  # Si es > 200%, probablemente está en porcentaje
+            if call_iv > 2:
                 call_iv = call_iv / 100
             
             all_options.append({
@@ -193,7 +191,6 @@ def process_schwab_options(options_data, spot_price):
             if put_iv > 2:
                 put_iv = put_iv / 100
             
-            # Buscar si ya existe el strike/fecha en all_options
             found = False
             for opt in all_options:
                 if opt['StrikePrice'] == float(strike) and opt['ExpirationDate'] == exp_date_clean:
@@ -224,7 +221,6 @@ def process_schwab_options(options_data, spot_price):
     if df.empty:
         return df
     
-    # Convertir fecha y calcular días hasta expiración
     df['ExpirationDate'] = pd.to_datetime(df['ExpirationDate'])
     today = date.today()
     df['daysTillExp'] = df['ExpirationDate'].apply(
@@ -247,59 +243,102 @@ def process_schwab_options(options_data, spot_price):
 
 
 def plot_total_gamma(df, spot_price, ticker, width):
-    """Gráfico de Gamma Exposure Total"""
-    fromStrike = spot_price * 0.8
-    toStrike = spot_price * 1.2
+    """Gráfico de Gamma Exposure Total - MEJORADO CON FILTROS"""
+    fromStrike = spot_price - width
+    toStrike = spot_price + width
     
-    dfAgg = df.groupby(['StrikePrice']).sum(numeric_only=True)
+    # Filtrar solo strikes en el rango relevante
+    df_range = df[(df['StrikePrice'] >= fromStrike) & (df['StrikePrice'] <= toStrike)]
+    dfAgg = df_range.groupby(['StrikePrice']).sum(numeric_only=True)
+    
+    # Filtrar strikes con OI mínimo para limpiar el gráfico
+    min_oi = dfAgg['total_oi'].quantile(0.10)  # Top 90% de OI
+    dfAgg = dfAgg[dfAgg['total_oi'] >= min_oi]
+    
     strikes = dfAgg.index.values
     
     fig, ax = plt.subplots(figsize=(16, 8))
-    ax.grid(True, alpha=0.3)
-    ax.bar(strikes, dfAgg['TotalGamma'].to_numpy(), width=width/10, 
-           linewidth=0.1, edgecolor='k', label="Gamma Exposure")
+    ax.grid(True, alpha=0.3, linewidth=0.5)
+    
+    # Barras más anchas y limpias
+    bar_width = (toStrike - fromStrike) / len(strikes) * 0.8
+    ax.bar(strikes, dfAgg['TotalGamma'].to_numpy(), width=bar_width, 
+           linewidth=0, edgecolor='none', color='steelblue', alpha=0.7,
+           label="Gamma Exposure")
+    
     ax.set_xlim([fromStrike, toStrike])
     
     chartTitle = f"Total Gamma: ${df['TotalGamma'].sum():.2f} Bn per 1% {ticker} Move"
-    ax.set_title(chartTitle, fontweight="bold", fontsize=20)
-    ax.set_xlabel('Strike', fontweight="bold")
-    ax.set_ylabel('Spot Gamma Exposure ($ billions/1% move)', fontweight="bold")
-    ax.axvline(x=spot_price, color='r', lw=1, label=f"{ticker} Spot: {spot_price:,.0f}")
-    ax.legend()
+    ax.set_title(chartTitle, fontweight="bold", fontsize=18, pad=20)
+    ax.set_xlabel('Strike', fontweight="bold", fontsize=14)
+    ax.set_ylabel('Spot Gamma Exposure ($ billions/1% move)', fontweight="bold", fontsize=14)
+    ax.axvline(x=spot_price, color='red', lw=2, label=f"{ticker} Spot: {spot_price:,.0f}", linestyle='--')
+    
+    # Resaltar strikes clave
+    max_gamma_idx = dfAgg['TotalGamma'].idxmax()
+    ax.scatter([max_gamma_idx], [dfAgg.loc[max_gamma_idx, 'TotalGamma']], 
+               color='green', s=200, zorder=5, marker='*', label=f'Max Gamma: {max_gamma_idx:.0f}')
+    
+    ax.legend(fontsize=12, loc='upper right')
+    ax.tick_params(labelsize=11)
     
     return fig
 
 
 def plot_open_interest(df, spot_price, ticker, width):
-    """Gráfico de Open Interest"""
-    fromStrike = spot_price * 0.8
-    toStrike = spot_price * 1.2
+    """Gráfico de Open Interest - MEJORADO"""
+    fromStrike = spot_price - width
+    toStrike = spot_price + width
     
-    dfAgg = df.groupby(['StrikePrice']).sum(numeric_only=True)
+    # Filtrar rango y agregar
+    df_range = df[(df['StrikePrice'] >= fromStrike) & (df['StrikePrice'] <= toStrike)]
+    dfAgg = df_range.groupby(['StrikePrice']).sum(numeric_only=True)
+    
+    # Filtrar OI bajo para limpiar
+    min_oi = dfAgg['total_oi'].quantile(0.05)
+    dfAgg = dfAgg[dfAgg['total_oi'] >= min_oi]
+    
     strikes = dfAgg.index.values
     
     fig, ax = plt.subplots(figsize=(16, 8))
-    ax.grid(True, alpha=0.3)
-    ax.bar(strikes, dfAgg['CallOpenInt'].to_numpy(), width=width/10,
-           linewidth=0.1, edgecolor='k', label="Call OI")
-    ax.bar(strikes, -1 * dfAgg['PutOpenInt'].to_numpy(), width=width/10,
-           linewidth=0.1, edgecolor='k', label="Put OI")
-    ax.set_xlim([fromStrike, toStrike])
+    ax.grid(True, alpha=0.3, linewidth=0.5)
     
-    ax.set_title(f"Total Open Interest for {ticker}", fontweight="bold", fontsize=20)
-    ax.set_xlabel('Strike', fontweight="bold")
-    ax.set_ylabel('Open Interest', fontweight="bold")
-    ax.axvline(x=spot_price, color='r', lw=1, label=f"{ticker} Spot: {spot_price:,.0f}")
-    ax.legend()
+    bar_width = (toStrike - fromStrike) / len(strikes) * 0.8
+    
+    ax.bar(strikes, dfAgg['CallOpenInt'].to_numpy(), width=bar_width,
+           linewidth=0, color='green', alpha=0.6, label="Call OI")
+    ax.bar(strikes, -1 * dfAgg['PutOpenInt'].to_numpy(), width=bar_width,
+           linewidth=0, color='red', alpha=0.6, label="Put OI")
+    
+    ax.set_xlim([fromStrike, toStrike])
+    ax.axhline(y=0, color='black', linewidth=1, linestyle='-', alpha=0.3)
+    
+    ax.set_title(f"Open Interest en rango ±{width} del Spot", fontweight="bold", fontsize=18, pad=20)
+    ax.set_xlabel('Strike', fontweight="bold", fontsize=14)
+    ax.set_ylabel('Open Interest', fontweight="bold", fontsize=14)
+    ax.axvline(x=spot_price, color='black', lw=2, linestyle='--', 
+               label=f"{ticker} Spot: {spot_price:,.0f}")
+    
+    # Destacar strikes con mayor OI
+    max_call_strike = dfAgg['CallOpenInt'].idxmax()
+    max_put_strike = dfAgg['PutOpenInt'].idxmax()
+    
+    ax.scatter([max_call_strike], [dfAgg.loc[max_call_strike, 'CallOpenInt']], 
+               color='darkgreen', s=150, zorder=5, marker='^')
+    ax.scatter([max_put_strike], [-dfAgg.loc[max_put_strike, 'PutOpenInt']], 
+               color='darkred', s=150, zorder=5, marker='v')
+    
+    ax.legend(fontsize=12, loc='upper right')
+    ax.tick_params(labelsize=11)
     
     return fig
 
 
 def plot_gex_profile(df, spot_price, ticker, width):
-    """Gráfico de Perfil de Gamma Exposure"""
+    """Gráfico de Perfil de Gamma Exposure - SIMPLIFICADO"""
     fromStrike = spot_price - width
     toStrike = spot_price + width
-    levels = np.linspace(fromStrike, toStrike, 30)
+    levels = np.linspace(fromStrike, toStrike, 25)  # Menos puntos = más rápido
     
     todayDate = date.today()
     nextExpiry = df['ExpirationDate'].min()
@@ -310,7 +349,6 @@ def plot_gex_profile(df, spot_price, ticker, width):
     
     totalGamma = []
     totalGammaExNext = []
-    totalGammaExFri = []
     
     for level in levels:
         df['callGammaEx'] = df.apply(
@@ -328,13 +366,9 @@ def plot_gex_profile(df, spot_price, ticker, width):
         
         exNxt = df.loc[df['ExpirationDate'] != nextExpiry]
         totalGammaExNext.append(exNxt['callGammaEx'].sum() - exNxt['putGammaEx'].sum())
-        
-        exFri = df.loc[df['ExpirationDate'] != nextMonthlyExp]
-        totalGammaExFri.append(exFri['callGammaEx'].sum() - exFri['putGammaEx'].sum())
     
     totalGamma = np.array(totalGamma) / 10**9
     totalGammaExNext = np.array(totalGammaExNext) / 10**9
-    totalGammaExFri = np.array(totalGammaExFri) / 10**9
     
     # Encontrar punto de flip gamma
     zeroCrossIdx = np.where(np.diff(np.sign(totalGamma)))[0]
@@ -349,123 +383,151 @@ def plot_gex_profile(df, spot_price, ticker, width):
         zeroGamma = zeroGamma[0]
     
     fig, ax = plt.subplots(figsize=(16, 8))
-    ax.grid(True, alpha=0.3)
-    ax.plot(levels, totalGamma, label="All Expiries")
-    ax.plot(levels, totalGammaExNext, label="Ex-Next Expiry")
-    ax.plot(levels, totalGammaExFri, label="Ex-Next Monthly Expiry")
+    ax.grid(True, alpha=0.3, linewidth=0.5)
     
-    chartTitle = f"Gamma Exposure Profile, {ticker}, {todayDate.strftime('%d %b %Y')}"
-    ax.set_title(chartTitle, fontweight="bold", fontsize=20)
-    ax.set_xlabel('Index Price', fontweight="bold")
-    ax.set_ylabel('Gamma Exposure ($ billions/1% move)', fontweight="bold")
+    ax.plot(levels, totalGamma, linewidth=3, color='steelblue', label="Todas las expiraciones")
+    ax.plot(levels, totalGammaExNext, linewidth=2, color='orange', 
+            linestyle='--', label="Sin próxima expiración")
     
-    ax.axvline(x=spot_price, color='r', lw=1, label=f"{ticker} Spot: {spot_price:,.0f}")
+    chartTitle = f"Perfil Gamma Exposure - {ticker} - {todayDate.strftime('%d %b %Y')}"
+    ax.set_title(chartTitle, fontweight="bold", fontsize=18, pad=20)
+    ax.set_xlabel('Precio del Índice', fontweight="bold", fontsize=14)
+    ax.set_ylabel('Gamma Exposure ($ billions/1% move)', fontweight="bold", fontsize=14)
+    
+    ax.axvline(x=spot_price, color='red', lw=2, linestyle='--',
+               label=f"{ticker} Spot: {spot_price:,.0f}")
     
     if zeroGamma is not None:
-        ax.axvline(x=zeroGamma, color='g', lw=1, label=f"Gamma Flip: {zeroGamma:,.0f}")
+        ax.axvline(x=zeroGamma, color='green', lw=2, linestyle=':',
+                   label=f"Gamma Flip: {zeroGamma:,.0f}")
     
-    ax.axhline(y=0, color='grey', lw=1)
+    ax.axhline(y=0, color='grey', lw=1.5, linestyle='-')
     ax.set_xlim([fromStrike, toStrike])
     
+    # Zonas de gamma positivo/negativo
     trans = ax.get_xaxis_transform()
     flip_point = zeroGamma if zeroGamma else fromStrike
-    ax.fill_between([fromStrike, flip_point], min(totalGamma), max(totalGamma),
-                    facecolor='red', alpha=0.1, transform=trans)
-    ax.fill_between([flip_point, toStrike], min(totalGamma), max(totalGamma),
-                    facecolor='green', alpha=0.1, transform=trans)
+    ax.fill_between([fromStrike, flip_point], 0, 1,
+                    facecolor='red', alpha=0.1, transform=trans, 
+                    label='Gamma Negativo (volátil)')
+    ax.fill_between([flip_point, toStrike], 0, 1,
+                    facecolor='green', alpha=0.1, transform=trans,
+                    label='Gamma Positivo (estable)')
     
-    ax.legend()
+    ax.legend(fontsize=11, loc='best')
+    ax.tick_params(labelsize=11)
+    
     return fig
 
 
 def plot_gex_by_strike(df_filtered, spot, ticker, width):
-    """Gráfico GEX por Strike"""
-    pos = df_filtered[df_filtered['net_gex'] > 0]
-    neg = df_filtered[df_filtered['net_gex'] < 0]
+    """Gráfico GEX por Strike - LIMPIO"""
+    # Filtrar strikes con GEX significativo
+    threshold = df_filtered['net_gex'].abs().quantile(0.20)
+    df_sig = df_filtered[df_filtered['net_gex'].abs() >= threshold]
+    
+    pos = df_sig[df_sig['net_gex'] > 0]
+    neg = df_sig[df_sig['net_gex'] < 0]
     
     if pos.empty and neg.empty:
         return None
     
-    max_gex = df_filtered.loc[df_filtered['net_gex'].idxmax()]
-    min_gex = df_filtered.loc[df_filtered['net_gex'].idxmin()]
+    max_gex = df_sig.loc[df_sig['net_gex'].idxmax()]
+    min_gex = df_sig.loc[df_sig['net_gex'].idxmin()]
     
-    bar_width = width / 25
+    bar_width = width / 15
     fig, ax = plt.subplots(figsize=(16, 8))
+    ax.grid(True, alpha=0.3, linewidth=0.5)
     
     if not pos.empty:
         ax.bar(pos['StrikePrice'], pos['net_gex'], color='limegreen',
-               width=bar_width, edgecolor='black', linewidth=0.8, label='GEX Positivo')
+               width=bar_width, edgecolor='darkgreen', linewidth=1.5, 
+               alpha=0.7, label='GEX Positivo')
     
     if not neg.empty:
         ax.bar(neg['StrikePrice'], neg['net_gex'], color='red',
-               width=bar_width, edgecolor='black', linewidth=0.8, label='GEX Negativo')
+               width=bar_width, edgecolor='darkred', linewidth=1.5,
+               alpha=0.7, label='GEX Negativo')
     
-    ax.axhline(0, color='black', linestyle='--')
-    ax.axvline(spot, color='black', linestyle='--', linewidth=1.5)
+    ax.axhline(0, color='black', linestyle='-', linewidth=1)
+    ax.axvline(spot, color='blue', linestyle='--', linewidth=2.5, alpha=0.8)
     
+    # Etiquetas más claras
     ymin, ymax = ax.get_ylim()
-    y_middle = (ymax + ymin) / 2
-    ax.text(spot, y_middle, f'{int(spot)}', ha='center', va='center',
-            fontsize=12, color='black', fontweight='bold',
-            bbox=dict(facecolor='white', edgecolor='black', boxstyle='round,pad=0.2'))
+    y_range = ymax - ymin
     
-    offset = (ymax - ymin) * 0.01
-    ax.text(max_gex['StrikePrice'], max_gex['net_gex'] + offset,
-            f'{int(max_gex["StrikePrice"])}', ha='right', va='bottom',
-            fontsize=10, fontweight='bold', color='green')
-    ax.text(min_gex['StrikePrice'], min_gex['net_gex'] - offset,
-            f'{int(min_gex["StrikePrice"])}', ha='left', va='top',
-            fontsize=10, fontweight='bold', color='darkred')
+    ax.text(spot, ymax - y_range * 0.05, f'Spot: {int(spot)}', 
+            ha='center', va='top', fontsize=14, color='blue', fontweight='bold',
+            bbox=dict(facecolor='white', edgecolor='blue', boxstyle='round,pad=0.5', linewidth=2))
     
-    ax.set_title(f'{ticker} GEX x STK (±{width} pts del Spot {int(spot)})',
-                 fontsize=16, fontweight='bold')
-    ax.grid(True, alpha=0.3)
-    ax.legend()
+    ax.text(max_gex['StrikePrice'], max_gex['net_gex'] + y_range * 0.02,
+            f'{int(max_gex["StrikePrice"])}', ha='center', va='bottom',
+            fontsize=12, fontweight='bold', color='darkgreen',
+            bbox=dict(facecolor='lightgreen', alpha=0.7, boxstyle='round,pad=0.3'))
+    
+    ax.text(min_gex['StrikePrice'], min_gex['net_gex'] - y_range * 0.02,
+            f'{int(min_gex["StrikePrice"])}', ha='center', va='top',
+            fontsize=12, fontweight='bold', color='darkred',
+            bbox=dict(facecolor='lightcoral', alpha=0.7, boxstyle='round,pad=0.3'))
+    
+    ax.set_title(f'{ticker} GEX por Strike (±{width} pts del Spot)',
+                 fontsize=18, fontweight='bold', pad=20)
+    ax.set_xlabel('Strike', fontweight='bold', fontsize=14)
+    ax.set_ylabel('Net GEX', fontweight='bold', fontsize=14)
+    ax.legend(fontsize=12, loc='upper right')
+    ax.tick_params(labelsize=11)
     
     return fig
 
 
 def plot_gamma_zones(df_filtered, spot, ticker, width):
-    """Gráfico de Zonas Gamma y OI"""
+    """Gráfico de Zonas Gamma - REDISEÑADO COMPLETAMENTE"""
     if df_filtered.empty:
         return None
     
-    max_gex = df_filtered.loc[df_filtered['net_gex'].idxmax()]
-    min_gex = df_filtered.loc[df_filtered['net_gex'].idxmin()]
+    # Filtrar solo strikes significativos
+    threshold = df_filtered['net_gex'].abs().quantile(0.15)
+    df_sig = df_filtered[df_filtered['net_gex'].abs() >= threshold]
     
-    oi_threshold = df_filtered['total_oi'].quantile(0.90)
-    high_oi = df_filtered[df_filtered['total_oi'] >= oi_threshold]
+    max_gex = df_sig.loc[df_sig['net_gex'].idxmax()]
+    min_gex = df_sig.loc[df_sig['net_gex'].idxmin()]
     
-    fig, ax = plt.subplots(figsize=(16, 8))
+    oi_threshold = df_sig['total_oi'].quantile(0.85)
+    high_oi = df_sig[df_sig['total_oi'] >= oi_threshold].sort_values('total_oi', ascending=False).head(5)
     
+    fig, ax = plt.subplots(figsize=(16, 10))
+    
+    # Zona gamma (verde)
     ax.axvspan(min_gex['StrikePrice'], max_gex['StrikePrice'],
-               color='lightgreen', alpha=0.3)
+               color='lightgreen', alpha=0.25, label='Zona Gamma (consolidación)')
     
-    for _, row in high_oi.iterrows():
+    # Líneas de alto OI (naranjas)
+    for idx, (_, row) in enumerate(high_oi.iterrows()):
         strike = row['StrikePrice']
-        ax.axvline(strike, color='orange', linestyle='--', alpha=0.6)
-        ax.text(strike, 0.95, f'{int(strike)}', rotation=90,
-                ha='center', va='top', fontsize=8,
-                transform=ax.get_xaxis_transform(), color='orange')
+        ax.axvline(strike, color='darkorange', linestyle='--', linewidth=2, alpha=0.7)
+        ax.text(strike, 0.92 - idx * 0.05, f'{int(strike)} (OI: {int(row["total_oi"]/1000)}k)', 
+                rotation=0, ha='left', va='top', fontsize=10,
+                transform=ax.get_xaxis_transform(), color='darkorange',
+                bbox=dict(facecolor='white', alpha=0.8, boxstyle='round,pad=0.3'))
     
-    ax.axvline(spot, color='black', linestyle='--', linewidth=1.5)
+    # Spot price (línea negra gruesa)
+    ax.axvline(spot, color='black', linestyle='-', linewidth=3, label=f'Spot: {int(spot)}')
     
-    ax.text(min_gex['StrikePrice'], 0.85, f'Mín\n{int(min_gex["StrikePrice"])}',
-            rotation=90, ha='center', va='top', fontsize=10,
-            transform=ax.get_xaxis_transform(), color='darkred')
-    ax.text(max_gex['StrikePrice'], 0.85, f'Máx\n{int(max_gex["StrikePrice"])}',
-            rotation=90, ha='center', va='top', fontsize=10,
-            transform=ax.get_xaxis_transform(), color='green')
+    # Strikes clave
+    ax.axvline(min_gex['StrikePrice'], color='red', linestyle=':', linewidth=2.5,
+               label=f'Mín GEX: {int(min_gex["StrikePrice"])}')
+    ax.axvline(max_gex['StrikePrice'], color='green', linestyle=':', linewidth=2.5,
+               label=f'Máx GEX: {int(max_gex["StrikePrice"])}')
     
-    ax.set_title('Zonas clave Gamma y Open Interest', fontsize=16, fontweight='bold')
-    ax.set_xlabel('Strike', fontsize=14)
-    ax.set_ylabel('Nivel', fontsize=14)
-    ax.grid(True, alpha=0.3)
+    ax.set_title('Zonas Clave: Gamma y Open Interest', fontsize=20, fontweight='bold', pad=20)
+    ax.set_xlabel('Strike', fontsize=16, fontweight='bold')
+    ax.set_xlim([spot - width, spot + width])
+    ax.set_ylim([0, 1])
+    ax.set_yticks([])
+    ax.grid(True, alpha=0.3, axis='x', linewidth=0.5)
     
-    lower_bound = int(min_gex['StrikePrice']) - 200
-    upper_bound = int(max_gex['StrikePrice']) + 200
-    ax.set_xticks(np.arange(lower_bound, upper_bound + 50, 50))
-    ax.tick_params(axis='x', labelrotation=45, labelsize=12)
+    ax.legend(fontsize=13, loc='upper left', framealpha=0.95)
+    ax.tick_params(axis='x', labelsize=12, rotation=45)
     
     return fig
 
@@ -499,7 +561,8 @@ def gex_scanner_page():
     
     with col2:
         width = st.number_input("Ancho de strikes (±puntos del spot)", 
-                                min_value=10, value=100, step=10)
+                                min_value=10, value=150, step=10,
+                                help="Rango de strikes a analizar alrededor del precio spot")
     
     if st.button("🔍 Analizar GEX", type="primary"):
         with st.spinner(f"Obteniendo datos de {ticker}..."):
@@ -509,7 +572,7 @@ def gex_scanner_page():
                 st.error(f"No se pudieron obtener datos para {ticker}")
                 st.stop()
             
-            st.info(f"Precio Spot de {ticker}: **${spot_price:,.2f}**")
+            st.info(f"💰 Precio Spot de {ticker}: **${spot_price:,.2f}**")
             
             # Procesar datos
             with st.spinner("Procesando datos de opciones..."):
@@ -532,78 +595,11 @@ def gex_scanner_page():
                 (df['StrikePrice'] <= upper_bound)
             ].sort_values(by='StrikePrice').reset_index(drop=True)
             
-            # Tabs para organizar gráficos
-            tab1, tab2, tab3, tab4, tab5 = st.tabs([
-                "📊 Total Gamma",
-                "📈 Open Interest", 
-                "🎯 Perfil GEX",
-                "🔥 GEX por Strike",
-                "🎪 Zonas Gamma"
-            ])
-            
-            with tab1:
-                st.subheader("Total Gamma Exposure")
-                with st.spinner("Generando gráfico..."):
-                    fig1 = plot_total_gamma(df, spot_price, ticker, width)
-                    st.pyplot(fig1)
-                    plt.close(fig1)
-            
-            with tab2:
-                st.subheader("Open Interest Total")
-                with st.spinner("Generando gráfico..."):
-                    fig2 = plot_open_interest(df, spot_price, ticker, width)
-                    st.pyplot(fig2)
-                    plt.close(fig2)
-            
-            with tab3:
-                st.subheader("Perfil de Gamma Exposure")
-                with st.spinner("Generando gráfico (esto puede tomar un momento)..."):
-                    fig3 = plot_gex_profile(df.copy(), spot_price, ticker, width)
-                    st.pyplot(fig3)
-                    plt.close(fig3)
-            
-            with tab4:
-                st.subheader("GEX por Strike")
-                with st.spinner("Generando gráfico..."):
-                    fig4 = plot_gex_by_strike(df_filtered, spot_price, ticker, width)
-                    if fig4:
-                        st.pyplot(fig4)
-                        plt.close(fig4)
-                    else:
-                        st.warning("No hay datos suficientes para este gráfico")
-            
-            with tab5:
-                st.subheader("Zonas de Gamma y Open Interest")
-                with st.spinner("Generando gráfico..."):
-                    fig5 = plot_gamma_zones(df_filtered, spot_price, ticker, width)
-                    if fig5:
-                        st.pyplot(fig5)
-                        plt.close(fig5)
-                        
-                        # Recomendaciones
-                        st.markdown("---")
-                        st.markdown("### 📋 Recomendaciones para 0DTE")
-                        st.info("""
-                        **Interpretación de Zonas:**
-                        - 🟢 **Zona Verde**: El precio tiende a consolidarse aquí (entre mín y máx GEX)
-                        - 🟠 **Picos OI**: Actúan como imanes de precio o barreras intradía
-                        - 📊 **Cerca del Máx GEX**: Posible presión alcista
-                        - 📉 **Cerca del Mín GEX**: Posible presión bajista
-                        - ⚡ **Fuera de zona GEX**: Mayor probabilidad de movimiento rápido
-                        
-                        **Estrategias sugeridas:**
-                        - **Bull Put Spreads**: Ubicar justo debajo de la zona verde si el spot sube
-                        - **Bear Call Spreads**: Ubicar justo arriba de la zona verde si el spot cae
-                        - **Iron Condor**: Ideal si el spot está centrado y el mercado tranquilo
-                        """)
-                    else:
-                        st.warning("No hay datos suficientes para este gráfico")
-            
-            # Métricas resumidas
+            # Métricas resumidas ARRIBA
             st.markdown("---")
-            st.subheader("📊 Métricas Resumidas")
+            st.subheader("📊 Métricas Clave")
             
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             
             with col1:
                 total_gamma = df['TotalGamma'].sum()
@@ -620,6 +616,99 @@ def gex_scanner_page():
             with col4:
                 put_call_ratio = total_put_oi / total_call_oi if total_call_oi > 0 else 0
                 st.metric("Put/Call Ratio", f"{put_call_ratio:.2f}")
+            
+            with col5:
+                max_gex_strike = df_filtered.loc[df_filtered['net_gex'].idxmax(), 'StrikePrice']
+                st.metric("Strike Max GEX", f"{max_gex_strike:,.0f}")
+            
+            st.markdown("---")
+            
+            # Tabs para organizar gráficos
+            tab1, tab2, tab3, tab4, tab5 = st.tabs([
+                "🎯 Zonas Clave",
+                "🔥 GEX por Strike",
+                "📈 Open Interest", 
+                "📊 Total Gamma",
+                "🌊 Perfil GEX"
+            ])
+            
+            with tab1:
+                st.subheader("🎯 Zonas de Gamma y Open Interest")
+                with st.spinner("Generando análisis de zonas..."):
+                    fig5 = plot_gamma_zones(df_filtered, spot_price, ticker, width)
+                    if fig5:
+                        st.pyplot(fig5)
+                        plt.close(fig5)
+                        
+                        # Recomendaciones
+                        st.markdown("---")
+                        col_a, col_b = st.columns(2)
+                        
+                        with col_a:
+                            st.markdown("### 📋 Interpretación")
+                            st.info("""
+                            **🟢 Zona Verde (Consolidación)**  
+                            El precio tiende a moverse entre los strikes de mín y máx GEX.
+                            
+                            **🟠 Líneas Naranjas (Alto OI)**  
+                            Actúan como imanes o barreras de precio intradía.
+                            
+                            **⚫ Línea Negra (Spot)**  
+                            Precio actual del subyacente.
+                            """)
+                        
+                        with col_b:
+                            st.markdown("### 💡 Estrategias Sugeridas")
+                            max_gex_val = df_filtered.loc[df_filtered['net_gex'].idxmax(), 'StrikePrice']
+                            min_gex_val = df_filtered.loc[df_filtered['net_gex'].idxmin(), 'StrikePrice']
+                            
+                            if spot_price > (max_gex_val + min_gex_val) / 2:
+                                st.success(f"""
+                                **📊 Spot por encima del centro de zona GEX**
+                                
+                                - **Bear Call Spread**: {int(max_gex_val + 20)}/{int(max_gex_val + 40)}
+                                - **Bull Put Spread**: {int(spot_price - 30)}/{int(spot_price - 50)}
+                                """)
+                            else:
+                                st.warning(f"""
+                                **📉 Spot por debajo del centro de zona GEX**
+                                
+                                - **Bull Put Spread**: {int(min_gex_val - 20)}/{int(min_gex_val - 40)}
+                                - **Bear Call Spread**: {int(spot_price + 30)}/{int(spot_price + 50)}
+                                """)
+                    else:
+                        st.warning("No hay datos suficientes para este gráfico")
+            
+            with tab2:
+                st.subheader("🔥 GEX por Strike")
+                with st.spinner("Generando gráfico..."):
+                    fig4 = plot_gex_by_strike(df_filtered, spot_price, ticker, width)
+                    if fig4:
+                        st.pyplot(fig4)
+                        plt.close(fig4)
+                    else:
+                        st.warning("No hay datos suficientes para este gráfico")
+            
+            with tab3:
+                st.subheader("📈 Open Interest")
+                with st.spinner("Generando gráfico..."):
+                    fig2 = plot_open_interest(df, spot_price, ticker, width)
+                    st.pyplot(fig2)
+                    plt.close(fig2)
+            
+            with tab4:
+                st.subheader("📊 Total Gamma Exposure")
+                with st.spinner("Generando gráfico..."):
+                    fig1 = plot_total_gamma(df, spot_price, ticker, width)
+                    st.pyplot(fig1)
+                    plt.close(fig1)
+            
+            with tab5:
+                st.subheader("🌊 Perfil de Gamma Exposure")
+                with st.spinner("Generando gráfico (esto puede tomar un momento)..."):
+                    fig3 = plot_gex_profile(df.copy(), spot_price, ticker, width)
+                    st.pyplot(fig3)
+                    plt.close(fig3)
 
 
 # =========================================================================
