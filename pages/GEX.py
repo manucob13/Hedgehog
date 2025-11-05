@@ -49,7 +49,7 @@ def connect_to_schwab():
         )
         
         # Verificar token
-        test_response = client.get_quote("SPX")
+        test_response = client.get_quote("$SPX")
         if hasattr(test_response, "status_code") and test_response.status_code != 200:
             raise Exception(f"Respuesta inesperada: {test_response.status_code}")
         
@@ -57,6 +57,8 @@ def connect_to_schwab():
     except Exception as e:
         st.error(f"❌ Error al conectar con Schwab: {e}")
         return None
+
+
 
 def calcGammaEx(S, K, vol, T, r, q, optType, OI):
     """Calcula Gamma Exposure basado en Black-Scholes"""
