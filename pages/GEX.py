@@ -94,8 +94,17 @@ def isThirdFriday(d):
     return d.weekday() == 4 and 15 <= d.day <= 21
 
 
-def get_options_data_schwab(client, ticker):
-    """Obtiene datos de opciones desde Schwab"""
+def get_options_data_schwab(client, ticker, spot_range_pct=0.25):
+    """
+    Obtiene datos de opciones desde Schwab con filtros para reducir el tamaño de la respuesta
+    
+    Parameters:
+    -----------
+    client : Schwab client
+    ticker : str
+    spot_range_pct : float
+        Porcentaje del precio spot para filtrar strikes (0.25 = ±25%)
+    """
     try:
         formatted_ticker = format_ticker_for_schwab(ticker)
         
@@ -117,10 +126,20 @@ def get_options_data_schwab(client, ticker):
             st.error(f"No se encontró el ticker en la respuesta: {list(quote_data.keys())}")
             return None, None
         
-        # Obtener cadena de opciones
+        # Calcular rango de strikes para filtrar
+        from_date = date.today()
+        to_date = date.today() + timedelta(days=60)  # Solo 60 días hacia adelante
+        
+        # Obtener cadena de opciones con FILTROS para reducir tamaño de respuesta
         options_response = client.get_option_chain(
             formatted_ticker,
-            contract_type=Client.Options.ContractType.ALL
+            contract_type=Client.Options.ContractType.ALL,
+            strike_count=50,  # Limita a 50 strikes arriba y abajo del ATM
+            include_underlying_quote=False,  # No necesitamos el quote otra vez
+            strategy=Client.Options.Strategy.SINGLE,  # Solo contratos simples
+            range=Client.Options.Range.ALL,  # Puedes usar ITM, OTM, etc.
+            from_date=from_date,
+            to_date=to_date
         )
         
         if options_response.status_code != 200:
