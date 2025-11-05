@@ -9,7 +9,6 @@ from utils import check_password
 import schwab
 from schwab.auth import easy_client
 from schwab.client import Client
-from utils import check_password
 import json
 import os
 
@@ -48,8 +47,8 @@ def connect_to_schwab():
             token_path=token_path
         )
         
-        # Verificar token
-        test_response = client.get_quote("$SPX")
+        # Verificar token con un símbolo simple
+        test_response = client.get_quote("SPY")
         if hasattr(test_response, "status_code") and test_response.status_code != 200:
             raise Exception(f"Respuesta inesperada: {test_response.status_code}")
         
@@ -58,6 +57,17 @@ def connect_to_schwab():
         st.error(f"❌ Error al conectar con Schwab: {e}")
         return None
 
+
+def format_ticker_for_schwab(ticker):
+    """Formatea el ticker según los requisitos de Schwab"""
+    # Para índices, agregar $ si no lo tiene
+    indices = ['SPX', 'NDX', 'RUT', 'DJX', 'VIX']
+    ticker_upper = ticker.upper()
+    
+    if ticker_upper in indices and not ticker.startswith('$'):
+        return f"${ticker_upper}"
+    
+    return ticker_upper
 
 
 def calcGammaEx(S, K, vol, T, r, q, optType, OI):
@@ -78,33 +88,57 @@ def calcGammaEx(S, K, vol, T, r, q, optType, OI):
     except:
         return 0
 
+
 def isThirdFriday(d):
     """Detecta si una fecha es el tercer viernes del mes"""
     return d.weekday() == 4 and 15 <= d.day <= 21
 
-@st.cache_data(ttl=300)  # Cache por 5 minutos
-def get_options_data_schwab(_client, ticker):
+
+def get_options_data_schwab(client, ticker):
     """Obtiene datos de opciones desde Schwab"""
     try:
+        formatted_ticker = format_ticker_for_schwab(ticker)
+        
         # Obtener spot price
-        quote_response = _client.get_quote(ticker)
+        quote_response = client.get_quote(formatted_ticker)
         if quote_response.status_code != 200:
+            st.error(f"Error en quote: Status {quote_response.status_code}")
+            st.error(f"Respuesta: {quote_response.text}")
             return None, None
         
         quote_data = quote_response.json()
-        spot_price = quote_data[ticker]['quote']['lastPrice']
+        
+        # Manejar diferentes formatos de respuesta
+        if formatted_ticker in quote_data:
+            spot_price = quote_data[formatted_ticker]['quote']['lastPrice']
+        elif ticker in quote_data:
+            spot_price = quote_data[ticker]['quote']['lastPrice']
+        else:
+            st.error(f"No se encontró el ticker en la respuesta: {list(quote_data.keys())}")
+            return None, None
         
         # Obtener cadena de opciones
-        options_response = _client.get_option_chain(ticker)
+        options_response = client.get_option_chain(
+            formatted_ticker,
+            contract_type=Client.Options.ContractType.ALL,
+            include_quotes=True
+        )
+        
         if options_response.status_code != 200:
+            st.error(f"Error en options: Status {options_response.status_code}")
+            st.error(f"Respuesta: {options_response.text}")
             return None, None
         
         options_data = options_response.json()
         
         return spot_price, options_data
+    
     except Exception as e:
-        st.error(f"Error obteniendo datos: {e}")
+        st.error(f"Error obteniendo datos: {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
         return None, None
+
 
 def process_schwab_options(options_data, spot_price):
     """Procesa los datos de opciones de Schwab en formato DataFrame"""
@@ -117,12 +151,18 @@ def process_schwab_options(options_data, spot_price):
         exp_date_clean = exp_date.split(':')[0]
         for strike, contracts in strikes.items():
             contract = contracts[0]
+            
+            # Extraer volatilidad (puede venir como decimal o porcentaje)
+            call_iv = contract.get('volatility', 0)
+            if call_iv > 2:  # Si es > 200%, probablemente está en porcentaje
+                call_iv = call_iv / 100
+            
             all_options.append({
                 'ExpirationDate': exp_date_clean,
                 'StrikePrice': float(strike),
                 'CallPut': 'C',
                 'CallOpenInt': contract.get('openInterest', 0),
-                'CallIV': contract.get('volatility', 0),
+                'CallIV': call_iv,
                 'CallGamma': contract.get('gamma', 0),
                 'CallVol': contract.get('totalVolume', 0),
                 'PutOpenInt': 0,
@@ -138,12 +178,16 @@ def process_schwab_options(options_data, spot_price):
         for strike, contracts in strikes.items():
             contract = contracts[0]
             
+            put_iv = contract.get('volatility', 0)
+            if put_iv > 2:
+                put_iv = put_iv / 100
+            
             # Buscar si ya existe el strike/fecha en all_options
             found = False
             for opt in all_options:
                 if opt['StrikePrice'] == float(strike) and opt['ExpirationDate'] == exp_date_clean:
                     opt['PutOpenInt'] = contract.get('openInterest', 0)
-                    opt['PutIV'] = contract.get('volatility', 0)
+                    opt['PutIV'] = put_iv
                     opt['PutGamma'] = contract.get('gamma', 0)
                     opt['PutVol'] = contract.get('totalVolume', 0)
                     found = True
@@ -159,7 +203,7 @@ def process_schwab_options(options_data, spot_price):
                     'CallGamma': 0,
                     'CallVol': 0,
                     'PutOpenInt': contract.get('openInterest', 0),
-                    'PutIV': contract.get('volatility', 0),
+                    'PutIV': put_iv,
                     'PutGamma': contract.get('gamma', 0),
                     'PutVol': contract.get('totalVolume', 0)
                 })
@@ -190,6 +234,7 @@ def process_schwab_options(options_data, spot_price):
     
     return df
 
+
 def plot_total_gamma(df, spot_price, ticker, width):
     """Gráfico de Gamma Exposure Total"""
     fromStrike = spot_price * 0.8
@@ -200,7 +245,7 @@ def plot_total_gamma(df, spot_price, ticker, width):
     
     fig, ax = plt.subplots(figsize=(16, 8))
     ax.grid(True, alpha=0.3)
-    ax.bar(strikes, dfAgg['TotalGamma'].to_numpy(), width=6, 
+    ax.bar(strikes, dfAgg['TotalGamma'].to_numpy(), width=width/10, 
            linewidth=0.1, edgecolor='k', label="Gamma Exposure")
     ax.set_xlim([fromStrike, toStrike])
     
@@ -213,6 +258,7 @@ def plot_total_gamma(df, spot_price, ticker, width):
     
     return fig
 
+
 def plot_open_interest(df, spot_price, ticker, width):
     """Gráfico de Open Interest"""
     fromStrike = spot_price * 0.8
@@ -223,9 +269,9 @@ def plot_open_interest(df, spot_price, ticker, width):
     
     fig, ax = plt.subplots(figsize=(16, 8))
     ax.grid(True, alpha=0.3)
-    ax.bar(strikes, dfAgg['CallOpenInt'].to_numpy(), width=6,
+    ax.bar(strikes, dfAgg['CallOpenInt'].to_numpy(), width=width/10,
            linewidth=0.1, edgecolor='k', label="Call OI")
-    ax.bar(strikes, -1 * dfAgg['PutOpenInt'].to_numpy(), width=6,
+    ax.bar(strikes, -1 * dfAgg['PutOpenInt'].to_numpy(), width=width/10,
            linewidth=0.1, edgecolor='k', label="Put OI")
     ax.set_xlim([fromStrike, toStrike])
     
@@ -236,6 +282,7 @@ def plot_open_interest(df, spot_price, ticker, width):
     ax.legend()
     
     return fig
+
 
 def plot_gex_profile(df, spot_price, ticker, width):
     """Gráfico de Perfil de Gamma Exposure"""
@@ -319,6 +366,7 @@ def plot_gex_profile(df, spot_price, ticker, width):
     ax.legend()
     return fig
 
+
 def plot_gex_by_strike(df_filtered, spot, ticker, width):
     """Gráfico GEX por Strike"""
     pos = df_filtered[df_filtered['net_gex'] > 0]
@@ -330,7 +378,7 @@ def plot_gex_by_strike(df_filtered, spot, ticker, width):
     max_gex = df_filtered.loc[df_filtered['net_gex'].idxmax()]
     min_gex = df_filtered.loc[df_filtered['net_gex'].idxmin()]
     
-    bar_width = 2
+    bar_width = width / 25
     fig, ax = plt.subplots(figsize=(16, 8))
     
     if not pos.empty:
@@ -364,6 +412,7 @@ def plot_gex_by_strike(df_filtered, spot, ticker, width):
     ax.legend()
     
     return fig
+
 
 def plot_gamma_zones(df_filtered, spot, ticker, width):
     """Gráfico de Zonas Gamma y OI"""
@@ -409,6 +458,7 @@ def plot_gamma_zones(df_filtered, spot, ticker, width):
     
     return fig
 
+
 # =========================================================================
 # 2. INTERFAZ PRINCIPAL
 # =========================================================================
@@ -434,11 +484,11 @@ def gex_scanner_page():
     col1, col2 = st.columns(2)
     
     with col1:
-        ticker = st.text_input("Ticker", value="SPX", help="Ingresa el símbolo del activo")
+        ticker = st.text_input("Ticker", value="SPX", help="Ingresa el símbolo del activo (SPX, SPY, QQQ, etc.)")
     
     with col2:
         width = st.number_input("Ancho de strikes (±puntos del spot)", 
-                                min_value=10, value=50, step=10)
+                                min_value=10, value=100, step=10)
     
     if st.button("🔍 Analizar GEX", type="primary"):
         with st.spinner(f"Obteniendo datos de {ticker}..."):
@@ -451,11 +501,14 @@ def gex_scanner_page():
             st.info(f"Precio Spot de {ticker}: **${spot_price:,.2f}**")
             
             # Procesar datos
-            df = process_schwab_options(options_data, spot_price)
+            with st.spinner("Procesando datos de opciones..."):
+                df = process_schwab_options(options_data, spot_price)
             
             if df.empty:
                 st.warning("No se encontraron datos de opciones")
                 st.stop()
+            
+            st.success(f"✅ Se procesaron {len(df)} contratos de opciones")
             
             # Filtrar por rango
             lower_bound = spot_price - width
@@ -479,51 +532,61 @@ def gex_scanner_page():
             
             with tab1:
                 st.subheader("Total Gamma Exposure")
-                fig1 = plot_total_gamma(df, spot_price, ticker, width)
-                st.pyplot(fig1)
+                with st.spinner("Generando gráfico..."):
+                    fig1 = plot_total_gamma(df, spot_price, ticker, width)
+                    st.pyplot(fig1)
+                    plt.close(fig1)
             
             with tab2:
                 st.subheader("Open Interest Total")
-                fig2 = plot_open_interest(df, spot_price, ticker, width)
-                st.pyplot(fig2)
+                with st.spinner("Generando gráfico..."):
+                    fig2 = plot_open_interest(df, spot_price, ticker, width)
+                    st.pyplot(fig2)
+                    plt.close(fig2)
             
             with tab3:
                 st.subheader("Perfil de Gamma Exposure")
-                fig3 = plot_gex_profile(df, spot_price, ticker, width)
-                st.pyplot(fig3)
+                with st.spinner("Generando gráfico (esto puede tomar un momento)..."):
+                    fig3 = plot_gex_profile(df.copy(), spot_price, ticker, width)
+                    st.pyplot(fig3)
+                    plt.close(fig3)
             
             with tab4:
                 st.subheader("GEX por Strike")
-                fig4 = plot_gex_by_strike(df_filtered, spot_price, ticker, width)
-                if fig4:
-                    st.pyplot(fig4)
-                else:
-                    st.warning("No hay datos suficientes para este gráfico")
+                with st.spinner("Generando gráfico..."):
+                    fig4 = plot_gex_by_strike(df_filtered, spot_price, ticker, width)
+                    if fig4:
+                        st.pyplot(fig4)
+                        plt.close(fig4)
+                    else:
+                        st.warning("No hay datos suficientes para este gráfico")
             
             with tab5:
                 st.subheader("Zonas de Gamma y Open Interest")
-                fig5 = plot_gamma_zones(df_filtered, spot_price, ticker, width)
-                if fig5:
-                    st.pyplot(fig5)
-                    
-                    # Recomendaciones
-                    st.markdown("---")
-                    st.markdown("### 📋 Recomendaciones para 0DTE")
-                    st.info("""
-                    **Interpretación de Zonas:**
-                    - 🟢 **Zona Verde**: El precio tiende a consolidarse aquí (entre mín y máx GEX)
-                    - 🟠 **Picos OI**: Actúan como imanes de precio o barreras intradía
-                    - 📊 **Cerca del Máx GEX**: Posible presión alcista
-                    - 📉 **Cerca del Mín GEX**: Posible presión bajista
-                    - ⚡ **Fuera de zona GEX**: Mayor probabilidad de movimiento rápido
-                    
-                    **Estrategias sugeridas:**
-                    - **Bull Put Spreads**: Ubicar justo debajo de la zona verde si el spot sube
-                    - **Bear Call Spreads**: Ubicar justo arriba de la zona verde si el spot cae
-                    - **Iron Condor**: Ideal si el spot está centrado y el mercado tranquilo
-                    """)
-                else:
-                    st.warning("No hay datos suficientes para este gráfico")
+                with st.spinner("Generando gráfico..."):
+                    fig5 = plot_gamma_zones(df_filtered, spot_price, ticker, width)
+                    if fig5:
+                        st.pyplot(fig5)
+                        plt.close(fig5)
+                        
+                        # Recomendaciones
+                        st.markdown("---")
+                        st.markdown("### 📋 Recomendaciones para 0DTE")
+                        st.info("""
+                        **Interpretación de Zonas:**
+                        - 🟢 **Zona Verde**: El precio tiende a consolidarse aquí (entre mín y máx GEX)
+                        - 🟠 **Picos OI**: Actúan como imanes de precio o barreras intradía
+                        - 📊 **Cerca del Máx GEX**: Posible presión alcista
+                        - 📉 **Cerca del Mín GEX**: Posible presión bajista
+                        - ⚡ **Fuera de zona GEX**: Mayor probabilidad de movimiento rápido
+                        
+                        **Estrategias sugeridas:**
+                        - **Bull Put Spreads**: Ubicar justo debajo de la zona verde si el spot sube
+                        - **Bear Call Spreads**: Ubicar justo arriba de la zona verde si el spot cae
+                        - **Iron Condor**: Ideal si el spot está centrado y el mercado tranquilo
+                        """)
+                    else:
+                        st.warning("No hay datos suficientes para este gráfico")
             
             # Métricas resumidas
             st.markdown("---")
@@ -546,6 +609,7 @@ def gex_scanner_page():
             with col4:
                 put_call_ratio = total_put_oi / total_call_oi if total_call_oi > 0 else 0
                 st.metric("Put/Call Ratio", f"{put_call_ratio:.2f}")
+
 
 # =========================================================================
 # 3. PUNTO DE ENTRADA
