@@ -11,7 +11,6 @@ import os
 import time
 from math import sqrt
 import schwab
-from schwab.auth import easy_client
 from schwab.client import Client
 from utils import check_password
 import json
@@ -68,39 +67,56 @@ def perform_initial_preparation():
         st.stop()
 
 # =========================================================================
-# 2. CONEXIÓN CON BROKER SCHWAB
+# 2. CONEXIÓN CON BROKER SCHWAB (SIN OAUTH)
 # =========================================================================
+
+def load_token_from_file(token_path):
+    """Carga el token desde archivo JSON"""
+    try:
+        with open(token_path, 'r') as f:
+            token_data = json.load(f)
+        return token_data
+    except Exception as e:
+        st.error(f"❌ Error al leer token: {e}")
+        return None
 
 def connect_to_schwab():
     """
-    Usa el token existente si está disponible.
-    No abre flujo OAuth ni usa puerto; solo valida token.json.
+    Crea cliente Schwab usando token existente SIN iniciar servidor OAuth.
+    Solo lee el token del archivo y lo usa directamente.
     """
     st.subheader("2. Conexión con Broker Schwab")
     
     if not os.path.exists(token_path):
         st.error("❌ No se encontró 'schwab_token.json'. Genera el token desde tu notebook local antes de usar esta página.")
+        st.info("📝 Instrucciones: Ejecuta el notebook local para generar el token, luego súbelo a Streamlit Cloud")
         return None
     
     try:
-        client = easy_client(
+        # Cargar token desde archivo
+        token_data = load_token_from_file(token_path)
+        if not token_data:
+            return None
+        
+        # Crear cliente directamente con el token (sin OAuth flow)
+        client = Client(
             api_key=api_key,
             app_secret=app_secret,
-            callback_url=redirect_uri,
-            token_path=token_path
+            token_metadata=token_data
         )
         
-        # Verificar token
+        # Verificar que el token funciona
         test_response = client.get_quote("AAPL")
         if hasattr(test_response, "status_code") and test_response.status_code != 200:
-            raise Exception(f"Respuesta inesperada: {test_response.status_code}")
+            raise Exception(f"Token inválido o expirado. Status: {test_response.status_code}")
         
         st.success("✅ Conexión con Schwab verificada (token activo).")
         return client
     
     except Exception as e:
         st.error(f"❌ Error al inicializar Schwab Client: {e}")
-        st.warning("⚠️ Si el error persiste, elimina el archivo 'schwab_token.json' y vuelve a generarlo desde tu entorno local.")
+        st.warning("⚠️ El token puede haber expirado. Genera uno nuevo desde tu notebook local.")
+        st.info("💡 Los tokens de Schwab expiran cada 7 días y deben regenerarse.")
         return None
 
 # =========================================================================
@@ -391,6 +407,8 @@ def options_scanner_page():
             if 'schwab_client_options' in st.session_state:
                 del st.session_state.schwab_client_options
             st.rerun()
+    with col2:
+        st.caption("💡 Usa este botón si el token se renovó")
     
     # Primero intentar reutilizar el cliente del FF Scanner si existe
     if 'schwab_client' in st.session_state and st.session_state.schwab_client is not None:
@@ -414,10 +432,11 @@ def options_scanner_page():
     st.divider()
     st.subheader("4. Escaneo de Opciones")
     
-    # Verificar si hay cliente válido (CORRECCIÓN AQUÍ)
+    # Verificar si hay cliente válido
     if not hasattr(st.session_state, 'schwab_client_options') or st.session_state.schwab_client_options is None:
         st.error("❌ Necesitas conectar con Schwab antes de ejecutar el escaneo")
-        st.info("💡 Haz clic en '🔄 Reconectar Schwab' arriba para establecer la conexión")
+        st.info("💡 Asegúrate de que 'schwab_token.json' existe y está actualizado")
+        st.warning("⚠️ Los tokens de Schwab expiran cada 7 días")
     else:
         # Cliente válido - mostrar interfaz de escaneo
         schwab_client = st.session_state.schwab_client_options
@@ -460,7 +479,7 @@ def options_scanner_page():
                 
                 except Exception as e:
                     st.error(f"❌ Error durante el escaneo: {str(e)}")
-                    st.info("💡 Intenta reconectar con Schwab y vuelve a ejecutar el escaneo")
+                    st.info("💡 El token puede haber expirado. Genera uno nuevo desde tu notebook local.")
     
     # --- Punto 5: Resultados ---
     st.divider()
@@ -474,7 +493,8 @@ def options_scanner_page():
     if schwab_client:
         st.success(f"🎯 Sistema listo con {len(valid_tickers)} tickers válidos y conexión Schwab activa.")
     else:
-        st.info("⏳ Conecta tu token Schwab para activar funciones de trading.")
+        st.warning("⏳ Conecta tu token Schwab para activar funciones de trading.")
+        st.info("📝 **Cómo generar el token:**\n1. Ejecuta tu notebook local\n2. Completa el flujo OAuth\n3. Sube 'schwab_token.json' a Streamlit Cloud")
 
 # =========================================================================
 # 8. PUNTO DE ENTRADA PROTEGIDO
