@@ -1,0 +1,322 @@
+# pages/Trend stocks.py
+import streamlit as st
+import pandas as pd
+import numpy as np
+from datetime import datetime
+import os
+
+# =========================================================================
+# CONFIGURACIÓN
+# =========================================================================
+
+st.set_page_config(page_title="Trend stocks", layout="wide")
+
+# =========================================================================
+# 1. CARGA Y PROCESAMIENTO DE DATOS
+# =========================================================================
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cargar_datos_csv():
+    """Carga el CSV principal con datos de acciones"""
+    st.subheader("1. Carga de Datos")
+    
+    csv_files = ['explorer.csv.csv', '1762686384523_explorer.csv.csv', 'explorer.csv']
+    df = None
+    
+    for csv_file in csv_files:
+        if os.path.exists(csv_file):
+            try:
+                df = pd.read_csv(csv_file)
+                st.success(f"✅ Archivo '{csv_file}' cargado correctamente: {len(df)} registros")
+                break
+            except Exception as e:
+                st.error(f"❌ Error al leer '{csv_file}': {e}")
+    
+    if df is None:
+        st.error("❌ No se encontró ningún archivo CSV válido")
+        st.info("📝 Asegúrate de tener 'explorer.csv.csv' o 'explorer.csv' en el directorio raíz")
+        return None
+    
+    return df
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def simular_datos_opciones(df):
+    """
+    Simula datos de opciones (call/put ratio y volumen).
+    NOTA: Reemplazar con datos reales de tu API cuando esté disponible.
+    """
+    if df is None:
+        return None
+    
+    df_opciones = df.copy()
+    
+    # Simular datos de opciones basados en características reales
+    np.random.seed(42)
+    
+    # Volumen de opciones correlacionado con volumen de acciones
+    df_opciones['Options_Volume'] = (df_opciones['Volumen'] * 
+                                      np.random.uniform(0.05, 0.3, len(df_opciones))).astype(int)
+    
+    # Call/Put Ratio con distribución realista
+    # Mayor ratio en acciones con tendencia alcista (ROC positivo)
+    base_ratio = np.random.lognormal(0, 0.5, len(df_opciones))
+    
+    # Ajustar ratio según momentum (ROC18)
+    momentum_factor = 1 + (df_opciones['ROC18'] / 100) * 0.3
+    df_opciones['Call_Put_Ratio'] = (base_ratio * momentum_factor).clip(0.1, 5.0)
+    
+    return df_opciones
+
+# =========================================================================
+# 2. FILTROS Y PARÁMETROS
+# =========================================================================
+
+def seccion_filtros():
+    """Sección de configuración de filtros"""
+    st.subheader("2. Configuración de Filtros")
+    
+    with st.container():
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            volumen_min = st.number_input(
+                "📊 Volumen mínimo de opciones",
+                min_value=0,
+                value=5000,
+                step=1000,
+                help="Volumen mínimo de contratos de opciones (calls + puts)"
+            )
+        
+        with col2:
+            ratio_min = st.number_input(
+                "📈 Call/Put Ratio mínimo",
+                min_value=0.0,
+                value=0.5,
+                step=0.1,
+                format="%.2f",
+                help="Ratio mínimo (>0.5 significa más calls que puts)"
+            )
+        
+        st.markdown("---")
+        
+        # Información adicional
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.info("**Volumen > 5000**: Alta liquidez en opciones")
+        with col2:
+            st.info("**Ratio > 0.5**: Sesgo alcista (más calls)")
+        with col3:
+            st.info("**Ratio > 1.0**: Fuerte sesgo alcista")
+    
+    return volumen_min, ratio_min
+
+# =========================================================================
+# 3. PROCESAMIENTO Y FILTRADO
+# =========================================================================
+
+def aplicar_filtros(df, volumen_min, ratio_min):
+    """Aplica los filtros de volumen y call/put ratio"""
+    if df is None:
+        return None
+    
+    st.subheader("3. Aplicación de Filtros")
+    
+    # Filtrar según criterios
+    df_filtrado = df[
+        (df['Options_Volume'] > volumen_min) & 
+        (df['Call_Put_Ratio'] > ratio_min)
+    ].copy()
+    
+    # Agregar columna de ranking por volumen
+    df_filtrado = df_filtrado.sort_values('Options_Volume', ascending=False)
+    df_filtrado.insert(0, 'Rank', range(1, len(df_filtrado) + 1))
+    
+    # Formatear columnas para display
+    df_filtrado['Call_Put_Ratio'] = df_filtrado['Call_Put_Ratio'].apply(lambda x: f"{x:.2f}")
+    df_filtrado['Price'] = df_filtrado['Price'].apply(lambda x: f"${x:.2f}")
+    
+    # Métricas de resumen
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("🎯 Acciones Filtradas", len(df_filtrado))
+    with col2:
+        if len(df_filtrado) > 0:
+            avg_ratio = df[df['Options_Volume'] > volumen_min]['Call_Put_Ratio'].mean()
+            st.metric("📊 Ratio Promedio", f"{avg_ratio:.2f}")
+    with col3:
+        ratio_gt_1 = len(df_filtrado[df_filtrado['Call_Put_Ratio'].astype(float) > 1.0])
+        st.metric("🚀 Ratio > 1.0", ratio_gt_1)
+    with col4:
+        if len(df_filtrado) > 0:
+            total_vol = df_filtrado['Options_Volume'].sum()
+            st.metric("📈 Vol. Total", f"{total_vol:,.0f}")
+    
+    return df_filtrado
+
+# =========================================================================
+# 4. VISUALIZACIÓN DE RESULTADOS
+# =========================================================================
+
+def mostrar_resultados(df_resultados):
+    """Muestra los resultados filtrados en tabla interactiva"""
+    st.subheader("4. Resultados del Escaneo")
+    
+    if df_resultados is None or df_resultados.empty:
+        st.warning("⚠️ No hay acciones que cumplan los criterios de filtrado")
+        st.info("💡 Intenta reducir los valores mínimos de los filtros")
+        return
+    
+    # Seleccionar columnas relevantes
+    columnas_display = [
+        'Rank', 'Ticker', 'Price', 'Volumen', 
+        'Options_Volume', 'Call_Put_Ratio',
+        'RSI', 'ROC18', 'Sharpe_ratio', 'Sector'
+    ]
+    
+    df_display = df_resultados[columnas_display].copy()
+    
+    # Renombrar columnas para mejor presentación
+    df_display.columns = [
+        '🏅 Rank', '🎯 Ticker', '💵 Precio', '📊 Vol. Acción',
+        '📈 Vol. Opciones', '🔥 Call/Put Ratio',
+        '📊 RSI', '📈 ROC18', '⭐ Sharpe', '🏢 Sector'
+    ]
+    
+    # Tabla de resultados
+    st.markdown("#### 🏆 Acciones con Mayor Actividad en Opciones")
+    st.dataframe(
+        df_display,
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "🏅 Rank": st.column_config.NumberColumn(width="small"),
+            "🎯 Ticker": st.column_config.TextColumn(width="small"),
+            "💵 Precio": st.column_config.TextColumn(width="small"),
+            "📊 Vol. Acción": st.column_config.NumberColumn(width="medium", format="%d"),
+            "📈 Vol. Opciones": st.column_config.NumberColumn(width="medium", format="%d"),
+            "🔥 Call/Put Ratio": st.column_config.TextColumn(width="small"),
+            "📊 RSI": st.column_config.NumberColumn(width="small", format="%.2f"),
+            "📈 ROC18": st.column_config.NumberColumn(width="small", format="%.2f"),
+            "⭐ Sharpe": st.column_config.NumberColumn(width="small", format="%.2f"),
+            "🏢 Sector": st.column_config.TextColumn(width="medium")
+        }
+    )
+    
+    # Gráfico de distribución
+    st.markdown("---")
+    st.markdown("#### 📊 Distribución de Call/Put Ratio")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Top 10 por ratio
+        top_10_ratio = df_resultados.nlargest(10, 'Call_Put_Ratio')
+        st.bar_chart(
+            top_10_ratio.set_index('Ticker')['Call_Put_Ratio'].astype(float),
+            use_container_width=True
+        )
+        st.caption("Top 10 acciones por Call/Put Ratio")
+    
+    with col2:
+        # Top 10 por volumen
+        top_10_vol = df_resultados.nlargest(10, 'Options_Volume')
+        st.bar_chart(
+            top_10_vol.set_index('Ticker')['Options_Volume'],
+            use_container_width=True
+        )
+        st.caption("Top 10 acciones por Volumen de Opciones")
+    
+    # Botón de descarga
+    st.markdown("---")
+    csv = df_resultados.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Descargar Resultados (CSV)",
+        data=csv,
+        file_name=f"options_scanner_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
+        use_container_width=False
+    )
+
+# =========================================================================
+# 5. FUNCIÓN PRINCIPAL
+# =========================================================================
+
+def options_scanner_page():
+    st.title("📊 Options Scanner - Call/Put Ratio Analyzer")
+    st.markdown("---")
+    st.info("🔍 Este escáner identifica acciones con alta actividad en opciones y sesgo alcista")
+    
+    # Cargar datos
+    st.divider()
+    df_base = cargar_datos_csv()
+    
+    if df_base is not None:
+        # Simular datos de opciones
+        with st.spinner("Procesando datos de opciones..."):
+            df_opciones = simular_datos_opciones(df_base)
+        
+        st.success(f"✅ Datos procesados: {len(df_opciones)} acciones con información de opciones")
+        
+        # Mostrar nota sobre datos simulados
+        with st.expander("⚠️ Importante: Datos de Opciones Simulados"):
+            st.warning("""
+            **NOTA**: Los datos de Call/Put Ratio y Volumen de Opciones son simulados para demostración.
+            
+            Para usar datos reales, necesitas:
+            1. Una API de datos de opciones (Schwab, Interactive Brokers, TDAmeritrade, etc.)
+            2. Reemplazar la función `simular_datos_opciones()` con llamadas reales a la API
+            3. La estructura del CSV debe incluir las columnas:
+               - `Options_Volume`: Volumen total de opciones
+               - `Call_Put_Ratio`: Ratio de calls vs puts
+            """)
+        
+        # Sección de filtros
+        st.divider()
+        volumen_min, ratio_min = seccion_filtros()
+        
+        # Botón de escaneo
+        st.divider()
+        col1, col2, col3 = st.columns([1, 2, 1])
+        
+        with col1:
+            ejecutar_btn = st.button("🚀 Aplicar Filtros", type="primary", use_container_width=True)
+        
+        with col2:
+            if 'df_resultados' in st.session_state and st.session_state.df_resultados is not None:
+                st.success(f"✅ {len(st.session_state.df_resultados)} resultados actuales")
+        
+        with col3:
+            if st.button("🗑️ Limpiar", use_container_width=True):
+                if 'df_resultados' in st.session_state:
+                    del st.session_state.df_resultados
+                st.rerun()
+        
+        # Ejecutar filtrado
+        if ejecutar_btn:
+            with st.spinner("Aplicando filtros..."):
+                df_resultados = aplicar_filtros(df_opciones, volumen_min, ratio_min)
+                st.session_state.df_resultados = df_resultados
+            
+            if df_resultados is not None and not df_resultados.empty:
+                st.success(f"✅ Filtrado completado: {len(df_resultados)} acciones encontradas")
+            else:
+                st.warning("⚠️ No se encontraron acciones que cumplan los criterios")
+        
+        # Mostrar resultados
+        st.divider()
+        if 'df_resultados' in st.session_state:
+            mostrar_resultados(st.session_state.df_resultados)
+        else:
+            st.info("👆 Configura los filtros y presiona 'Aplicar Filtros' para ver los resultados")
+    
+    else:
+        st.error("❌ No se pudo cargar el archivo CSV. Verifica que existe en el directorio raíz.")
+
+# =========================================================================
+# 6. PUNTO DE ENTRADA
+# =========================================================================
+
+if __name__ == "__main__":
+    options_scanner_page()
