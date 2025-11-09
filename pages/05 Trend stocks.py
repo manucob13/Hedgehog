@@ -16,76 +16,166 @@ from schwab.client import Client
 from utils import check_password
 import json
 
-
 # =========================================================================
-# CONFIGURACIÓN
-# =========================================================================
-
-st.set_page_config(page_title="Trend stocks", layout="wide")
-
-# =========================================================================
-# 1. CARGA Y PROCESAMIENTO DE DATOS
+# 0. CONFIGURACIÓN Y VARIABLES
 # =========================================================================
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def cargar_datos_csv():
-    """Carga el CSV principal con datos de acciones"""
-    st.subheader("1. Carga de Datos")
+st.set_page_config(page_title="Trend Stocks", layout="wide")
+
+# Cargar variables de Schwab desde secrets
+try:
+    api_key = st.secrets["schwab"]["api_key"]
+    app_secret = st.secrets["schwab"]["app_secret"]
+    redirect_uri = st.secrets["schwab"]["redirect_uri"]
+except KeyError as e:
+    st.error(f"❌ Falta configurar los secrets de Schwab. Clave faltante: {e}. Asegúrate de que tienes [schwab] en secrets.toml")
+    st.stop()
+
+# Ruta local del token
+token_path = "schwab_token.json"
+
+# =========================================================================
+# 1. PREPARACIÓN DE TICKERS (DESDE CSV)
+# =========================================================================
+
+@st.cache_resource(ttl=timedelta(hours=24), show_spinner=False)
+def perform_initial_preparation():
+    st.subheader("1. Preparación de Tickers")
     
-    csv_files = ['explorer.csv.csv', '1762686384523_explorer.csv.csv', 'explorer.csv']
-    df = None
+    status_text = st.empty()
     
-    for csv_file in csv_files:
-        if os.path.exists(csv_file):
-            try:
-                df = pd.read_csv(csv_file)
-                st.success(f"✅ Archivo '{csv_file}' cargado correctamente: {len(df)} registros")
-                break
-            except Exception as e:
-                st.error(f"❌ Error al leer '{csv_file}': {e}")
+    # Leer tickers del archivo CSV
+    if os.path.exists('Tickers.csv'):
+        try:
+            df_tickers = pd.read_csv('Tickers.csv')
+            tickers = df_tickers.iloc[:, 0].astype(str).str.upper().str.strip().tolist()
+            tickers = sorted(set(tickers))  # Eliminar duplicados y ordenar
+            
+            st.success(f"✅ 'Tickers.csv' encontrado con {len(tickers)} tickers.")
+            st.info("ℹ️ Los tickers se usan directamente sin validación adicional.")
+            
+            status_text.empty()
+            st.divider()
+            
+            return tickers
+            
+        except Exception as e:
+            st.error(f"❌ Error al leer 'Tickers.csv': {e}")
+            st.stop()
+    else:
+        st.error("❌ 'Tickers.csv' no encontrado en el directorio raíz.")
+        st.info("📝 Crea un archivo 'Tickers.csv' con una columna de tickers (uno por línea)")
+        st.stop()
+
+# =========================================================================
+# 2. CONEXIÓN CON BROKER SCHWAB
+# =========================================================================
+
+def connect_to_schwab():
+    """
+    Usa el token existente si está disponible.
+    No abre flujo OAuth ni usa puerto; solo valida token.json.
+    """
+    st.subheader("2. Conexión con Broker Schwab")
     
-    if df is None:
-        st.error("❌ No se encontró ningún archivo CSV válido")
-        st.info("📝 Asegúrate de tener 'explorer.csv.csv' o 'explorer.csv' en el directorio raíz")
+    if not os.path.exists(token_path):
+        st.error("❌ No se encontró 'schwab_token.json'. Genera el token desde tu notebook local antes de usar esta página.")
         return None
     
-    return df
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def simular_datos_opciones(df):
-    """
-    Simula datos de opciones (call/put ratio y volumen).
-    NOTA: Reemplazar con datos reales de tu API cuando esté disponible.
-    """
-    if df is None:
+    try:
+        client = easy_client(
+            api_key=api_key,
+            app_secret=app_secret,
+            callback_url=redirect_uri,
+            token_path=token_path
+        )
+        
+        # Verificar token
+        test_response = client.get_quote("AAPL")
+        if hasattr(test_response, "status_code") and test_response.status_code != 200:
+            raise Exception(f"Respuesta inesperada: {test_response.status_code}")
+        
+        st.success("✅ Conexión con Schwab verificada (token activo).")
+        return client
+    
+    except Exception as e:
+        st.error(f"❌ Error al inicializar Schwab Client: {e}")
+        st.warning("⚠️ Si el error persiste, elimina el archivo 'schwab_token.json' y vuelve a generarlo desde tu entorno local.")
         return None
-    
-    df_opciones = df.copy()
-    
-    # Simular datos de opciones basados en características reales
-    np.random.seed(42)
-    
-    # Volumen de opciones correlacionado con volumen de acciones
-    df_opciones['Options_Volume'] = (df_opciones['Volumen'] * 
-                                      np.random.uniform(0.05, 0.3, len(df_opciones))).astype(int)
-    
-    # Call/Put Ratio con distribución realista
-    # Mayor ratio en acciones con tendencia alcista (ROC positivo)
-    base_ratio = np.random.lognormal(0, 0.5, len(df_opciones))
-    
-    # Ajustar ratio según momentum (ROC18)
-    momentum_factor = 1 + (df_opciones['ROC18'] / 100) * 0.3
-    df_opciones['Call_Put_Ratio'] = (base_ratio * momentum_factor).clip(0.1, 5.0)
-    
-    return df_opciones
 
 # =========================================================================
-# 2. FILTROS Y PARÁMETROS
+# 3. FUNCIONES PARA OBTENER DATOS DE OPCIONES DESDE SCHWAB
+# =========================================================================
+
+def obtener_datos_opciones_schwab(client, ticker):
+    """
+    Obtiene datos de opciones desde Schwab API:
+    - Call/Put Ratio
+    - Volumen total de opciones
+    """
+    try:
+        response = client.get_option_chain(ticker)
+        if response.status_code != 200:
+            return None, None
+        
+        opciones = response.json()
+        
+        # Obtener mapas de calls y puts
+        call_map = opciones.get('callExpDateMap', {})
+        put_map = opciones.get('putExpDateMap', {})
+        
+        # Calcular volúmenes totales
+        total_call_volume = 0
+        total_put_volume = 0
+        
+        # Sumar volumen de todas las calls
+        for fecha, strikes in call_map.items():
+            for strike, contratos in strikes.items():
+                for contrato in contratos:
+                    vol = contrato.get('totalVolume', 0)
+                    if vol:
+                        total_call_volume += vol
+        
+        # Sumar volumen de todas las puts
+        for fecha, strikes in put_map.items():
+            for strike, contratos in strikes.items():
+                for contrato in contratos:
+                    vol = contrato.get('totalVolume', 0)
+                    if vol:
+                        total_put_volume += vol
+        
+        # Calcular Call/Put Ratio
+        if total_put_volume > 0:
+            call_put_ratio = total_call_volume / total_put_volume
+        else:
+            call_put_ratio = 0.0
+        
+        # Volumen total de opciones
+        options_volume = total_call_volume + total_put_volume
+        
+        return options_volume, call_put_ratio
+    
+    except Exception as e:
+        return None, None
+
+def procesar_ticker_opciones(args):
+    """Función helper para paralelizar obtención de datos de opciones"""
+    client, ticker = args
+    options_volume, call_put_ratio = obtener_datos_opciones_schwab(client, ticker)
+    
+    return {
+        'ticker': ticker,
+        'options_volume': options_volume if options_volume else 0,
+        'call_put_ratio': call_put_ratio if call_put_ratio else 0.0
+    }
+
+# =========================================================================
+# 4. FILTROS Y PARÁMETROS
 # =========================================================================
 
 def seccion_filtros():
     """Sección de configuración de filtros"""
-    st.subheader("2. Configuración de Filtros")
+    st.subheader("3. Configuración de Filtros")
     
     with st.container():
         col1, col2 = st.columns(2)
@@ -124,51 +214,62 @@ def seccion_filtros():
     return volumen_min, ratio_min
 
 # =========================================================================
-# 3. PROCESAMIENTO Y FILTRADO
+# 5. ESCANEO DE OPCIONES (PARALELO CON SCHWAB API)
 # =========================================================================
 
-def aplicar_filtros(df, volumen_min, ratio_min):
-    """Aplica los filtros de volumen y call/put ratio"""
-    if df is None:
+def ejecutar_escaneo_opciones(client, tickers, volumen_min, ratio_min):
+    """Ejecuta el escaneo de opciones usando Schwab API EN PARALELO"""
+    
+    # Contenedores para mostrar progreso
+    status_container = st.empty()
+    progress_bar = st.progress(0)
+    
+    # Obtener datos de opciones (PARALELO)
+    status_container.info("📊 Obteniendo datos de opciones desde Schwab API (paralelo)...")
+    
+    args_list = [(client, ticker) for ticker in tickers]
+    
+    resultados = []
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        futures = [executor.submit(procesar_ticker_opciones, args) for args in args_list]
+        for i, future in enumerate(futures):
+            result = future.result()
+            if result and result['options_volume'] > 0:
+                resultados.append(result)
+            progress_bar.progress((i + 1) / len(futures))
+    
+    if not resultados:
+        status_container.error("❌ No se encontraron tickers con datos de opciones válidos")
+        progress_bar.empty()
         return None
     
-    st.subheader("3. Aplicación de Filtros")
+    df = pd.DataFrame(resultados)
+    df.columns = ['Ticker', 'Options_Volume', 'Call_Put_Ratio']
     
-    # Filtrar según criterios
+    status_container.success(f"✅ Datos obtenidos: {len(df)} tickers con información de opciones")
+    
+    # Aplicar filtros
     df_filtrado = df[
         (df['Options_Volume'] > volumen_min) & 
         (df['Call_Put_Ratio'] > ratio_min)
     ].copy()
     
-    # Agregar columna de ranking por volumen
+    if df_filtrado.empty:
+        status_container.warning("⚠️ No hay tickers que cumplan los criterios de filtrado")
+        progress_bar.empty()
+        return None
+    
+    # Ordenar por volumen descendente
     df_filtrado = df_filtrado.sort_values('Options_Volume', ascending=False)
     df_filtrado.insert(0, 'Rank', range(1, len(df_filtrado) + 1))
     
-    # Formatear columnas para display
-    df_filtrado['Call_Put_Ratio'] = df_filtrado['Call_Put_Ratio'].apply(lambda x: f"{x:.2f}")
-    df_filtrado['Price'] = df_filtrado['Price'].apply(lambda x: f"${x:.2f}")
-    
-    # Métricas de resumen
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("🎯 Acciones Filtradas", len(df_filtrado))
-    with col2:
-        if len(df_filtrado) > 0:
-            avg_ratio = df[df['Options_Volume'] > volumen_min]['Call_Put_Ratio'].mean()
-            st.metric("📊 Ratio Promedio", f"{avg_ratio:.2f}")
-    with col3:
-        ratio_gt_1 = len(df_filtrado[df_filtrado['Call_Put_Ratio'].astype(float) > 1.0])
-        st.metric("🚀 Ratio > 1.0", ratio_gt_1)
-    with col4:
-        if len(df_filtrado) > 0:
-            total_vol = df_filtrado['Options_Volume'].sum()
-            st.metric("📈 Vol. Total", f"{total_vol:,.0f}")
+    progress_bar.empty()
+    status_container.success(f"🎉 Escaneo completado: {len(df_filtrado)} acciones encontradas")
     
     return df_filtrado
 
 # =========================================================================
-# 4. VISUALIZACIÓN DE RESULTADOS
+# 6. VISUALIZACIÓN DE RESULTADOS
 # =========================================================================
 
 def mostrar_resultados(df_resultados):
@@ -180,53 +281,58 @@ def mostrar_resultados(df_resultados):
         st.info("💡 Intenta reducir los valores mínimos de los filtros")
         return
     
-    # Seleccionar columnas relevantes
-    columnas_display = [
-        'Rank', 'Ticker', 'Price', 'Volumen', 
-        'Options_Volume', 'Call_Put_Ratio',
-        'RSI', 'ROC18', 'Sharpe_ratio', 'Sector'
-    ]
+    # Métricas de resumen (ANTES de formatear)
+    col1, col2, col3, col4 = st.columns(4)
     
-    df_display = df_resultados[columnas_display].copy()
+    with col1:
+        st.metric("🎯 Acciones Filtradas", len(df_resultados))
+    with col2:
+        avg_ratio = df_resultados['Call_Put_Ratio'].mean()
+        st.metric("📊 Ratio Promedio", f"{avg_ratio:.2f}")
+    with col3:
+        ratio_gt_1 = len(df_resultados[df_resultados['Call_Put_Ratio'] > 1.0])
+        st.metric("🚀 Ratio > 1.0", ratio_gt_1)
+    with col4:
+        total_vol = df_resultados['Options_Volume'].sum()
+        st.metric("📈 Vol. Total", f"{total_vol:,.0f}")
+    
+    st.markdown("---")
+    
+    # Crear copia para display y formatear
+    df_display = df_resultados.copy()
+    df_display['Call_Put_Ratio_Formatted'] = df_display['Call_Put_Ratio'].apply(lambda x: f"{x:.2f}")
+    
+    # Seleccionar columnas para la tabla
+    df_table = df_display[['Rank', 'Ticker', 'Options_Volume', 'Call_Put_Ratio_Formatted']].copy()
     
     # Renombrar columnas para mejor presentación
-    df_display.columns = [
-        '🏅 Rank', '🎯 Ticker', '💵 Precio', '📊 Vol. Acción',
-        '📈 Vol. Opciones', '🔥 Call/Put Ratio',
-        '📊 RSI', '📈 ROC18', '⭐ Sharpe', '🏢 Sector'
-    ]
+    df_table.columns = ['🏅 Rank', '🎯 Ticker', '📈 Vol. Opciones', '🔥 Call/Put Ratio']
     
     # Tabla de resultados
     st.markdown("#### 🏆 Acciones con Mayor Actividad en Opciones")
     st.dataframe(
-        df_display,
+        df_table,
         hide_index=True,
         use_container_width=True,
         column_config={
             "🏅 Rank": st.column_config.NumberColumn(width="small"),
-            "🎯 Ticker": st.column_config.TextColumn(width="small"),
-            "💵 Precio": st.column_config.TextColumn(width="small"),
-            "📊 Vol. Acción": st.column_config.NumberColumn(width="medium", format="%d"),
+            "🎯 Ticker": st.column_config.TextColumn(width="medium"),
             "📈 Vol. Opciones": st.column_config.NumberColumn(width="medium", format="%d"),
-            "🔥 Call/Put Ratio": st.column_config.TextColumn(width="small"),
-            "📊 RSI": st.column_config.NumberColumn(width="small", format="%.2f"),
-            "📈 ROC18": st.column_config.NumberColumn(width="small", format="%.2f"),
-            "⭐ Sharpe": st.column_config.NumberColumn(width="small", format="%.2f"),
-            "🏢 Sector": st.column_config.TextColumn(width="medium")
+            "🔥 Call/Put Ratio": st.column_config.TextColumn(width="medium")
         }
     )
     
-    # Gráfico de distribución
+    # Gráfico de distribución (usar columnas numéricas originales)
     st.markdown("---")
     st.markdown("#### 📊 Distribución de Call/Put Ratio")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        # Top 10 por ratio
+        # Top 10 por ratio (usar Call_Put_Ratio numérico original)
         top_10_ratio = df_resultados.nlargest(10, 'Call_Put_Ratio')
         st.bar_chart(
-            top_10_ratio.set_index('Ticker')['Call_Put_Ratio'].astype(float),
+            top_10_ratio.set_index('Ticker')['Call_Put_Ratio'],
             use_container_width=True
         )
         st.caption("Top 10 acciones por Call/Put Ratio")
@@ -240,9 +346,12 @@ def mostrar_resultados(df_resultados):
         )
         st.caption("Top 10 acciones por Volumen de Opciones")
     
-    # Botón de descarga
+    # Botón de descarga (formatear para CSV legible)
     st.markdown("---")
-    csv = df_resultados.to_csv(index=False).encode('utf-8')
+    df_csv = df_resultados.copy()
+    df_csv['Call_Put_Ratio'] = df_csv['Call_Put_Ratio'].apply(lambda x: f"{x:.2f}")
+    
+    csv = df_csv.to_csv(index=False).encode('utf-8')
     st.download_button(
         label="📥 Descargar Resultados (CSV)",
         data=csv,
@@ -252,83 +361,105 @@ def mostrar_resultados(df_resultados):
     )
 
 # =========================================================================
-# 5. FUNCIÓN PRINCIPAL
+# 7. FUNCIÓN PRINCIPAL
 # =========================================================================
 
 def options_scanner_page():
-    st.title("📊 Options Scanner - Call/Put Ratio Analyzer")
+    st.title("📊 Trend Stocks Scanner - Call/Put Ratio Analyzer")
     st.markdown("---")
-    st.info("🔍 Este escáner identifica acciones con alta actividad en opciones y sesgo alcista")
+    st.info("🔍 Este escáner identifica acciones con alta actividad en opciones y sesgo alcista usando datos REALES de Schwab API")
     
-    # Cargar datos
+    # --- Punto 1: Preparación de Tickers ---
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        st.button("🔄 Recargar Tickers", type="primary",
+                  help="Borra la caché y recarga Tickers.csv",
+                  on_click=perform_initial_preparation.clear)
+    with col2:
+        st.markdown("_(Los tickers se cargan desde Tickers.csv sin validación.)_")
+    
     st.divider()
-    df_base = cargar_datos_csv()
+    valid_tickers = perform_initial_preparation()
     
-    if df_base is not None:
-        # Simular datos de opciones
-        with st.spinner("Procesando datos de opciones..."):
-            df_opciones = simular_datos_opciones(df_base)
+    # --- Punto 2: Conexión Schwab ---
+    st.divider()
+    
+    # Guardar cliente en session_state si no existe
+    if 'schwab_client' not in st.session_state:
+        st.session_state.schwab_client = connect_to_schwab()
+    else:
+        st.subheader("2. Conexión con Broker Schwab")
+        st.success("✅ Conexión con Schwab verificada (ya conectado en esta sesión).")
+    
+    schwab_client = st.session_state.schwab_client
+    
+    # --- Punto 3: Filtros ---
+    st.divider()
+    volumen_min, ratio_min = seccion_filtros()
+    
+    # --- Punto 4: Escaneo ---
+    st.divider()
+    st.subheader("4. Escaneo de Opciones")
+    
+    if schwab_client is None:
+        st.error("❌ Necesitas conectar con Schwab antes de ejecutar el escaneo")
+    else:
+        st.info(f"📊 Tickers listos para escanear: **{len(valid_tickers)}** | 🚀 Modo: **Paralelo (15 hilos)**")
+        st.warning("⚠️ El escaneo tardará 2-4 minutos. **No cambies de página durante el proceso.**")
+        st.info("📊 **Datos REALES**: Call/Put Ratio y Volumen de opciones desde Schwab API")
         
-        st.success(f"✅ Datos procesados: {len(df_opciones)} acciones con información de opciones")
-        
-        # Mostrar nota sobre datos simulados
-        with st.expander("⚠️ Importante: Datos de Opciones Simulados"):
-            st.warning("""
-            **NOTA**: Los datos de Call/Put Ratio y Volumen de Opciones son simulados para demostración.
-            
-            Para usar datos reales, necesitas:
-            1. Una API de datos de opciones (Schwab, Interactive Brokers, TDAmeritrade, etc.)
-            2. Reemplazar la función `simular_datos_opciones()` con llamadas reales a la API
-            3. La estructura del CSV debe incluir las columnas:
-               - `Options_Volume`: Volumen total de opciones
-               - `Call_Put_Ratio`: Ratio de calls vs puts
-            """)
-        
-        # Sección de filtros
-        st.divider()
-        volumen_min, ratio_min = seccion_filtros()
-        
-        # Botón de escaneo
-        st.divider()
         col1, col2, col3 = st.columns([1, 2, 1])
-        
         with col1:
-            ejecutar_btn = st.button("🚀 Aplicar Filtros", type="primary", use_container_width=True)
-        
+            ejecutar_btn = st.button("🚀 Ejecutar Escaneo", type="primary", use_container_width=True)
         with col2:
-            if 'df_resultados' in st.session_state and st.session_state.df_resultados is not None:
-                st.success(f"✅ {len(st.session_state.df_resultados)} resultados actuales")
-        
+            if 'df_resultados_options' in st.session_state and st.session_state.df_resultados_options is not None:
+                st.success(f"✅ Último escaneo: {len(st.session_state.df_resultados_options)} resultados")
         with col3:
             if st.button("🗑️ Limpiar", use_container_width=True):
-                if 'df_resultados' in st.session_state:
-                    del st.session_state.df_resultados
+                if 'df_resultados_options' in st.session_state:
+                    del st.session_state.df_resultados_options
                 st.rerun()
         
-        # Ejecutar filtrado
         if ejecutar_btn:
-            with st.spinner("Aplicando filtros..."):
-                df_resultados = aplicar_filtros(df_opciones, volumen_min, ratio_min)
-                st.session_state.df_resultados = df_resultados
+            start_time = time.time()
+            with st.spinner("Ejecutando escaneo paralelo con Schwab API..."):
+                df_resultados = ejecutar_escaneo_opciones(
+                    schwab_client,
+                    valid_tickers,
+                    volumen_min,
+                    ratio_min
+                )
+                st.session_state.df_resultados_options = df_resultados
+            
+            elapsed_time = time.time() - start_time
             
             if df_resultados is not None and not df_resultados.empty:
-                st.success(f"✅ Filtrado completado: {len(df_resultados)} acciones encontradas")
+                st.balloons()
+                st.success(f"🎉 Escaneo completado en {elapsed_time:.1f} segundos - {len(df_resultados)} acciones encontradas")
             else:
                 st.warning("⚠️ No se encontraron acciones que cumplan los criterios")
-        
-        # Mostrar resultados
-        st.divider()
-        if 'df_resultados' in st.session_state:
-            mostrar_resultados(st.session_state.df_resultados)
-        else:
-            st.info("👆 Configura los filtros y presiona 'Aplicar Filtros' para ver los resultados")
     
+    # --- Punto 5: Resultados ---
+    st.divider()
+    if 'df_resultados_options' in st.session_state:
+        mostrar_resultados(st.session_state.df_resultados_options)
     else:
-        st.error("❌ No se pudo cargar el archivo CSV. Verifica que existe en el directorio raíz.")
+        st.info("👆 Ejecuta el escaneo primero para ver los resultados aquí")
+    
+    # --- Estado final ---
+    st.divider()
+    if schwab_client:
+        st.success(f"🎯 Sistema listo con {len(valid_tickers)} tickers válidos y conexión Schwab activa.")
+    else:
+        st.info("⏳ Conecta tu token Schwab para activar funciones de trading.")
 
 # =========================================================================
-# 6. PUNTO DE ENTRADA
+# 8. PUNTO DE ENTRADA PROTEGIDO
 # =========================================================================
 
 if __name__ == "__main__":
-    options_scanner_page()
+    if check_password():
+        options_scanner_page()
+    else:
+        st.title("🔒 Acceso Restringido")
+        st.info("Introduce tus credenciales en el menú lateral para acceder.")
