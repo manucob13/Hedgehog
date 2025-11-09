@@ -401,9 +401,12 @@ def options_scanner_page():
     st.divider()
     st.subheader("4. Escaneo de Opciones")
     
-    if schwab_client is None:
+    # Verificar si hay cliente válido
+    if 'schwab_client_options' not in st.session_state or st.session_state.schwab_client_options is None:
         st.error("❌ Necesitas conectar con Schwab antes de ejecutar el escaneo")
+        st.info("💡 Recarga la página para intentar reconectar")
     else:
+        schwab_client = st.session_state.schwab_client_options
         st.info(f"📊 Tickers listos para escanear: **{len(valid_tickers)}** | 🚀 Modo: **Paralelo (15 hilos)**")
         st.warning("⚠️ El escaneo tardará 2-4 minutos. **No cambies de página durante el proceso.**")
         st.info("📊 **Datos REALES**: Call/Put Ratio y Volumen de opciones desde Schwab API")
