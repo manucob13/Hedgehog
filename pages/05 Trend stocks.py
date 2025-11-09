@@ -15,7 +15,7 @@ from utils import check_password
 st.set_page_config(page_title="Trend Stocks", layout="wide")
 
 # =========================================================================
-# 1. PREPARACIÓN DE TICKERS (DESDE CSV)
+# 1. PREPARACIÓN DE TICKERS (DESDE CSV CON MÚLTIPLES COLUMNAS)
 # =========================================================================
 
 @st.cache_resource(ttl=timedelta(hours=24), show_spinner=False)
@@ -25,26 +25,50 @@ def perform_initial_preparation():
     status_text = st.empty()
     
     # Leer tickers del archivo CSV
-    if os.path.exists('Tickers.csv'):
+    csv_filename = 'Explorer.csv'
+    if os.path.exists(csv_filename):
         try:
-            df_tickers = pd.read_csv('Tickers.csv')
-            tickers = df_tickers.iloc[:, 0].astype(str).str.upper().str.strip().tolist()
+            df_tickers = pd.read_csv(csv_filename)
+            
+            # Verificar que existe la columna 'Ticker'
+            if 'Ticker' not in df_tickers.columns:
+                st.error(f"❌ El archivo '{csv_filename}' no tiene una columna 'Ticker'")
+                st.stop()
+            
+            # Extraer tickers únicos
+            tickers = df_tickers['Ticker'].astype(str).str.upper().str.strip().tolist()
             tickers = sorted(set(tickers))  # Eliminar duplicados y ordenar
             
-            st.success(f"✅ 'Tickers.csv' encontrado con {len(tickers)} tickers.")
+            st.success(f"✅ '{csv_filename}' encontrado con {len(tickers)} tickers únicos.")
+            
+            # Mostrar información del dataset
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("📊 Total Tickers", len(tickers))
+            with col2:
+                st.metric("📅 Columnas", len(df_tickers.columns))
+            with col3:
+                if 'Sector' in df_tickers.columns:
+                    sectores = df_tickers['Sector'].nunique()
+                    st.metric("🏢 Sectores", sectores)
+            
+            # Mostrar preview de datos
+            with st.expander("👀 Vista previa del dataset"):
+                st.dataframe(df_tickers.head(10), use_container_width=True)
+            
             st.info("ℹ️ Los tickers se usan directamente sin validación adicional.")
             
             status_text.empty()
             st.divider()
             
-            return tickers
+            return tickers, df_tickers
             
         except Exception as e:
-            st.error(f"❌ Error al leer 'Tickers.csv': {e}")
+            st.error(f"❌ Error al leer '{csv_filename}': {e}")
             st.stop()
     else:
-        st.error("❌ 'Tickers.csv' no encontrado en el directorio raíz.")
-        st.info("📝 Crea un archivo 'Tickers.csv' con una columna de tickers (uno por línea)")
+        st.error(f"❌ '{csv_filename}' no encontrado en el directorio raíz.")
+        st.info(f"📝 Crea un archivo '{csv_filename}' con la columna 'Ticker' y otros datos")
         st.stop()
 
 # =========================================================================
@@ -120,11 +144,13 @@ def procesar_ticker_opciones(ticker):
 # 3. FILTROS Y PARÁMETROS
 # =========================================================================
 
-def seccion_filtros():
+def seccion_filtros(df_original):
     """Sección de configuración de filtros"""
     st.subheader("2. Configuración de Filtros")
     
     with st.container():
+        # Filtros de opciones
+        st.markdown("#### 📊 Filtros de Opciones")
         col1, col2 = st.columns(2)
         
         with col1:
@@ -148,6 +174,39 @@ def seccion_filtros():
         
         st.markdown("---")
         
+        # Filtros adicionales del CSV original (si aplican)
+        st.markdown("#### 🔍 Filtros Adicionales del Dataset")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            filtrar_sector = st.checkbox("Filtrar por Sector", value=False)
+            if filtrar_sector and 'Sector' in df_original.columns:
+                sectores_disponibles = df_original['Sector'].unique().tolist()
+                sectores_seleccionados = st.multiselect(
+                    "Selecciona sectores",
+                    options=sectores_disponibles,
+                    default=sectores_disponibles
+                )
+            else:
+                sectores_seleccionados = None
+        
+        with col2:
+            filtrar_rsi = st.checkbox("Filtrar por RSI", value=False)
+            if filtrar_rsi and 'RSI' in df_original.columns:
+                rsi_min = st.slider("RSI mínimo", 0, 100, 40)
+                rsi_max = st.slider("RSI máximo", 0, 100, 70)
+            else:
+                rsi_min, rsi_max = None, None
+        
+        with col3:
+            filtrar_atlas = st.checkbox("Filtrar por Atlas", value=False)
+            if filtrar_atlas and 'Atlas' in df_original.columns:
+                atlas_value = st.selectbox("Valor Atlas", [0.0, 1.0], index=1)
+            else:
+                atlas_value = None
+        
+        st.markdown("---")
+        
         # Información adicional
         col1, col2, col3 = st.columns(3)
         
@@ -158,25 +217,53 @@ def seccion_filtros():
         with col3:
             st.info("**Ratio > 1.0**: Fuerte sesgo alcista")
     
-    return volumen_min, ratio_min
+    return {
+        'volumen_min': volumen_min,
+        'ratio_min': ratio_min,
+        'sectores': sectores_seleccionados,
+        'rsi_min': rsi_min,
+        'rsi_max': rsi_max,
+        'atlas': atlas_value
+    }
 
 # =========================================================================
 # 4. ESCANEO DE OPCIONES (PARALELO CON YAHOO FINANCE)
 # =========================================================================
 
-def ejecutar_escaneo_opciones(tickers, volumen_min, ratio_min):
+def ejecutar_escaneo_opciones(tickers, df_original, filtros):
     """Ejecuta el escaneo de opciones usando Yahoo Finance EN PARALELO"""
     
     # Contenedores para mostrar progreso
     status_container = st.empty()
     progress_bar = st.progress(0)
     
+    # Aplicar filtros del dataset original primero
+    tickers_filtrados = tickers.copy()
+    
+    if filtros['sectores'] and 'Sector' in df_original.columns:
+        df_temp = df_original[df_original['Sector'].isin(filtros['sectores'])]
+        tickers_filtrados = df_temp['Ticker'].tolist()
+        status_container.info(f"🔍 Filtro de sector aplicado: {len(tickers_filtrados)} tickers")
+    
+    if filtros['rsi_min'] is not None and 'RSI' in df_original.columns:
+        df_temp = df_original[
+            (df_original['RSI'] >= filtros['rsi_min']) & 
+            (df_original['RSI'] <= filtros['rsi_max'])
+        ]
+        tickers_filtrados = [t for t in tickers_filtrados if t in df_temp['Ticker'].tolist()]
+        status_container.info(f"🔍 Filtro RSI aplicado: {len(tickers_filtrados)} tickers")
+    
+    if filtros['atlas'] is not None and 'Atlas' in df_original.columns:
+        df_temp = df_original[df_original['Atlas'] == filtros['atlas']]
+        tickers_filtrados = [t for t in tickers_filtrados if t in df_temp['Ticker'].tolist()]
+        status_container.info(f"🔍 Filtro Atlas aplicado: {len(tickers_filtrados)} tickers")
+    
     # Obtener datos de opciones (PARALELO)
-    status_container.info("📊 Obteniendo datos de opciones desde Yahoo Finance (paralelo)...")
+    status_container.info(f"📊 Obteniendo datos de opciones para {len(tickers_filtrados)} tickers desde Yahoo Finance (paralelo)...")
     
     resultados = []
     with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [executor.submit(procesar_ticker_opciones, ticker) for ticker in tickers]
+        futures = [executor.submit(procesar_ticker_opciones, ticker) for ticker in tickers_filtrados]
         for i, future in enumerate(futures):
             try:
                 result = future.result()
@@ -196,10 +283,10 @@ def ejecutar_escaneo_opciones(tickers, volumen_min, ratio_min):
     
     status_container.success(f"✅ Datos obtenidos: {len(df)} tickers con información de opciones")
     
-    # Aplicar filtros
+    # Aplicar filtros de opciones
     df_filtrado = df[
-        (df['Options_Volume'] > volumen_min) & 
-        (df['Call_Put_Ratio'] > ratio_min)
+        (df['Options_Volume'] > filtros['volumen_min']) & 
+        (df['Call_Put_Ratio'] > filtros['ratio_min'])
     ].copy()
     
     if df_filtrado.empty:
@@ -207,7 +294,10 @@ def ejecutar_escaneo_opciones(tickers, volumen_min, ratio_min):
         progress_bar.empty()
         return None
     
-    # Ordenar por volumen descendente
+    # Merge con datos originales para tener toda la información
+    df_filtrado = df_filtrado.merge(df_original, on='Ticker', how='left')
+    
+    # Ordenar por volumen de opciones descendente
     df_filtrado = df_filtrado.sort_values('Options_Volume', ascending=False)
     df_filtrado.insert(0, 'Rank', range(1, len(df_filtrado) + 1))
     
@@ -246,15 +336,37 @@ def mostrar_resultados(df_resultados):
     
     st.markdown("---")
     
-    # Crear copia para display y formatear
-    df_display = df_resultados.copy()
-    df_display['Call_Put_Ratio_Formatted'] = df_display['Call_Put_Ratio'].apply(lambda x: f"{x:.2f}")
+    # Seleccionar columnas clave para mostrar
+    columnas_mostrar = ['Rank', 'Ticker', 'Options_Volume', 'Call_Put_Ratio']
     
-    # Seleccionar columnas para la tabla
-    df_table = df_display[['Rank', 'Ticker', 'Options_Volume', 'Call_Put_Ratio_Formatted']].copy()
+    # Añadir columnas adicionales si existen
+    columnas_opcionales = ['Sector', 'Price', 'RSI', 'Atlas', 'Sharpe_ratio', 'ROC18', 'RSC']
+    for col in columnas_opcionales:
+        if col in df_resultados.columns:
+            columnas_mostrar.append(col)
+    
+    df_table = df_resultados[columnas_mostrar].copy()
+    
+    # Formatear Call_Put_Ratio para display
+    df_table['Call_Put_Ratio'] = df_table['Call_Put_Ratio'].apply(lambda x: f"{x:.2f}")
     
     # Renombrar columnas para mejor presentación
-    df_table.columns = ['🏅 Rank', '🎯 Ticker', '📈 Vol. Opciones', '🔥 Call/Put Ratio']
+    column_config = {
+        "Rank": st.column_config.NumberColumn("🏅 Rank", width="small"),
+        "Ticker": st.column_config.TextColumn("🎯 Ticker", width="small"),
+        "Options_Volume": st.column_config.NumberColumn("📈 Vol. Opciones", width="medium", format="%d"),
+        "Call_Put_Ratio": st.column_config.TextColumn("🔥 C/P Ratio", width="small"),
+    }
+    
+    # Añadir configs para columnas adicionales
+    if 'Sector' in df_table.columns:
+        column_config['Sector'] = st.column_config.TextColumn("🏢 Sector", width="medium")
+    if 'Price' in df_table.columns:
+        column_config['Price'] = st.column_config.NumberColumn("💲 Precio", width="small", format="%.2f")
+    if 'RSI' in df_table.columns:
+        column_config['RSI'] = st.column_config.NumberColumn("📊 RSI", width="small", format="%.1f")
+    if 'Atlas' in df_table.columns:
+        column_config['Atlas'] = st.column_config.NumberColumn("🗺️ Atlas", width="small", format="%.2f")
     
     # Tabla de resultados
     st.markdown("#### 🏆 Acciones con Mayor Actividad en Opciones")
@@ -262,22 +374,17 @@ def mostrar_resultados(df_resultados):
         df_table,
         hide_index=True,
         use_container_width=True,
-        column_config={
-            "🏅 Rank": st.column_config.NumberColumn(width="small"),
-            "🎯 Ticker": st.column_config.TextColumn(width="medium"),
-            "📈 Vol. Opciones": st.column_config.NumberColumn(width="medium", format="%d"),
-            "🔥 Call/Put Ratio": st.column_config.TextColumn(width="medium")
-        }
+        column_config=column_config
     )
     
-    # Gráfico de distribución (usar columnas numéricas originales)
+    # Gráficos de distribución
     st.markdown("---")
-    st.markdown("#### 📊 Distribución de Call/Put Ratio")
+    st.markdown("#### 📊 Análisis Visual")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        # Top 10 por ratio (usar Call_Put_Ratio numérico original)
+        # Top 10 por ratio
         top_10_ratio = df_resultados.nlargest(10, 'Call_Put_Ratio')
         st.bar_chart(
             top_10_ratio.set_index('Ticker')['Call_Put_Ratio'],
@@ -294,14 +401,21 @@ def mostrar_resultados(df_resultados):
         )
         st.caption("Top 10 acciones por Volumen de Opciones")
     
-    # Botón de descarga (formatear para CSV legible)
+    # Distribución por sector si existe
+    if 'Sector' in df_resultados.columns:
+        st.markdown("---")
+        st.markdown("#### 🏢 Distribución por Sector")
+        sector_counts = df_resultados['Sector'].value_counts()
+        st.bar_chart(sector_counts, use_container_width=True)
+    
+    # Botón de descarga
     st.markdown("---")
     df_csv = df_resultados.copy()
-    df_csv['Call_Put_Ratio'] = df_csv['Call_Put_Ratio'].apply(lambda x: f"{x:.2f}")
+    df_csv['Call_Put_Ratio'] = df_csv['Call_Put_Ratio'].apply(lambda x: f"{x:.2f}" if isinstance(x, float) else x)
     
     csv = df_csv.to_csv(index=False).encode('utf-8')
     st.download_button(
-        label="📥 Descargar Resultados (CSV)",
+        label="📥 Descargar Resultados Completos (CSV)",
         data=csv,
         file_name=f"options_scanner_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
         mime="text/csv",
@@ -320,18 +434,18 @@ def options_scanner_page():
     # --- Punto 1: Preparación de Tickers ---
     col1, col2 = st.columns([1, 4])
     with col1:
-        st.button("🔄 Recargar Tickers", type="primary",
-                  help="Borra la caché y recarga Tickers.csv",
+        st.button("🔄 Recargar Datos", type="primary",
+                  help="Borra la caché y recarga el archivo CSV",
                   on_click=perform_initial_preparation.clear)
     with col2:
-        st.markdown("_(Los tickers se cargan desde Tickers.csv sin validación.)_")
+        st.markdown("_(Los datos se cargan desde Tickers.csv con todas las columnas disponibles.)_")
     
     st.divider()
-    valid_tickers = perform_initial_preparation()
+    valid_tickers, df_original = perform_initial_preparation()
     
     # --- Punto 2: Filtros ---
     st.divider()
-    volumen_min, ratio_min = seccion_filtros()
+    filtros = seccion_filtros(df_original)
     
     # --- Punto 3: Escaneo ---
     st.divider()
@@ -359,8 +473,8 @@ def options_scanner_page():
             try:
                 df_resultados = ejecutar_escaneo_opciones(
                     valid_tickers,
-                    volumen_min,
-                    ratio_min
+                    df_original,
+                    filtros
                 )
                 st.session_state.df_resultados_options = df_resultados
                 
