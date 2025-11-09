@@ -384,8 +384,21 @@ def options_scanner_page():
     # --- Punto 2: Conexión Schwab ---
     st.divider()
     
-    # Guardar cliente en session_state si no existe
-    if 'schwab_client_options' not in st.session_state:
+    # Botón para reconectar manualmente
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        if st.button("🔄 Reconectar Schwab", type="secondary"):
+            if 'schwab_client_options' in st.session_state:
+                del st.session_state.schwab_client_options
+            st.rerun()
+    
+    # Primero intentar reutilizar el cliente del FF Scanner si existe
+    if 'schwab_client' in st.session_state and st.session_state.schwab_client is not None:
+        st.subheader("2. Conexión con Broker Schwab")
+        st.success("✅ Conexión con Schwab verificada (reutilizando sesión de FF Scanner).")
+        st.session_state.schwab_client_options = st.session_state.schwab_client
+    # Si no existe, crear nueva conexión
+    elif 'schwab_client_options' not in st.session_state:
         st.session_state.schwab_client_options = connect_to_schwab()
     else:
         st.subheader("2. Conexión con Broker Schwab")
