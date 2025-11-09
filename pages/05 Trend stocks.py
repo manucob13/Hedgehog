@@ -1,37 +1,18 @@
 # pages/Trend stocks.py
 import streamlit as st
 import pandas as pd
-import requests
 import yfinance as yf
 from datetime import timedelta, datetime
-from io import StringIO
 from concurrent.futures import ThreadPoolExecutor
-import numpy as np
 import os
 import time
-from math import sqrt
-import schwab
-from schwab.client import Client
 from utils import check_password
-import json
 
 # =========================================================================
 # 0. CONFIGURACIÓN Y VARIABLES
 # =========================================================================
 
 st.set_page_config(page_title="Trend Stocks", layout="wide")
-
-# Cargar variables de Schwab desde secrets
-try:
-    api_key = st.secrets["schwab"]["api_key"]
-    app_secret = st.secrets["schwab"]["app_secret"]
-    redirect_uri = st.secrets["schwab"]["redirect_uri"]
-except KeyError as e:
-    st.error(f"❌ Falta configurar los secrets de Schwab. Clave faltante: {e}. Asegúrate de que tienes [schwab] en secrets.toml")
-    st.stop()
-
-# Ruta local del token
-token_path = "schwab_token.json"
 
 # =========================================================================
 # 1. PREPARACIÓN DE TICKERS (DESDE CSV)
@@ -67,102 +48,53 @@ def perform_initial_preparation():
         st.stop()
 
 # =========================================================================
-# 2. CONEXIÓN CON BROKER SCHWAB (SIN OAUTH)
+# 2. FUNCIONES PARA OBTENER DATOS DE OPCIONES DESDE YAHOO FINANCE
 # =========================================================================
 
-def load_token_from_file(token_path):
-    """Carga el token desde archivo JSON"""
-    try:
-        with open(token_path, 'r') as f:
-            token_data = json.load(f)
-        return token_data
-    except Exception as e:
-        st.error(f"❌ Error al leer token: {e}")
-        return None
-
-def connect_to_schwab():
+def obtener_datos_opciones_yfinance(ticker):
     """
-    Crea cliente Schwab usando token existente SIN iniciar servidor OAuth.
-    Solo lee el token del archivo y lo usa directamente.
-    """
-    st.subheader("2. Conexión con Broker Schwab")
-    
-    if not os.path.exists(token_path):
-        st.error("❌ No se encontró 'schwab_token.json'. Genera el token desde tu notebook local antes de usar esta página.")
-        st.info("📝 Instrucciones: Ejecuta el notebook local para generar el token, luego súbelo a Streamlit Cloud")
-        return None
-    
-    try:
-        # Cargar token desde archivo
-        token_data = load_token_from_file(token_path)
-        if not token_data:
-            return None
-        
-        # Crear cliente directamente con el token (sin OAuth flow)
-        client = Client(
-            api_key=api_key,
-            app_secret=app_secret,
-            token_metadata=token_data
-        )
-        
-        # Verificar que el token funciona
-        test_response = client.get_quote("AAPL")
-        if hasattr(test_response, "status_code") and test_response.status_code != 200:
-            raise Exception(f"Token inválido o expirado. Status: {test_response.status_code}")
-        
-        st.success("✅ Conexión con Schwab verificada (token activo).")
-        return client
-    
-    except Exception as e:
-        st.error(f"❌ Error al inicializar Schwab Client: {e}")
-        st.warning("⚠️ El token puede haber expirado. Genera uno nuevo desde tu notebook local.")
-        st.info("💡 Los tokens de Schwab expiran cada 7 días y deben regenerarse.")
-        return None
-
-# =========================================================================
-# 3. FUNCIONES PARA OBTENER DATOS DE OPCIONES DESDE SCHWAB
-# =========================================================================
-
-def obtener_datos_opciones_schwab(client, ticker):
-    """
-    Obtiene datos de opciones desde Schwab API:
-    - Call/Put Ratio
+    Obtiene datos de opciones desde Yahoo Finance:
+    - Call/Put Ratio basado en open interest
     - Volumen total de opciones
     """
     try:
-        response = client.get_option_chain(ticker)
-        if response.status_code != 200:
+        stock = yf.Ticker(ticker)
+        
+        # Obtener fechas de expiración disponibles
+        exp_dates = stock.options
+        
+        if not exp_dates:
             return None, None
         
-        opciones = response.json()
-        
-        # Obtener mapas de calls y puts
-        call_map = opciones.get('callExpDateMap', {})
-        put_map = opciones.get('putExpDateMap', {})
-        
-        # Calcular volúmenes totales
         total_call_volume = 0
         total_put_volume = 0
+        total_call_oi = 0
+        total_put_oi = 0
         
-        # Sumar volumen de todas las calls
-        for fecha, strikes in call_map.items():
-            for strike, contratos in strikes.items():
-                for contrato in contratos:
-                    vol = contrato.get('totalVolume', 0)
-                    if vol:
-                        total_call_volume += vol
+        # Iterar sobre todas las fechas de expiración (limitamos a las primeras 3 para velocidad)
+        for exp_date in exp_dates[:3]:
+            try:
+                # Obtener cadena de opciones para esta fecha
+                opt_chain = stock.option_chain(exp_date)
+                
+                calls = opt_chain.calls
+                puts = opt_chain.puts
+                
+                # Sumar volúmenes y open interest
+                if not calls.empty:
+                    total_call_volume += calls['volume'].fillna(0).sum()
+                    total_call_oi += calls['openInterest'].fillna(0).sum()
+                
+                if not puts.empty:
+                    total_put_volume += puts['volume'].fillna(0).sum()
+                    total_put_oi += puts['openInterest'].fillna(0).sum()
+                    
+            except Exception:
+                continue
         
-        # Sumar volumen de todas las puts
-        for fecha, strikes in put_map.items():
-            for strike, contratos in strikes.items():
-                for contrato in contratos:
-                    vol = contrato.get('totalVolume', 0)
-                    if vol:
-                        total_put_volume += vol
-        
-        # Calcular Call/Put Ratio
-        if total_put_volume > 0:
-            call_put_ratio = total_call_volume / total_put_volume
+        # Calcular Call/Put Ratio basado en open interest (más estable que volumen)
+        if total_put_oi > 0:
+            call_put_ratio = total_call_oi / total_put_oi
         else:
             call_put_ratio = 0.0
         
@@ -174,10 +106,9 @@ def obtener_datos_opciones_schwab(client, ticker):
     except Exception as e:
         return None, None
 
-def procesar_ticker_opciones(args):
+def procesar_ticker_opciones(ticker):
     """Función helper para paralelizar obtención de datos de opciones"""
-    client, ticker = args
-    options_volume, call_put_ratio = obtener_datos_opciones_schwab(client, ticker)
+    options_volume, call_put_ratio = obtener_datos_opciones_yfinance(ticker)
     
     return {
         'ticker': ticker,
@@ -186,12 +117,12 @@ def procesar_ticker_opciones(args):
     }
 
 # =========================================================================
-# 4. FILTROS Y PARÁMETROS
+# 3. FILTROS Y PARÁMETROS
 # =========================================================================
 
 def seccion_filtros():
     """Sección de configuración de filtros"""
-    st.subheader("3. Configuración de Filtros")
+    st.subheader("2. Configuración de Filtros")
     
     with st.container():
         col1, col2 = st.columns(2)
@@ -212,7 +143,7 @@ def seccion_filtros():
                 value=0.5,
                 step=0.1,
                 format="%.2f",
-                help="Ratio mínimo (>0.5 significa más calls que puts)"
+                help="Ratio mínimo basado en Open Interest (>0.5 significa más calls que puts)"
             )
         
         st.markdown("---")
@@ -230,28 +161,29 @@ def seccion_filtros():
     return volumen_min, ratio_min
 
 # =========================================================================
-# 5. ESCANEO DE OPCIONES (PARALELO CON SCHWAB API)
+# 4. ESCANEO DE OPCIONES (PARALELO CON YAHOO FINANCE)
 # =========================================================================
 
-def ejecutar_escaneo_opciones(client, tickers, volumen_min, ratio_min):
-    """Ejecuta el escaneo de opciones usando Schwab API EN PARALELO"""
+def ejecutar_escaneo_opciones(tickers, volumen_min, ratio_min):
+    """Ejecuta el escaneo de opciones usando Yahoo Finance EN PARALELO"""
     
     # Contenedores para mostrar progreso
     status_container = st.empty()
     progress_bar = st.progress(0)
     
     # Obtener datos de opciones (PARALELO)
-    status_container.info("📊 Obteniendo datos de opciones desde Schwab API (paralelo)...")
-    
-    args_list = [(client, ticker) for ticker in tickers]
+    status_container.info("📊 Obteniendo datos de opciones desde Yahoo Finance (paralelo)...")
     
     resultados = []
-    with ThreadPoolExecutor(max_workers=15) as executor:
-        futures = [executor.submit(procesar_ticker_opciones, args) for args in args_list]
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(procesar_ticker_opciones, ticker) for ticker in tickers]
         for i, future in enumerate(futures):
-            result = future.result()
-            if result and result['options_volume'] > 0:
-                resultados.append(result)
+            try:
+                result = future.result()
+                if result and result['options_volume'] > 0:
+                    resultados.append(result)
+            except Exception:
+                pass
             progress_bar.progress((i + 1) / len(futures))
     
     if not resultados:
@@ -285,12 +217,12 @@ def ejecutar_escaneo_opciones(client, tickers, volumen_min, ratio_min):
     return df_filtrado
 
 # =========================================================================
-# 6. VISUALIZACIÓN DE RESULTADOS
+# 5. VISUALIZACIÓN DE RESULTADOS
 # =========================================================================
 
 def mostrar_resultados(df_resultados):
     """Muestra los resultados filtrados en tabla interactiva"""
-    st.subheader("4. Resultados del Escaneo")
+    st.subheader("3. Resultados del Escaneo")
     
     if df_resultados is None or df_resultados.empty:
         st.warning("⚠️ No hay acciones que cumplan los criterios de filtrado")
@@ -377,13 +309,13 @@ def mostrar_resultados(df_resultados):
     )
 
 # =========================================================================
-# 7. FUNCIÓN PRINCIPAL
+# 6. FUNCIÓN PRINCIPAL
 # =========================================================================
 
 def options_scanner_page():
     st.title("📊 Trend Stocks Scanner - Call/Put Ratio Analyzer")
     st.markdown("---")
-    st.info("🔍 Este escáner identifica acciones con alta actividad en opciones y sesgo alcista usando datos REALES de Schwab API")
+    st.info("🔍 Este escáner identifica acciones con alta actividad en opciones y sesgo alcista usando Yahoo Finance")
     
     # --- Punto 1: Preparación de Tickers ---
     col1, col2 = st.columns([1, 4])
@@ -397,91 +329,53 @@ def options_scanner_page():
     st.divider()
     valid_tickers = perform_initial_preparation()
     
-    # --- Punto 2: Conexión Schwab ---
-    st.divider()
-    
-    # Botón para reconectar manualmente
-    col1, col2 = st.columns([1, 4])
-    with col1:
-        if st.button("🔄 Reconectar Schwab", type="secondary"):
-            if 'schwab_client_options' in st.session_state:
-                del st.session_state.schwab_client_options
-            st.rerun()
-    with col2:
-        st.caption("💡 Usa este botón si el token se renovó")
-    
-    # Primero intentar reutilizar el cliente del FF Scanner si existe
-    if 'schwab_client' in st.session_state and st.session_state.schwab_client is not None:
-        st.subheader("2. Conexión con Broker Schwab")
-        st.success("✅ Conexión con Schwab verificada (reutilizando sesión de FF Scanner).")
-        st.session_state.schwab_client_options = st.session_state.schwab_client
-    # Si no existe, crear nueva conexión
-    elif 'schwab_client_options' not in st.session_state:
-        st.session_state.schwab_client_options = connect_to_schwab()
-    else:
-        st.subheader("2. Conexión con Broker Schwab")
-        st.success("✅ Conexión con Schwab verificada (ya conectado en esta sesión).")
-    
-    schwab_client = st.session_state.schwab_client_options
-    
-    # --- Punto 3: Filtros ---
+    # --- Punto 2: Filtros ---
     st.divider()
     volumen_min, ratio_min = seccion_filtros()
     
-    # --- Punto 4: Escaneo ---
+    # --- Punto 3: Escaneo ---
     st.divider()
-    st.subheader("4. Escaneo de Opciones")
+    st.subheader("3. Escaneo de Opciones")
     
-    # Verificar si hay cliente válido
-    if not hasattr(st.session_state, 'schwab_client_options') or st.session_state.schwab_client_options is None:
-        st.error("❌ Necesitas conectar con Schwab antes de ejecutar el escaneo")
-        st.info("💡 Asegúrate de que 'schwab_token.json' existe y está actualizado")
-        st.warning("⚠️ Los tokens de Schwab expiran cada 7 días")
-    else:
-        # Cliente válido - mostrar interfaz de escaneo
-        schwab_client = st.session_state.schwab_client_options
-        
-        st.info(f"📊 Tickers listos para escanear: **{len(valid_tickers)}** | 🚀 Modo: **Paralelo (15 hilos)**")
-        st.warning("⚠️ El escaneo tardará 2-4 minutos. **No cambies de página durante el proceso.**")
-        st.info("📊 **Datos REALES**: Call/Put Ratio y Volumen de opciones desde Schwab API")
-        
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col1:
-            ejecutar_btn = st.button("🚀 Ejecutar Escaneo", type="primary", use_container_width=True)
-        with col2:
-            if 'df_resultados_options' in st.session_state and st.session_state.df_resultados_options is not None:
-                st.success(f"✅ Último escaneo: {len(st.session_state.df_resultados_options)} resultados")
-        with col3:
-            if st.button("🗑️ Limpiar", use_container_width=True):
-                if 'df_resultados_options' in st.session_state:
-                    del st.session_state.df_resultados_options
-                st.rerun()
-        
-        if ejecutar_btn:
-            start_time = time.time()
-            with st.spinner("Ejecutando escaneo paralelo con Schwab API..."):
-                try:
-                    df_resultados = ejecutar_escaneo_opciones(
-                        schwab_client,
-                        valid_tickers,
-                        volumen_min,
-                        ratio_min
-                    )
-                    st.session_state.df_resultados_options = df_resultados
-                    
-                    elapsed_time = time.time() - start_time
-                    
-                    if df_resultados is not None and not df_resultados.empty:
-                        st.balloons()
-                        st.success(f"🎉 Escaneo completado en {elapsed_time:.1f} segundos - {len(df_resultados)} acciones encontradas")
-                    else:
-                        st.warning("⚠️ No se encontraron acciones que cumplan los criterios")
+    st.info(f"📊 Tickers listos para escanear: **{len(valid_tickers)}** | 🚀 Modo: **Paralelo (10 hilos)**")
+    st.warning("⚠️ El escaneo tardará 3-5 minutos. **No cambies de página durante el proceso.**")
+    st.info("📊 **Fuente de datos**: Yahoo Finance (Call/Put Ratio basado en Open Interest)")
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col1:
+        ejecutar_btn = st.button("🚀 Ejecutar Escaneo", type="primary", use_container_width=True)
+    with col2:
+        if 'df_resultados_options' in st.session_state and st.session_state.df_resultados_options is not None:
+            st.success(f"✅ Último escaneo: {len(st.session_state.df_resultados_options)} resultados")
+    with col3:
+        if st.button("🗑️ Limpiar", use_container_width=True):
+            if 'df_resultados_options' in st.session_state:
+                del st.session_state.df_resultados_options
+            st.rerun()
+    
+    if ejecutar_btn:
+        start_time = time.time()
+        with st.spinner("Ejecutando escaneo paralelo con Yahoo Finance..."):
+            try:
+                df_resultados = ejecutar_escaneo_opciones(
+                    valid_tickers,
+                    volumen_min,
+                    ratio_min
+                )
+                st.session_state.df_resultados_options = df_resultados
                 
-                except Exception as e:
-                    st.error(f"❌ Error durante el escaneo: {str(e)}")
-                    st.info("💡 El token puede haber expirado. Genera uno nuevo desde tu notebook local.")
+                elapsed_time = time.time() - start_time
+                
+                if df_resultados is not None and not df_resultados.empty:
+                    st.balloons()
+                    st.success(f"🎉 Escaneo completado en {elapsed_time:.1f} segundos - {len(df_resultados)} acciones encontradas")
+                else:
+                    st.warning("⚠️ No se encontraron acciones que cumplan los criterios")
+            
+            except Exception as e:
+                st.error(f"❌ Error durante el escaneo: {str(e)}")
     
-    # --- Punto 5: Resultados ---
+    # --- Punto 4: Resultados ---
     st.divider()
     if 'df_resultados_options' in st.session_state:
         mostrar_resultados(st.session_state.df_resultados_options)
@@ -490,14 +384,10 @@ def options_scanner_page():
     
     # --- Estado final ---
     st.divider()
-    if schwab_client:
-        st.success(f"🎯 Sistema listo con {len(valid_tickers)} tickers válidos y conexión Schwab activa.")
-    else:
-        st.warning("⏳ Conecta tu token Schwab para activar funciones de trading.")
-        st.info("📝 **Cómo generar el token:**\n1. Ejecuta tu notebook local\n2. Completa el flujo OAuth\n3. Sube 'schwab_token.json' a Streamlit Cloud")
+    st.success(f"🎯 Sistema listo con {len(valid_tickers)} tickers válidos usando Yahoo Finance.")
 
 # =========================================================================
-# 8. PUNTO DE ENTRADA PROTEGIDO
+# 7. PUNTO DE ENTRADA PROTEGIDO
 # =========================================================================
 
 if __name__ == "__main__":
