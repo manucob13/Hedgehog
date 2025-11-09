@@ -385,13 +385,13 @@ def options_scanner_page():
     st.divider()
     
     # Guardar cliente en session_state si no existe
-    if 'schwab_client' not in st.session_state:
-        st.session_state.schwab_client = connect_to_schwab()
+    if 'schwab_client_options' not in st.session_state:
+        st.session_state.schwab_client_options = connect_to_schwab()
     else:
         st.subheader("2. Conexión con Broker Schwab")
         st.success("✅ Conexión con Schwab verificada (ya conectado en esta sesión).")
     
-    schwab_client = st.session_state.schwab_client
+    schwab_client = st.session_state.schwab_client_options
     
     # --- Punto 3: Filtros ---
     st.divider()
