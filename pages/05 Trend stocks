@@ -1,9 +1,21 @@
 # pages/Trend stocks.py
 import streamlit as st
 import pandas as pd
+import requests
+import yfinance as yf
+from datetime import timedelta, datetime
+from io import StringIO
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
-from datetime import datetime
 import os
+import time
+from math import sqrt
+import schwab
+from schwab.auth import easy_client
+from schwab.client import Client
+from utils import check_password
+import json
+
 
 # =========================================================================
 # CONFIGURACIÓN
