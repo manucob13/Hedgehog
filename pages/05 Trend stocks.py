@@ -414,12 +414,14 @@ def options_scanner_page():
     st.divider()
     st.subheader("4. Escaneo de Opciones")
     
-    # Verificar si hay cliente válido
-    if 'schwab_client_options' not in st.session_state or st.session_state.schwab_client_options is None:
+    # Verificar si hay cliente válido (CORRECCIÓN AQUÍ)
+    if not hasattr(st.session_state, 'schwab_client_options') or st.session_state.schwab_client_options is None:
         st.error("❌ Necesitas conectar con Schwab antes de ejecutar el escaneo")
-        st.info("💡 Recarga la página para intentar reconectar")
+        st.info("💡 Haz clic en '🔄 Reconectar Schwab' arriba para establecer la conexión")
     else:
+        # Cliente válido - mostrar interfaz de escaneo
         schwab_client = st.session_state.schwab_client_options
+        
         st.info(f"📊 Tickers listos para escanear: **{len(valid_tickers)}** | 🚀 Modo: **Paralelo (15 hilos)**")
         st.warning("⚠️ El escaneo tardará 2-4 minutos. **No cambies de página durante el proceso.**")
         st.info("📊 **Datos REALES**: Call/Put Ratio y Volumen de opciones desde Schwab API")
@@ -439,21 +441,26 @@ def options_scanner_page():
         if ejecutar_btn:
             start_time = time.time()
             with st.spinner("Ejecutando escaneo paralelo con Schwab API..."):
-                df_resultados = ejecutar_escaneo_opciones(
-                    schwab_client,
-                    valid_tickers,
-                    volumen_min,
-                    ratio_min
-                )
-                st.session_state.df_resultados_options = df_resultados
-            
-            elapsed_time = time.time() - start_time
-            
-            if df_resultados is not None and not df_resultados.empty:
-                st.balloons()
-                st.success(f"🎉 Escaneo completado en {elapsed_time:.1f} segundos - {len(df_resultados)} acciones encontradas")
-            else:
-                st.warning("⚠️ No se encontraron acciones que cumplan los criterios")
+                try:
+                    df_resultados = ejecutar_escaneo_opciones(
+                        schwab_client,
+                        valid_tickers,
+                        volumen_min,
+                        ratio_min
+                    )
+                    st.session_state.df_resultados_options = df_resultados
+                    
+                    elapsed_time = time.time() - start_time
+                    
+                    if df_resultados is not None and not df_resultados.empty:
+                        st.balloons()
+                        st.success(f"🎉 Escaneo completado en {elapsed_time:.1f} segundos - {len(df_resultados)} acciones encontradas")
+                    else:
+                        st.warning("⚠️ No se encontraron acciones que cumplan los criterios")
+                
+                except Exception as e:
+                    st.error(f"❌ Error durante el escaneo: {str(e)}")
+                    st.info("💡 Intenta reconectar con Schwab y vuelve a ejecutar el escaneo")
     
     # --- Punto 5: Resultados ---
     st.divider()
