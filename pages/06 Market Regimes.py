@@ -187,11 +187,11 @@ def analyze_regime(ticker, start_date, lookback_weeks):
     return df, df_recent
 
 # =========================================================================
-# VISUALIZACIÓN ULTRA MEJORADA CON MACD-V CORREGIDO
+# VISUALIZACIÓN ULTRA MEJORADA CON MACD-V FONDO BLANCO Y BANDAS DE COLOR
 # =========================================================================
 
 def plot_regime_dashboard(df_recent, ticker):
-    """Dashboard consolidado con MACD-V estilo ThinkOrSwim mejorado"""
+    """Dashboard consolidado con MACD-V sobre fondo blanco y bandas de color por régimen"""
     
     # Verificar que las columnas necesarias existen
     required_cols = ['Close', 'Regime_Name', 'SMA_20', 'SMA_50', 'RSI', 'ADX', 
@@ -446,10 +446,10 @@ def plot_regime_dashboard(df_recent, ticker):
     ax3.spines['bottom'].set_linewidth(1.5)
     
     # =====================================================================
-    # GRÁFICO 4: MACD-V MEJORADO (ESTILO THINKORSWIM PROFESIONAL)
+    # GRÁFICO 4: MACD-V CON FONDO BLANCO Y BANDAS DE COLOR POR RÉGIMEN
     # =====================================================================
     ax4 = fig.add_subplot(gs[3], sharex=ax1)
-    ax4.set_facecolor('#0A0A0A')  # Fondo negro puro
+    ax4.set_facecolor('#FFFFFF')  # FONDO BLANCO
     
     # Verificar que MACD_V_Signal tenga datos válidos
     if 'MACD_V_Signal' in df_recent.columns and not df_recent['MACD_V_Signal'].isna().all():
@@ -465,132 +465,146 @@ def plot_regime_dashboard(df_recent, ticker):
             y_max = macd_max + (macd_range * 0.2)
             y_min = macd_min - (macd_range * 0.2)
             
-            # Líneas de referencia principales (bandas ±50, ±150)
-            ax4.axhline(y=150, color='#CC0000', linestyle='--', linewidth=2, alpha=0.9, zorder=2, label='±150')
-            ax4.axhline(y=50, color='#FFD700', linestyle='--', linewidth=1.5, alpha=0.7, zorder=2, label='±50')
-            ax4.axhline(y=0, color='#FFFFFF', linestyle='-', linewidth=2, alpha=0.5, zorder=2, label='Zero')
-            ax4.axhline(y=-50, color='#FFD700', linestyle='--', linewidth=1.5, alpha=0.7, zorder=2)
-            ax4.axhline(y=-150, color='#CC0000', linestyle='--', linewidth=2, alpha=0.9, zorder=2)
+            # ============================================================
+            # BANDAS DE COLOR POR RÉGIMEN (FONDO)
+            # ============================================================
             
-            # Zonas de color (similar a ThinkOrSwim)
-            # Zona alcista fuerte (>150)
+            # RIESGO ALCISTA (>150): Naranja fuerte
             ax4.fill_between(df_recent.index, 150, y_max, 
-                             color='#00FF00', alpha=0.08, zorder=0)
+                             color='#FF6B35', alpha=0.15, zorder=0, label='Riesgo Alcista')
             
-            # Zona alcista moderada (50 a 150)
+            # ALCISTA (50 a 150): Verde
             ax4.fill_between(df_recent.index, 50, 150, 
-                             color='#00CC00', alpha=0.12, zorder=0)
+                             color='#10B981', alpha=0.20, zorder=0, label='Alcista')
             
-            # Zona neutral (-50 a 50)
+            # RANGO (-50 a 50): Gris
             ax4.fill_between(df_recent.index, -50, 50, 
-                             color='#404040', alpha=0.15, zorder=0)
+                             color='#4A5568', alpha=0.15, zorder=0, label='Rango')
             
-            # Zona bajista moderada (-150 a -50)
+            # BAJISTA (-150 a -50): Rojo
             ax4.fill_between(df_recent.index, -150, -50, 
-                             color='#CC0000', alpha=0.12, zorder=0)
+                             color='#DC143C', alpha=0.20, zorder=0, label='Bajista')
             
-            # Zona bajista fuerte (<-150)
+            # RIESGO BAJISTA (<-150): Naranja fuerte
             ax4.fill_between(df_recent.index, y_min, -150, 
-                             color='#FF0000', alpha=0.08, zorder=0)
+                             color='#FF6B35', alpha=0.15, zorder=0, label='Riesgo Bajista')
             
-            # Línea MACD-V con gradiente de color según dirección
+            # ============================================================
+            # LÍNEAS DE REFERENCIA (BORDES DE BANDAS)
+            # ============================================================
+            ax4.axhline(y=150, color='#FF6B35', linestyle='--', linewidth=2.5, alpha=0.9, zorder=2)
+            ax4.axhline(y=50, color='#10B981', linestyle='--', linewidth=2, alpha=0.8, zorder=2)
+            ax4.axhline(y=0, color='#1A202C', linestyle='-', linewidth=2.5, alpha=0.6, zorder=2)
+            ax4.axhline(y=-50, color='#DC143C', linestyle='--', linewidth=2, alpha=0.8, zorder=2)
+            ax4.axhline(y=-150, color='#FF6B35', linestyle='--', linewidth=2.5, alpha=0.9, zorder=2)
+            
+            # ============================================================
+            # LÍNEA MACD-V CON COLOR DINÁMICO
+            # ============================================================
             for i in range(1, len(df_recent)):
                 if pd.notna(df_recent['MACD_V_Signal'].iloc[i-1]) and pd.notna(df_recent['MACD_V_Signal'].iloc[i]):
                     x1, x2 = df_recent.index[i-1], df_recent.index[i]
                     y1, y2 = df_recent['MACD_V_Signal'].iloc[i-1], df_recent['MACD_V_Signal'].iloc[i]
                     
-                    # Color según dirección Y posición
-                    if y2 > y1:  # Subiendo
-                        if y2 > 50:
-                            color = '#00FF00'  # Verde brillante
-                        elif y2 > 0:
-                            color = '#7FFF00'  # Verde lima
-                        else:
-                            color = '#FFFF00'  # Amarillo
-                    else:  # Bajando
-                        if y2 < -50:
-                            color = '#FF0000'  # Rojo brillante
-                        elif y2 < 0:
-                            color = '#FF6600'  # Naranja
-                        else:
-                            color = '#FFAA00'  # Amarillo-naranja
+                    # Color según valor (no dirección)
+                    if y2 > 150:
+                        color = '#FF6B35'  # Riesgo alcista
+                        width = 4
+                    elif y2 > 50:
+                        color = '#10B981'  # Alcista
+                        width = 3.5
+                    elif y2 > -50:
+                        color = '#4A5568'  # Rango
+                        width = 3
+                    elif y2 > -150:
+                        color = '#DC143C'  # Bajista
+                        width = 3.5
+                    else:
+                        color = '#FF6B35'  # Riesgo bajista
+                        width = 4
                     
-                    ax4.plot([x1, x2], [y1, y2], color=color, linewidth=3.5, alpha=0.95, zorder=5)
+                    ax4.plot([x1, x2], [y1, y2], color=color, linewidth=width, alpha=0.95, zorder=5)
             
-            # Punto actual con doble círculo
+            # ============================================================
+            # PUNTO ACTUAL
+            # ============================================================
             if pd.notna(current['MACD_V_Signal']):
-                current_color = '#00FF00' if current['MACD_V_Signal'] > 0 else '#FF0000'
+                # Determinar color según régimen
+                if current['MACD_V_Signal'] > 150:
+                    current_color = '#FF6B35'
+                    regime_label = 'RIESGO ALCISTA'
+                elif current['MACD_V_Signal'] > 50:
+                    current_color = '#10B981'
+                    regime_label = 'ALCISTA'
+                elif current['MACD_V_Signal'] > -50:
+                    current_color = '#4A5568'
+                    regime_label = 'RANGO'
+                elif current['MACD_V_Signal'] > -150:
+                    current_color = '#DC143C'
+                    regime_label = 'BAJISTA'
+                else:
+                    current_color = '#FF6B35'
+                    regime_label = 'RIESGO BAJISTA'
                 
                 # Círculo exterior (glow)
                 ax4.scatter(current.name, current['MACD_V_Signal'], 
                            facecolors=current_color,
                            edgecolors='none', 
-                           s=250,
-                           alpha=0.3,
+                           s=300,
+                           alpha=0.25,
                            marker='o',
                            zorder=9)
                 
                 # Círculo principal
                 ax4.scatter(current.name, current['MACD_V_Signal'], 
                            facecolors=current_color,
-                           edgecolors='#FFFFFF', 
-                           s=150,
-                           linewidth=3,
+                           edgecolors='#1A202C', 
+                           s=180,
+                           linewidth=3.5,
                            marker='o',
                            alpha=0.95,
                            zorder=10)
                 
-                # Badge informativo mejorado
+                # Badge informativo
                 if len(df_recent) >= 2 and pd.notna(df_recent['MACD_V_Signal'].iloc[-2]):
                     signal_diff = current['MACD_V_Signal'] - df_recent['MACD_V_Signal'].iloc[-2]
                     signal_direction = '▲' if signal_diff > 0 else '▼'
-                    signal_color = '#00FF00' if signal_diff > 0 else '#FF0000'
+                    direction_color = '#10B981' if signal_diff > 0 else '#DC143C'
                     
                     # Badge con valor actual
-                    ax4.text(0.02, 0.92, f'MACD-V: {current["MACD_V_Signal"]:.1f}', 
+                    ax4.text(0.02, 0.95, f'MACD-V: {current["MACD_V_Signal"]:.1f}', 
                             transform=ax4.transAxes, 
-                            fontsize=13, 
+                            fontsize=12, 
                             fontweight='bold',
-                            color='#FFFFFF',
+                            color='white',
                             verticalalignment='top',
                             bbox=dict(boxstyle='round,pad=0.7', 
-                                     facecolor='#1A1A1A', 
+                                     facecolor=current_color, 
                                      alpha=0.95, 
-                                     edgecolor=signal_color, 
-                                     linewidth=3))
+                                     edgecolor='#1A202C', 
+                                     linewidth=2.5))
                     
                     # Indicador de dirección
                     ax4.text(0.02, 0.78, f'{signal_direction} {abs(signal_diff):.1f}', 
                             transform=ax4.transAxes, 
-                            fontsize=11, 
+                            fontsize=10, 
                             fontweight='bold',
-                            color=signal_color,
+                            color=direction_color,
                             verticalalignment='top')
                     
-                    # Estado del momentum
-                    if current['MACD_V_Signal'] > 150:
-                        momentum_status = 'EXTREMELY BULLISH'
-                        status_color = '#00FF00'
-                    elif current['MACD_V_Signal'] > 50:
-                        momentum_status = 'BULLISH'
-                        status_color = '#7FFF00'
-                    elif current['MACD_V_Signal'] > -50:
-                        momentum_status = 'NEUTRAL'
-                        status_color = '#FFFF00'
-                    elif current['MACD_V_Signal'] > -150:
-                        momentum_status = 'BEARISH'
-                        status_color = '#FF6600'
-                    else:
-                        momentum_status = 'EXTREMELY BEARISH'
-                        status_color = '#FF0000'
-                    
-                    ax4.text(0.98, 0.92, momentum_status, 
+                    # Estado del régimen
+                    ax4.text(0.98, 0.95, regime_label, 
                             transform=ax4.transAxes, 
                             fontsize=11, 
                             fontweight='bold',
-                            color=status_color,
+                            color=current_color,
                             verticalalignment='top',
-                            horizontalalignment='right')
+                            horizontalalignment='right',
+                            bbox=dict(boxstyle='round,pad=0.5', 
+                                     facecolor='white', 
+                                     alpha=0.8, 
+                                     edgecolor=current_color, 
+                                     linewidth=2))
             
             # Configurar límites del eje Y
             ax4.set_ylim([y_min, y_max])
@@ -601,24 +615,29 @@ def plot_regime_dashboard(df_recent, ticker):
                     fontsize=12, 
                     ha='center', 
                     va='center',
-                    color='#FFFFFF')
+                    color='#1A202C')
     else:
         ax4.text(0.5, 0.5, 'MACD-V no disponible', 
                 transform=ax4.transAxes, 
                 fontsize=12, 
                 ha='center', 
                 va='center',
-                color='#FFFFFF')
+                color='#1A202C')
     
-    ax4.set_ylabel('MACD-V', fontsize=13, fontweight='bold', color='#FFFFFF', labelpad=10)
-    ax4.grid(True, alpha=0.2, linestyle=':', linewidth=0.5, color='#404040')
-    ax4.tick_params(labelsize=10, colors='#CCCCCC', width=1.2)
+    ax4.set_ylabel('MACD-V', fontsize=13, fontweight='600', color='#2D3748', labelpad=10)
+    ax4.grid(True, alpha=0.2, linestyle=':', linewidth=0.8, color='#CBD5E0')
+    ax4.tick_params(labelsize=10, colors='#4A5568', width=1.2)
     ax4.spines['top'].set_visible(False)
     ax4.spines['right'].set_visible(False)
-    ax4.spines['left'].set_color('#404040')
-    ax4.spines['bottom'].set_color('#404040')
-    ax4.spines['left'].set_linewidth(2)
-    ax4.spines['bottom'].set_linewidth(2)
+    ax4.spines['left'].set_color('#CBD5E0')
+    ax4.spines['bottom'].set_color('#CBD5E0')
+    ax4.spines['left'].set_linewidth(1.5)
+    ax4.spines['bottom'].set_linewidth(1.5)
+    
+    # Leyenda opcional (puedes comentar si prefieres sin leyenda)
+    legend = ax4.legend(loc='upper left', fontsize=8, framealpha=0.95, 
+                       ncol=5, edgecolor='#CBD5E0', fancybox=True)
+    legend.get_frame().set_facecolor('#FFFFFF')
     
     # =====================================================================
     # GRÁFICO 5: TIMELINE DE REGÍMENES
@@ -742,13 +761,11 @@ def market_regime_page():
         
         **MACD-V (Momentum):**
         - Normalizado por volatilidad (ATR)
-        - Verde: momentum alcista
-        - Rojo: momentum bajista
-        - >150: Extremadamente alcista
-        - 50-150: Alcista
-        - -50 a 50: Neutral
-        - -150 a -50: Bajista
-        - <-150: Extremadamente bajista
+        - **>150**: 🟠 Riesgo Alcista
+        - **50-150**: 🟢 Alcista
+        - **-50 a 50**: ⚫ Rango
+        - **-150 a -50**: 🔴 Bajista
+        - **<-150**: 🟠 Riesgo Bajista
         
         **Regímenes:**
         - 🟢 **ALCISTA**: ADX>25, +DI>-DI, precio>SMAs
