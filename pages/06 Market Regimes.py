@@ -208,14 +208,14 @@ def plot_regime_dashboard(df_recent, ticker):
              color='#9B59B6', alpha=0.8, linewidth=2, linestyle='--', 
              label='SMA(50)', zorder=2)
     
-    # Punto actual (estrella más pequeña)
+    # Punto actual (círculo transparente)
     current = df_recent.iloc[-1]
     ax1.scatter(current.name, current['Close'], 
-               color='#FFD700', 
-               s=250,  # Reducido de 600 a 250
-               marker='*', 
+               facecolors='none',  # Transparente
                edgecolors='black', 
-               linewidth=2,
+               s=200,
+               linewidth=3,
+               marker='o', 
                label=f'Actual: {current["Regime_Name"]}', 
                zorder=10)
     
@@ -277,13 +277,13 @@ def plot_regime_dashboard(df_recent, ticker):
     ax2.fill_between(df_recent.index, 75, 100, alpha=0.1, color='#E74C3C')
     ax2.fill_between(df_recent.index, 0, 25, alpha=0.1, color='#27AE60')
     
-    # Punto actual (estrella pequeña)
+    # Punto actual (círculo transparente)
     ax2.scatter(current.name, current['RSI'], 
-               color='#FFD700', 
-               s=150,  # Reducido de 300 a 150
-               marker='*', 
+               facecolors='none',  # Transparente
                edgecolors='black', 
-               linewidth=1.5, 
+               s=150,
+               linewidth=2.5,
+               marker='o',
                zorder=10)
     
     # Texto informativo
@@ -328,13 +328,13 @@ def plot_regime_dashboard(df_recent, ticker):
     ax3.fill_between(df_recent.index, 0, 20, alpha=0.1, color='#95A5A6')
     ax3.fill_between(df_recent.index, 25, 100, alpha=0.1, color='#27AE60')
     
-    # Punto actual
+    # Punto actual (círculo transparente)
     ax3.scatter(current.name, current['ADX'], 
-               color='#FFD700', 
-               s=150,  # Reducido de 300 a 150
-               marker='*', 
+               facecolors='none',  # Transparente
                edgecolors='black', 
-               linewidth=1.5, 
+               s=150,
+               linewidth=2.5,
+               marker='o',
                zorder=10)
     
     # Texto informativo
@@ -384,14 +384,14 @@ def plot_regime_dashboard(df_recent, ticker):
                        edgecolors='white', 
                        linewidth=0.8)
     
-    # Punto actual
+    # Punto actual (círculo transparente)
     current_regime_num = regime_order.index(current['Regime_Name'])
     ax4.scatter(current.name, current_regime_num, 
-               color='#FFD700', 
-               s=250,  # Reducido de 600 a 250
-               marker='*', 
+               facecolors='none',  # Transparente
                edgecolors='black', 
-               linewidth=2, 
+               s=200,
+               linewidth=3,
+               marker='o',
                zorder=10)
     
     ax4.set_ylabel('Regime', fontsize=12, fontweight='bold', color='#2C3E50')
