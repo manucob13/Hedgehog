@@ -437,32 +437,28 @@ def plot_regime_dashboard(df_recent, ticker):
     ax3.spines['bottom'].set_linewidth(1.5)
     
     # =====================================================================
-    # GRÁFICO 4: MACD-V (NUEVO)
+    # GRÁFICO 4: MACD-V
     # =====================================================================
     ax4 = fig.add_subplot(gs[3], sharex=ax1)
-    ax4.set_facecolor('#1A1A1A')  # Fondo oscuro como ToS
+    ax4.set_facecolor('#1A1A1A')
     
-    # Bandas horizontales
     ax4.axhline(y=150, color='#DC143C', linestyle='--', linewidth=1, alpha=0.8, zorder=1)
     ax4.axhline(y=50, color='#000000', linestyle='--', linewidth=1, alpha=0.6, zorder=1)
     ax4.axhline(y=-50, color='#000000', linestyle='--', linewidth=1, alpha=0.6, zorder=1)
     ax4.axhline(y=-150, color='#DC143C', linestyle='--', linewidth=1, alpha=0.8, zorder=1)
     
-    # Sombreado entre bandas (colores más suaves para fondo oscuro)
     ax4.fill_between(df_recent.index, 150, 50, 
-                     color='#A0FFA0', alpha=0.15, zorder=0)  # Verde subida
+                     color='#A0FFA0', alpha=0.15, zorder=0)
     ax4.fill_between(df_recent.index, 50, -50, 
-                     color='#F5F5A0', alpha=0.15, zorder=0)  # Amarillo neutral
+                     color='#F5F5A0', alpha=0.15, zorder=0)
     ax4.fill_between(df_recent.index, -50, -150, 
-                     color='#FFAAAA', alpha=0.15, zorder=0)  # Rojo bajada
+                     color='#FFAAAA', alpha=0.15, zorder=0)
     
-    # Zonas de riesgo extremo
     ax4.fill_between(df_recent.index, 150, df_recent['MACD_V_Signal'].max() + 50, 
                      color='#F0F0F0', alpha=0.1, zorder=0)
     ax4.fill_between(df_recent.index, -150, df_recent['MACD_V_Signal'].min() - 50, 
                      color='#F0F0F0', alpha=0.1, zorder=0)
     
-    # Línea de señal con colores dinámicos (verde/rojo según dirección)
     for i in range(1, len(df_recent)):
         x1, x2 = df_recent.index[i-1], df_recent.index[i]
         y1, y2 = df_recent['MACD_V_Signal'].iloc[i-1], df_recent['MACD_V_Signal'].iloc[i]
@@ -470,7 +466,6 @@ def plot_regime_dashboard(df_recent, ticker):
         color = '#00FF00' if y2 > y1 else '#FF0000' if y2 < y1 else '#808080'
         ax4.plot([x1, x2], [y1, y2], color=color, linewidth=2.5, alpha=0.9, zorder=3)
     
-    # Punto actual
     ax4.scatter(current.name, current['MACD_V_Signal'], 
                facecolors='none',
                edgecolors='#FFFFFF', 
@@ -479,7 +474,6 @@ def plot_regime_dashboard(df_recent, ticker):
                marker='o',
                zorder=10)
     
-    # Badge informativo
     signal_direction = 'UP' if current['MACD_V_Signal'] > df_recent['MACD_V_Signal'].iloc[-2] else 'DOWN'
     signal_color = '#00FF00' if signal_direction == 'UP' else '#FF0000'
     
@@ -580,7 +574,6 @@ def market_regime_page():
     st.markdown("---")
     st.info("🔍 Análisis de regímenes de mercado usando ADX + RSI + SMAs + MACD-V")
     
-    # Sidebar para configuración
     with st.sidebar:
         st.header("⚙️ Configuración")
         
@@ -645,7 +638,6 @@ def market_regime_page():
         - 🟠 **RIESGO**: RSI extremo + ADX alto
         """)
     
-    # Ejecutar análisis
     if analizar_btn:
         with st.spinner(f"Descargando y analizando datos para {ticker}..."):
             df, df_recent = analyze_regime(
@@ -663,7 +655,6 @@ def market_regime_page():
             st.session_state.df_recent = df_recent
             st.session_state.lookback_months = lookback_months
     
-    # Mostrar resultados
     if 'df' in st.session_state and 'df_recent' in st.session_state:
         df = st.session_state.df
         df_recent = st.session_state.df_recent
@@ -674,7 +665,6 @@ def market_regime_page():
         
         st.markdown("---")
         
-        # Métricas del régimen actual
         st.markdown("### 🎯 Régimen Actual")
         
         col1, col2, col3, col4, col5, col6 = st.columns(6)
@@ -703,13 +693,24 @@ def market_regime_page():
             st.metric("RSI", f"{current['RSI']:.1f}", rsi_status)
         
         with col5:
-            macd_direction = "↑" if current['MACD_V_Signal'] > df['MACD_V_Signal'].iloc[-2] else "↓"
-            st.metric("MACD-V", f"{current['MACD_V_Signal']:.1f}", macd_direction)
+            try:
+                if 'MACD_V_Signal' in df.columns and len(df) >= 2:
+                    current_macd = current.get('MACD_V_Signal')
+                    previous_macd = df['MACD_V_Signal'].iloc[-2]
+                    
+                    if pd.notna(current_macd) and pd.notna(previous_macd):
+                        macd_direction = "↑" if current_macd > previous_macd else "↓"
+                        st.metric("MACD-V", f"{current_macd:.1f}", macd_direction)
+                    else:
+                        st.metric("MACD-V", "N/A", "Sin datos")
+                else:
+                    st.metric("MACD-V", "N/A", "Insuficientes datos")
+            except (KeyError, IndexError, TypeError) as e:
+                st.metric("MACD-V", "Error", str(e)[:10])
         
         with col6:
             st.metric("Fecha", current.name.strftime('%Y-%m-%d'))
         
-        # Recomendación
         st.markdown("---")
         st.markdown("### 💡 Recomendación")
         
@@ -725,7 +726,6 @@ def market_regime_page():
         else:
             st.info("⚖️ **ESPERAR**: Sin dirección clara - estrategia de mean reversion")
         
-        # Gráfico
         st.markdown("---")
         lookback_display = st.session_state.get('lookback_months', lookback_months)
         st.markdown(f"### 📈 Análisis Visual ({lookback_display} meses)")
@@ -733,7 +733,6 @@ def market_regime_page():
         fig = plot_regime_dashboard(df_recent, st.session_state.last_ticker)
         st.pyplot(fig)
         
-        # Descarga de datos
         st.markdown("---")
         csv = df[['Close', 'Regime_Name', 'State', 'ADX', 'RSI', 'Plus_DI', 'Minus_DI', 
                   'SMA_20', 'SMA_50', 'MACD_V', 'MACD_V_Signal']].to_csv()
