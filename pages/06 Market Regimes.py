@@ -160,25 +160,33 @@ def analyze_regime(ticker, start_date, lookback_weeks):
     return df, df_recent
 
 # =========================================================================
-# VISUALIZACIÓN
+# VISUALIZACIÓN MEJORADA
 # =========================================================================
 
 def plot_regime_dashboard(df_recent, ticker):
-    """Dashboard consolidado: Precio + RSI + ADX + Secuencia"""
+    """Dashboard consolidado: Precio + RSI + ADX + Secuencia - VERSIÓN MEJORADA"""
     
+    # Colores modernos y más suaves
     regime_colors = {
-        'RIESGO': 'orange',
-        'BAJISTA': 'red',
-        'RANGO': 'black',
-        'ALCISTA': 'green'
+        'RIESGO': '#FF8C00',    # Naranja más vibrante
+        'BAJISTA': '#E74C3C',   # Rojo moderno
+        'RANGO': '#34495E',     # Gris azulado
+        'ALCISTA': '#27AE60'    # Verde moderno
     }
     
     fig = plt.figure(figsize=(20, 12))
     gs = fig.add_gridspec(4, 1, height_ratios=[3, 1, 1, 1], hspace=0.3)
     
+    # =====================================================================
     # GRÁFICO 1: PRECIO CON REGÍMENES
+    # =====================================================================
     ax1 = fig.add_subplot(gs[0])
     
+    # Línea de precio de fondo
+    ax1.plot(df_recent.index, df_recent['Close'], 
+             color='#95A5A6', alpha=0.3, linewidth=2, zorder=1)
+    
+    # Puntos de régimen (tamaño reducido)
     for regime_name, color in regime_colors.items():
         mask = df_recent['Regime_Name'] == regime_name
         if mask.sum() > 0:
@@ -186,117 +194,182 @@ def plot_regime_dashboard(df_recent, ticker):
                        df_recent[mask]['Close'],
                        c=color, 
                        label=regime_name,
-                       alpha=0.8, s=80, edgecolors='white', linewidth=1,
+                       alpha=0.85, 
+                       s=50,  # Reducido de 80 a 50
+                       edgecolors='white', 
+                       linewidth=0.8,
                        zorder=5)
     
-    ax1.plot(df_recent.index, df_recent['Close'], 
-             color='gray', alpha=0.4, linewidth=2, zorder=1)
-    
+    # SMAs con estilo más limpio
     ax1.plot(df_recent.index, df_recent['SMA_20'], 
-             color='blue', alpha=0.7, linewidth=2.5, linestyle='--', 
+             color='#3498DB', alpha=0.8, linewidth=2, linestyle='--', 
              label='SMA(20)', zorder=2)
     ax1.plot(df_recent.index, df_recent['SMA_50'], 
-             color='purple', alpha=0.7, linewidth=2.5, linestyle='--', 
+             color='#9B59B6', alpha=0.8, linewidth=2, linestyle='--', 
              label='SMA(50)', zorder=2)
     
-    # Marcar punto actual
+    # Punto actual (estrella más pequeña)
     current = df_recent.iloc[-1]
     ax1.scatter(current.name, current['Close'], 
-               color='gold', s=600, marker='*', 
-               edgecolors='black', linewidth=3,
-               label=f'HOY: {current["Regime_Name"]}', zorder=10)
+               color='#FFD700', 
+               s=250,  # Reducido de 600 a 250
+               marker='*', 
+               edgecolors='black', 
+               linewidth=2,
+               label=f'Actual: {current["Regime_Name"]}', 
+               zorder=10)
     
+    # Anotación simplificada
     ax1.annotate(f'{current["Regime_Name"]}\n${current["Close"]:.2f}',
                 xy=(current.name, current['Close']),
-                xytext=(10, 30), textcoords='offset points',
-                fontsize=14, fontweight='bold',
-                bbox=dict(boxstyle='round,pad=0.8', 
+                xytext=(15, 25), 
+                textcoords='offset points',
+                fontsize=11,  # Reducido de 14 a 11
+                fontweight='bold',
+                bbox=dict(boxstyle='round,pad=0.6', 
                          facecolor=regime_colors[current['Regime_Name']], 
-                         alpha=0.9, edgecolor='black', linewidth=2),
-                arrowprops=dict(arrowstyle='->', lw=2, color='black'),
+                         alpha=0.85, 
+                         edgecolor='black', 
+                         linewidth=1.5),
+                arrowprops=dict(arrowstyle='->', lw=1.5, color='black'),
                 zorder=11)
     
-    ax1.set_title(f'{ticker} - Régimen de Mercado\nTimeframe: SEMANAL', 
-                  fontsize=18, fontweight='bold', pad=20)
-    ax1.set_ylabel('Precio ($)', fontsize=14, fontweight='bold')
-    ax1.legend(loc='upper left', fontsize=11, framealpha=0.95, 
-              ncol=3, edgecolor='black', shadow=True)
-    ax1.grid(True, alpha=0.3, linestyle='--')
-    ax1.tick_params(labelsize=11)
+    # Título limpio
+    ax1.set_title(f'{ticker} - Market Regime Analysis (Weekly)', 
+                  fontsize=16, fontweight='bold', pad=15, color='#2C3E50')
+    ax1.set_ylabel('Price ($)', fontsize=13, fontweight='bold', color='#2C3E50')
     
+    # Leyenda mejorada
+    ax1.legend(loc='upper left', fontsize=10, framealpha=0.95, 
+              ncol=3, edgecolor='#BDC3C7', shadow=False,
+              borderpad=0.8, labelspacing=0.5)
+    
+    ax1.grid(True, alpha=0.2, linestyle='--', linewidth=0.5)
+    ax1.tick_params(labelsize=10, colors='#34495E')
+    ax1.spines['top'].set_visible(False)
+    ax1.spines['right'].set_visible(False)
+    
+    # =====================================================================
     # GRÁFICO 2: RSI
+    # =====================================================================
     ax2 = fig.add_subplot(gs[1], sharex=ax1)
     
+    # Línea RSI principal
     ax2.plot(df_recent.index, df_recent['RSI'], 
-             color='purple', linewidth=3, label='RSI')
+             color='#8E44AD', linewidth=2.5, label='RSI')
+    
+    # Zonas de color
     ax2.fill_between(df_recent.index, df_recent['RSI'], 50,
                      where=(df_recent['RSI'] >= 50), 
-                     color='green', alpha=0.2)
+                     color='#27AE60', alpha=0.15)
     ax2.fill_between(df_recent.index, df_recent['RSI'], 50,
                      where=(df_recent['RSI'] < 50), 
-                     color='red', alpha=0.2)
+                     color='#E74C3C', alpha=0.15)
     
-    ax2.axhline(y=75, color='red', linestyle='--', linewidth=2, alpha=0.7)
-    ax2.axhline(y=70, color='orange', linestyle='--', linewidth=1, alpha=0.5)
-    ax2.axhline(y=50, color='gray', linestyle='-', linewidth=1.5, alpha=0.6)
-    ax2.axhline(y=30, color='orange', linestyle='--', linewidth=1, alpha=0.5)
-    ax2.axhline(y=25, color='green', linestyle='--', linewidth=2, alpha=0.7)
+    # Líneas de referencia
+    ax2.axhline(y=75, color='#E74C3C', linestyle='--', linewidth=1.5, alpha=0.6)
+    ax2.axhline(y=70, color='#E67E22', linestyle=':', linewidth=1, alpha=0.5)
+    ax2.axhline(y=50, color='#7F8C8D', linestyle='-', linewidth=1, alpha=0.5)
+    ax2.axhline(y=30, color='#E67E22', linestyle=':', linewidth=1, alpha=0.5)
+    ax2.axhline(y=25, color='#27AE60', linestyle='--', linewidth=1.5, alpha=0.6)
     
-    ax2.fill_between(df_recent.index, 75, 100, alpha=0.15, color='red')
-    ax2.fill_between(df_recent.index, 0, 25, alpha=0.15, color='green')
+    # Zonas extremas
+    ax2.fill_between(df_recent.index, 75, 100, alpha=0.1, color='#E74C3C')
+    ax2.fill_between(df_recent.index, 0, 25, alpha=0.1, color='#27AE60')
     
+    # Punto actual (estrella pequeña)
     ax2.scatter(current.name, current['RSI'], 
-               color='gold', s=300, marker='*', 
-               edgecolors='black', linewidth=2, zorder=10)
+               color='#FFD700', 
+               s=150,  # Reducido de 300 a 150
+               marker='*', 
+               edgecolors='black', 
+               linewidth=1.5, 
+               zorder=10)
     
-    ax2.text(0.02, 0.95, f'RSI Actual: {current["RSI"]:.1f}', 
-            transform=ax2.transAxes, fontsize=12, fontweight='bold',
+    # Texto informativo
+    rsi_color = '#E74C3C' if current['RSI'] > 70 else '#27AE60' if current['RSI'] < 30 else '#7F8C8D'
+    ax2.text(0.02, 0.92, f'RSI: {current["RSI"]:.1f}', 
+            transform=ax2.transAxes, 
+            fontsize=11, 
+            fontweight='bold',
+            color=rsi_color,
             verticalalignment='top',
-            bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, 
-                     edgecolor='black', linewidth=1.5))
+            bbox=dict(boxstyle='round,pad=0.5', 
+                     facecolor='white', 
+                     alpha=0.9, 
+                     edgecolor=rsi_color, 
+                     linewidth=2))
     
-    ax2.set_ylabel('RSI', fontsize=13, fontweight='bold')
+    ax2.set_ylabel('RSI', fontsize=12, fontweight='bold', color='#2C3E50')
     ax2.set_ylim([0, 100])
-    ax2.grid(True, alpha=0.3, linestyle='--')
-    ax2.tick_params(labelsize=10)
+    ax2.grid(True, alpha=0.2, linestyle='--', linewidth=0.5)
+    ax2.tick_params(labelsize=9, colors='#34495E')
+    ax2.spines['top'].set_visible(False)
+    ax2.spines['right'].set_visible(False)
     
+    # =====================================================================
     # GRÁFICO 3: ADX
+    # =====================================================================
     ax3 = fig.add_subplot(gs[2], sharex=ax1)
     
+    # Líneas ADX y DI
     ax3.plot(df_recent.index, df_recent['ADX'], 
-             color='black', linewidth=3, label='ADX')
+             color='#2C3E50', linewidth=2.5, label='ADX')
     ax3.plot(df_recent.index, df_recent['Plus_DI'], 
-             color='green', linewidth=2, alpha=0.7, label='+DI')
+             color='#27AE60', linewidth=2, alpha=0.7, label='+DI')
     ax3.plot(df_recent.index, df_recent['Minus_DI'], 
-             color='red', linewidth=2, alpha=0.7, label='-DI')
+             color='#E74C3C', linewidth=2, alpha=0.7, label='-DI')
     
-    ax3.axhline(y=25, color='green', linestyle='--', linewidth=2, alpha=0.7)
-    ax3.axhline(y=20, color='orange', linestyle='--', linewidth=1.5, alpha=0.6)
+    # Líneas de referencia
+    ax3.axhline(y=25, color='#27AE60', linestyle='--', linewidth=1.5, alpha=0.6)
+    ax3.axhline(y=20, color='#E67E22', linestyle=':', linewidth=1, alpha=0.5)
     
-    ax3.fill_between(df_recent.index, 0, 20, alpha=0.15, color='gray')
-    ax3.fill_between(df_recent.index, 25, 100, alpha=0.15, color='green')
+    # Zonas
+    ax3.fill_between(df_recent.index, 0, 20, alpha=0.1, color='#95A5A6')
+    ax3.fill_between(df_recent.index, 25, 100, alpha=0.1, color='#27AE60')
     
+    # Punto actual
     ax3.scatter(current.name, current['ADX'], 
-               color='gold', s=300, marker='*', 
-               edgecolors='black', linewidth=2, zorder=10)
+               color='#FFD700', 
+               s=150,  # Reducido de 300 a 150
+               marker='*', 
+               edgecolors='black', 
+               linewidth=1.5, 
+               zorder=10)
     
-    ax3.text(0.02, 0.95, f'ADX Actual: {current["ADX"]:.1f}', 
-            transform=ax3.transAxes, fontsize=12, fontweight='bold',
+    # Texto informativo
+    adx_color = '#27AE60' if current['ADX'] > 25 else '#E67E22' if current['ADX'] > 20 else '#95A5A6'
+    trend_strength = 'Fuerte' if current['ADX'] > 25 else 'Moderada' if current['ADX'] > 20 else 'Débil'
+    
+    ax3.text(0.02, 0.92, f'ADX: {current["ADX"]:.1f} ({trend_strength})', 
+            transform=ax3.transAxes, 
+            fontsize=11, 
+            fontweight='bold',
+            color=adx_color,
             verticalalignment='top',
-            bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, 
-                     edgecolor='black', linewidth=1.5))
+            bbox=dict(boxstyle='round,pad=0.5', 
+                     facecolor='white', 
+                     alpha=0.9, 
+                     edgecolor=adx_color, 
+                     linewidth=2))
     
-    ax3.set_ylabel('ADX', fontsize=13, fontweight='bold')
+    ax3.set_ylabel('ADX / DI', fontsize=12, fontweight='bold', color='#2C3E50')
     ax3.set_ylim([0, 70])
-    ax3.legend(loc='upper left', fontsize=9, framealpha=0.9, ncol=3)
-    ax3.grid(True, alpha=0.3, linestyle='--')
-    ax3.tick_params(labelsize=10)
+    ax3.legend(loc='upper left', fontsize=9, framealpha=0.9, 
+              ncol=3, edgecolor='#BDC3C7')
+    ax3.grid(True, alpha=0.2, linestyle='--', linewidth=0.5)
+    ax3.tick_params(labelsize=9, colors='#34495E')
+    ax3.spines['top'].set_visible(False)
+    ax3.spines['right'].set_visible(False)
     
+    # =====================================================================
     # GRÁFICO 4: SECUENCIA DE REGÍMENES
+    # =====================================================================
     ax4 = fig.add_subplot(gs[3], sharex=ax1)
     
     regime_order = ['BAJISTA', 'RANGO', 'ALCISTA', 'RIESGO']
     
+    # Puntos de régimen
     for regime_name in regime_order:
         mask = df_recent['Regime_Name'] == regime_name
         if mask.sum() > 0:
@@ -306,19 +379,34 @@ def plot_regime_dashboard(df_recent, ticker):
             ax4.scatter(df_recent[mask].index, 
                        [regime_num] * mask.sum(),
                        c=color, 
-                       alpha=0.8, s=100, edgecolors='white', linewidth=1)
+                       alpha=0.85, 
+                       s=80,  # Reducido de 100 a 80
+                       edgecolors='white', 
+                       linewidth=0.8)
     
+    # Punto actual
     current_regime_num = regime_order.index(current['Regime_Name'])
     ax4.scatter(current.name, current_regime_num, 
-               color='gold', s=600, marker='*', 
-               edgecolors='black', linewidth=3, zorder=10)
+               color='#FFD700', 
+               s=250,  # Reducido de 600 a 250
+               marker='*', 
+               edgecolors='black', 
+               linewidth=2, 
+               zorder=10)
     
-    ax4.set_ylabel('Régimen', fontsize=13, fontweight='bold')
+    ax4.set_ylabel('Regime', fontsize=12, fontweight='bold', color='#2C3E50')
     ax4.set_yticks(range(4))
-    ax4.set_yticklabels(regime_order, fontsize=11, fontweight='bold')
-    ax4.set_xlabel('Fecha', fontsize=14, fontweight='bold')
-    ax4.grid(True, alpha=0.3, linestyle='--', axis='x')
-    ax4.tick_params(labelsize=10)
+    ax4.set_yticklabels(regime_order, fontsize=10, fontweight='bold')
+    ax4.set_xlabel('Date', fontsize=13, fontweight='bold', color='#2C3E50')
+    ax4.grid(True, alpha=0.2, linestyle='--', linewidth=0.5, axis='x')
+    ax4.tick_params(labelsize=9, colors='#34495E')
+    ax4.spines['top'].set_visible(False)
+    ax4.spines['right'].set_visible(False)
+    
+    # Fondo blanco limpio
+    fig.patch.set_facecolor('white')
+    for ax in [ax1, ax2, ax3, ax4]:
+        ax.set_facecolor('#FAFAFA')
     
     plt.tight_layout()
     
