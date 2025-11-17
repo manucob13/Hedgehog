@@ -539,6 +539,16 @@ def market_regime_page():
         
         st.markdown("---")
         
+        # BOTÓN DE ANÁLISIS EN EL SIDEBAR
+        analizar_btn = st.button(
+            "🚀 Analizar Régimen",
+            type="primary",
+            use_container_width=True,
+            key="sidebar_analyze"
+        )
+        
+        st.markdown("---")
+        
         st.markdown("### 📖 Metodología")
         st.markdown("""
         **ADX (Fuerza de Tendencia):**
@@ -556,17 +566,8 @@ def market_regime_page():
         - 🟠 **RIESGO**: RSI extremo + ADX alto
         """)
     
-    # Botón de análisis
-    col1, col2, col3 = st.columns([1, 2, 1])
-    
-    with col2:
-        analizar_btn = st.button(
-            "🚀 Analizar Régimen",
-            type="primary",
-            use_container_width=True
-        )
-    
-    if analizar_btn or 'last_ticker' in st.session_state and st.session_state.last_ticker == ticker:
+    # Ejecutar análisis cuando se presiona el botón
+    if analizar_btn:
         with st.spinner(f"Descargando y analizando datos para {ticker}..."):
             df, df_recent = analyze_regime(
                 ticker,
@@ -581,12 +582,17 @@ def market_regime_page():
             st.session_state.last_ticker = ticker
             st.session_state.df = df
             st.session_state.df_recent = df_recent
+            st.session_state.lookback_months = lookback_months
     
     # Mostrar resultados si existen
     if 'df' in st.session_state and 'df_recent' in st.session_state:
         df = st.session_state.df
         df_recent = st.session_state.df_recent
         current = df.iloc[-1]
+        
+        # Verificar si el ticker cambió
+        if 'last_ticker' not in st.session_state or st.session_state.last_ticker != ticker:
+            st.warning("⚠️ El ticker ha cambiado. Presiona '🚀 Analizar Régimen' en el sidebar para actualizar.")
         
         st.markdown("---")
         
@@ -639,9 +645,10 @@ def market_regime_page():
         
         # Gráfico
         st.markdown("---")
-        st.markdown(f"### 📈 Análisis Visual ({lookback_months} meses)")
+        lookback_display = st.session_state.get('lookback_months', lookback_months)
+        st.markdown(f"### 📈 Análisis Visual ({lookback_display} meses)")
         
-        fig = plot_regime_dashboard(df_recent, ticker)
+        fig = plot_regime_dashboard(df_recent, st.session_state.last_ticker)
         st.pyplot(fig)
         
         # Tabla de datos recientes
@@ -671,9 +678,13 @@ def market_regime_page():
         st.download_button(
             label="📥 Descargar Datos Completos (CSV)",
             data=csv,
-            file_name=f"market_regime_{ticker}_{datetime.now().strftime('%Y%m%d')}.csv",
+            file_name=f"market_regime_{st.session_state.last_ticker}_{datetime.now().strftime('%Y%m%d')}.csv",
             mime="text/csv"
         )
+    else:
+        # Mensaje inicial cuando no hay datos
+        st.markdown("---")
+        st.info("👈 Configura los parámetros en el sidebar y presiona **'🚀 Analizar Régimen'** para comenzar el análisis.")
 
 # =========================================================================
 # PUNTO DE ENTRADA PROTEGIDO
