@@ -193,6 +193,15 @@ def analyze_regime(ticker, start_date, lookback_weeks):
 def plot_regime_dashboard(df_recent, ticker):
     """Dashboard consolidado con MACD-V incluido"""
     
+    # Verificar que las columnas necesarias existen
+    required_cols = ['Close', 'Regime_Name', 'SMA_20', 'SMA_50', 'RSI', 'ADX', 
+                     'Plus_DI', 'Minus_DI', 'MACD_V_Signal']
+    
+    missing_cols = [col for col in required_cols if col not in df_recent.columns]
+    if missing_cols:
+        st.error(f"❌ Columnas faltantes en los datos: {missing_cols}")
+        return None
+    
     # Paleta de colores moderna con gradientes
     regime_colors = {
         'RIESGO': '#FF6B35',
@@ -437,63 +446,98 @@ def plot_regime_dashboard(df_recent, ticker):
     ax3.spines['bottom'].set_linewidth(1.5)
     
     # =====================================================================
-    # GRÁFICO 4: MACD-V
+    # GRÁFICO 4: MACD-V (CON VERIFICACIÓN DE DATOS)
     # =====================================================================
     ax4 = fig.add_subplot(gs[3], sharex=ax1)
     ax4.set_facecolor('#1A1A1A')
     
-    ax4.axhline(y=150, color='#DC143C', linestyle='--', linewidth=1, alpha=0.8, zorder=1)
-    ax4.axhline(y=50, color='#000000', linestyle='--', linewidth=1, alpha=0.6, zorder=1)
-    ax4.axhline(y=-50, color='#000000', linestyle='--', linewidth=1, alpha=0.6, zorder=1)
-    ax4.axhline(y=-150, color='#DC143C', linestyle='--', linewidth=1, alpha=0.8, zorder=1)
-    
-    ax4.fill_between(df_recent.index, 150, 50, 
-                     color='#A0FFA0', alpha=0.15, zorder=0)
-    ax4.fill_between(df_recent.index, 50, -50, 
-                     color='#F5F5A0', alpha=0.15, zorder=0)
-    ax4.fill_between(df_recent.index, -50, -150, 
-                     color='#FFAAAA', alpha=0.15, zorder=0)
-    
-    ax4.fill_between(df_recent.index, 150, df_recent['MACD_V_Signal'].max() + 50, 
-                     color='#F0F0F0', alpha=0.1, zorder=0)
-    ax4.fill_between(df_recent.index, -150, df_recent['MACD_V_Signal'].min() - 50, 
-                     color='#F0F0F0', alpha=0.1, zorder=0)
-    
-    for i in range(1, len(df_recent)):
-        x1, x2 = df_recent.index[i-1], df_recent.index[i]
-        y1, y2 = df_recent['MACD_V_Signal'].iloc[i-1], df_recent['MACD_V_Signal'].iloc[i]
+    # Verificar que MACD_V_Signal tenga datos válidos
+    if 'MACD_V_Signal' in df_recent.columns and not df_recent['MACD_V_Signal'].isna().all():
+        # Calcular límites seguros para fill_between
+        macd_signal = df_recent['MACD_V_Signal'].dropna()
         
-        color = '#00FF00' if y2 > y1 else '#FF0000' if y2 < y1 else '#808080'
-        ax4.plot([x1, x2], [y1, y2], color=color, linewidth=2.5, alpha=0.9, zorder=3)
-    
-    ax4.scatter(current.name, current['MACD_V_Signal'], 
-               facecolors='none',
-               edgecolors='#FFFFFF', 
-               s=180,
-               linewidth=3,
-               marker='o',
-               zorder=10)
-    
-    signal_direction = 'UP' if current['MACD_V_Signal'] > df_recent['MACD_V_Signal'].iloc[-2] else 'DOWN'
-    signal_color = '#00FF00' if signal_direction == 'UP' else '#FF0000'
-    
-    ax4.text(0.02, 0.90, f'MACD-V: {current["MACD_V_Signal"]:.1f}', 
-            transform=ax4.transAxes, 
-            fontsize=12, 
-            fontweight='bold',
-            color='white',
-            verticalalignment='top',
-            bbox=dict(boxstyle='round,pad=0.6', 
-                     facecolor=signal_color, 
-                     alpha=0.95, 
-                     edgecolor='white', 
-                     linewidth=2))
-    ax4.text(0.15, 0.90, signal_direction, 
-            transform=ax4.transAxes, 
-            fontsize=10, 
-            style='italic',
-            color=signal_color,
-            verticalalignment='top')
+        if len(macd_signal) > 0:
+            macd_max = macd_signal.max()
+            macd_min = macd_signal.min()
+            
+            # Bandas horizontales
+            ax4.axhline(y=150, color='#DC143C', linestyle='--', linewidth=1, alpha=0.8, zorder=1)
+            ax4.axhline(y=50, color='#000000', linestyle='--', linewidth=1, alpha=0.6, zorder=1)
+            ax4.axhline(y=-50, color='#000000', linestyle='--', linewidth=1, alpha=0.6, zorder=1)
+            ax4.axhline(y=-150, color='#DC143C', linestyle='--', linewidth=1, alpha=0.8, zorder=1)
+            
+            # Sombreado entre bandas
+            ax4.fill_between(df_recent.index, 150, 50, 
+                             color='#A0FFA0', alpha=0.15, zorder=0)
+            ax4.fill_between(df_recent.index, 50, -50, 
+                             color='#F5F5A0', alpha=0.15, zorder=0)
+            ax4.fill_between(df_recent.index, -50, -150, 
+                             color='#FFAAAA', alpha=0.15, zorder=0)
+            
+            # Zonas de riesgo extremo (con límites seguros)
+            upper_limit = max(150, macd_max) + 50
+            lower_limit = min(-150, macd_min) - 50
+            
+            ax4.fill_between(df_recent.index, 150, upper_limit, 
+                             color='#F0F0F0', alpha=0.1, zorder=0)
+            ax4.fill_between(df_recent.index, -150, lower_limit, 
+                             color='#F0F0F0', alpha=0.1, zorder=0)
+            
+            # Línea de señal con colores dinámicos
+            for i in range(1, len(df_recent)):
+                if pd.notna(df_recent['MACD_V_Signal'].iloc[i-1]) and pd.notna(df_recent['MACD_V_Signal'].iloc[i]):
+                    x1, x2 = df_recent.index[i-1], df_recent.index[i]
+                    y1, y2 = df_recent['MACD_V_Signal'].iloc[i-1], df_recent['MACD_V_Signal'].iloc[i]
+                    
+                    color = '#00FF00' if y2 > y1 else '#FF0000' if y2 < y1 else '#808080'
+                    ax4.plot([x1, x2], [y1, y2], color=color, linewidth=2.5, alpha=0.9, zorder=3)
+            
+            # Punto actual
+            if pd.notna(current['MACD_V_Signal']):
+                ax4.scatter(current.name, current['MACD_V_Signal'], 
+                           facecolors='none',
+                           edgecolors='#FFFFFF', 
+                           s=180,
+                           linewidth=3,
+                           marker='o',
+                           zorder=10)
+                
+                # Badge informativo
+                if len(df_recent) >= 2 and pd.notna(df_recent['MACD_V_Signal'].iloc[-2]):
+                    signal_direction = 'UP' if current['MACD_V_Signal'] > df_recent['MACD_V_Signal'].iloc[-2] else 'DOWN'
+                    signal_color = '#00FF00' if signal_direction == 'UP' else '#FF0000'
+                    
+                    ax4.text(0.02, 0.90, f'MACD-V: {current["MACD_V_Signal"]:.1f}', 
+                            transform=ax4.transAxes, 
+                            fontsize=12, 
+                            fontweight='bold',
+                            color='white',
+                            verticalalignment='top',
+                            bbox=dict(boxstyle='round,pad=0.6', 
+                                     facecolor=signal_color, 
+                                     alpha=0.95, 
+                                     edgecolor='white', 
+                                     linewidth=2))
+                    ax4.text(0.15, 0.90, signal_direction, 
+                            transform=ax4.transAxes, 
+                            fontsize=10, 
+                            style='italic',
+                            color=signal_color,
+                            verticalalignment='top')
+        else:
+            ax4.text(0.5, 0.5, 'Sin datos MACD-V disponibles', 
+                    transform=ax4.transAxes, 
+                    fontsize=12, 
+                    ha='center', 
+                    va='center',
+                    color='#FFFFFF')
+    else:
+        ax4.text(0.5, 0.5, 'MACD-V no disponible', 
+                transform=ax4.transAxes, 
+                fontsize=12, 
+                ha='center', 
+                va='center',
+                color='#FFFFFF')
     
     ax4.set_ylabel('MACD-V', fontsize=13, fontweight='600', color='#FFFFFF', labelpad=10)
     ax4.grid(True, alpha=0.1, linestyle='-', linewidth=0.8, color='#404040')
@@ -731,11 +775,28 @@ def market_regime_page():
         st.markdown(f"### 📈 Análisis Visual ({lookback_display} meses)")
         
         fig = plot_regime_dashboard(df_recent, st.session_state.last_ticker)
-        st.pyplot(fig)
+        
+        if fig is not None:
+            st.pyplot(fig)
+        else:
+            st.error("❌ No se pudo generar el gráfico. Verifica que los datos estén completos.")
         
         st.markdown("---")
-        csv = df[['Close', 'Regime_Name', 'State', 'ADX', 'RSI', 'Plus_DI', 'Minus_DI', 
-                  'SMA_20', 'SMA_50', 'MACD_V', 'MACD_V_Signal']].to_csv()
+        
+        # Verificar columnas antes de exportar
+        export_cols = ['Close', 'Regime_Name', 'State', 'ADX', 'RSI', 'Plus_DI', 'Minus_DI', 
+                      'SMA_20', 'SMA_50']
+        
+        # Agregar MACD-V solo si existen
+        if 'MACD_V' in df.columns:
+            export_cols.append('MACD_V')
+        if 'MACD_V_Signal' in df.columns:
+            export_cols.append('MACD_V_Signal')
+        
+        # Filtrar solo las columnas que existen
+        available_cols = [col for col in export_cols if col in df.columns]
+        
+        csv = df[available_cols].to_csv()
         st.download_button(
             label="📥 Descargar Datos Completos (CSV)",
             data=csv,
