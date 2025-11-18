@@ -68,8 +68,8 @@ def calculate_atr(df, period=26):
     atr = true_range.rolling(window=period).mean()
     return atr
 
-def calculate_macd_v(df, fast_len=12, slow_len=26, signal_len=9, atr_len=26):
-    """Calcula MACD-V (MACD normalizado por volatilidad)"""
+def calculate_macd_v(df, fast_len=12, slow_len=26, signal_len=20, atr_len=26):
+    """Calcula MACD-V (MACD normalizado por volatilidad) con parámetros personalizados"""
     fast_ema = calculate_ema(df['Close'], fast_len)
     slow_ema = calculate_ema(df['Close'], slow_len)
     atr = calculate_atr(df, atr_len)
@@ -85,9 +85,10 @@ def calculate_macd_v(df, fast_len=12, slow_len=26, signal_len=9, atr_len=26):
 
 @st.cache_data(ttl=timedelta(hours=1))
 def prepare_data(ticker, start_date='2018-01-01'):
-    """Descarga datos SEMANALES y calcula indicadores"""
+    """Descarga datos DIARIOS y calcula indicadores"""
     try:
-        data = yf.download(ticker, start=start_date, interval='1wk', progress=False)
+        # Cambiar a intervalo diario '1d'
+        data = yf.download(ticker, start=start_date, interval='1d', progress=False)
         
         if data.empty:
             return None
@@ -109,8 +110,14 @@ def prepare_data(ticker, start_date='2018-01-01'):
         df['SMA_20'] = calculate_sma(df['Close'], 20)
         df['SMA_50'] = calculate_sma(df['Close'], 50)
         
-        # Calcular MACD-V
-        df['MACD_V'], df['MACD_V_Signal'] = calculate_macd_v(df)
+        # Calcular MACD-V con parámetros personalizados (fast=12, slow=26, signal=20, atr=26)
+        df['MACD_V'], df['MACD_V_Signal'] = calculate_macd_v(
+            df, 
+            fast_len=12, 
+            slow_len=26, 
+            signal_len=20, 
+            atr_len=26
+        )
         
         df = df.dropna()
         
@@ -172,7 +179,7 @@ def classify_regime(df):
 # ANÁLISIS
 # =========================================================================
 
-def analyze_regime(ticker, start_date, lookback_weeks):
+def analyze_regime(ticker, start_date, lookback_days):
     """Analiza regímenes"""
     df = prepare_data(ticker, start_date)
     
@@ -181,19 +188,18 @@ def analyze_regime(ticker, start_date, lookback_weeks):
     
     df['Regime_Name'], df['State'] = classify_regime(df)
     
-    # Filtrar últimos meses para visualización
-    df_recent = df.tail(lookback_weeks)
+    # Filtrar últimos días para visualización
+    df_recent = df.tail(lookback_days)
     
     return df, df_recent
 
 # =========================================================================
-# VISUALIZACIÓN MEJORADA - LÍNEAS MÁS DELGADAS Y ETIQUETAS CORREGIDAS
+# VISUALIZACIÓN MEJORADA
 # =========================================================================
 
 def plot_regime_dashboard(df_recent, ticker):
-    """Dashboard consolidado con líneas delgadas y etiquetas reposicionadas"""
+    """Dashboard consolidado para datos diarios"""
     
-    # Verificar que las columnas necesarias existen
     required_cols = ['Close', 'Regime_Name', 'SMA_20', 'SMA_50', 'RSI', 'ADX', 
                      'Plus_DI', 'Minus_DI', 'MACD_V_Signal']
     
@@ -202,7 +208,6 @@ def plot_regime_dashboard(df_recent, ticker):
         st.error(f"❌ Columnas faltantes en los datos: {missing_cols}")
         return None
     
-    # Paleta de colores moderna con gradientes
     regime_colors = {
         'RIESGO': '#FF6B35',
         'BAJISTA': '#DC143C',
@@ -210,7 +215,6 @@ def plot_regime_dashboard(df_recent, ticker):
         'ALCISTA': '#10B981'
     }
     
-    # Configuración de estilo moderno
     plt.style.use('seaborn-v0_8-darkgrid')
     fig = plt.figure(figsize=(22, 15), facecolor='#F8F9FA')
     gs = fig.add_gridspec(5, 1, height_ratios=[3.5, 1, 1, 1, 1.2], hspace=0.35)
@@ -225,9 +229,9 @@ def plot_regime_dashboard(df_recent, ticker):
                      df_recent['Close'], color='#E8F4F8', alpha=0.3, zorder=0)
     
     ax1.plot(df_recent.index, df_recent['Close'], 
-             color='#A0AEC0', alpha=0.4, linewidth=2.5, zorder=1)  # REDUCIDO
+             color='#A0AEC0', alpha=0.4, linewidth=2.5, zorder=1)
     ax1.plot(df_recent.index, df_recent['Close'], 
-             color='#2D3748', alpha=0.6, linewidth=1.2, zorder=2)  # REDUCIDO
+             color='#2D3748', alpha=0.6, linewidth=1.2, zorder=2)
     
     for regime_name, color in regime_colors.items():
         mask = df_recent['Regime_Name'] == regime_name
@@ -250,10 +254,10 @@ def plot_regime_dashboard(df_recent, ticker):
                        zorder=5)
     
     ax1.plot(df_recent.index, df_recent['SMA_20'], 
-             color='#3B82F6', alpha=0.85, linewidth=2, linestyle='-',  # REDUCIDO
+             color='#3B82F6', alpha=0.85, linewidth=2, linestyle='-',
              label='SMA(20)', zorder=3)
     ax1.plot(df_recent.index, df_recent['SMA_50'], 
-             color='#8B5CF6', alpha=0.85, linewidth=2, linestyle='-',  # REDUCIDO
+             color='#8B5CF6', alpha=0.85, linewidth=2, linestyle='-',
              label='SMA(50)', zorder=3)
     
     current = df_recent.iloc[-1]
@@ -296,7 +300,7 @@ def plot_regime_dashboard(df_recent, ticker):
             transform=ax1.transAxes,
             fontsize=24, fontweight='bold', 
             ha='center', color='#1A202C')
-    ax1.text(0.5, 1.03, 'Market Regime Analysis • Weekly Timeframe', 
+    ax1.text(0.5, 1.03, 'Market Regime Analysis • Daily Timeframe', 
             transform=ax1.transAxes,
             fontsize=12, style='italic',
             ha='center', color='#718096')
@@ -325,7 +329,7 @@ def plot_regime_dashboard(df_recent, ticker):
     ax2.set_facecolor('#FFFFFF')
     
     ax2.plot(df_recent.index, df_recent['RSI'], 
-             color='#7C3AED', linewidth=2, label='RSI', zorder=3)  # REDUCIDO
+             color='#7C3AED', linewidth=2, label='RSI', zorder=3)
     
     ax2.fill_between(df_recent.index, df_recent['RSI'], 50,
                      where=(df_recent['RSI'] >= 50), 
@@ -334,11 +338,11 @@ def plot_regime_dashboard(df_recent, ticker):
                      where=(df_recent['RSI'] < 50), 
                      color='#DC143C', alpha=0.12, zorder=1)
     
-    ax2.axhline(y=75, color='#DC143C', linestyle='--', linewidth=1.5, alpha=0.7, zorder=2)  # REDUCIDO
-    ax2.axhline(y=70, color='#F59E0B', linestyle=':', linewidth=1.2, alpha=0.6, zorder=2)  # REDUCIDO
-    ax2.axhline(y=50, color='#6B7280', linestyle='-', linewidth=1.2, alpha=0.6, zorder=2)  # REDUCIDO
-    ax2.axhline(y=30, color='#F59E0B', linestyle=':', linewidth=1.2, alpha=0.6, zorder=2)  # REDUCIDO
-    ax2.axhline(y=25, color='#10B981', linestyle='--', linewidth=1.5, alpha=0.7, zorder=2)  # REDUCIDO
+    ax2.axhline(y=75, color='#DC143C', linestyle='--', linewidth=1.5, alpha=0.7, zorder=2)
+    ax2.axhline(y=70, color='#F59E0B', linestyle=':', linewidth=1.2, alpha=0.6, zorder=2)
+    ax2.axhline(y=50, color='#6B7280', linestyle='-', linewidth=1.2, alpha=0.6, zorder=2)
+    ax2.axhline(y=30, color='#F59E0B', linestyle=':', linewidth=1.2, alpha=0.6, zorder=2)
+    ax2.axhline(y=25, color='#10B981', linestyle='--', linewidth=1.5, alpha=0.7, zorder=2)
     
     ax2.fill_between(df_recent.index, 75, 100, alpha=0.08, color='#DC143C', zorder=0)
     ax2.fill_between(df_recent.index, 0, 25, alpha=0.08, color='#10B981', zorder=0)
@@ -384,20 +388,20 @@ def plot_regime_dashboard(df_recent, ticker):
     ax2.spines['bottom'].set_linewidth(1.5)
     
     # =====================================================================
-    # GRÁFICO 3: ADX - ETIQUETAS REPOSICIONADAS
+    # GRÁFICO 3: ADX
     # =====================================================================
     ax3 = fig.add_subplot(gs[2], sharex=ax1)
     ax3.set_facecolor('#FFFFFF')
     
     ax3.plot(df_recent.index, df_recent['ADX'], 
-             color='#1A202C', linewidth=2, label='ADX', zorder=3)  # REDUCIDO
+             color='#1A202C', linewidth=2, label='ADX', zorder=3)
     ax3.plot(df_recent.index, df_recent['Plus_DI'], 
-             color='#10B981', linewidth=1.8, alpha=0.8, label='+DI', zorder=2)  # REDUCIDO
+             color='#10B981', linewidth=1.8, alpha=0.8, label='+DI', zorder=2)
     ax3.plot(df_recent.index, df_recent['Minus_DI'], 
-             color='#DC143C', linewidth=1.8, alpha=0.8, label='-DI', zorder=2)  # REDUCIDO
+             color='#DC143C', linewidth=1.8, alpha=0.8, label='-DI', zorder=2)
     
-    ax3.axhline(y=25, color='#10B981', linestyle='--', linewidth=1.5, alpha=0.7)  # REDUCIDO
-    ax3.axhline(y=20, color='#F59E0B', linestyle=':', linewidth=1.2, alpha=0.6)  # REDUCIDO
+    ax3.axhline(y=25, color='#10B981', linestyle='--', linewidth=1.5, alpha=0.7)
+    ax3.axhline(y=20, color='#F59E0B', linestyle=':', linewidth=1.2, alpha=0.6)
     
     ax3.fill_between(df_recent.index, 0, 20, alpha=0.08, color='#9CA3AF')
     ax3.fill_between(df_recent.index, 25, 100, alpha=0.08, color='#10B981')
@@ -413,21 +417,20 @@ def plot_regime_dashboard(df_recent, ticker):
     adx_color = '#10B981' if current['ADX'] > 25 else '#F59E0B' if current['ADX'] > 20 else '#9CA3AF'
     trend_strength = 'Strong' if current['ADX'] > 25 else 'Moderate' if current['ADX'] > 20 else 'Weak'
     
-    # REPOSICIONADAS - Movidas más abajo
     ax3.text(0.02, 0.75, f'ADX: {current["ADX"]:.1f}', 
             transform=ax3.transAxes, 
-            fontsize=11,  # REDUCIDO
+            fontsize=11,
             fontweight='bold',
             color='white',
             verticalalignment='top',
-            bbox=dict(boxstyle='round,pad=0.5',  # PADDING REDUCIDO
+            bbox=dict(boxstyle='round,pad=0.5',
                      facecolor=adx_color, 
                      alpha=0.95, 
                      edgecolor='white', 
-                     linewidth=1.5))  # REDUCIDO
+                     linewidth=1.5))
     ax3.text(0.11, 0.75, trend_strength, 
             transform=ax3.transAxes, 
-            fontsize=9,  # REDUCIDO
+            fontsize=9,
             style='italic',
             color=adx_color,
             verticalalignment='top')
@@ -447,90 +450,67 @@ def plot_regime_dashboard(df_recent, ticker):
     ax3.spines['bottom'].set_linewidth(1.5)
     
     # =====================================================================
-    # GRÁFICO 4: MACD-V - ETIQUETAS REPOSICIONADAS Y LÍNEAS MÁS DELGADAS
+    # GRÁFICO 4: MACD-V
     # =====================================================================
     ax4 = fig.add_subplot(gs[3], sharex=ax1)
     ax4.set_facecolor('#FFFFFF')
     
-    # Verificar que MACD_V_Signal tenga datos válidos
     if 'MACD_V_Signal' in df_recent.columns and not df_recent['MACD_V_Signal'].isna().all():
         macd_signal = df_recent['MACD_V_Signal'].dropna()
         
         if len(macd_signal) > 0:
-            # Calcular límites dinámicos
             macd_max = macd_signal.max()
             macd_min = macd_signal.min()
             macd_range = macd_max - macd_min
             
-            # Definir límites del gráfico con padding
             y_max = macd_max + (macd_range * 0.2)
             y_min = macd_min - (macd_range * 0.2)
             
-            # ============================================================
-            # BANDAS DE COLOR POR RÉGIMEN (FONDO)
-            # ============================================================
-            
-            # RIESGO ALCISTA (>150): Naranja fuerte
+            # Bandas de color
             ax4.fill_between(df_recent.index, 150, y_max, 
                              color='#FF6B35', alpha=0.15, zorder=0, label='Riesgo Alcista')
-            
-            # ALCISTA (50 a 150): Verde
             ax4.fill_between(df_recent.index, 50, 150, 
                              color='#10B981', alpha=0.20, zorder=0, label='Alcista')
-            
-            # RANGO (-50 a 50): Gris
             ax4.fill_between(df_recent.index, -50, 50, 
                              color='#4A5568', alpha=0.15, zorder=0, label='Rango')
-            
-            # BAJISTA (-150 a -50): Rojo
             ax4.fill_between(df_recent.index, -150, -50, 
                              color='#DC143C', alpha=0.20, zorder=0, label='Bajista')
-            
-            # RIESGO BAJISTA (<-150): Naranja fuerte
             ax4.fill_between(df_recent.index, y_min, -150, 
                              color='#FF6B35', alpha=0.15, zorder=0, label='Riesgo Bajista')
             
-            # ============================================================
-            # LÍNEAS DE REFERENCIA (BORDES DE BANDAS) - MÁS DELGADAS
-            # ============================================================
-            ax4.axhline(y=150, color='#FF6B35', linestyle='--', linewidth=1.8, alpha=0.9, zorder=2)  # REDUCIDO
-            ax4.axhline(y=50, color='#10B981', linestyle='--', linewidth=1.5, alpha=0.8, zorder=2)  # REDUCIDO
-            ax4.axhline(y=0, color='#1A202C', linestyle='-', linewidth=1.8, alpha=0.6, zorder=2)  # REDUCIDO
-            ax4.axhline(y=-50, color='#DC143C', linestyle='--', linewidth=1.5, alpha=0.8, zorder=2)  # REDUCIDO
-            ax4.axhline(y=-150, color='#FF6B35', linestyle='--', linewidth=1.8, alpha=0.9, zorder=2)  # REDUCIDO
+            # Líneas de referencia
+            ax4.axhline(y=150, color='#FF6B35', linestyle='--', linewidth=1.8, alpha=0.9, zorder=2)
+            ax4.axhline(y=50, color='#10B981', linestyle='--', linewidth=1.5, alpha=0.8, zorder=2)
+            ax4.axhline(y=0, color='#1A202C', linestyle='-', linewidth=1.8, alpha=0.6, zorder=2)
+            ax4.axhline(y=-50, color='#DC143C', linestyle='--', linewidth=1.5, alpha=0.8, zorder=2)
+            ax4.axhline(y=-150, color='#FF6B35', linestyle='--', linewidth=1.8, alpha=0.9, zorder=2)
             
-            # ============================================================
-            # LÍNEA MACD-V CON COLOR DINÁMICO - MÁS DELGADA
-            # ============================================================
+            # Línea MACD-V con color dinámico
             for i in range(1, len(df_recent)):
                 if pd.notna(df_recent['MACD_V_Signal'].iloc[i-1]) and pd.notna(df_recent['MACD_V_Signal'].iloc[i]):
                     x1, x2 = df_recent.index[i-1], df_recent.index[i]
                     y1, y2 = df_recent['MACD_V_Signal'].iloc[i-1], df_recent['MACD_V_Signal'].iloc[i]
                     
-                    # Color según valor (no dirección)
                     if y2 > 150:
-                        color = '#FF6B35'  # Riesgo alcista
-                        width = 2.5  # REDUCIDO
+                        color = '#FF6B35'
+                        width = 2.5
                     elif y2 > 50:
-                        color = '#10B981'  # Alcista
-                        width = 2.2  # REDUCIDO
+                        color = '#10B981'
+                        width = 2.2
                     elif y2 > -50:
-                        color = '#4A5568'  # Rango
-                        width = 2  # REDUCIDO
+                        color = '#4A5568'
+                        width = 2
                     elif y2 > -150:
-                        color = '#DC143C'  # Bajista
-                        width = 2.2  # REDUCIDO
+                        color = '#DC143C'
+                        width = 2.2
                     else:
-                        color = '#FF6B35'  # Riesgo bajista
-                        width = 2.5  # REDUCIDO
+                        color = '#FF6B35'
+                        width = 2.5
                     
                     ax4.plot([x1, x2], [y1, y2], color=color, linewidth=width, alpha=0.95, zorder=5)
             
-            # ============================================================
-            # PUNTO ACTUAL
-            # ============================================================
+            # Punto actual
             if pd.notna(current['MACD_V_Signal']):
-                # Determinar color según régimen
                 if current['MACD_V_Signal'] > 150:
                     current_color = '#FF6B35'
                     regime_label = 'RIESGO ALCISTA'
@@ -547,7 +527,6 @@ def plot_regime_dashboard(df_recent, ticker):
                     current_color = '#FF6B35'
                     regime_label = 'RIESGO BAJISTA'
                 
-                # Círculo exterior (glow)
                 ax4.scatter(current.name, current['MACD_V_Signal'], 
                            facecolors=current_color,
                            edgecolors='none', 
@@ -556,7 +535,6 @@ def plot_regime_dashboard(df_recent, ticker):
                            marker='o',
                            zorder=9)
                 
-                # Círculo principal
                 ax4.scatter(current.name, current['MACD_V_Signal'], 
                            facecolors=current_color,
                            edgecolors='#1A202C', 
@@ -566,48 +544,43 @@ def plot_regime_dashboard(df_recent, ticker):
                            alpha=0.95,
                            zorder=10)
                 
-                # Badge informativo - REPOSICIONADO MÁS ABAJO
                 if len(df_recent) >= 2 and pd.notna(df_recent['MACD_V_Signal'].iloc[-2]):
                     signal_diff = current['MACD_V_Signal'] - df_recent['MACD_V_Signal'].iloc[-2]
                     signal_direction = '▲' if signal_diff > 0 else '▼'
                     direction_color = '#10B981' if signal_diff > 0 else '#DC143C'
                     
-                    # Badge con valor actual - MOVIDO A LA PARTE INFERIOR IZQUIERDA
                     ax4.text(0.02, 0.18, f'MACD-V: {current["MACD_V_Signal"]:.1f}', 
                             transform=ax4.transAxes, 
-                            fontsize=11,  # REDUCIDO
+                            fontsize=11,
                             fontweight='bold',
                             color='white',
                             verticalalignment='top',
-                            bbox=dict(boxstyle='round,pad=0.5',  # PADDING REDUCIDO
+                            bbox=dict(boxstyle='round,pad=0.5',
                                      facecolor=current_color, 
                                      alpha=0.95, 
                                      edgecolor='#1A202C', 
-                                     linewidth=1.5))  # REDUCIDO
+                                     linewidth=1.5))
                     
-                    # Indicador de dirección - JUSTO DEBAJO
                     ax4.text(0.02, 0.05, f'{signal_direction} {abs(signal_diff):.1f}', 
                             transform=ax4.transAxes, 
-                            fontsize=9,  # REDUCIDO
+                            fontsize=9,
                             fontweight='bold',
                             color=direction_color,
                             verticalalignment='top')
                     
-                    # Estado del régimen - MOVIDO A ESQUINA INFERIOR DERECHA
                     ax4.text(0.98, 0.10, regime_label, 
                             transform=ax4.transAxes, 
-                            fontsize=10,  # REDUCIDO
+                            fontsize=10,
                             fontweight='bold',
                             color=current_color,
                             verticalalignment='top',
                             horizontalalignment='right',
-                            bbox=dict(boxstyle='round,pad=0.4',  # PADDING REDUCIDO
+                            bbox=dict(boxstyle='round,pad=0.4',
                                      facecolor='white', 
                                      alpha=0.8, 
                                      edgecolor=current_color, 
-                                     linewidth=1.5))  # REDUCIDO
+                                     linewidth=1.5))
             
-            # Configurar límites del eje Y
             ax4.set_ylim([y_min, y_max])
             
         else:
@@ -635,8 +608,7 @@ def plot_regime_dashboard(df_recent, ticker):
     ax4.spines['left'].set_linewidth(1.5)
     ax4.spines['bottom'].set_linewidth(1.5)
     
-    # Leyenda movida a esquina superior derecha para evitar conflictos
-    legend = ax4.legend(loc='upper right', fontsize=7.5, framealpha=0.95,  # REDUCIDO
+    legend = ax4.legend(loc='upper right', fontsize=7.5, framealpha=0.95,
                        ncol=5, edgecolor='#CBD5E0', fancybox=True)
     legend.get_frame().set_facecolor('#FFFFFF')
     
@@ -650,7 +622,7 @@ def plot_regime_dashboard(df_recent, ticker):
     
     regime_nums = [regime_order.index(r) for r in df_recent['Regime_Name']]
     ax5.plot(df_recent.index, regime_nums, 
-            color='#CBD5E0', linewidth=1.5, alpha=0.5, zorder=1, linestyle='-')  # REDUCIDO
+            color='#CBD5E0', linewidth=1.5, alpha=0.5, zorder=1, linestyle='-')
     
     for regime_name in regime_order:
         mask = df_recent['Regime_Name'] == regime_name
@@ -707,7 +679,7 @@ def plot_regime_dashboard(df_recent, ticker):
 def market_regime_page():
     st.title("📊 Market Regime Analyzer (ADX + MACD-V)")
     st.markdown("---")
-    st.info("🔍 Análisis de regímenes de mercado usando ADX + RSI + SMAs + MACD-V")
+    st.info("🔍 Análisis de regímenes de mercado usando ADX + RSI + SMAs + MACD-V (Daily)")
     
     with st.sidebar:
         st.header("⚙️ Configuración")
@@ -722,14 +694,15 @@ def market_regime_page():
         
         lookback_months = st.slider(
             "📅 Meses a mostrar",
-            min_value=3,
-            max_value=24,
-            value=6,
+            min_value=1,
+            max_value=12,
+            value=3,
             step=1,
             help="Número de meses de historia a visualizar"
         )
         
-        lookback_weeks = int(lookback_months * 4.33)
+        # Convertir meses a días (aproximadamente 21 días de trading por mes)
+        lookback_days = int(lookback_months * 21)
         
         st.markdown("---")
         
@@ -752,6 +725,8 @@ def market_regime_page():
         
         st.markdown("### 📖 Metodología")
         st.markdown("""
+        **Datos Diarios (1d)**
+        
         **ADX (Fuerza de Tendencia):**
         - ADX > 25: Tendencia fuerte
         - ADX < 20: Sin tendencia / Rango
@@ -761,7 +736,9 @@ def market_regime_page():
         - RSI < 25: Oversold (riesgo)
         
         **MACD-V (Momentum):**
-        - Normalizado por volatilidad (ATR)
+        - Fast: 12, Slow: 26
+        - Signal: 20, ATR: 26
+        - Normalizado por volatilidad
         - **>150**: 🟠 Riesgo Alcista
         - **50-150**: 🟢 Alcista
         - **-50 a 50**: ⚫ Rango
@@ -776,11 +753,11 @@ def market_regime_page():
         """)
     
     if analizar_btn:
-        with st.spinner(f"Descargando y analizando datos para {ticker}..."):
+        with st.spinner(f"Descargando y analizando datos diarios para {ticker}..."):
             df, df_recent = analyze_regime(
                 ticker,
                 start_date.strftime('%Y-%m-%d'),
-                lookback_weeks
+                lookback_days
             )
             
             if df is None or df_recent is None:
@@ -865,7 +842,7 @@ def market_regime_page():
         
         st.markdown("---")
         lookback_display = st.session_state.get('lookback_months', lookback_months)
-        st.markdown(f"### 📈 Análisis Visual ({lookback_display} meses)")
+        st.markdown(f"### 📈 Análisis Visual ({lookback_display} meses - Daily)")
         
         fig = plot_regime_dashboard(df_recent, st.session_state.last_ticker)
         
@@ -876,17 +853,14 @@ def market_regime_page():
         
         st.markdown("---")
         
-        # Verificar columnas antes de exportar
         export_cols = ['Close', 'Regime_Name', 'State', 'ADX', 'RSI', 'Plus_DI', 'Minus_DI', 
                       'SMA_20', 'SMA_50']
         
-        # Agregar MACD-V solo si existen
         if 'MACD_V' in df.columns:
             export_cols.append('MACD_V')
         if 'MACD_V_Signal' in df.columns:
             export_cols.append('MACD_V_Signal')
         
-        # Filtrar solo las columnas que existen
         available_cols = [col for col in export_cols if col in df.columns]
         
         csv = df[available_cols].to_csv()
