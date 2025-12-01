@@ -126,14 +126,12 @@ def obtener_datos_opciones_cboe(ticker):
 
 @st.cache_resource(ttl=timedelta(hours=24))
 def cargar_tickers():
-    """Cargar tickers desde CSV"""
+    """Cargar tickers desde CSV sin encabezado"""
     csv_filename = 'Tickers.csv'
     if os.path.exists(csv_filename):
         try:
-            df_tickers = pd.read_csv(csv_filename)
-            if 'Ticker' not in df_tickers.columns:
-                st.error(f"❌ El archivo '{csv_filename}' no tiene columna 'Ticker'")
-                st.stop()
+            # Leer CSV sin encabezado (header=None)
+            df_tickers = pd.read_csv(csv_filename, header=None, names=['Ticker'])
             
             tickers = df_tickers['Ticker'].astype(str).str.upper().str.strip().tolist()
             tickers = sorted(set(tickers))
