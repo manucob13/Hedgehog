@@ -348,7 +348,7 @@ def analizar_ticker_detallado(ticker):
     st.success(f"✅ {len(df_filtrado)} contratos encontrados (±50 strikes, 60 días)")
     
     # Tabs para diferentes vistas
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Resumen General", "📈 Por Strike", "📅 Por Expiración", "🎯 Max Pain & Greeks", "🔍 Tabla Completa"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Resumen General", "📈 Por Strike", "📅 Por Expiración", "🎯 Max Pain & Greeks", "🔎 Búsqueda Específica", "🔍 Tabla Completa"])
     
     with tab1:
         st.markdown("#### 📊 Resumen General")
@@ -586,6 +586,234 @@ def analizar_ticker_detallado(ticker):
         st.area_chart(chart_vol, use_container_width=True)
     
     with tab5:
+        st.markdown("#### 🔎 Búsqueda de Strike y Expiración Específica")
+        
+        st.info("Selecciona un strike y una fecha de expiración para ver datos detallados de esas opciones específicas")
+        
+        # Obtener strikes y expiraciones únicas disponibles
+        strikes_disponibles = sorted(df_filtrado['strike'].unique())
+        expiraciones_disponibles = sorted(df_filtrado['expiration'].unique())
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Selector de Strike
+            strike_seleccionado = st.selectbox(
+                "🎯 Selecciona Strike",
+                options=strikes_disponibles,
+                format_func=lambda x: f"${x:.2f}",
+                index=len(strikes_disponibles)//2 if strikes_disponibles else 0,
+                key="strike_selector"
+            )
+        
+        with col2:
+            # Selector de Expiración
+            exp_seleccionada = st.selectbox(
+                "📅 Selecciona Expiración",
+                options=expiraciones_disponibles,
+                format_func=lambda x: f"{x.strftime('%Y-%m-%d')} ({(x - datetime.now()).days} días)",
+                index=0,
+                key="exp_selector"
+            )
+        
+        st.markdown("---")
+        
+        # Filtrar datos para el strike y expiración seleccionados
+        df_especifico = df_filtrado[
+            (df_filtrado['strike'] == strike_seleccionado) & 
+            (df_filtrado['expiration'] == exp_seleccionada)
+        ].copy()
+        
+        if df_especifico.empty:
+            st.warning("⚠️ No hay datos disponibles para esta combinación de strike y expiración")
+        else:
+            # Separar calls y puts
+            call_data = df_especifico[df_especifico['type'] == 'C']
+            put_data = df_especifico[df_especifico['type'] == 'P']
+            
+            # Información general
+            st.success(f"✅ Datos encontrados para Strike ${strike_seleccionado:.2f} con expiración {exp_seleccionada.strftime('%Y-%m-%d')}")
+            
+            dias_hasta_exp = (exp_seleccionada - datetime.now()).days
+            distancia_precio = ((strike_seleccionado - spot_price) / spot_price) * 100
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("📅 Días hasta Expiración", f"{dias_hasta_exp}")
+            
+            with col2:
+                st.metric("💲 Precio Actual", f"${spot_price:.2f}")
+            
+            with col3:
+                moneyness = "ITM" if abs(distancia_precio) < 2 else ("ATM" if abs(distancia_precio) < 5 else "OTM")
+                st.metric("📍 Distancia del Strike", f"{distancia_precio:+.2f}%", delta=moneyness)
+            
+            st.markdown("---")
+            
+            # Datos de CALLS
+            st.markdown("### 📞 CALL OPTIONS")
+            
+            if not call_data.empty:
+                call_row = call_data.iloc[0]
+                
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("📊 Volumen", f"{call_row['volume']:,.0f}")
+                
+                with col2:
+                    st.metric("🔓 Open Interest", f"{call_row['open_interest']:,.0f}")
+                
+                with col3:
+                    if 'iv' in call_row and pd.notna(call_row['iv']):
+                        st.metric("📈 IV", f"{call_row['iv']*100:.2f}%")
+                    else:
+                        st.metric("📈 IV", "N/A")
+                
+                with col4:
+                    if 'delta' in call_row and pd.notna(call_row['delta']):
+                        st.metric("Δ Delta", f"{call_row['delta']:.3f}")
+                    else:
+                        st.metric("Δ Delta", "N/A")
+                
+                # Segunda fila de greeks
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    if 'gamma' in call_row and pd.notna(call_row['gamma']):
+                        st.metric("Γ Gamma", f"{call_row['gamma']:.4f}")
+                    else:
+                        st.metric("Γ Gamma", "N/A")
+                
+                with col2:
+                    if 'vega' in call_row and pd.notna(call_row['vega']):
+                        st.metric("ν Vega", f"{call_row['vega']:.2f}")
+                    else:
+                        st.metric("ν Vega", "N/A")
+                
+                with col3:
+                    if 'theta' in call_row and pd.notna(call_row['theta']):
+                        st.metric("Θ Theta", f"{call_row['theta']:.2f}")
+                    else:
+                        st.metric("Θ Theta", "N/A")
+                
+                with col4:
+                    # Vol/OI ratio para detectar actividad reciente
+                    vol_oi_ratio = call_row['volume'] / call_row['open_interest'] if call_row['open_interest'] > 0 else 0
+                    st.metric("⚡ Vol/OI", f"{vol_oi_ratio:.2f}")
+            else:
+                st.warning("⚠️ No hay datos de CALL para este strike/expiración")
+            
+            st.markdown("---")
+            
+            # Datos de PUTS
+            st.markdown("### 📉 PUT OPTIONS")
+            
+            if not put_data.empty:
+                put_row = put_data.iloc[0]
+                
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("📊 Volumen", f"{put_row['volume']:,.0f}")
+                
+                with col2:
+                    st.metric("🔓 Open Interest", f"{put_row['open_interest']:,.0f}")
+                
+                with col3:
+                    if 'iv' in put_row and pd.notna(put_row['iv']):
+                        st.metric("📈 IV", f"{put_row['iv']*100:.2f}%")
+                    else:
+                        st.metric("📈 IV", "N/A")
+                
+                with col4:
+                    if 'delta' in put_row and pd.notna(put_row['delta']):
+                        st.metric("Δ Delta", f"{put_row['delta']:.3f}")
+                    else:
+                        st.metric("Δ Delta", "N/A")
+                
+                # Segunda fila de greeks
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    if 'gamma' in put_row and pd.notna(put_row['gamma']):
+                        st.metric("Γ Gamma", f"{put_row['gamma']:.4f}")
+                    else:
+                        st.metric("Γ Gamma", "N/A")
+                
+                with col2:
+                    if 'vega' in put_row and pd.notna(put_row['vega']):
+                        st.metric("ν Vega", f"{put_row['vega']:.2f}")
+                    else:
+                        st.metric("ν Vega", "N/A")
+                
+                with col3:
+                    if 'theta' in put_row and pd.notna(put_row['theta']):
+                        st.metric("Θ Theta", f"{put_row['theta']:.2f}")
+                    else:
+                        st.metric("Θ Theta", "N/A")
+                
+                with col4:
+                    # Vol/OI ratio
+                    vol_oi_ratio = put_row['volume'] / put_row['open_interest'] if put_row['open_interest'] > 0 else 0
+                    st.metric("⚡ Vol/OI", f"{vol_oi_ratio:.2f}")
+            else:
+                st.warning("⚠️ No hay datos de PUT para este strike/expiración")
+            
+            st.markdown("---")
+            
+            # Comparativa CALL vs PUT
+            if not call_data.empty and not put_data.empty:
+                st.markdown("### ⚖️ Comparativa Call vs Put")
+                
+                call_row = call_data.iloc[0]
+                put_row = put_data.iloc[0]
+                
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    cp_ratio_vol = call_row['volume'] / put_row['volume'] if put_row['volume'] > 0 else 0
+                    st.metric("🔥 C/P Ratio (Volumen)", f"{cp_ratio_vol:.2f}")
+                
+                with col2:
+                    cp_ratio_oi = call_row['open_interest'] / put_row['open_interest'] if put_row['open_interest'] > 0 else 0
+                    st.metric("🔥 C/P Ratio (OI)", f"{cp_ratio_oi:.2f}")
+                
+                with col3:
+                    if 'iv' in call_row and 'iv' in put_row and pd.notna(call_row['iv']) and pd.notna(put_row['iv']):
+                        iv_diff = (put_row['iv'] - call_row['iv']) * 100
+                        st.metric("📊 IV Skew (P-C)", f"{iv_diff:+.2f}%")
+                    else:
+                        st.metric("📊 IV Skew", "N/A")
+                
+                with col4:
+                    total_oi = call_row['open_interest'] + put_row['open_interest']
+                    st.metric("🎯 Total OI", f"{total_oi:,.0f}")
+                
+                # Gráfico comparativo
+                st.markdown("#### 📊 Comparativa Visual")
+                
+                comparison_data = pd.DataFrame({
+                    'Volumen': [call_row['volume'], put_row['volume']],
+                    'Open Interest': [call_row['open_interest'], put_row['open_interest']]
+                }, index=['Calls', 'Puts'])
+                
+                st.bar_chart(comparison_data, use_container_width=True)
+                
+                # Interpretación
+                st.markdown("#### 💡 Interpretación")
+                
+                if cp_ratio_oi > 1.5:
+                    st.success("🚀 **Sentimiento Muy Alcista**: Mucho más interés en calls que en puts")
+                elif cp_ratio_oi > 1.0:
+                    st.info("📈 **Sentimiento Alcista**: Mayor interés en calls")
+                elif cp_ratio_oi > 0.7:
+                    st.warning("⚖️ **Sentimiento Neutral**: Interés equilibrado")
+                else:
+                    st.error("📉 **Sentimiento Bajista**: Mayor interés en puts")
+    
+    with tab6:
         st.markdown("#### 🎯 Max Pain & Análisis de Greeks")
         
         # Calcular Max Pain (precio donde más opciones expiran sin valor)
