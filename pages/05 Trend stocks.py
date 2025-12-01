@@ -1,749 +1,512 @@
-# pages/Trend_stocks.py
+# pages/Trend stocks.py
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-import numpy as np
 from datetime import timedelta, datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 import os
 import time
-import requests
-from typing import Optional, Tuple
+from utils import check_password
 
 # =========================================================================
-# 0. CONFIGURACIÓN Y CONSTANTES
+# 0. CONFIGURACIÓN Y VARIABLES
 # =========================================================================
 
-st.set_page_config(page_title="Trend Stocks Scanner", layout="wide")
-
-CONTRACT_SIZE = 100
-CACHE_DIR = "data"
-API_BASE_URL = "https://cdn.cboe.com/api/global/delayed_quotes/options"
+st.set_page_config(page_title="Trend Stocks", layout="wide")
 
 # =========================================================================
-# 1. FUNCIONES AUXILIARES PARA OPCIONES (CBOE API)
+# 1. PREPARACIÓN DE TICKERS (DESDE CSV CON MÚLTIPLES COLUMNAS)
 # =========================================================================
 
-def ensure_cache_dir():
-    """Crear directorio de caché si no existe"""
-    os.makedirs(CACHE_DIR, exist_ok=True)
-
-@st.cache_data(ttl=300)
-def fetch_option_data(ticker: str) -> Optional[dict]:
-    """Obtener datos de opciones desde CBOE API con caché"""
-    ensure_cache_dir()
+@st.cache_resource(ttl=timedelta(hours=24), show_spinner=False)
+def perform_initial_preparation():
+    st.subheader("1. Preparación de Tickers")
     
-    urls = [
-        f"{API_BASE_URL}/_{ticker}.json",
-        f"{API_BASE_URL}/{ticker}.json"
-    ]
+    status_text = st.empty()
     
-    for url in urls:
+    # Leer tickers del archivo CSV
+    csv_filename = 'Explorer.csv'
+    if os.path.exists(csv_filename):
         try:
-            response = requests.get(url, timeout=10)
-            if response.status_code == 200:
-                return response.json()
-        except:
-            continue
-    return None
+            df_tickers = pd.read_csv(csv_filename)
+            
+            # Verificar que existe la columna 'Ticker'
+            if 'Ticker' not in df_tickers.columns:
+                st.error(f"❌ El archivo '{csv_filename}' no tiene una columna 'Ticker'")
+                st.stop()
+            
+            # Extraer tickers únicos
+            tickers = df_tickers['Ticker'].astype(str).str.upper().str.strip().tolist()
+            tickers = sorted(set(tickers))  # Eliminar duplicados y ordenar
+            
+            st.success(f"✅ '{csv_filename}' encontrado con {len(tickers)} tickers únicos.")
+            
+            # Mostrar información del dataset
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("📊 Total Tickers", len(tickers))
+            with col2:
+                st.metric("📅 Columnas", len(df_tickers.columns))
+            with col3:
+                if 'Sector' in df_tickers.columns:
+                    sectores = df_tickers['Sector'].nunique()
+                    st.metric("🏢 Sectores", sectores)
+            
+            # Mostrar preview de datos
+            with st.expander("👀 Vista previa del dataset"):
+                st.dataframe(df_tickers.head(10), use_container_width=True)
+            
+            st.info("ℹ️ Los tickers se usan directamente sin validación adicional.")
+            
+            status_text.empty()
+            st.divider()
+            
+            return tickers, df_tickers
+            
+        except Exception as e:
+            st.error(f"❌ Error al leer '{csv_filename}': {e}")
+            st.stop()
+    else:
+        st.error(f"❌ '{csv_filename}' no encontrado en el directorio raíz.")
+        st.info(f"📝 Crea un archivo '{csv_filename}' con la columna 'Ticker' y otros datos")
+        st.stop()
 
-def parse_option_data(raw_data: dict) -> Tuple[float, pd.DataFrame]:
-    """Parsear datos crudos de opciones"""
+# =========================================================================
+# 2. FUNCIONES PARA OBTENER DATOS DE OPCIONES DESDE YAHOO FINANCE
+# =========================================================================
+
+def obtener_datos_opciones_yfinance(ticker):
+    """
+    Obtiene datos de opciones desde Yahoo Finance:
+    - Call/Put Ratio basado en open interest
+    - Volumen total de opciones
+    """
     try:
-        data = pd.DataFrame.from_dict(raw_data)
-        spot_price = float(data.loc["current_price", "data"])
-        option_data = pd.DataFrame(data.loc["options", "data"])
-        return spot_price, option_data
-    except Exception as e:
-        return 0, pd.DataFrame()
-
-def process_option_data_optimized(data: pd.DataFrame) -> pd.DataFrame:
-    """Procesar y limpiar datos de opciones usando vectorización"""
-    df = data.copy()
-    
-    df["type"] = df.option.str.extract(r'\d([CP])\d')
-    df["strike_raw"] = df.option.str.extract(r'[CP](\d+)').astype(float)
-    df["strike"] = df["strike_raw"] / 1000
-    df["expiration_str"] = df.option.str.extract(r'[A-Z]+(\d{6})')
-    df["expiration"] = pd.to_datetime(df["expiration_str"], format="%y%m%d", errors='coerce')
-    
-    numeric_cols = ['gamma', 'open_interest', 'volume', 'delta', 'vega', 'theta', 'iv']
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-    
-    mask = (
-        df['type'].notna() & 
-        df['strike'].notna() & 
-        df['expiration'].notna() & 
-        df['gamma'].notna() & 
-        df['open_interest'].notna() &
-        (df['open_interest'] > 0) & 
-        (df['gamma'] > 0)
-    )
-    
-    return df[mask]
-
-def obtener_datos_opciones_cboe(ticker):
-    """Obtiene volumen y call/put ratio desde CBOE"""
-    try:
-        raw_data = fetch_option_data(ticker)
-        if not raw_data:
+        stock = yf.Ticker(ticker)
+        
+        # Obtener fechas de expiración disponibles
+        exp_dates = stock.options
+        
+        if not exp_dates:
             return None, None
         
-        spot_price, option_data = parse_option_data(raw_data)
-        if option_data.empty:
-            return None, None
+        total_call_volume = 0
+        total_put_volume = 0
+        total_call_oi = 0
+        total_put_oi = 0
         
-        df = process_option_data_optimized(option_data)
-        if df.empty:
-            return None, None
+        # Iterar sobre todas las fechas de expiración (limitamos a las primeras 3 para velocidad)
+        for exp_date in exp_dates[:3]:
+            try:
+                # Obtener cadena de opciones para esta fecha
+                opt_chain = stock.option_chain(exp_date)
+                
+                calls = opt_chain.calls
+                puts = opt_chain.puts
+                
+                # Sumar volúmenes y open interest
+                if not calls.empty:
+                    total_call_volume += calls['volume'].fillna(0).sum()
+                    total_call_oi += calls['openInterest'].fillna(0).sum()
+                
+                if not puts.empty:
+                    total_put_volume += puts['volume'].fillna(0).sum()
+                    total_put_oi += puts['openInterest'].fillna(0).sum()
+                    
+            except Exception:
+                continue
         
-        # Calcular volumen total y ratio
-        calls = df[df['type'] == 'C']
-        puts = df[df['type'] == 'P']
-        
-        total_call_volume = calls['volume'].fillna(0).sum()
-        total_put_volume = puts['volume'].fillna(0).sum()
-        total_call_oi = calls['open_interest'].fillna(0).sum()
-        total_put_oi = puts['open_interest'].fillna(0).sum()
-        
-        options_volume = total_call_volume + total_put_volume
-        
+        # Calcular Call/Put Ratio basado en open interest (más estable que volumen)
         if total_put_oi > 0:
             call_put_ratio = total_call_oi / total_put_oi
         else:
             call_put_ratio = 0.0
         
+        # Volumen total de opciones
+        options_volume = total_call_volume + total_put_volume
+        
         return options_volume, call_put_ratio
     
-    except Exception:
+    except Exception as e:
         return None, None
 
-# =========================================================================
-# 2. CARGA DE TICKERS
-# =========================================================================
-
-@st.cache_resource(ttl=timedelta(hours=24))
-def cargar_tickers():
-    """Cargar tickers desde CSV sin encabezado"""
-    csv_filename = 'Tickers.csv'
-    if os.path.exists(csv_filename):
-        try:
-            # Leer CSV sin encabezado (header=None)
-            df_tickers = pd.read_csv(csv_filename, header=None, names=['Ticker'])
-            
-            tickers = df_tickers['Ticker'].astype(str).str.upper().str.strip().tolist()
-            tickers = sorted(set(tickers))
-            
-            return tickers
-        except Exception as e:
-            st.error(f"❌ Error al leer '{csv_filename}': {e}")
-            st.stop()
-    else:
-        st.error(f"❌ '{csv_filename}' no encontrado")
-        st.stop()
+def procesar_ticker_opciones(ticker):
+    """Función helper para paralelizar obtención de datos de opciones"""
+    options_volume, call_put_ratio = obtener_datos_opciones_yfinance(ticker)
+    
+    return {
+        'ticker': ticker,
+        'options_volume': options_volume if options_volume else 0,
+        'call_put_ratio': call_put_ratio if call_put_ratio else 0.0
+    }
 
 # =========================================================================
-# 3. FUNCIONES DE CÁLCULO DE INDICADORES
+# 3. FILTROS Y PARÁMETROS
 # =========================================================================
 
-def calcular_rsc_mansfield(prices, benchmark_prices, periodo):
-    """Calcula RSC Mansfield"""
-    try:
-        cociente = prices / benchmark_prices
-        count_rsc = cociente.rolling(window=periodo).sum()
-        base_price = count_rsc / periodo
-        rsc = ((cociente / base_price) - 1) * 10
-        return rsc.iloc[-1] if not rsc.empty else None
-    except:
-        return None
-
-def calcular_liquidez(prices, volumes, periodo):
-    """Calcula liquidez promedio"""
-    try:
-        liquidity = (prices * volumes).rolling(window=periodo).mean()
-        return liquidity.iloc[-1] if not liquidity.empty else None
-    except:
-        return None
-
-def calcular_dist_max(prices, periodos):
-    """Calcula distancia al máximo"""
-    try:
-        maximo = prices.rolling(window=periodos).max().iloc[-1]
-        precio_actual = prices.iloc[-1]
-        dist = abs(precio_actual - maximo) / precio_actual * 100
-        return dist
-    except:
-        return None
-
-def calcular_wma(prices, periodo=30):
-    """Calcula WMA (Weighted Moving Average)"""
-    try:
-        weights = np.arange(1, periodo + 1)
-        wma = prices.rolling(window=periodo).apply(
-            lambda x: np.dot(x, weights) / weights.sum(), raw=True
-        )
-        return wma.iloc[-1] if not wma.empty else None
-    except:
-        return None
-
-def calcular_atlas(prices):
-    """Calcula indicador Atlas"""
-    try:
-        # Bollinger Bands
-        bb_period = 20
-        rolling_mean = prices.rolling(window=bb_period).mean()
-        rolling_std = prices.rolling(window=bb_period).std()
-        bb_top = rolling_mean + (2 * rolling_std)
-        bb_bot = rolling_mean - (2 * rolling_std)
-        
-        dbb = np.sqrt((bb_top - bb_bot) / bb_top) * 20
-        dbbmed = dbb.ewm(span=120).mean()
-        factor = dbbmed * 4 / 5
-        atl = dbb - factor
-        al1 = np.where(atl > 0, 0, 1)
-        
-        return al1[-1] if len(al1) > 0 else 0
-    except:
-        return 0
-
-def calcular_mic_value(prices):
-    """Calcula MIC Value (ROC/ATR)"""
-    try:
-        roc18 = ((prices.iloc[-1] / prices.iloc[-19]) - 1) * 100 if len(prices) > 19 else 0
-        roc50 = ((prices.iloc[-1] / prices.iloc[-51]) - 1) * 100 if len(prices) > 51 else 0
-        
-        # ATR simplificado (High-Low range)
-        atr18 = prices.rolling(window=18).std().iloc[-1] / prices.iloc[-1] * 100
-        atr50 = prices.rolling(window=50).std().iloc[-1] / prices.iloc[-1] * 100
-        
-        if atr18 > 0 and atr50 > 0:
-            mic_value = (roc18 / atr18) * 0.6 + (roc50 / atr50) * 0.4
-        else:
-            mic_value = 0
-        
-        return mic_value
-    except:
-        return 0
-
-def calcular_linear_regression(prices, periods=30):
-    """Calcula regresión lineal: Slope, R2, Normalized Distance"""
-    try:
-        if len(prices) < periods:
-            return None, None, None
-        
-        y = prices.iloc[-periods:].values
-        x = np.arange(len(y))
-        
-        # Regresión lineal
-        A = np.vstack([x, np.ones(len(x))]).T
-        slope, intercept = np.linalg.lstsq(A, y, rcond=None)[0]
-        
-        # R-squared
-        y_pred = slope * x + intercept
-        ss_res = np.sum((y - y_pred) ** 2)
-        ss_tot = np.sum((y - np.mean(y)) ** 2)
-        r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
-        
-        # Normalized distance
-        se_regression = np.sqrt(ss_res / (len(y) - 2))
-        distance = abs(y[-1] - y_pred[-1])
-        normalized_distance = distance / se_regression if se_regression > 0 else 0
-        
-        return slope, r_squared, normalized_distance
-    except:
-        return None, None, None
-
-def calcular_sharpe_ratio(prices, periodos=50):
-    """Calcula Sharpe Ratio"""
-    try:
-        returns = prices.pct_change().dropna()
-        if len(returns) < periodos:
-            return None
-        
-        mean_return = returns.iloc[-periodos:].mean()
-        std_return = returns.iloc[-periodos:].std()
-        
-        if std_return > 0:
-            sharpe = (mean_return / std_return) * np.sqrt(periodos)
-        else:
-            sharpe = 0
-        
-        return sharpe
-    except:
-        return None
-
-def calcular_macdv(prices):
-    """Calcula MACD-V"""
-    try:
-        ema12 = prices.ewm(span=12).mean()
-        ema26 = prices.ewm(span=26).mean()
-        
-        # ATR simplificado
-        atr = prices.rolling(window=26).std()
-        
-        lineamacd = ((ema12 - ema26) / atr) * 100
-        return lineamacd.iloc[-1] if not lineamacd.empty else None
-    except:
-        return None
-
-def calcular_rsi(prices, periodo=14):
-    """Calcula RSI"""
-    try:
-        delta = prices.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=periodo).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=periodo).mean()
-        
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        
-        return rsi.iloc[-1] if not rsi.empty else None
-    except:
-        return None
-
-# =========================================================================
-# 4. PROCESAMIENTO DE UN TICKER
-# =========================================================================
-
-def procesar_ticker(ticker, config, benchmark_data, mercado):
-    """Procesa un ticker completo con todos los filtros"""
-    try:
-        # Descargar datos históricos
-        periodo_descarga = '3y' if config['timeframe'] == 'Semanal' else '2y'
-        interval = '1wk' if config['timeframe'] == 'Semanal' else '1d'
-        
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period=periodo_descarga, interval=interval)
-        
-        if hist.empty or len(hist) < 100:
-            return None
-        
-        prices = hist['Close']
-        volumes = hist['Volume']
-        
-        # Obtener sector
-        try:
-            sector = stock.info.get('sector', 'N/A')
-        except:
-            sector = 'N/A'
-        
-        # Calcular indicadores según configuración
-        periodo_rsc = config['periodo_rsc']
-        
-        # RSC Mansfield
-        rsc = calcular_rsc_mansfield(prices, benchmark_data, periodo_rsc)
-        if rsc is None or rsc <= 0:
-            return None
-        
-        # Liquidez
-        liquidity = calcular_liquidez(prices, volumes, periodo_rsc)
-        volumen_min = config['volumen_min']
-        
-        if config['inversion'] > 0:
-            precio_actual = prices.iloc[-1]
-            if liquidity is None or liquidity <= volumen_min:
-                return None
-            if precio_actual < 3 or precio_actual > (config['inversion'] / 100):
-                return None
-        else:
-            if liquidity is None or liquidity <= volumen_min:
-                return None
-        
-        # Distancia a máximos
-        periodos_max = 52 * config['max_years'] if config['timeframe'] == 'Semanal' else 250 * config['max_years']
-        dist_max = calcular_dist_max(prices, periodos_max)
-        if dist_max is None or dist_max > config['pct_a_max']:
-            return None
-        
-        # WMA
-        wma = calcular_wma(prices, 30)
-        precio_actual = prices.iloc[-1]
-        if wma is None or precio_actual <= wma:
-            return None
-        
-        dist_wma = abs(precio_actual - wma) / precio_actual * 100
-        if dist_wma > config['dist_wma']:
-            return None
-        
-        # RSC Sectorial (simplificado, usamos RSC general como aproximación)
-        rsc_s = rsc * 0.8  # Aproximación
-        if rsc_s <= 0:
-            return None
-        
-        resultado = {
-            'Ticker': ticker,
-            'Price': precio_actual,
-            'Liquidity': liquidity,
-            'Sector': sector,
-            'RSC': rsc,
-            'RSC_S': rsc_s,
-            'dist_a_max': dist_max,
-            'dist_a_WMA30': dist_wma,
-        }
-        
-        # Filtros opcionales
-        if config['atlas_enabled']:
-            atlas = calcular_atlas(prices)
-            resultado['Atlas'] = atlas
-            if atlas <= 0:
-                return None
-        
-        if config['mic_enabled']:
-            mic_value = calcular_mic_value(prices)
-            resultado['MICValue'] = mic_value
-            if mic_value <= 5:
-                return None
-        
-        if config['lr_enabled']:
-            slope, r2, norm_dist = calcular_linear_regression(prices, 30)
-            resultado['Slope'] = slope
-            resultado['R2'] = r2
-            resultado['Norm_Dist'] = norm_dist
-            if r2 is None or r2 < 0.7 or norm_dist is None or norm_dist > 1.5:
-                return None
-        
-        if config['sr_enabled']:
-            sharpe = calcular_sharpe_ratio(prices, 50)
-            resultado['Sharpe_ratio'] = sharpe
-            if sharpe is None or sharpe < 1.5:
-                return None
-        
-        if config['macdv_enabled']:
-            macdv = calcular_macdv(prices)
-            resultado['MACD_v'] = macdv
-            if macdv is None or macdv < 50:
-                return None
-        
-        if config['rsi_enabled']:
-            rsi = calcular_rsi(prices, config['rsi_periodo'])
-            resultado['RSI'] = rsi
-            if rsi is None or rsi < config['rsi_min'] or rsi > config['rsi_max']:
-                return None
-        
-        return resultado
+def seccion_filtros(df_original):
+    """Sección de configuración de filtros"""
+    st.subheader("2. Configuración de Filtros")
     
-    except Exception as e:
-        return None
-
-# =========================================================================
-# 5. ESCANEO PRINCIPAL
-# =========================================================================
-
-def ejecutar_escaneo(tickers, config, mercado):
-    """Ejecuta escaneo en paralelo"""
-    
-    # Descargar benchmark
-    st.info(f"📊 Descargando datos del benchmark {config['benchmark']}...")
-    periodo_descarga = '3y' if config['timeframe'] == 'Semanal' else '2y'
-    interval = '1wk' if config['timeframe'] == 'Semanal' else '1d'
-    
-    benchmark = yf.Ticker(config['benchmark'])
-    benchmark_hist = benchmark.history(period=periodo_descarga, interval=interval)
-    
-    if benchmark_hist.empty:
-        st.error("❌ No se pudo descargar datos del benchmark")
-        return None
-    
-    benchmark_data = benchmark_hist['Close']
-    
-    # Procesar tickers en paralelo
-    resultados = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(procesar_ticker, ticker, config, benchmark_data, mercado): ticker 
-                   for ticker in tickers}
-        
-        completed = 0
-        total = len(futures)
-        
-        for future in as_completed(futures):
-            completed += 1
-            progress_bar.progress(completed / total)
-            status_text.text(f"Procesando: {completed}/{total} tickers...")
-            
-            try:
-                result = future.result()
-                if result:
-                    resultados.append(result)
-            except Exception:
-                pass
-    
-    progress_bar.empty()
-    status_text.empty()
-    
-    if not resultados:
-        return None
-    
-    df = pd.DataFrame(resultados)
-    return df
-
-# =========================================================================
-# 6. ENRIQUECIMIENTO CON DATOS DE OPCIONES
-# =========================================================================
-
-def enriquecer_con_opciones(df, filtros_opciones):
-    """Añade datos de opciones desde CBOE"""
-    
-    st.info(f"📊 Obteniendo datos de opciones para {len(df)} tickers desde CBOE...")
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    options_data = []
-    
-    for idx, ticker in enumerate(df['Ticker']):
-        progress_bar.progress((idx + 1) / len(df))
-        status_text.text(f"Opciones: {idx + 1}/{len(df)} - {ticker}")
-        
-        vol, ratio = obtener_datos_opciones_cboe(ticker)
-        
-        options_data.append({
-            'Ticker': ticker,
-            'Options_Volume': vol if vol else 0,
-            'Call_Put_Ratio': ratio if ratio else 0.0
-        })
-    
-    progress_bar.empty()
-    status_text.empty()
-    
-    df_options = pd.DataFrame(options_data)
-    df_final = df.merge(df_options, on='Ticker', how='left')
-    
-    # Aplicar filtros de opciones
-    if filtros_opciones['aplicar_filtros']:
-        df_final = df_final[
-            (df_final['Options_Volume'] >= filtros_opciones['volumen_min']) &
-            (df_final['Call_Put_Ratio'] >= filtros_opciones['ratio_min'])
-        ]
-    
-    return df_final
-
-# =========================================================================
-# 7. INTERFAZ STREAMLIT
-# =========================================================================
-
-def main():
-    st.title("📊 Trend Stocks Scanner - Diario y Semanal")
-    st.markdown("---")
-    
-    # Cargar tickers
-    with st.spinner("Cargando tickers..."):
-        tickers = cargar_tickers()
-    
-    st.success(f"✅ {len(tickers)} tickers cargados")
-    
-    # CONFIGURACIÓN
-    st.header("⚙️ Configuración del Scanner")
-    
-    tab1, tab2 = st.tabs(["📅 Timeframe y Filtros Base", "🔧 Filtros Opcionales"])
-    
-    with tab1:
+    with st.container():
+        # Filtros de opciones
+        st.markdown("#### 📊 Filtros de Opciones")
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("🌍 Mercado y Timeframe")
-            mercado = st.selectbox("Mercado", ["USA", "AUS"])
-            timeframe = st.selectbox("Timeframe", ["Diario", "Semanal"])
-            
-            # Benchmark automático
-            if mercado == "USA":
-                benchmark = "SPY"
-            else:
-                benchmark = "^AXJO"
-            
-            st.info(f"📊 Benchmark: {benchmark}")
+            volumen_min = st.number_input(
+                "📊 Volumen mínimo de opciones",
+                min_value=0,
+                value=5000,
+                step=1000,
+                help="Volumen mínimo de contratos de opciones (calls + puts)"
+            )
         
         with col2:
-            st.subheader("📊 Períodos RSC")
-            if timeframe == "Semanal":
-                periodo_rsc = st.number_input("Período RSC", min_value=1, max_value=500, value=52)
-            else:
-                periodo_rsc = st.number_input("Período RSC", min_value=1, max_value=500, value=250)
+            ratio_min = st.number_input(
+                "📈 Call/Put Ratio mínimo",
+                min_value=0.0,
+                value=0.5,
+                step=0.1,
+                format="%.2f",
+                help="Ratio mínimo basado en Open Interest (>0.5 significa más calls que puts)"
+            )
         
         st.markdown("---")
         
+        # Filtros adicionales del CSV original (si aplican)
+        st.markdown("#### 🔍 Filtros Adicionales del Dataset")
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            st.subheader("💰 Liquidez")
-            if timeframe == "Semanal":
-                volumen_default = 5000000
+            filtrar_sector = st.checkbox("Filtrar por Sector", value=False)
+            if filtrar_sector and 'Sector' in df_original.columns:
+                sectores_disponibles = df_original['Sector'].unique().tolist()
+                sectores_seleccionados = st.multiselect(
+                    "Selecciona sectores",
+                    options=sectores_disponibles,
+                    default=sectores_disponibles
+                )
             else:
-                volumen_default = 500000
-            
-            volumen_min = st.number_input(
-                "Volumen mínimo", 
-                min_value=500000, 
-                max_value=10000000, 
-                value=volumen_default,
-                step=100000
-            )
-            
-            inversion = st.number_input(
-                "Inversión (0=sin filtro precio)",
-                min_value=0,
-                max_value=10000,
-                value=0,
-                step=500
-            )
+                sectores_seleccionados = None
         
         with col2:
-            st.subheader("📈 Máximos")
-            if timeframe == "Semanal":
-                pct_default = 5
+            filtrar_rsi = st.checkbox("Filtrar por RSI", value=False)
+            if filtrar_rsi and 'RSI' in df_original.columns:
+                rsi_min = st.slider("RSI mínimo", 0, 100, 40)
+                rsi_max = st.slider("RSI máximo", 0, 100, 70)
             else:
-                pct_default = 10
-            
-            pct_a_max = st.slider("% a Máximo", 0, 10, pct_default)
-            max_years = st.slider("Años Máximo", 1, 5, 3 if timeframe == "Semanal" else 1)
+                rsi_min, rsi_max = None, None
         
         with col3:
-            st.subheader("📉 WMA")
-            if timeframe == "Semanal":
-                dist_default = 9
+            filtrar_atlas = st.checkbox("Filtrar por Atlas", value=False)
+            if filtrar_atlas and 'Atlas' in df_original.columns:
+                atlas_value = st.selectbox("Valor Atlas", [0.0, 1.0], index=1)
             else:
-                dist_default = 10
-            
-            dist_wma = st.slider("% a WMA30", 0, 15, dist_default)
-    
-    with tab2:
-        st.subheader("🔧 Filtros Opcionales")
+                atlas_value = None
         
+        st.markdown("---")
+        
+        # Información adicional
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            atlas_enabled = st.checkbox("Atlas", value=False)
-            mic_enabled = st.checkbox("MIC Value > 5", value=True)
-            lr_enabled = st.checkbox("Linear Regression (R²≥0.7)", value=True)
-        
+            st.info("**Volumen > 5000**: Alta liquidez en opciones")
         with col2:
-            sr_enabled = st.checkbox("Sharpe Ratio ≥ 1.5", value=True)
-            macdv_enabled = st.checkbox("MACD-v ≥ 50", value=True)
-            rsi_enabled = st.checkbox("Filtro RSI", value=True if timeframe == "Diario" else False)
-        
+            st.info("**Ratio > 0.5**: Sesgo alcista (más calls)")
         with col3:
-            if rsi_enabled:
-                rsi_periodo = st.number_input("RSI Período", 1, 50, 14)
-                rsi_min = st.slider("RSI Mínimo", 0, 100, 40)
-                rsi_max = st.slider("RSI Máximo", 0, 100, 60)
-            else:
-                rsi_periodo = 14
-                rsi_min = 40
-                rsi_max = 60
+            st.info("**Ratio > 1.0**: Fuerte sesgo alcista")
     
-    # FILTROS DE OPCIONES
-    st.markdown("---")
-    st.header("📊 Filtros de Opciones (CBOE)")
+    return {
+        'volumen_min': volumen_min,
+        'ratio_min': ratio_min,
+        'sectores': sectores_seleccionados,
+        'rsi_min': rsi_min,
+        'rsi_max': rsi_max,
+        'atlas': atlas_value
+    }
+
+# =========================================================================
+# 4. ESCANEO DE OPCIONES (PARALELO CON YAHOO FINANCE)
+# =========================================================================
+
+def ejecutar_escaneo_opciones(tickers, df_original, filtros):
+    """Ejecuta el escaneo de opciones usando Yahoo Finance EN PARALELO"""
     
-    col1, col2, col3 = st.columns(3)
+    # Contenedores para mostrar progreso
+    status_container = st.empty()
+    progress_bar = st.progress(0)
+    
+    # Aplicar filtros del dataset original primero
+    tickers_filtrados = tickers.copy()
+    
+    if filtros['sectores'] and 'Sector' in df_original.columns:
+        df_temp = df_original[df_original['Sector'].isin(filtros['sectores'])]
+        tickers_filtrados = df_temp['Ticker'].tolist()
+        status_container.info(f"🔍 Filtro de sector aplicado: {len(tickers_filtrados)} tickers")
+    
+    if filtros['rsi_min'] is not None and 'RSI' in df_original.columns:
+        df_temp = df_original[
+            (df_original['RSI'] >= filtros['rsi_min']) & 
+            (df_original['RSI'] <= filtros['rsi_max'])
+        ]
+        tickers_filtrados = [t for t in tickers_filtrados if t in df_temp['Ticker'].tolist()]
+        status_container.info(f"🔍 Filtro RSI aplicado: {len(tickers_filtrados)} tickers")
+    
+    if filtros['atlas'] is not None and 'Atlas' in df_original.columns:
+        df_temp = df_original[df_original['Atlas'] == filtros['atlas']]
+        tickers_filtrados = [t for t in tickers_filtrados if t in df_temp['Ticker'].tolist()]
+        status_container.info(f"🔍 Filtro Atlas aplicado: {len(tickers_filtrados)} tickers")
+    
+    # Obtener datos de opciones (PARALELO)
+    status_container.info(f"📊 Obteniendo datos de opciones para {len(tickers_filtrados)} tickers desde Yahoo Finance (paralelo)...")
+    
+    resultados = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(procesar_ticker_opciones, ticker) for ticker in tickers_filtrados]
+        for i, future in enumerate(futures):
+            try:
+                result = future.result()
+                if result and result['options_volume'] > 0:
+                    resultados.append(result)
+            except Exception:
+                pass
+            progress_bar.progress((i + 1) / len(futures))
+    
+    if not resultados:
+        status_container.error("❌ No se encontraron tickers con datos de opciones válidos")
+        progress_bar.empty()
+        return None
+    
+    df = pd.DataFrame(resultados)
+    df.columns = ['Ticker', 'Options_Volume', 'Call_Put_Ratio']
+    
+    status_container.success(f"✅ Datos obtenidos: {len(df)} tickers con información de opciones")
+    
+    # Aplicar filtros de opciones
+    df_filtrado = df[
+        (df['Options_Volume'] > filtros['volumen_min']) & 
+        (df['Call_Put_Ratio'] > filtros['ratio_min'])
+    ].copy()
+    
+    if df_filtrado.empty:
+        status_container.warning("⚠️ No hay tickers que cumplan los criterios de filtrado")
+        progress_bar.empty()
+        return None
+    
+    # Merge con datos originales para tener toda la información
+    df_filtrado = df_filtrado.merge(df_original, on='Ticker', how='left')
+    
+    # Ordenar por volumen de opciones descendente
+    df_filtrado = df_filtrado.sort_values('Options_Volume', ascending=False)
+    df_filtrado.insert(0, 'Rank', range(1, len(df_filtrado) + 1))
+    
+    progress_bar.empty()
+    status_container.success(f"🎉 Escaneo completado: {len(df_filtrado)} acciones encontradas")
+    
+    return df_filtrado
+
+# =========================================================================
+# 5. VISUALIZACIÓN DE RESULTADOS
+# =========================================================================
+
+def mostrar_resultados(df_resultados):
+    """Muestra los resultados filtrados en tabla interactiva"""
+    st.subheader("3. Resultados del Escaneo")
+    
+    if df_resultados is None or df_resultados.empty:
+        st.warning("⚠️ No hay acciones que cumplan los criterios de filtrado")
+        st.info("💡 Intenta reducir los valores mínimos de los filtros")
+        return
+    
+    # Métricas de resumen (ANTES de formatear)
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        aplicar_filtros_opciones = st.checkbox("Aplicar filtros de opciones", value=True)
-    
+        st.metric("🎯 Acciones Filtradas", len(df_resultados))
     with col2:
-        volumen_opciones_min = st.number_input(
-            "Volumen mínimo opciones",
-            min_value=0,
-            value=5000,
-            step=1000
-        )
-    
+        avg_ratio = df_resultados['Call_Put_Ratio'].mean()
+        st.metric("📊 Ratio Promedio", f"{avg_ratio:.2f}")
     with col3:
-        ratio_min = st.number_input(
-            "Call/Put Ratio mínimo",
-            min_value=0.0,
-            value=0.5,
-            step=0.1,
-            format="%.2f"
-        )
+        ratio_gt_1 = len(df_resultados[df_resultados['Call_Put_Ratio'] > 1.0])
+        st.metric("🚀 Ratio > 1.0", ratio_gt_1)
+    with col4:
+        total_vol = df_resultados['Options_Volume'].sum()
+        st.metric("📈 Vol. Total", f"{total_vol:,.0f}")
     
-    # BOTÓN DE ESCANEO
     st.markdown("---")
     
-    if st.button("🚀 EJECUTAR SCANNER", type="primary", use_container_width=True):
-        
-        config = {
-            'timeframe': timeframe,
-            'benchmark': benchmark,
-            'periodo_rsc': periodo_rsc,
-            'volumen_min': volumen_min,
-            'inversion': inversion,
-            'pct_a_max': pct_a_max,
-            'max_years': max_years,
-            'dist_wma': dist_wma,
-            'atlas_enabled': atlas_enabled,
-            'mic_enabled': mic_enabled,
-            'lr_enabled': lr_enabled,
-            'sr_enabled': sr_enabled,
-            'macdv_enabled': macdv_enabled,
-            'rsi_enabled': rsi_enabled,
-            'rsi_periodo': rsi_periodo,
-            'rsi_min': rsi_min,
-            'rsi_max': rsi_max
-        }
-        
-        filtros_opciones = {
-            'aplicar_filtros': aplicar_filtros_opciones,
-            'volumen_min': volumen_opciones_min,
-            'ratio_min': ratio_min
-        }
-        
-        start_time = time.time()
-        
-        with st.spinner("🔍 Escaneando tickers..."):
-            df_resultados = ejecutar_escaneo(tickers, config, mercado)
-        
-        if df_resultados is None or df_resultados.empty:
-            st.warning("⚠️ No se encontraron acciones que cumplan los criterios")
-            st.stop()
-        
-        st.success(f"✅ Primera fase completada: {len(df_resultados)} acciones encontradas")
-        
-        # Enriquecer con opciones
-        with st.spinner("📊 Obteniendo datos de opciones..."):
-            df_final = enriquecer_con_opciones(df_resultados, filtros_opciones)
-        
-        elapsed = time.time() - start_time
-        
-        if df_final.empty:
-            st.warning("⚠️ Ninguna acción pasó los filtros de opciones")
-            st.stop()
-        
-        st.balloons()
-        st.success(f"🎉 Escaneo completado en {elapsed:.1f}s - {len(df_final)} acciones finales")
-        
-        # MOSTRAR RESULTADOS
-        st.markdown("---")
-        st.header("📊 Resultados")
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("🎯 Total Acciones", len(df_final))
-        with col2:
-            avg_ratio = df_final['Call_Put_Ratio'].mean()
-            st.metric("📊 Ratio Promedio", f"{avg_ratio:.2f}")
-        with col3:
-            ratio_gt_1 = len(df_final[df_final['Call_Put_Ratio'] > 1.0])
-            st.metric("🚀 Ratio > 1.0", ratio_gt_1)
-        with col4:
-            total_vol = df_final['Options_Volume'].sum()
-            st.metric("📈 Vol. Total", f"{total_vol:,.0f}")
-        
-        # Tabla de resultados
-        st.dataframe(df_final, use_container_width=True)
-        
-        # Descarga
-        csv = df_final.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Descargar CSV",
-            data=csv,
-            file_name=f"scanner_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv"
+    # Seleccionar columnas clave para mostrar
+    columnas_mostrar = ['Rank', 'Ticker', 'Options_Volume', 'Call_Put_Ratio']
+    
+    # Añadir columnas adicionales si existen
+    columnas_opcionales = ['Sector', 'Price', 'RSI', 'Atlas', 'Sharpe_ratio', 'ROC18', 'RSC']
+    for col in columnas_opcionales:
+        if col in df_resultados.columns:
+            columnas_mostrar.append(col)
+    
+    df_table = df_resultados[columnas_mostrar].copy()
+    
+    # Formatear Call_Put_Ratio para display
+    df_table['Call_Put_Ratio'] = df_table['Call_Put_Ratio'].apply(lambda x: f"{x:.2f}")
+    
+    # Renombrar columnas para mejor presentación
+    column_config = {
+        "Rank": st.column_config.NumberColumn("🏅 Rank", width="small"),
+        "Ticker": st.column_config.TextColumn("🎯 Ticker", width="small"),
+        "Options_Volume": st.column_config.NumberColumn("📈 Vol. Opciones", width="medium", format="%d"),
+        "Call_Put_Ratio": st.column_config.TextColumn("🔥 C/P Ratio", width="small"),
+    }
+    
+    # Añadir configs para columnas adicionales
+    if 'Sector' in df_table.columns:
+        column_config['Sector'] = st.column_config.TextColumn("🏢 Sector", width="medium")
+    if 'Price' in df_table.columns:
+        column_config['Price'] = st.column_config.NumberColumn("💲 Precio", width="small", format="%.2f")
+    if 'RSI' in df_table.columns:
+        column_config['RSI'] = st.column_config.NumberColumn("📊 RSI", width="small", format="%.1f")
+    if 'Atlas' in df_table.columns:
+        column_config['Atlas'] = st.column_config.NumberColumn("🗺️ Atlas", width="small", format="%.2f")
+    
+    # Tabla de resultados
+    st.markdown("#### 🏆 Acciones con Mayor Actividad en Opciones")
+    st.dataframe(
+        df_table,
+        hide_index=True,
+        use_container_width=True,
+        column_config=column_config
+    )
+    
+    # Gráficos de distribución
+    st.markdown("---")
+    st.markdown("#### 📊 Análisis Visual")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Top 10 por ratio
+        top_10_ratio = df_resultados.nlargest(10, 'Call_Put_Ratio')
+        st.bar_chart(
+            top_10_ratio.set_index('Ticker')['Call_Put_Ratio'],
+            use_container_width=True
         )
+        st.caption("Top 10 acciones por Call/Put Ratio")
+    
+    with col2:
+        # Top 10 por volumen
+        top_10_vol = df_resultados.nlargest(10, 'Options_Volume')
+        st.bar_chart(
+            top_10_vol.set_index('Ticker')['Options_Volume'],
+            use_container_width=True
+        )
+        st.caption("Top 10 acciones por Volumen de Opciones")
+    
+    # Distribución por sector si existe
+    if 'Sector' in df_resultados.columns:
+        st.markdown("---")
+        st.markdown("#### 🏢 Distribución por Sector")
+        sector_counts = df_resultados['Sector'].value_counts()
+        st.bar_chart(sector_counts, use_container_width=True)
+    
+    # Botón de descarga
+    st.markdown("---")
+    df_csv = df_resultados.copy()
+    df_csv['Call_Put_Ratio'] = df_csv['Call_Put_Ratio'].apply(lambda x: f"{x:.2f}" if isinstance(x, float) else x)
+    
+    csv = df_csv.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Descargar Resultados Completos (CSV)",
+        data=csv,
+        file_name=f"options_scanner_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
+        use_container_width=False
+    )
+
+# =========================================================================
+# 6. FUNCIÓN PRINCIPAL
+# =========================================================================
+
+def options_scanner_page():
+    st.title("📊 Trend Stocks Scanner - Call/Put Ratio Analyzer")
+    st.markdown("---")
+    st.info("🔍 Este escáner identifica acciones con alta actividad en opciones y sesgo alcista usando Yahoo Finance")
+    
+    # --- Punto 1: Preparación de Tickers ---
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        st.button("🔄 Recargar Datos", type="primary",
+                  help="Borra la caché y recarga el archivo CSV",
+                  on_click=perform_initial_preparation.clear)
+    with col2:
+        st.markdown("_(Los datos se cargan desde Tickers.csv con todas las columnas disponibles.)_")
+    
+    st.divider()
+    valid_tickers, df_original = perform_initial_preparation()
+    
+    # --- Punto 2: Filtros ---
+    st.divider()
+    filtros = seccion_filtros(df_original)
+    
+    # --- Punto 3: Escaneo ---
+    st.divider()
+    st.subheader("3. Escaneo de Opciones")
+    
+    st.info(f"📊 Tickers listos para escanear: **{len(valid_tickers)}** | 🚀 Modo: **Paralelo (10 hilos)**")
+    st.warning("⚠️ El escaneo tardará 3-5 minutos. **No cambies de página durante el proceso.**")
+    st.info("📊 **Fuente de datos**: Yahoo Finance (Call/Put Ratio basado en Open Interest)")
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col1:
+        ejecutar_btn = st.button("🚀 Ejecutar Escaneo", type="primary", use_container_width=True)
+    with col2:
+        if 'df_resultados_options' in st.session_state and st.session_state.df_resultados_options is not None:
+            st.success(f"✅ Último escaneo: {len(st.session_state.df_resultados_options)} resultados")
+    with col3:
+        if st.button("🗑️ Limpiar", use_container_width=True):
+            if 'df_resultados_options' in st.session_state:
+                del st.session_state.df_resultados_options
+            st.rerun()
+    
+    if ejecutar_btn:
+        start_time = time.time()
+        with st.spinner("Ejecutando escaneo paralelo con Yahoo Finance..."):
+            try:
+                df_resultados = ejecutar_escaneo_opciones(
+                    valid_tickers,
+                    df_original,
+                    filtros
+                )
+                st.session_state.df_resultados_options = df_resultados
+                
+                elapsed_time = time.time() - start_time
+                
+                if df_resultados is not None and not df_resultados.empty:
+                    st.balloons()
+                    st.success(f"🎉 Escaneo completado en {elapsed_time:.1f} segundos - {len(df_resultados)} acciones encontradas")
+                else:
+                    st.warning("⚠️ No se encontraron acciones que cumplan los criterios")
+            
+            except Exception as e:
+                st.error(f"❌ Error durante el escaneo: {str(e)}")
+    
+    # --- Punto 4: Resultados ---
+    st.divider()
+    if 'df_resultados_options' in st.session_state:
+        mostrar_resultados(st.session_state.df_resultados_options)
+    else:
+        st.info("👆 Ejecuta el escaneo primero para ver los resultados aquí")
+    
+    # --- Estado final ---
+    st.divider()
+    st.success(f"🎯 Sistema listo con {len(valid_tickers)} tickers válidos usando Yahoo Finance.")
+
+# =========================================================================
+# 7. PUNTO DE ENTRADA PROTEGIDO
+# =========================================================================
 
 if __name__ == "__main__":
-    main()
+    if check_password():
+        options_scanner_page()
+    else:
+        st.title("🔒 Acceso Restringido")
+        st.info("Introduce tus credenciales en el menú lateral para acceder.")
