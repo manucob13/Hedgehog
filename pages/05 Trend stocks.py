@@ -1168,11 +1168,12 @@ def options_scanner_page():
         st.success(f"🎯 Sistema listo con {len(valid_tickers)} tickers válidos usando CBOE API.")
     
     # =====================================================================
-    # TAB 2: ANÁLISIS DETALLADO DE TICKER
+    # TAB 2: ANÁLISIS DETALLADO DE TICKER (CÓDIGO CORREGIDO)
     # =====================================================================
     with tab_analisis:
         st.info("📊 Analiza un ticker específico mostrando volumen y call/put ratio para ±50 strikes y 60 días")
         
+        # Usamos el valor del text_input como fuente
         col1, col2 = st.columns([3, 1])
         
         with col1:
@@ -1187,14 +1188,30 @@ def options_scanner_page():
             st.markdown("<br>", unsafe_allow_html=True)
             analizar_btn = st.button("🔍 Analizar", type="primary", use_container_width=True)
         
-        st.markdown("---")
+        # LÓGICA DE CORRECCIÓN: Persistir el ticker en session_state tras el botón.
+        TICKER_STATE_KEY = "last_analyzed_ticker"
         
         if analizar_btn:
             if ticker_input:
-                analizar_ticker_detallado(ticker_input)
+                # 1. Guardar el ticker en session_state cuando el botón es presionado
+                st.session_state[TICKER_STATE_KEY] = ticker_input
             else:
+                # 2. Si se presiona sin ticker, limpiar estado y mostrar warning
+                if TICKER_STATE_KEY in st.session_state:
+                    del st.session_state[TICKER_STATE_KEY]
                 st.warning("⚠️ Por favor introduce un ticker válido")
+        
+        st.markdown("---")
+        
+        # 3. La visualización se basa en el ticker guardado en session_state,
+        #    que persiste en los reruns causados por los selectbox internos.
+        ticker_to_display = st.session_state.get(TICKER_STATE_KEY)
+        
+        if ticker_to_display:
+            # Aseguramos que el análisis se muestra si hay un ticker en estado
+            analizar_ticker_detallado(ticker_to_display)
         else:
+            # Mensaje inicial
             st.info("👆 Introduce un ticker y presiona 'Analizar' para ver los datos de opciones")
 
 # =========================================================================
