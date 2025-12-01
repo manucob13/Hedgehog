@@ -6,7 +6,8 @@ from datetime import timedelta, datetime
 from concurrent.futures import ThreadPoolExecutor
 import os
 import time
-from utils import check_password
+import requests
+from typing import Optional, Tuple
 
 # =========================================================================
 # 0. CONFIGURACIÓN Y VARIABLES
@@ -14,8 +15,12 @@ from utils import check_password
 
 st.set_page_config(page_title="Trend Stocks", layout="wide")
 
+CONTRACT_SIZE = 100
+CACHE_DIR = "data"
+API_BASE_URL = "https://cdn.cboe.com/api/global/delayed_quotes/options"
+
 # =========================================================================
-# 1. PREPARACIÓN DE TICKERS (DESDE CSV CON MÚLTIPLES COLUMNAS)
+# 1. PREPARACIÓN DE TICKERS (DESDE CSV)
 # =========================================================================
 
 @st.cache_resource(ttl=timedelta(hours=24), show_spinner=False)
@@ -24,16 +29,11 @@ def perform_initial_preparation():
     
     status_text = st.empty()
     
-    # Leer tickers del archivo CSV
-    csv_filename = 'Explorer.csv'
+    # Leer tickers del archivo CSV sin encabezado
+    csv_filename = 'Tickers.csv'
     if os.path.exists(csv_filename):
         try:
-            df_tickers = pd.read_csv(csv_filename)
-            
-            # Verificar que existe la columna 'Ticker'
-            if 'Ticker' not in df_tickers.columns:
-                st.error(f"❌ El archivo '{csv_filename}' no tiene una columna 'Ticker'")
-                st.stop()
+            df_tickers = pd.read_csv(csv_filename, header=None, names=['Ticker'])
             
             # Extraer tickers únicos
             tickers = df_tickers['Ticker'].astype(str).str.upper().str.strip().tolist()
@@ -42,15 +42,11 @@ def perform_initial_preparation():
             st.success(f"✅ '{csv_filename}' encontrado con {len(tickers)} tickers únicos.")
             
             # Mostrar información del dataset
-            col1, col2, col3 = st.columns(3)
+            col1, col2 = st.columns(2)
             with col1:
                 st.metric("📊 Total Tickers", len(tickers))
             with col2:
-                st.metric("📅 Columnas", len(df_tickers.columns))
-            with col3:
-                if 'Sector' in df_tickers.columns:
-                    sectores = df_tickers['Sector'].nunique()
-                    st.metric("🏢 Sectores", sectores)
+                st.metric("📅 Columnas", 1)
             
             # Mostrar preview de datos
             with st.expander("👀 Vista previa del dataset"):
@@ -68,53 +64,102 @@ def perform_initial_preparation():
             st.stop()
     else:
         st.error(f"❌ '{csv_filename}' no encontrado en el directorio raíz.")
-        st.info(f"📝 Crea un archivo '{csv_filename}' con la columna 'Ticker' y otros datos")
+        st.info(f"📝 Crea un archivo '{csv_filename}' con los tickers (sin encabezado)")
         st.stop()
 
 # =========================================================================
-# 2. FUNCIONES PARA OBTENER DATOS DE OPCIONES DESDE YAHOO FINANCE
+# 2. FUNCIONES PARA OBTENER DATOS DE OPCIONES DESDE CBOE API
 # =========================================================================
 
-def obtener_datos_opciones_yfinance(ticker):
+def ensure_cache_dir():
+    """Crear directorio de caché si no existe"""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+
+@st.cache_data(ttl=300)
+def fetch_option_data(ticker: str) -> Optional[dict]:
+    """Obtener datos de opciones desde CBOE API con caché"""
+    ensure_cache_dir()
+    
+    urls = [
+        f"{API_BASE_URL}/_{ticker}.json",
+        f"{API_BASE_URL}/{ticker}.json"
+    ]
+    
+    for url in urls:
+        try:
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                return response.json()
+        except:
+            continue
+    return None
+
+def parse_option_data(raw_data: dict) -> Tuple[float, pd.DataFrame]:
+    """Parsear datos crudos de opciones"""
+    try:
+        data = pd.DataFrame.from_dict(raw_data)
+        spot_price = float(data.loc["current_price", "data"])
+        option_data = pd.DataFrame(data.loc["options", "data"])
+        return spot_price, option_data
+    except Exception as e:
+        return 0, pd.DataFrame()
+
+def process_option_data_optimized(data: pd.DataFrame) -> pd.DataFrame:
+    """Procesar y limpiar datos de opciones usando vectorización"""
+    df = data.copy()
+    
+    df["type"] = df.option.str.extract(r'\d([CP])\d')
+    df["strike_raw"] = df.option.str.extract(r'[CP](\d+)').astype(float)
+    df["strike"] = df["strike_raw"] / 1000
+    df["expiration_str"] = df.option.str.extract(r'[A-Z]+(\d{6})')
+    df["expiration"] = pd.to_datetime(df["expiration_str"], format="%y%m%d", errors='coerce')
+    
+    numeric_cols = ['gamma', 'open_interest', 'volume', 'delta', 'vega', 'theta', 'iv']
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    mask = (
+        df['type'].notna() & 
+        df['strike'].notna() & 
+        df['expiration'].notna() & 
+        df['gamma'].notna() & 
+        df['open_interest'].notna() &
+        (df['open_interest'] > 0) & 
+        (df['gamma'] > 0)
+    )
+    
+    return df[mask]
+
+def obtener_datos_opciones_cboe(ticker):
     """
-    Obtiene datos de opciones desde Yahoo Finance:
+    Obtiene datos de opciones desde CBOE API:
     - Call/Put Ratio basado en open interest
     - Volumen total de opciones
     """
     try:
-        stock = yf.Ticker(ticker)
-        
-        # Obtener fechas de expiración disponibles
-        exp_dates = stock.options
-        
-        if not exp_dates:
+        raw_data = fetch_option_data(ticker)
+        if not raw_data:
             return None, None
         
-        total_call_volume = 0
-        total_put_volume = 0
-        total_call_oi = 0
-        total_put_oi = 0
+        spot_price, option_data = parse_option_data(raw_data)
+        if option_data.empty:
+            return None, None
         
-        # Iterar sobre todas las fechas de expiración (limitamos a las primeras 3 para velocidad)
-        for exp_date in exp_dates[:3]:
-            try:
-                # Obtener cadena de opciones para esta fecha
-                opt_chain = stock.option_chain(exp_date)
-                
-                calls = opt_chain.calls
-                puts = opt_chain.puts
-                
-                # Sumar volúmenes y open interest
-                if not calls.empty:
-                    total_call_volume += calls['volume'].fillna(0).sum()
-                    total_call_oi += calls['openInterest'].fillna(0).sum()
-                
-                if not puts.empty:
-                    total_put_volume += puts['volume'].fillna(0).sum()
-                    total_put_oi += puts['openInterest'].fillna(0).sum()
-                    
-            except Exception:
-                continue
+        df = process_option_data_optimized(option_data)
+        if df.empty:
+            return None, None
+        
+        # Calcular volumen total y ratio
+        calls = df[df['type'] == 'C']
+        puts = df[df['type'] == 'P']
+        
+        total_call_volume = calls['volume'].fillna(0).sum()
+        total_put_volume = puts['volume'].fillna(0).sum()
+        total_call_oi = calls['open_interest'].fillna(0).sum()
+        total_put_oi = puts['open_interest'].fillna(0).sum()
+        
+        options_volume = total_call_volume + total_put_volume
         
         # Calcular Call/Put Ratio basado en open interest (más estable que volumen)
         if total_put_oi > 0:
@@ -122,17 +167,14 @@ def obtener_datos_opciones_yfinance(ticker):
         else:
             call_put_ratio = 0.0
         
-        # Volumen total de opciones
-        options_volume = total_call_volume + total_put_volume
-        
         return options_volume, call_put_ratio
     
-    except Exception as e:
+    except Exception:
         return None, None
 
 def procesar_ticker_opciones(ticker):
     """Función helper para paralelizar obtención de datos de opciones"""
-    options_volume, call_put_ratio = obtener_datos_opciones_yfinance(ticker)
+    options_volume, call_put_ratio = obtener_datos_opciones_cboe(ticker)
     
     return {
         'ticker': ticker,
@@ -174,39 +216,6 @@ def seccion_filtros(df_original):
         
         st.markdown("---")
         
-        # Filtros adicionales del CSV original (si aplican)
-        st.markdown("#### 🔍 Filtros Adicionales del Dataset")
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            filtrar_sector = st.checkbox("Filtrar por Sector", value=False)
-            if filtrar_sector and 'Sector' in df_original.columns:
-                sectores_disponibles = df_original['Sector'].unique().tolist()
-                sectores_seleccionados = st.multiselect(
-                    "Selecciona sectores",
-                    options=sectores_disponibles,
-                    default=sectores_disponibles
-                )
-            else:
-                sectores_seleccionados = None
-        
-        with col2:
-            filtrar_rsi = st.checkbox("Filtrar por RSI", value=False)
-            if filtrar_rsi and 'RSI' in df_original.columns:
-                rsi_min = st.slider("RSI mínimo", 0, 100, 40)
-                rsi_max = st.slider("RSI máximo", 0, 100, 70)
-            else:
-                rsi_min, rsi_max = None, None
-        
-        with col3:
-            filtrar_atlas = st.checkbox("Filtrar por Atlas", value=False)
-            if filtrar_atlas and 'Atlas' in df_original.columns:
-                atlas_value = st.selectbox("Valor Atlas", [0.0, 1.0], index=1)
-            else:
-                atlas_value = None
-        
-        st.markdown("---")
-        
         # Información adicional
         col1, col2, col3 = st.columns(3)
         
@@ -219,51 +228,26 @@ def seccion_filtros(df_original):
     
     return {
         'volumen_min': volumen_min,
-        'ratio_min': ratio_min,
-        'sectores': sectores_seleccionados,
-        'rsi_min': rsi_min,
-        'rsi_max': rsi_max,
-        'atlas': atlas_value
+        'ratio_min': ratio_min
     }
 
 # =========================================================================
-# 4. ESCANEO DE OPCIONES (PARALELO CON YAHOO FINANCE)
+# 4. ESCANEO DE OPCIONES (PARALELO CON CBOE API)
 # =========================================================================
 
 def ejecutar_escaneo_opciones(tickers, df_original, filtros):
-    """Ejecuta el escaneo de opciones usando Yahoo Finance EN PARALELO"""
+    """Ejecuta el escaneo de opciones usando CBOE API EN PARALELO"""
     
     # Contenedores para mostrar progreso
     status_container = st.empty()
     progress_bar = st.progress(0)
     
-    # Aplicar filtros del dataset original primero
-    tickers_filtrados = tickers.copy()
-    
-    if filtros['sectores'] and 'Sector' in df_original.columns:
-        df_temp = df_original[df_original['Sector'].isin(filtros['sectores'])]
-        tickers_filtrados = df_temp['Ticker'].tolist()
-        status_container.info(f"🔍 Filtro de sector aplicado: {len(tickers_filtrados)} tickers")
-    
-    if filtros['rsi_min'] is not None and 'RSI' in df_original.columns:
-        df_temp = df_original[
-            (df_original['RSI'] >= filtros['rsi_min']) & 
-            (df_original['RSI'] <= filtros['rsi_max'])
-        ]
-        tickers_filtrados = [t for t in tickers_filtrados if t in df_temp['Ticker'].tolist()]
-        status_container.info(f"🔍 Filtro RSI aplicado: {len(tickers_filtrados)} tickers")
-    
-    if filtros['atlas'] is not None and 'Atlas' in df_original.columns:
-        df_temp = df_original[df_original['Atlas'] == filtros['atlas']]
-        tickers_filtrados = [t for t in tickers_filtrados if t in df_temp['Ticker'].tolist()]
-        status_container.info(f"🔍 Filtro Atlas aplicado: {len(tickers_filtrados)} tickers")
-    
     # Obtener datos de opciones (PARALELO)
-    status_container.info(f"📊 Obteniendo datos de opciones para {len(tickers_filtrados)} tickers desde Yahoo Finance (paralelo)...")
+    status_container.info(f"📊 Obteniendo datos de opciones para {len(tickers)} tickers desde CBOE API (paralelo)...")
     
     resultados = []
     with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [executor.submit(procesar_ticker_opciones, ticker) for ticker in tickers_filtrados]
+        futures = [executor.submit(procesar_ticker_opciones, ticker) for ticker in tickers]
         for i, future in enumerate(futures):
             try:
                 result = future.result()
@@ -293,9 +277,6 @@ def ejecutar_escaneo_opciones(tickers, df_original, filtros):
         status_container.warning("⚠️ No hay tickers que cumplan los criterios de filtrado")
         progress_bar.empty()
         return None
-    
-    # Merge con datos originales para tener toda la información
-    df_filtrado = df_filtrado.merge(df_original, on='Ticker', how='left')
     
     # Ordenar por volumen de opciones descendente
     df_filtrado = df_filtrado.sort_values('Options_Volume', ascending=False)
@@ -339,12 +320,6 @@ def mostrar_resultados(df_resultados):
     # Seleccionar columnas clave para mostrar
     columnas_mostrar = ['Rank', 'Ticker', 'Options_Volume', 'Call_Put_Ratio']
     
-    # Añadir columnas adicionales si existen
-    columnas_opcionales = ['Sector', 'Price', 'RSI', 'Atlas', 'Sharpe_ratio', 'ROC18', 'RSC']
-    for col in columnas_opcionales:
-        if col in df_resultados.columns:
-            columnas_mostrar.append(col)
-    
     df_table = df_resultados[columnas_mostrar].copy()
     
     # Formatear Call_Put_Ratio para display
@@ -357,16 +332,6 @@ def mostrar_resultados(df_resultados):
         "Options_Volume": st.column_config.NumberColumn("📈 Vol. Opciones", width="medium", format="%d"),
         "Call_Put_Ratio": st.column_config.TextColumn("🔥 C/P Ratio", width="small"),
     }
-    
-    # Añadir configs para columnas adicionales
-    if 'Sector' in df_table.columns:
-        column_config['Sector'] = st.column_config.TextColumn("🏢 Sector", width="medium")
-    if 'Price' in df_table.columns:
-        column_config['Price'] = st.column_config.NumberColumn("💲 Precio", width="small", format="%.2f")
-    if 'RSI' in df_table.columns:
-        column_config['RSI'] = st.column_config.NumberColumn("📊 RSI", width="small", format="%.1f")
-    if 'Atlas' in df_table.columns:
-        column_config['Atlas'] = st.column_config.NumberColumn("🗺️ Atlas", width="small", format="%.2f")
     
     # Tabla de resultados
     st.markdown("#### 🏆 Acciones con Mayor Actividad en Opciones")
@@ -401,13 +366,6 @@ def mostrar_resultados(df_resultados):
         )
         st.caption("Top 10 acciones por Volumen de Opciones")
     
-    # Distribución por sector si existe
-    if 'Sector' in df_resultados.columns:
-        st.markdown("---")
-        st.markdown("#### 🏢 Distribución por Sector")
-        sector_counts = df_resultados['Sector'].value_counts()
-        st.bar_chart(sector_counts, use_container_width=True)
-    
     # Botón de descarga
     st.markdown("---")
     df_csv = df_resultados.copy()
@@ -429,7 +387,7 @@ def mostrar_resultados(df_resultados):
 def options_scanner_page():
     st.title("📊 Trend Stocks Scanner - Call/Put Ratio Analyzer")
     st.markdown("---")
-    st.info("🔍 Este escáner identifica acciones con alta actividad en opciones y sesgo alcista usando Yahoo Finance")
+    st.info("🔍 Este escáner identifica acciones con alta actividad en opciones y sesgo alcista usando CBOE API")
     
     # --- Punto 1: Preparación de Tickers ---
     col1, col2 = st.columns([1, 4])
@@ -438,7 +396,7 @@ def options_scanner_page():
                   help="Borra la caché y recarga el archivo CSV",
                   on_click=perform_initial_preparation.clear)
     with col2:
-        st.markdown("_(Los datos se cargan desde Tickers.csv con todas las columnas disponibles.)_")
+        st.markdown("_(Los datos se cargan desde Tickers.csv sin encabezado.)_")
     
     st.divider()
     valid_tickers, df_original = perform_initial_preparation()
@@ -453,7 +411,7 @@ def options_scanner_page():
     
     st.info(f"📊 Tickers listos para escanear: **{len(valid_tickers)}** | 🚀 Modo: **Paralelo (10 hilos)**")
     st.warning("⚠️ El escaneo tardará 3-5 minutos. **No cambies de página durante el proceso.**")
-    st.info("📊 **Fuente de datos**: Yahoo Finance (Call/Put Ratio basado en Open Interest)")
+    st.info("📊 **Fuente de datos**: CBOE API (Call/Put Ratio basado en Open Interest)")
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col1:
@@ -469,7 +427,7 @@ def options_scanner_page():
     
     if ejecutar_btn:
         start_time = time.time()
-        with st.spinner("Ejecutando escaneo paralelo con Yahoo Finance..."):
+        with st.spinner("Ejecutando escaneo paralelo con CBOE API..."):
             try:
                 df_resultados = ejecutar_escaneo_opciones(
                     valid_tickers,
@@ -498,15 +456,11 @@ def options_scanner_page():
     
     # --- Estado final ---
     st.divider()
-    st.success(f"🎯 Sistema listo con {len(valid_tickers)} tickers válidos usando Yahoo Finance.")
+    st.success(f"🎯 Sistema listo con {len(valid_tickers)} tickers válidos usando CBOE API.")
 
 # =========================================================================
-# 7. PUNTO DE ENTRADA PROTEGIDO
+# 7. PUNTO DE ENTRADA
 # =========================================================================
 
 if __name__ == "__main__":
-    if check_password():
-        options_scanner_page()
-    else:
-        st.title("🔒 Acceso Restringido")
-        st.info("Introduce tus credenciales en el menú lateral para acceder.")
+    options_scanner_page()
