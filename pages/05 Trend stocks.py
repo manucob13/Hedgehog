@@ -348,7 +348,7 @@ def analizar_ticker_detallado(ticker):
     st.success(f"✅ {len(df_filtrado)} contratos encontrados (±50 strikes, 60 días)")
     
     # Tabs para diferentes vistas
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Resumen General", "📈 Por Strike", "📅 Por Expiración", "🔍 Tabla Completa"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Resumen General", "📈 Por Strike", "📅 Por Expiración", "🎯 Max Pain & Greeks", "🔍 Tabla Completa"])
     
     with tab1:
         st.markdown("#### 📊 Resumen General")
@@ -374,17 +374,69 @@ def analizar_ticker_detallado(ticker):
             total_call_oi = calls['open_interest'].sum()
             total_put_oi = puts['open_interest'].sum()
             ratio = total_call_oi / total_put_oi if total_put_oi > 0 else 0
-            st.metric("🔥 Call/Put Ratio", f"{ratio:.2f}")
+            
+            # Determinar sentimiento
+            if ratio > 1.5:
+                sentiment = "🚀 Muy Alcista"
+                color = "green"
+            elif ratio > 1.0:
+                sentiment = "📈 Alcista"
+                color = "lightgreen"
+            elif ratio > 0.7:
+                sentiment = "⚖️ Neutral"
+                color = "gray"
+            elif ratio > 0.5:
+                sentiment = "📉 Bajista"
+                color = "orange"
+            else:
+                sentiment = "🔻 Muy Bajista"
+                color = "red"
+            
+            st.metric("🔥 Call/Put Ratio", f"{ratio:.2f}", delta=sentiment)
         
         st.markdown("---")
         
-        col1, col2 = st.columns(2)
+        # Segunda fila de métricas
+        col1, col2, col3, col4 = st.columns(4)
         
         with col1:
             st.metric("📞 Open Interest Calls", f"{total_call_oi:,.0f}")
         
         with col2:
             st.metric("📉 Open Interest Puts", f"{total_put_oi:,.0f}")
+        
+        with col3:
+            # Put/Call Ratio (inverso)
+            pc_ratio = total_put_oi / total_call_oi if total_call_oi > 0 else 0
+            st.metric("🔄 Put/Call Ratio", f"{pc_ratio:.2f}")
+        
+        with col4:
+            # Volumen vs OI ratio
+            vol_oi_ratio = total_vol / (total_call_oi + total_put_oi) if (total_call_oi + total_put_oi) > 0 else 0
+            st.metric("⚡ Vol/OI Ratio", f"{vol_oi_ratio:.2f}")
+        
+        st.markdown("---")
+        
+        # Gráfico comparativo de volumen y OI
+        st.markdown("#### 📊 Comparativa Calls vs Puts")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**Volumen**")
+            vol_data = pd.DataFrame({
+                'Calls': [total_call_vol],
+                'Puts': [total_put_vol]
+            })
+            st.bar_chart(vol_data, use_container_width=True, height=200)
+        
+        with col2:
+            st.markdown("**Open Interest**")
+            oi_data = pd.DataFrame({
+                'Calls': [total_call_oi],
+                'Puts': [total_put_oi]
+            })
+            st.bar_chart(oi_data, use_container_width=True, height=200)
     
     with tab2:
         st.markdown("#### 📈 Análisis por Strike")
@@ -400,15 +452,25 @@ def analizar_ticker_detallado(ticker):
         df_pivot.columns = ['Strike', 'Call_OI', 'Put_OI', 'Call_Vol', 'Put_Vol']
         df_pivot = df_pivot.fillna(0)
         
-        # Calcular ratio por strike
+        # Calcular métricas adicionales
         df_pivot['Call/Put_Ratio'] = df_pivot.apply(
             lambda row: row['Call_OI'] / row['Put_OI'] if row['Put_OI'] > 0 else 0, axis=1
         )
+        df_pivot['Net_OI'] = df_pivot['Call_OI'] - df_pivot['Put_OI']
+        df_pivot['Total_OI'] = df_pivot['Call_OI'] + df_pivot['Put_OI']
+        df_pivot['OI_Skew'] = (df_pivot['Call_OI'] - df_pivot['Put_OI']) / df_pivot['Total_OI'] * 100
+        
+        # Identificar strike ATM (at the money)
+        df_pivot['Distance_from_Price'] = abs(df_pivot['Strike'] - spot_price)
+        atm_strike = df_pivot.loc[df_pivot['Distance_from_Price'].idxmin(), 'Strike']
         
         # Ordenar por strike
         df_pivot = df_pivot.sort_values('Strike')
         
-        # Tabla
+        # Mostrar strike ATM
+        st.info(f"💲 **Strike ATM (más cercano al precio)**: ${atm_strike:.2f}")
+        
+        # Tabla interactiva
         st.dataframe(
             df_pivot.style.format({
                 'Strike': '${:.2f}',
@@ -416,16 +478,36 @@ def analizar_ticker_detallado(ticker):
                 'Put_Vol': '{:.0f}',
                 'Call_OI': '{:.0f}',
                 'Put_OI': '{:.0f}',
-                'Call/Put_Ratio': '{:.2f}'
-            }),
+                'Call/Put_Ratio': '{:.2f}',
+                'Net_OI': '{:.0f}',
+                'Total_OI': '{:.0f}',
+                'OI_Skew': '{:.1f}%'
+            }).background_gradient(subset=['OI_Skew'], cmap='RdYlGn', vmin=-100, vmax=100),
             use_container_width=True,
             height=400
         )
         
-        # Gráfico de volumen por strike
-        st.markdown("##### 📊 Volumen por Strike")
-        chart_data = df_pivot.set_index('Strike')[['Call_Vol', 'Put_Vol']]
-        st.bar_chart(chart_data, use_container_width=True)
+        st.markdown("---")
+        
+        # Gráficos mejorados
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("##### 📊 Open Interest por Strike")
+            chart_data_oi = df_pivot.set_index('Strike')[['Call_OI', 'Put_OI']]
+            st.bar_chart(chart_data_oi, use_container_width=True)
+        
+        with col2:
+            st.markdown("##### 🎯 OI Skew (Sesgo de Open Interest)")
+            chart_skew = df_pivot.set_index('Strike')['OI_Skew']
+            st.bar_chart(chart_skew, use_container_width=True, color="#FF6B6B")
+        
+        st.markdown("---")
+        
+        # Call/Put Ratio por strike
+        st.markdown("##### 🔥 Call/Put Ratio por Strike")
+        chart_ratio = df_pivot.set_index('Strike')['Call/Put_Ratio']
+        st.line_chart(chart_ratio, use_container_width=True)
     
     with tab3:
         st.markdown("#### 📅 Análisis por Fecha de Expiración")
@@ -441,18 +523,27 @@ def analizar_ticker_detallado(ticker):
         df_exp_pivot.columns = ['Expiration', 'Call_OI', 'Put_OI', 'Call_Vol', 'Put_Vol']
         df_exp_pivot = df_exp_pivot.fillna(0)
         
-        # Calcular ratio
+        # Calcular métricas
         df_exp_pivot['Call/Put_Ratio'] = df_exp_pivot.apply(
             lambda row: row['Call_OI'] / row['Put_OI'] if row['Put_OI'] > 0 else 0, axis=1
         )
-        
-        # Calcular días hasta expiración
+        df_exp_pivot['Put/Call_Ratio'] = df_exp_pivot.apply(
+            lambda row: row['Put_OI'] / row['Call_OI'] if row['Call_OI'] > 0 else 0, axis=1
+        )
         df_exp_pivot['Days_to_Exp'] = df_exp_pivot['Expiration'].apply(
             lambda x: (x - datetime.now()).days
         )
+        df_exp_pivot['Net_OI'] = df_exp_pivot['Call_OI'] - df_exp_pivot['Put_OI']
+        df_exp_pivot['Total_Vol'] = df_exp_pivot['Call_Vol'] + df_exp_pivot['Put_Vol']
         
         # Ordenar por fecha
         df_exp_pivot = df_exp_pivot.sort_values('Expiration')
+        
+        # Calcular tendencia del ratio (si está subiendo o bajando)
+        if len(df_exp_pivot) > 1:
+            ratio_change = df_exp_pivot['Call/Put_Ratio'].iloc[-1] - df_exp_pivot['Call/Put_Ratio'].iloc[0]
+            ratio_trend = "📈 Subiendo" if ratio_change > 0.1 else ("📉 Bajando" if ratio_change < -0.1 else "➡️ Estable")
+            st.info(f"**Tendencia Call/Put Ratio**: {ratio_trend} ({ratio_change:+.2f} desde la primera expiración)")
         
         # Tabla
         st.dataframe(
@@ -463,18 +554,148 @@ def analizar_ticker_detallado(ticker):
                 'Call_OI': '{:.0f}',
                 'Put_OI': '{:.0f}',
                 'Call/Put_Ratio': '{:.2f}',
-                'Days_to_Exp': '{:.0f}'
-            }),
+                'Put/Call_Ratio': '{:.2f}',
+                'Days_to_Exp': '{:.0f}',
+                'Net_OI': '{:+.0f}',
+                'Total_Vol': '{:.0f}'
+            }).background_gradient(subset=['Call/Put_Ratio'], cmap='RdYlGn', vmin=0.5, vmax=2.0),
             use_container_width=True,
             height=400
         )
         
-        # Gráfico
-        st.markdown("##### 📊 Call/Put Ratio por Expiración")
-        chart_exp = df_exp_pivot.set_index('Expiration')['Call/Put_Ratio']
-        st.line_chart(chart_exp, use_container_width=True)
+        st.markdown("---")
+        
+        # Gráficos
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("##### 🔥 Call/Put Ratio por Expiración")
+            chart_exp = df_exp_pivot.set_index('Expiration')['Call/Put_Ratio']
+            st.line_chart(chart_exp, use_container_width=True)
+        
+        with col2:
+            st.markdown("##### 📊 Net Open Interest (Call - Put)")
+            chart_net = df_exp_pivot.set_index('Expiration')['Net_OI']
+            st.bar_chart(chart_net, use_container_width=True)
+        
+        st.markdown("---")
+        
+        # Volumen total por expiración
+        st.markdown("##### 📈 Volumen Total por Expiración")
+        chart_vol = df_exp_pivot.set_index('Expiration')['Total_Vol']
+        st.area_chart(chart_vol, use_container_width=True)
     
-    with tab4:
+    with tab5:
+        st.markdown("#### 🎯 Max Pain & Análisis de Greeks")
+        
+        # Calcular Max Pain (precio donde más opciones expiran sin valor)
+        st.markdown("##### 💰 Max Pain Analysis")
+        st.info("**Max Pain**: El precio al que la mayor cantidad de opciones (en valor $) expirarían sin valor, causando máxima pérdida a los compradores de opciones.")
+        
+        # Agrupar por strike para calcular max pain
+        df_pain = df_filtrado.groupby('strike').agg({
+            'open_interest': 'sum',
+            'type': lambda x: list(x)
+        }).reset_index()
+        
+        # Calcular pain por strike (simplificado)
+        pain_scores = []
+        for _, row in df_pain.iterrows():
+            strike = row['strike']
+            # Pain = suma del valor intrínseco de todas las opciones ITM
+            call_pain = df_filtrado[(df_filtrado['type'] == 'C') & (df_filtrado['strike'] < strike)]['open_interest'].sum() * (strike - spot_price)
+            put_pain = df_filtrado[(df_filtrado['type'] == 'P') & (df_filtrado['strike'] > strike)]['open_interest'].sum() * (spot_price - strike)
+            total_pain = abs(call_pain) + abs(put_pain)
+            pain_scores.append({'Strike': strike, 'Pain_Score': total_pain})
+        
+        df_pain_calc = pd.DataFrame(pain_scores)
+        max_pain_strike = df_pain_calc.loc[df_pain_calc['Pain_Score'].idxmin(), 'Strike']
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("💲 Precio Actual", f"${spot_price:.2f}")
+        
+        with col2:
+            st.metric("🎯 Max Pain Strike", f"${max_pain_strike:.2f}")
+        
+        with col3:
+            distance_to_pain = ((max_pain_strike - spot_price) / spot_price) * 100
+            st.metric("📏 Distancia a Max Pain", f"{distance_to_pain:+.2f}%")
+        
+        st.markdown("---")
+        
+        # Greeks Analysis
+        st.markdown("##### 🔬 Análisis de Greeks Agregados")
+        
+        if 'delta' in df_filtrado.columns and 'gamma' in df_filtrado.columns:
+            # Calcular greeks totales
+            total_call_delta = calls['delta'].fillna(0).sum()
+            total_put_delta = puts['delta'].fillna(0).sum()
+            net_delta = total_call_delta + total_put_delta  # Put delta es negativo
+            
+            total_gamma = df_filtrado['gamma'].fillna(0).sum()
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("📊 Net Delta", f"{net_delta:,.0f}")
+            
+            with col2:
+                st.metric("🔺 Total Gamma", f"{total_gamma:,.2f}")
+            
+            with col3:
+                if 'vega' in df_filtrado.columns:
+                    total_vega = df_filtrado['vega'].fillna(0).sum()
+                    st.metric("📈 Total Vega", f"{total_vega:,.0f}")
+            
+            with col4:
+                if 'theta' in df_filtrado.columns:
+                    total_theta = df_filtrado['theta'].fillna(0).sum()
+                    st.metric("⏰ Total Theta", f"{total_theta:,.0f}")
+            
+            st.markdown("---")
+            
+            # Gamma Exposure por strike
+            st.markdown("##### ⚡ Gamma Exposure por Strike")
+            
+            gamma_by_strike = df_filtrado.groupby('strike')['gamma'].sum().reset_index()
+            gamma_by_strike = gamma_by_strike.sort_values('strike')
+            
+            chart_gamma = gamma_by_strike.set_index('strike')['gamma']
+            st.bar_chart(chart_gamma, use_container_width=True)
+            
+            st.info("💡 **Gamma Exposure**: Zonas de alta gamma indican niveles de precio donde los market makers tendrán que cubrir agresivamente sus posiciones.")
+        
+        st.markdown("---")
+        
+        # Implied Volatility Analysis
+        if 'iv' in df_filtrado.columns:
+            st.markdown("##### 📊 Análisis de Volatilidad Implícita (IV)")
+            
+            avg_call_iv = calls['iv'].mean() * 100 if not calls.empty else 0
+            avg_put_iv = puts['iv'].mean() * 100 if not puts.empty else 0
+            iv_skew = avg_put_iv - avg_call_iv
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("📞 IV Promedio Calls", f"{avg_call_iv:.2f}%")
+            
+            with col2:
+                st.metric("📉 IV Promedio Puts", f"{avg_put_iv:.2f}%")
+            
+            with col3:
+                skew_sentiment = "Bearish" if iv_skew > 5 else ("Bullish" if iv_skew < -5 else "Neutral")
+                st.metric("🎭 IV Skew", f"{iv_skew:+.2f}%", delta=skew_sentiment)
+            
+            # IV por strike
+            iv_by_strike = df_filtrado.groupby(['strike', 'type'])['iv'].mean().reset_index()
+            iv_pivot = iv_by_strike.pivot(index='strike', columns='type', values='iv')
+            iv_pivot = iv_pivot.sort_index()
+            
+            st.markdown("##### 📈 IV por Strike (Calls vs Puts)")
+            st.line_chart(iv_pivot * 100, use_container_width=True)
         st.markdown("#### 🔍 Tabla Completa de Opciones")
         
         # Preparar tabla completa
