@@ -29,11 +29,16 @@ def perform_initial_preparation():
     
     status_text = st.empty()
     
-    # Leer tickers del archivo CSV sin encabezado
-    csv_filename = 'Tickers.csv'
+    # Leer tickers del archivo CSV
+    csv_filename = 'Explorer.csv'
     if os.path.exists(csv_filename):
         try:
-            df_tickers = pd.read_csv(csv_filename, header=None, names=['Ticker'])
+            df_tickers = pd.read_csv(csv_filename)
+            
+            # Verificar que existe la columna 'Ticker'
+            if 'Ticker' not in df_tickers.columns:
+                st.error(f"❌ El archivo '{csv_filename}' no tiene una columna 'Ticker'")
+                st.stop()
             
             # Extraer tickers únicos
             tickers = df_tickers['Ticker'].astype(str).str.upper().str.strip().tolist()
@@ -42,11 +47,15 @@ def perform_initial_preparation():
             st.success(f"✅ '{csv_filename}' encontrado con {len(tickers)} tickers únicos.")
             
             # Mostrar información del dataset
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("📊 Total Tickers", len(tickers))
             with col2:
-                st.metric("📅 Columnas", 1)
+                st.metric("📅 Columnas", len(df_tickers.columns))
+            with col3:
+                if 'Sector' in df_tickers.columns:
+                    sectores = df_tickers['Sector'].nunique()
+                    st.metric("🏢 Sectores", sectores)
             
             # Mostrar preview de datos
             with st.expander("👀 Vista previa del dataset"):
@@ -64,7 +73,7 @@ def perform_initial_preparation():
             st.stop()
     else:
         st.error(f"❌ '{csv_filename}' no encontrado en el directorio raíz.")
-        st.info(f"📝 Crea un archivo '{csv_filename}' con los tickers (sin encabezado)")
+        st.info(f"📝 Crea un archivo '{csv_filename}' con la columna 'Ticker' y otros datos")
         st.stop()
 
 # =========================================================================
@@ -396,7 +405,7 @@ def options_scanner_page():
                   help="Borra la caché y recarga el archivo CSV",
                   on_click=perform_initial_preparation.clear)
     with col2:
-        st.markdown("_(Los datos se cargan desde Tickers.csv sin encabezado.)_")
+        st.markdown("_(Los datos se cargan desde Explorer.csv con todas las columnas disponibles.)_")
     
     st.divider()
     valid_tickers, df_original = perform_initial_preparation()
