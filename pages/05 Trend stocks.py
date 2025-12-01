@@ -594,7 +594,13 @@ def analizar_ticker_detallado(ticker):
         strikes_disponibles = sorted(df_filtrado['strike'].unique())
         expiraciones_disponibles = sorted(df_filtrado['expiration'].unique())
         
-        col1, col2 = st.columns(2)
+        # Inicializar session_state si no existe
+        if 'selected_strike_idx' not in st.session_state:
+            st.session_state.selected_strike_idx = len(strikes_disponibles)//2 if strikes_disponibles else 0
+        if 'selected_exp_idx' not in st.session_state:
+            st.session_state.selected_exp_idx = 0
+        
+        col1, col2, col3 = st.columns([2, 2, 1])
         
         with col1:
             # Selector de Strike
@@ -602,9 +608,11 @@ def analizar_ticker_detallado(ticker):
                 "🎯 Selecciona Strike",
                 options=strikes_disponibles,
                 format_func=lambda x: f"${x:.2f}",
-                index=len(strikes_disponibles)//2 if strikes_disponibles else 0,
-                key="strike_selector"
+                index=st.session_state.selected_strike_idx,
+                key="strike_selector_unique"
             )
+            # Actualizar índice cuando cambia
+            st.session_state.selected_strike_idx = strikes_disponibles.index(strike_seleccionado)
         
         with col2:
             # Selector de Expiración
@@ -612,9 +620,18 @@ def analizar_ticker_detallado(ticker):
                 "📅 Selecciona Expiración",
                 options=expiraciones_disponibles,
                 format_func=lambda x: f"{x.strftime('%Y-%m-%d')} ({(x - datetime.now()).days} días)",
-                index=0,
-                key="exp_selector"
+                index=st.session_state.selected_exp_idx,
+                key="exp_selector_unique"
             )
+            # Actualizar índice cuando cambia
+            st.session_state.selected_exp_idx = expiraciones_disponibles.index(exp_seleccionada)
+        
+        with col3:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("🔄 Reset", use_container_width=True):
+                st.session_state.selected_strike_idx = len(strikes_disponibles)//2 if strikes_disponibles else 0
+                st.session_state.selected_exp_idx = 0
+                st.rerun()
         
         st.markdown("---")
         
