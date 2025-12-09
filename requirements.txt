@@ -12,6 +12,7 @@ lxml
 schwab-py
 tqdm
 datetime
+hmmlearn
 
 
 
