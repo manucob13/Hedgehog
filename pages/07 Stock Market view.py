@@ -1,1 +1,695 @@
+# pages/Market_Regime_ML.py
+import streamlit as st
+import pandas as pd
+import yfinance as yf
+import numpy as np
+import matplotlib.pyplot as plt
+from datetime import datetime, timedelta
+import warnings
+from sklearn.cluster import KMeans
+from sklearn.mixture import GaussianMixture
+from hmmlearn.hmm import GaussianHMM
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
+from sklearn.decomposition import PCA
+
+warnings.filterwarnings('ignore')
+
+# =========================================================================
+# CONFIGURACIÓN
+# =========================================================================
+
+st.set_page_config(page_title="Market Regime ML Detection", layout="wide")
+
+# =========================================================================
+# FUNCIONES DE DESCARGA Y PREPARACIÓN DE DATOS
+# =========================================================================
+
+@st.cache_data(ttl=timedelta(hours=1))
+def download_weekly_data(ticker, start_date='2010-01-01'):
+    """Descarga datos SEMANALES y calcula features para clustering"""
+    try:
+        # Descargar datos semanales
+        data = yf.download(ticker, start=start_date, interval='1wk', progress=False)
+        
+        if data.empty:
+            return None
+        
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+        
+        df = pd.DataFrame({
+            'Close': data['Close'].squeeze(),
+            'Open': data['Open'].squeeze(),
+            'High': data['High'].squeeze(),
+            'Low': data['Low'].squeeze(),
+            'Volume': data['Volume'].squeeze()
+        }, index=data.index)
+        
+        return df
+    
+    except Exception as e:
+        st.error(f"Error descargando datos para {ticker}: {str(e)}")
+        return None
+
+def engineer_features(df):
+    """Crea features para clustering basadas en el notebook de GitHub"""
+    
+    # Returns
+    df['Returns'] = df['Close'].pct_change()
+    df['LogReturns'] = np.log(df['Close'] / df['Close'].shift(1))
+    
+    # Volatility (4 weeks rolling para datos semanales)
+    df['Volatility'] = df['Returns'].rolling(window=4).std()
+    
+    # Momentum (10 weeks)
+    df['Momentum10w'] = (df['Close'] - df['Close'].shift(10)) / df['Close'].shift(10)
+    
+    # Volume changes
+    df['VolumeChange'] = df['Volume'].pct_change()
+    df['VolumeMA'] = df['Volume'].rolling(window=4).mean()
+    df['VolumeRatio'] = df['Volume'] / df['VolumeMA']
+    
+    # Price moving averages
+    df['MA20'] = df['Close'].rolling(window=20).mean()
+    df['MA50'] = df['Close'].rolling(window=50).mean()
+    df['PriceMA20Ratio'] = df['Close'] / df['MA20']
+    df['PriceMA50Ratio'] = df['Close'] / df['MA50']
+    
+    # High-Low range
+    df['HighLowRange'] = (df['High'] - df['Low']) / df['Close']
+    
+    # Returns skewness and kurtosis (8 weeks window para datos semanales)
+    df['ReturnsSkew8w'] = df['Returns'].rolling(window=8).skew()
+    df['ReturnsKurt8w'] = df['Returns'].rolling(window=8).kurt()
+    
+    # Lag features
+    df['Returns_Lag1'] = df['Returns'].shift(1)
+    df['Volatility_Lag1'] = df['Volatility'].shift(1)
+    
+    return df
+
+def prepare_clustering_features(df):
+    """Prepara features para clustering"""
+    
+    feature_columns = [
+        'Returns', 'Volatility', 'Momentum10w', 
+        'VolumeRatio', 'PriceMA20Ratio', 'PriceMA50Ratio',
+        'HighLowRange', 'ReturnsSkew8w', 'ReturnsKurt8w',
+        'Returns_Lag1', 'Volatility_Lag1'
+    ]
+    
+    # Eliminar NaNs
+    df_clean = df.dropna(subset=feature_columns)
+    
+    if len(df_clean) < 50:
+        return None, None, None
+    
+    # Extraer features
+    X = df_clean[feature_columns].values
+    
+    # Normalizar
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    return X_scaled, df_clean, feature_columns
+
+# =========================================================================
+# MODELOS DE CLUSTERING
+# =========================================================================
+
+def fit_kmeans(X, n_clusters=3, random_state=42):
+    """Ajusta K-Means"""
+    kmeans = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10)
+    labels = kmeans.fit_predict(X)
+    
+    metrics = {
+        'silhouette': silhouette_score(X, labels),
+        'davies_bouldin': davies_bouldin_score(X, labels),
+        'calinski_harabasz': calinski_harabasz_score(X, labels),
+        'inertia': kmeans.inertia_
+    }
+    
+    return labels, kmeans, metrics
+
+def fit_gmm(X, n_components=3, random_state=42):
+    """Ajusta Gaussian Mixture Model"""
+    gmm = GaussianMixture(n_components=n_components, covariance_type='full', 
+                          random_state=random_state, n_init=10)
+    gmm.fit(X)
+    labels = gmm.predict(X)
+    
+    metrics = {
+        'silhouette': silhouette_score(X, labels),
+        'davies_bouldin': davies_bouldin_score(X, labels),
+        'bic': gmm.bic(X),
+        'aic': gmm.aic(X)
+    }
+    
+    return labels, gmm, metrics
+
+def fit_hmm(X, n_states=3, random_state=42):
+    """Ajusta Hidden Markov Model"""
+    hmm = GaussianHMM(n_components=n_states, covariance_type='full', 
+                      n_iter=100, random_state=random_state)
+    hmm.fit(X)
+    labels = hmm.predict(X)
+    
+    metrics = {
+        'silhouette': silhouette_score(X, labels),
+        'davies_bouldin': davies_bouldin_score(X, labels),
+        'log_likelihood': hmm.score(X)
+    }
+    
+    return labels, hmm, metrics
+
+# =========================================================================
+# VISUALIZACIÓN
+# =========================================================================
+
+def plot_regime_comparison(df_clean, ticker):
+    """Visualiza los 3 modelos en comparación"""
+    
+    fig = plt.figure(figsize=(20, 14), facecolor='#0E1117')
+    gs = fig.add_gridspec(4, 1, height_ratios=[3, 3, 3, 2], hspace=0.3)
+    
+    # Colores para regímenes
+    colors_map = {
+        0: '#4ECDC4',  # Turquesa
+        1: '#FF6B6B',  # Rojo
+        2: '#FFD93D',  # Amarillo
+        3: '#95A5A6',  # Gris
+        4: '#BD93F9'   # Púrpura
+    }
+    
+    # =====================================================================
+    # GRÁFICO 1: K-MEANS
+    # =====================================================================
+    ax1 = fig.add_subplot(gs[0])
+    ax1.set_facecolor('#1A1D29')
+    
+    # Línea de precio
+    ax1.plot(df_clean.index, df_clean['Close'], color='#FFFFFF', 
+             linewidth=1, alpha=0.5, zorder=1)
+    
+    # Puntos coloreados por régimen
+    for regime in df_clean['KMeans_Regime'].unique():
+        mask = df_clean['KMeans_Regime'] == regime
+        ax1.scatter(df_clean[mask].index, df_clean[mask]['Close'],
+                   c=colors_map.get(regime, '#FFFFFF'), s=30, alpha=0.8,
+                   label=f'Regime {regime}', zorder=3, edgecolors='white', linewidth=0.5)
+    
+    ax1.set_title(f'{ticker} - K-Means Clustering Regimes (Weekly)', 
+                  fontsize=16, fontweight='bold', color='#FFFFFF', pad=20)
+    ax1.set_ylabel('Price ($)', fontsize=13, color='#FFFFFF', fontweight='600')
+    ax1.legend(loc='upper left', fontsize=10, framealpha=0.9)
+    ax1.grid(True, alpha=0.1, color='#FFFFFF')
+    ax1.tick_params(colors='#B0B0B0', labelsize=10)
+    
+    for spine in ax1.spines.values():
+        spine.set_color('#2D3142')
+        spine.set_linewidth(1.5)
+    
+    # =====================================================================
+    # GRÁFICO 2: GMM
+    # =====================================================================
+    ax2 = fig.add_subplot(gs[1], sharex=ax1)
+    ax2.set_facecolor('#1A1D29')
+    
+    ax2.plot(df_clean.index, df_clean['Close'], color='#FFFFFF', 
+             linewidth=1, alpha=0.5, zorder=1)
+    
+    for regime in df_clean['GMM_Regime'].unique():
+        mask = df_clean['GMM_Regime'] == regime
+        ax2.scatter(df_clean[mask].index, df_clean[mask]['Close'],
+                   c=colors_map.get(regime, '#FFFFFF'), s=30, alpha=0.8,
+                   label=f'Component {regime}', zorder=3, edgecolors='white', linewidth=0.5)
+    
+    ax2.set_title(f'{ticker} - Gaussian Mixture Model Regimes (Weekly)', 
+                  fontsize=16, fontweight='bold', color='#FFFFFF', pad=20)
+    ax2.set_ylabel('Price ($)', fontsize=13, color='#FFFFFF', fontweight='600')
+    ax2.legend(loc='upper left', fontsize=10, framealpha=0.9)
+    ax2.grid(True, alpha=0.1, color='#FFFFFF')
+    ax2.tick_params(colors='#B0B0B0', labelsize=10)
+    
+    for spine in ax2.spines.values():
+        spine.set_color('#2D3142')
+        spine.set_linewidth(1.5)
+    
+    # =====================================================================
+    # GRÁFICO 3: HMM
+    # =====================================================================
+    ax3 = fig.add_subplot(gs[2], sharex=ax1)
+    ax3.set_facecolor('#1A1D29')
+    
+    ax3.plot(df_clean.index, df_clean['Close'], color='#FFFFFF', 
+             linewidth=1, alpha=0.5, zorder=1)
+    
+    for regime in df_clean['HMM_Regime'].unique():
+        mask = df_clean['HMM_Regime'] == regime
+        ax3.scatter(df_clean[mask].index, df_clean[mask]['Close'],
+                   c=colors_map.get(regime, '#FFFFFF'), s=30, alpha=0.8,
+                   label=f'State {regime}', zorder=3, edgecolors='white', linewidth=0.5)
+    
+    ax3.set_title(f'{ticker} - Hidden Markov Model Regimes (Weekly)', 
+                  fontsize=16, fontweight='bold', color='#FFFFFF', pad=20)
+    ax3.set_ylabel('Price ($)', fontsize=13, color='#FFFFFF', fontweight='600')
+    ax3.legend(loc='upper left', fontsize=10, framealpha=0.9)
+    ax3.grid(True, alpha=0.1, color='#FFFFFF')
+    ax3.tick_params(colors='#B0B0B0', labelsize=10)
+    
+    for spine in ax3.spines.values():
+        spine.set_color('#2D3142')
+        spine.set_linewidth(1.5)
+    
+    # =====================================================================
+    # GRÁFICO 4: TIMELINE COMPARACIÓN
+    # =====================================================================
+    ax4 = fig.add_subplot(gs[3], sharex=ax1)
+    ax4.set_facecolor('#1A1D29')
+    
+    # Crear líneas para cada modelo
+    ax4.scatter(df_clean.index, df_clean['KMeans_Regime'], 
+               c=[colors_map.get(r, '#FFFFFF') for r in df_clean['KMeans_Regime']], 
+               s=20, alpha=0.8, label='K-Means', marker='s')
+    
+    ax4.scatter(df_clean.index, df_clean['GMM_Regime'] + 0.1, 
+               c=[colors_map.get(r, '#FFFFFF') for r in df_clean['GMM_Regime']], 
+               s=20, alpha=0.8, label='GMM', marker='^')
+    
+    ax4.scatter(df_clean.index, df_clean['HMM_Regime'] + 0.2, 
+               c=[colors_map.get(r, '#FFFFFF') for r in df_clean['HMM_Regime']], 
+               s=20, alpha=0.8, label='HMM', marker='o')
+    
+    ax4.set_title('Regime Timeline Comparison', fontsize=16, 
+                  fontweight='bold', color='#FFFFFF', pad=20)
+    ax4.set_ylabel('Regime ID', fontsize=13, color='#FFFFFF', fontweight='600')
+    ax4.set_xlabel('Date', fontsize=13, color='#FFFFFF', fontweight='600')
+    ax4.legend(loc='upper left', fontsize=10, framealpha=0.9)
+    ax4.grid(True, alpha=0.1, color='#FFFFFF')
+    ax4.tick_params(colors='#B0B0B0', labelsize=10)
+    
+    for spine in ax4.spines.values():
+        spine.set_color('#2D3142')
+        spine.set_linewidth(1.5)
+    
+    plt.tight_layout()
+    
+    return fig
+
+def plot_pca_visualization(X_scaled, df_clean):
+    """Visualización PCA de los regímenes"""
+    
+    # Aplicar PCA
+    pca = PCA(n_components=2, random_state=42)
+    X_pca = pca.fit_transform(X_scaled)
+    
+    fig, axes = plt.subplots(1, 3, figsize=(22, 6), facecolor='#0E1117')
+    
+    colors_map = {0: '#4ECDC4', 1: '#FF6B6B', 2: '#FFD93D', 3: '#95A5A6', 4: '#BD93F9'}
+    
+    # K-Means PCA
+    ax1 = axes[0]
+    ax1.set_facecolor('#1A1D29')
+    for regime in df_clean['KMeans_Regime'].unique():
+        mask = df_clean['KMeans_Regime'] == regime
+        ax1.scatter(X_pca[mask, 0], X_pca[mask, 1], 
+                   c=colors_map.get(regime, '#FFFFFF'), s=50, alpha=0.7,
+                   label=f'Regime {regime}', edgecolors='white', linewidth=0.5)
+    ax1.set_title('K-Means - PCA Projection', fontsize=14, fontweight='bold', color='#FFFFFF')
+    ax1.set_xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.1%} var)', color='#FFFFFF')
+    ax1.set_ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.1%} var)', color='#FFFFFF')
+    ax1.legend()
+    ax1.grid(True, alpha=0.1, color='#FFFFFF')
+    ax1.tick_params(colors='#B0B0B0')
+    
+    # GMM PCA
+    ax2 = axes[1]
+    ax2.set_facecolor('#1A1D29')
+    for regime in df_clean['GMM_Regime'].unique():
+        mask = df_clean['GMM_Regime'] == regime
+        ax2.scatter(X_pca[mask, 0], X_pca[mask, 1], 
+                   c=colors_map.get(regime, '#FFFFFF'), s=50, alpha=0.7,
+                   label=f'Component {regime}', edgecolors='white', linewidth=0.5)
+    ax2.set_title('GMM - PCA Projection', fontsize=14, fontweight='bold', color='#FFFFFF')
+    ax2.set_xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.1%} var)', color='#FFFFFF')
+    ax2.set_ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.1%} var)', color='#FFFFFF')
+    ax2.legend()
+    ax2.grid(True, alpha=0.1, color='#FFFFFF')
+    ax2.tick_params(colors='#B0B0B0')
+    
+    # HMM PCA
+    ax3 = axes[2]
+    ax3.set_facecolor('#1A1D29')
+    for regime in df_clean['HMM_Regime'].unique():
+        mask = df_clean['HMM_Regime'] == regime
+        ax3.scatter(X_pca[mask, 0], X_pca[mask, 1], 
+                   c=colors_map.get(regime, '#FFFFFF'), s=50, alpha=0.7,
+                   label=f'State {regime}', edgecolors='white', linewidth=0.5)
+    ax3.set_title('HMM - PCA Projection', fontsize=14, fontweight='bold', color='#FFFFFF')
+    ax3.set_xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.1%} var)', color='#FFFFFF')
+    ax3.set_ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.1%} var)', color='#FFFFFF')
+    ax3.legend()
+    ax3.grid(True, alpha=0.1, color='#FFFFFF')
+    ax3.tick_params(colors='#B0B0B0')
+    
+    plt.tight_layout()
+    
+    return fig
+
+def plot_hmm_transition_matrix(hmm_model, n_states):
+    """Visualiza la matriz de transición del HMM"""
+    
+    fig, ax = plt.subplots(figsize=(10, 8), facecolor='#0E1117')
+    ax.set_facecolor('#1A1D29')
+    
+    transmat = hmm_model.transmat_
+    
+    im = ax.imshow(transmat, cmap='YlOrRd', aspect='auto', vmin=0, vmax=1)
+    
+    # Añadir valores en las celdas
+    for i in range(n_states):
+        for j in range(n_states):
+            text = ax.text(j, i, f'{transmat[i, j]:.3f}',
+                          ha="center", va="center", color="black", fontsize=12, fontweight='bold')
+    
+    ax.set_xticks(np.arange(n_states))
+    ax.set_yticks(np.arange(n_states))
+    ax.set_xticklabels([f'State {i}' for i in range(n_states)], color='#FFFFFF')
+    ax.set_yticklabels([f'State {i}' for i in range(n_states)], color='#FFFFFF')
+    ax.set_xlabel('To State', fontsize=13, color='#FFFFFF', fontweight='600')
+    ax.set_ylabel('From State', fontsize=13, color='#FFFFFF', fontweight='600')
+    ax.set_title('HMM Transition Probability Matrix', fontsize=16, 
+                 fontweight='bold', color='#FFFFFF', pad=20)
+    
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label('Transition Probability', color='#FFFFFF', fontsize=12)
+    cbar.ax.tick_params(colors='#FFFFFF')
+    
+    plt.tight_layout()
+    
+    return fig
+
+# =========================================================================
+# ANÁLISIS DE REGÍMENES
+# =========================================================================
+
+def analyze_regime_characteristics(df_clean):
+    """Analiza características de cada régimen por modelo"""
+    
+    results = {}
+    
+    for model_name, regime_col in [('K-Means', 'KMeans_Regime'), 
+                                     ('GMM', 'GMM_Regime'), 
+                                     ('HMM', 'HMM_Regime')]:
+        
+        regime_stats = df_clean.groupby(regime_col).agg({
+            'Returns': ['mean', 'std', 'count'],
+            'Volatility': ['mean', 'std'],
+            'Momentum10w': 'mean',
+            'VolumeRatio': 'mean'
+        }).round(4)
+        
+        # Renombrar columnas
+        regime_stats.columns = ['_'.join(col).strip() for col in regime_stats.columns.values]
+        
+        # Calcular retornos anualizados (52 semanas)
+        regime_stats['Annual_Return_%'] = regime_stats['Returns_mean'] * 52 * 100
+        regime_stats['Annual_Vol_%'] = regime_stats['Volatility_mean'] * np.sqrt(52) * 100
+        
+        results[model_name] = regime_stats
+    
+    return results
+
+# =========================================================================
+# PÁGINA PRINCIPAL
+# =========================================================================
+
+def main():
+    
+    # CSS personalizado
+    st.markdown("""
+    <style>
+    .main {
+        background-color: #0E1117;
+    }
+    .stMetric {
+        background: linear-gradient(135deg, #1A1D29 0%, #2D3142 100%);
+        padding: 20px;
+        border-radius: 15px;
+        border: 2px solid #00D9FF;
+        box-shadow: 0 4px 15px rgba(0, 217, 255, 0.2);
+    }
+    h1, h2, h3 {
+        color: #FFFFFF !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    st.title("🤖 Market Regime Detection - ML Models (Weekly)")
+    st.markdown("---")
+    
+    # Sidebar
+    with st.sidebar:
+        st.markdown("""
+        <div style='text-align: center; padding: 20px; 
+                    background: linear-gradient(135deg, #4ECDC4 0%, #00D9FF 100%); 
+                    border-radius: 15px; margin-bottom: 20px;'>
+            <h2 style='color: white; margin: 0;'>⚙️ Configuration</h2>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        ticker = st.text_input(
+            "🎯 Ticker Symbol",
+            value="SPY",
+            help="Ingresa el símbolo del ticker (ej: SPY, QQQ, AAPL)"
+        ).upper()
+        
+        st.markdown("---")
+        
+        start_date = st.date_input(
+            "📆 Start Date",
+            value=datetime(2015, 1, 1),
+            help="Fecha de inicio para descargar datos"
+        )
+        
+        st.markdown("---")
+        
+        n_regimes = st.slider(
+            "🔢 Number of Regimes/States",
+            min_value=2,
+            max_value=5,
+            value=3,
+            help="Número de regímenes/estados para los modelos"
+        )
+        
+        st.markdown("---")
+        
+        analyze_btn = st.button(
+            "🚀 ANALYZE REGIMES",
+            type="primary",
+            use_container_width=True
+        )
+        
+        st.markdown("---")
+        
+        # Información de modelos
+        st.markdown("""
+        ### 📚 Models Used
+        
+        **K-Means Clustering**
+        - Fast partitioning algorithm
+        - Hard cluster assignments
+        - Good for clear separations
+        
+        **GMM (Gaussian Mixture)**
+        - Probabilistic clustering
+        - Soft assignments
+        - Flexible covariances
+        
+        **HMM (Hidden Markov)**
+        - Temporal dependencies
+        - Transition probabilities
+        - Sequential patterns
+        
+        ### 📊 Features Used
+        - Returns & Volatility
+        - Momentum (10 weeks)
+        - Volume ratios
+        - Price/MA ratios
+        - High-Low range
+        - Returns skewness/kurtosis
+        """)
+    
+    if analyze_btn:
+        with st.spinner(f"📥 Downloading weekly data for {ticker}..."):
+            df = download_weekly_data(ticker, start_date.strftime('%Y-%m-%d'))
+            
+            if df is None or df.empty:
+                st.error(f"❌ No data available for {ticker}")
+                st.stop()
+            
+            st.success(f"✅ Downloaded {len(df)} weekly candles")
+        
+        with st.spinner("🔧 Engineering features..."):
+            df = engineer_features(df)
+            X_scaled, df_clean, feature_cols = prepare_clustering_features(df)
+            
+            if X_scaled is None:
+                st.error("❌ Not enough data after feature engineering")
+                st.stop()
+            
+            st.success(f"✅ Prepared {len(df_clean)} observations with {len(feature_cols)} features")
+        
+        with st.spinner("🤖 Training models..."):
+            
+            # K-Means
+            kmeans_labels, kmeans_model, kmeans_metrics = fit_kmeans(X_scaled, n_clusters=n_regimes)
+            df_clean['KMeans_Regime'] = kmeans_labels
+            
+            # GMM
+            gmm_labels, gmm_model, gmm_metrics = fit_gmm(X_scaled, n_components=n_regimes)
+            df_clean['GMM_Regime'] = gmm_labels
+            
+            # HMM
+            hmm_labels, hmm_model, hmm_metrics = fit_hmm(X_scaled, n_states=n_regimes)
+            df_clean['HMM_Regime'] = hmm_labels
+            
+            st.success("✅ All models trained successfully!")
+        
+        # Guardar en session state
+        st.session_state.df_clean = df_clean
+        st.session_state.X_scaled = X_scaled
+        st.session_state.kmeans_metrics = kmeans_metrics
+        st.session_state.gmm_metrics = gmm_metrics
+        st.session_state.hmm_metrics = hmm_metrics
+        st.session_state.hmm_model = hmm_model
+        st.session_state.n_regimes = n_regimes
+        st.session_state.ticker = ticker
+    
+    # Mostrar resultados si existen en session state
+    if 'df_clean' in st.session_state:
+        df_clean = st.session_state.df_clean
+        X_scaled = st.session_state.X_scaled
+        kmeans_metrics = st.session_state.kmeans_metrics
+        gmm_metrics = st.session_state.gmm_metrics
+        hmm_metrics = st.session_state.hmm_metrics
+        hmm_model = st.session_state.hmm_model
+        n_regimes = st.session_state.n_regimes
+        ticker = st.session_state.ticker
+        
+        st.markdown("---")
+        
+        # Métricas de los modelos
+        st.markdown("## 📊 Model Performance Metrics")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("### K-Means")
+            st.metric("Silhouette Score", f"{kmeans_metrics['silhouette']:.4f}")
+            st.metric("Davies-Bouldin", f"{kmeans_metrics['davies_bouldin']:.4f}")
+            st.metric("Calinski-Harabasz", f"{kmeans_metrics['calinski_harabasz']:.1f}")
+        
+        with col2:
+            st.markdown("### GMM")
+            st.metric("Silhouette Score", f"{gmm_metrics['silhouette']:.4f}")
+            st.metric("BIC", f"{gmm_metrics['bic']:.0f}")
+            st.metric("AIC", f"{gmm_metrics['aic']:.0f}")
+        
+        with col3:
+            st.markdown("### HMM")
+            st.metric("Silhouette Score", f"{hmm_metrics['silhouette']:.4f}")
+            st.metric("Davies-Bouldin", f"{hmm_metrics['davies_bouldin']:.4f}")
+            st.metric("Log-Likelihood", f"{hmm_metrics['log_likelihood']:.2f}")
+        
+        st.markdown("---")
+        
+        # Régimen actual
+        st.markdown("## 🎯 Current Market Regime")
+        
+        current = df_clean.iloc[-1]
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Date", current.name.strftime('%Y-%m-%d'))
+        
+        with col2:
+            st.metric("K-Means Regime", f"Regime {int(current['KMeans_Regime'])}")
+        
+        with col3:
+            st.metric("GMM Component", f"Component {int(current['GMM_Regime'])}")
+        
+        with col4:
+            st.metric("HMM State", f"State {int(current['HMM_Regime'])}")
+        
+        st.markdown("---")
+        
+        # Gráficos principales
+        st.markdown("## 📈 Regime Visualization")
+        
+        with st.spinner("Creating visualizations..."):
+            fig1 = plot_regime_comparison(df_clean, ticker)
+            st.pyplot(fig1)
+        
+        st.markdown("---")
+        
+        # PCA Visualization
+        st.markdown("## 🔍 PCA Projection - Cluster Separability")
+        
+        with st.spinner("Computing PCA..."):
+            fig2 = plot_pca_visualization(X_scaled, df_clean)
+            st.pyplot(fig2)
+        
+        st.markdown("---")
+        
+        # HMM Transition Matrix
+        st.markdown("## 🔄 HMM Transition Probability Matrix")
+        
+        with st.spinner("Plotting transition matrix..."):
+            fig3 = plot_hmm_transition_matrix(hmm_model, n_regimes)
+            st.pyplot(fig3)
+        
+        st.markdown("---")
+        
+        # Análisis de características
+        st.markdown("## 📋 Regime Characteristics Analysis")
+        
+        regime_analysis = analyze_regime_characteristics(df_clean)
+        
+        for model_name, stats_df in regime_analysis.items():
+            st.markdown(f"### {model_name}")
+            st.dataframe(stats_df, use_container_width=True)
+        
+        st.markdown("---")
+        
+        # Distribución de regímenes
+        st.markdown("## 📊 Regime Distribution")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("### K-Means")
+            kmeans_dist = df_clean['KMeans_Regime'].value_counts().sort_index()
+            for regime, count in kmeans_dist.items():
+                pct = (count / len(df_clean)) * 100
+                st.write(f"**Regime {regime}**: {count} weeks ({pct:.1f}%)")
+        
+        with col2:
+            st.markdown("### GMM")
+            gmm_dist = df_clean['GMM_Regime'].value_counts().sort_index()
+            for regime, count in gmm_dist.items():
+                pct = (count / len(df_clean)) * 100
+                st.write(f"**Component {regime}**: {count} weeks ({pct:.1f}%)")
+        
+        with col3:
+            st.markdown("### HMM")
+            hmm_dist = df_clean['HMM_Regime'].value_counts().sort_index()
+            for regime, count in hmm_dist.items():
+                pct = (count / len(df_clean)) * 100
+                st.write(f"**State {regime}**: {count} weeks ({pct:.1f}%)")
+
+if __name__ == "__main__":
+    main()
 
