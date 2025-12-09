@@ -29,6 +29,23 @@ warnings.filterwarnings('ignore')
 st.set_page_config(page_title="Market Regime ML Detection", layout="wide")
 
 # =========================================================================
+# CONSTANTES DE COLORES Y ETIQUETAS
+# =========================================================================
+
+# Colores consistentes para regímenes (siempre 3 regímenes)
+REGIME_COLORS = {
+    'uptrend': '#00FF88',      # Verde brillante
+    'sideways': '#FFD93D',     # Amarillo
+    'downtrend': '#FF4444'     # Rojo
+}
+
+REGIME_LABELS = {
+    'uptrend': 'Uptrend 📈',
+    'sideways': 'Sideways ↔️',
+    'downtrend': 'Downtrend 📉'
+}
+
+# =========================================================================
 # FUNCIONES DE DESCARGA Y PREPARACIÓN DE DATOS
 # =========================================================================
 
@@ -36,7 +53,6 @@ st.set_page_config(page_title="Market Regime ML Detection", layout="wide")
 def download_weekly_data(ticker, start_date='2010-01-01'):
     """Descarga datos SEMANALES y calcula features para clustering"""
     try:
-        # Descargar datos semanales
         data = yf.download(ticker, start=start_date, interval='1wk', progress=False)
         
         if data.empty:
@@ -171,24 +187,59 @@ def fit_hmm(X, n_states=3, random_state=42):
     return labels, hmm, metrics
 
 # =========================================================================
+# MAPEO DE REGÍMENES
+# =========================================================================
+
+def map_regimes_to_labels(df_clean, regime_col):
+    """
+    Mapea los clusters numéricos a labels consistentes (uptrend, sideways, downtrend)
+    basándose en características de retorno y momentum
+    """
+    
+    regime_stats = df_clean.groupby(regime_col).agg({
+        'Returns': 'mean',
+        'Momentum10w': 'mean',
+        'Volatility': 'mean'
+    })
+    
+    # Ordenar por retorno promedio
+    regime_stats = regime_stats.sort_values('Returns', ascending=False)
+    
+    # Asignar etiquetas basadas en el ranking de retornos
+    mapping = {}
+    regime_ids = regime_stats.index.tolist()
+    
+    if len(regime_ids) == 3:
+        # El mejor retorno = uptrend, medio = sideways, peor = downtrend
+        mapping[regime_ids[0]] = 'uptrend'
+        mapping[regime_ids[1]] = 'sideways'
+        mapping[regime_ids[2]] = 'downtrend'
+    elif len(regime_ids) == 2:
+        # Solo dos regímenes
+        mapping[regime_ids[0]] = 'uptrend'
+        mapping[regime_ids[1]] = 'downtrend'
+    else:
+        # Más de 3 regímenes - usar percentiles
+        for i, regime_id in enumerate(regime_ids):
+            if i < len(regime_ids) // 3:
+                mapping[regime_id] = 'uptrend'
+            elif i < 2 * len(regime_ids) // 3:
+                mapping[regime_id] = 'sideways'
+            else:
+                mapping[regime_id] = 'downtrend'
+    
+    return mapping, regime_stats
+
+# =========================================================================
 # VISUALIZACIÓN
 # =========================================================================
 
 def plot_regime_comparison(df_clean, ticker):
-    """Visualiza los 3 modelos en comparación"""
+    """Visualiza los 3 modelos en comparación con colores consistentes"""
     
     plt.style.use('dark_background')
     fig = plt.figure(figsize=(20, 14), facecolor='#0E1117')
     gs = fig.add_gridspec(4, 1, height_ratios=[3, 3, 3, 2], hspace=0.3)
-    
-    # Colores para regímenes
-    colors_map = {
-        0: '#4ECDC4',  # Turquesa
-        1: '#FF6B6B',  # Rojo
-        2: '#FFD93D',  # Amarillo
-        3: '#95A5A6',  # Gris
-        4: '#BD93F9'   # Púrpura
-    }
     
     # =====================================================================
     # GRÁFICO 1: K-MEANS
@@ -198,19 +249,21 @@ def plot_regime_comparison(df_clean, ticker):
     
     # Línea de precio
     ax1.plot(df_clean.index, df_clean['Close'], color='#FFFFFF', 
-             linewidth=1, alpha=0.5, zorder=1)
+             linewidth=1.5, alpha=0.6, zorder=1)
     
     # Puntos coloreados por régimen
-    for regime in df_clean['KMeans_Regime'].unique():
-        mask = df_clean['KMeans_Regime'] == regime
-        ax1.scatter(df_clean[mask].index, df_clean[mask]['Close'],
-                   c=colors_map.get(regime, '#FFFFFF'), s=30, alpha=0.8,
-                   label=f'Regime {regime}', zorder=3, edgecolors='white', linewidth=0.5)
+    for regime_label in ['uptrend', 'sideways', 'downtrend']:
+        mask = df_clean['KMeans_Label'] == regime_label
+        if mask.any():
+            ax1.scatter(df_clean[mask].index, df_clean[mask]['Close'],
+                       c=REGIME_COLORS[regime_label], s=35, alpha=0.8,
+                       label=REGIME_LABELS[regime_label], zorder=3, 
+                       edgecolors='white', linewidth=0.5)
     
     ax1.set_title(f'{ticker} - K-Means Clustering Regimes (Weekly)', 
                   fontsize=16, fontweight='bold', color='#FFFFFF', pad=20)
     ax1.set_ylabel('Price ($)', fontsize=13, color='#FFFFFF', fontweight='600')
-    ax1.legend(loc='upper left', fontsize=10, framealpha=0.9)
+    ax1.legend(loc='upper left', fontsize=11, framealpha=0.9, facecolor='#1A1D29')
     ax1.grid(True, alpha=0.1, color='#FFFFFF')
     ax1.tick_params(colors='#B0B0B0', labelsize=10)
     
@@ -225,18 +278,20 @@ def plot_regime_comparison(df_clean, ticker):
     ax2.set_facecolor('#1A1D29')
     
     ax2.plot(df_clean.index, df_clean['Close'], color='#FFFFFF', 
-             linewidth=1, alpha=0.5, zorder=1)
+             linewidth=1.5, alpha=0.6, zorder=1)
     
-    for regime in df_clean['GMM_Regime'].unique():
-        mask = df_clean['GMM_Regime'] == regime
-        ax2.scatter(df_clean[mask].index, df_clean[mask]['Close'],
-                   c=colors_map.get(regime, '#FFFFFF'), s=30, alpha=0.8,
-                   label=f'Component {regime}', zorder=3, edgecolors='white', linewidth=0.5)
+    for regime_label in ['uptrend', 'sideways', 'downtrend']:
+        mask = df_clean['GMM_Label'] == regime_label
+        if mask.any():
+            ax2.scatter(df_clean[mask].index, df_clean[mask]['Close'],
+                       c=REGIME_COLORS[regime_label], s=35, alpha=0.8,
+                       label=REGIME_LABELS[regime_label], zorder=3, 
+                       edgecolors='white', linewidth=0.5)
     
     ax2.set_title(f'{ticker} - Gaussian Mixture Model Regimes (Weekly)', 
                   fontsize=16, fontweight='bold', color='#FFFFFF', pad=20)
     ax2.set_ylabel('Price ($)', fontsize=13, color='#FFFFFF', fontweight='600')
-    ax2.legend(loc='upper left', fontsize=10, framealpha=0.9)
+    ax2.legend(loc='upper left', fontsize=11, framealpha=0.9, facecolor='#1A1D29')
     ax2.grid(True, alpha=0.1, color='#FFFFFF')
     ax2.tick_params(colors='#B0B0B0', labelsize=10)
     
@@ -251,18 +306,20 @@ def plot_regime_comparison(df_clean, ticker):
     ax3.set_facecolor('#1A1D29')
     
     ax3.plot(df_clean.index, df_clean['Close'], color='#FFFFFF', 
-             linewidth=1, alpha=0.5, zorder=1)
+             linewidth=1.5, alpha=0.6, zorder=1)
     
-    for regime in df_clean['HMM_Regime'].unique():
-        mask = df_clean['HMM_Regime'] == regime
-        ax3.scatter(df_clean[mask].index, df_clean[mask]['Close'],
-                   c=colors_map.get(regime, '#FFFFFF'), s=30, alpha=0.8,
-                   label=f'State {regime}', zorder=3, edgecolors='white', linewidth=0.5)
+    for regime_label in ['uptrend', 'sideways', 'downtrend']:
+        mask = df_clean['HMM_Label'] == regime_label
+        if mask.any():
+            ax3.scatter(df_clean[mask].index, df_clean[mask]['Close'],
+                       c=REGIME_COLORS[regime_label], s=35, alpha=0.8,
+                       label=REGIME_LABELS[regime_label], zorder=3, 
+                       edgecolors='white', linewidth=0.5)
     
     ax3.set_title(f'{ticker} - Hidden Markov Model Regimes (Weekly)', 
                   fontsize=16, fontweight='bold', color='#FFFFFF', pad=20)
     ax3.set_ylabel('Price ($)', fontsize=13, color='#FFFFFF', fontweight='600')
-    ax3.legend(loc='upper left', fontsize=10, framealpha=0.9)
+    ax3.legend(loc='upper left', fontsize=11, framealpha=0.9, facecolor='#1A1D29')
     ax3.grid(True, alpha=0.1, color='#FFFFFF')
     ax3.tick_params(colors='#B0B0B0', labelsize=10)
     
@@ -276,24 +333,53 @@ def plot_regime_comparison(df_clean, ticker):
     ax4 = fig.add_subplot(gs[3], sharex=ax1)
     ax4.set_facecolor('#1A1D29')
     
-    # Crear líneas para cada modelo
-    ax4.scatter(df_clean.index, df_clean['KMeans_Regime'], 
-               c=[colors_map.get(r, '#FFFFFF') for r in df_clean['KMeans_Regime']], 
-               s=20, alpha=0.8, label='K-Means', marker='s')
+    # Mapeo numérico para visualización
+    label_to_num = {'uptrend': 2, 'sideways': 1, 'downtrend': 0}
     
-    ax4.scatter(df_clean.index, df_clean['GMM_Regime'] + 0.1, 
-               c=[colors_map.get(r, '#FFFFFF') for r in df_clean['GMM_Regime']], 
-               s=20, alpha=0.8, label='GMM', marker='^')
+    # K-Means
+    kmeans_nums = df_clean['KMeans_Label'].map(label_to_num)
+    for label in ['uptrend', 'sideways', 'downtrend']:
+        mask = df_clean['KMeans_Label'] == label
+        ax4.scatter(df_clean[mask].index, kmeans_nums[mask], 
+                   c=REGIME_COLORS[label], s=25, alpha=0.8, marker='s',
+                   edgecolors='white', linewidth=0.3)
     
-    ax4.scatter(df_clean.index, df_clean['HMM_Regime'] + 0.2, 
-               c=[colors_map.get(r, '#FFFFFF') for r in df_clean['HMM_Regime']], 
-               s=20, alpha=0.8, label='HMM', marker='o')
+    # GMM
+    gmm_nums = df_clean['GMM_Label'].map(label_to_num) + 0.1
+    for label in ['uptrend', 'sideways', 'downtrend']:
+        mask = df_clean['GMM_Label'] == label
+        ax4.scatter(df_clean[mask].index, gmm_nums[mask], 
+                   c=REGIME_COLORS[label], s=25, alpha=0.8, marker='^',
+                   edgecolors='white', linewidth=0.3)
+    
+    # HMM
+    hmm_nums = df_clean['HMM_Label'].map(label_to_num) + 0.2
+    for label in ['uptrend', 'sideways', 'downtrend']:
+        mask = df_clean['HMM_Label'] == label
+        ax4.scatter(df_clean[mask].index, hmm_nums[mask], 
+                   c=REGIME_COLORS[label], s=25, alpha=0.8, marker='o',
+                   edgecolors='white', linewidth=0.3)
+    
+    # Leyenda personalizada
+    from matplotlib.patches import Patch
+    from matplotlib.lines import Line2D
+    legend_elements = [
+        Line2D([0], [0], marker='s', color='w', markerfacecolor='#888', 
+               markersize=8, label='K-Means', linestyle='None'),
+        Line2D([0], [0], marker='^', color='w', markerfacecolor='#888', 
+               markersize=8, label='GMM', linestyle='None'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='#888', 
+               markersize=8, label='HMM', linestyle='None')
+    ]
     
     ax4.set_title('Regime Timeline Comparison', fontsize=16, 
                   fontweight='bold', color='#FFFFFF', pad=20)
-    ax4.set_ylabel('Regime ID', fontsize=13, color='#FFFFFF', fontweight='600')
+    ax4.set_ylabel('Regime Type', fontsize=13, color='#FFFFFF', fontweight='600')
     ax4.set_xlabel('Date', fontsize=13, color='#FFFFFF', fontweight='600')
-    ax4.legend(loc='upper left', fontsize=10, framealpha=0.9)
+    ax4.set_yticks([0, 1, 2])
+    ax4.set_yticklabels(['Downtrend 📉', 'Sideways ↔️', 'Uptrend 📈'])
+    ax4.legend(handles=legend_elements, loc='upper left', fontsize=10, 
+              framealpha=0.9, facecolor='#1A1D29')
     ax4.grid(True, alpha=0.1, color='#FFFFFF')
     ax4.tick_params(colors='#B0B0B0', labelsize=10)
     
@@ -306,7 +392,7 @@ def plot_regime_comparison(df_clean, ticker):
     return fig
 
 def plot_pca_visualization(X_scaled, df_clean):
-    """Visualización PCA de los regímenes"""
+    """Visualización PCA de los regímenes con colores consistentes"""
     
     # Aplicar PCA
     pca = PCA(n_components=2, random_state=42)
@@ -315,20 +401,20 @@ def plot_pca_visualization(X_scaled, df_clean):
     plt.style.use('dark_background')
     fig, axes = plt.subplots(1, 3, figsize=(22, 6), facecolor='#0E1117')
     
-    colors_map = {0: '#4ECDC4', 1: '#FF6B6B', 2: '#FFD93D', 3: '#95A5A6', 4: '#BD93F9'}
-    
     # K-Means PCA
     ax1 = axes[0]
     ax1.set_facecolor('#1A1D29')
-    for regime in df_clean['KMeans_Regime'].unique():
-        mask = df_clean['KMeans_Regime'] == regime
-        ax1.scatter(X_pca[mask, 0], X_pca[mask, 1], 
-                   c=colors_map.get(regime, '#FFFFFF'), s=50, alpha=0.7,
-                   label=f'Regime {regime}', edgecolors='white', linewidth=0.5)
+    for regime_label in ['uptrend', 'sideways', 'downtrend']:
+        mask = df_clean['KMeans_Label'] == regime_label
+        if mask.any():
+            ax1.scatter(X_pca[mask, 0], X_pca[mask, 1], 
+                       c=REGIME_COLORS[regime_label], s=60, alpha=0.7,
+                       label=REGIME_LABELS[regime_label], 
+                       edgecolors='white', linewidth=0.5)
     ax1.set_title('K-Means - PCA Projection', fontsize=14, fontweight='bold', color='#FFFFFF')
     ax1.set_xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.1%} var)', color='#FFFFFF')
     ax1.set_ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.1%} var)', color='#FFFFFF')
-    ax1.legend()
+    ax1.legend(fontsize=10, framealpha=0.9, facecolor='#1A1D29')
     ax1.grid(True, alpha=0.1, color='#FFFFFF')
     ax1.tick_params(colors='#B0B0B0')
     
@@ -338,15 +424,17 @@ def plot_pca_visualization(X_scaled, df_clean):
     # GMM PCA
     ax2 = axes[1]
     ax2.set_facecolor('#1A1D29')
-    for regime in df_clean['GMM_Regime'].unique():
-        mask = df_clean['GMM_Regime'] == regime
-        ax2.scatter(X_pca[mask, 0], X_pca[mask, 1], 
-                   c=colors_map.get(regime, '#FFFFFF'), s=50, alpha=0.7,
-                   label=f'Component {regime}', edgecolors='white', linewidth=0.5)
+    for regime_label in ['uptrend', 'sideways', 'downtrend']:
+        mask = df_clean['GMM_Label'] == regime_label
+        if mask.any():
+            ax2.scatter(X_pca[mask, 0], X_pca[mask, 1], 
+                       c=REGIME_COLORS[regime_label], s=60, alpha=0.7,
+                       label=REGIME_LABELS[regime_label], 
+                       edgecolors='white', linewidth=0.5)
     ax2.set_title('GMM - PCA Projection', fontsize=14, fontweight='bold', color='#FFFFFF')
     ax2.set_xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.1%} var)', color='#FFFFFF')
     ax2.set_ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.1%} var)', color='#FFFFFF')
-    ax2.legend()
+    ax2.legend(fontsize=10, framealpha=0.9, facecolor='#1A1D29')
     ax2.grid(True, alpha=0.1, color='#FFFFFF')
     ax2.tick_params(colors='#B0B0B0')
     
@@ -356,15 +444,17 @@ def plot_pca_visualization(X_scaled, df_clean):
     # HMM PCA
     ax3 = axes[2]
     ax3.set_facecolor('#1A1D29')
-    for regime in df_clean['HMM_Regime'].unique():
-        mask = df_clean['HMM_Regime'] == regime
-        ax3.scatter(X_pca[mask, 0], X_pca[mask, 1], 
-                   c=colors_map.get(regime, '#FFFFFF'), s=50, alpha=0.7,
-                   label=f'State {regime}', edgecolors='white', linewidth=0.5)
+    for regime_label in ['uptrend', 'sideways', 'downtrend']:
+        mask = df_clean['HMM_Label'] == regime_label
+        if mask.any():
+            ax3.scatter(X_pca[mask, 0], X_pca[mask, 1], 
+                       c=REGIME_COLORS[regime_label], s=60, alpha=0.7,
+                       label=REGIME_LABELS[regime_label], 
+                       edgecolors='white', linewidth=0.5)
     ax3.set_title('HMM - PCA Projection', fontsize=14, fontweight='bold', color='#FFFFFF')
     ax3.set_xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.1%} var)', color='#FFFFFF')
     ax3.set_ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.1%} var)', color='#FFFFFF')
-    ax3.legend()
+    ax3.legend(fontsize=10, framealpha=0.9, facecolor='#1A1D29')
     ax3.grid(True, alpha=0.1, color='#FFFFFF')
     ax3.tick_params(colors='#B0B0B0')
     
@@ -375,14 +465,20 @@ def plot_pca_visualization(X_scaled, df_clean):
     
     return fig
 
-def plot_hmm_transition_matrix(hmm_model, n_states):
-    """Visualiza la matriz de transición del HMM"""
+def plot_hmm_transition_matrix(hmm_model, regime_mapping):
+    """Visualiza la matriz de transición del HMM con labels"""
     
     plt.style.use('dark_background')
     fig, ax = plt.subplots(figsize=(10, 8), facecolor='#0E1117')
     ax.set_facecolor('#1A1D29')
     
     transmat = hmm_model.transmat_
+    n_states = len(transmat)
+    
+    # Crear mapeo inverso
+    inv_mapping = {v: k for k, v in regime_mapping.items()}
+    state_labels = [REGIME_LABELS.get(inv_mapping.get(i, 'unknown'), f'State {i}') 
+                    for i in range(n_states)]
     
     im = ax.imshow(transmat, cmap='YlOrRd', aspect='auto', vmin=0, vmax=1)
     
@@ -390,12 +486,13 @@ def plot_hmm_transition_matrix(hmm_model, n_states):
     for i in range(n_states):
         for j in range(n_states):
             text = ax.text(j, i, f'{transmat[i, j]:.3f}',
-                          ha="center", va="center", color="black", fontsize=12, fontweight='bold')
+                          ha="center", va="center", color="black", 
+                          fontsize=14, fontweight='bold')
     
     ax.set_xticks(np.arange(n_states))
     ax.set_yticks(np.arange(n_states))
-    ax.set_xticklabels([f'State {i}' for i in range(n_states)], color='#FFFFFF')
-    ax.set_yticklabels([f'State {i}' for i in range(n_states)], color='#FFFFFF')
+    ax.set_xticklabels(state_labels, color='#FFFFFF', fontsize=11)
+    ax.set_yticklabels(state_labels, color='#FFFFFF', fontsize=11)
     ax.set_xlabel('To State', fontsize=13, color='#FFFFFF', fontweight='600')
     ax.set_ylabel('From State', fontsize=13, color='#FFFFFF', fontweight='600')
     ax.set_title('HMM Transition Probability Matrix', fontsize=16, 
@@ -418,11 +515,11 @@ def analyze_regime_characteristics(df_clean):
     
     results = {}
     
-    for model_name, regime_col in [('K-Means', 'KMeans_Regime'), 
-                                     ('GMM', 'GMM_Regime'), 
-                                     ('HMM', 'HMM_Regime')]:
+    for model_name, label_col in [('K-Means', 'KMeans_Label'), 
+                                   ('GMM', 'GMM_Label'), 
+                                   ('HMM', 'HMM_Label')]:
         
-        regime_stats = df_clean.groupby(regime_col).agg({
+        regime_stats = df_clean.groupby(label_col).agg({
             'Returns': ['mean', 'std', 'count'],
             'Volatility': ['mean', 'std'],
             'Momentum10w': 'mean',
@@ -435,6 +532,11 @@ def analyze_regime_characteristics(df_clean):
         # Calcular retornos anualizados (52 semanas)
         regime_stats['Annual_Return_%'] = regime_stats['Returns_mean'] * 52 * 100
         regime_stats['Annual_Vol_%'] = regime_stats['Volatility_mean'] * np.sqrt(52) * 100
+        
+        # Reordenar index para consistencia
+        desired_order = ['uptrend', 'sideways', 'downtrend']
+        existing_labels = [label for label in desired_order if label in regime_stats.index]
+        regime_stats = regime_stats.reindex(existing_labels)
         
         results[model_name] = regime_stats
     
@@ -529,21 +631,20 @@ def market_regime_ml_page():
         
         st.markdown("---")
         
+        # Fecha por defecto: 5 años atrás
+        default_start = datetime.now() - timedelta(days=365*5)
+        
         start_date = st.date_input(
             "📆 Start Date",
-            value=datetime(2015, 1, 1),
-            help="Fecha de inicio para descargar datos"
+            value=default_start,
+            help="Fecha de inicio para descargar datos (por defecto: 5 años)"
         )
         
         st.markdown("---")
         
-        n_regimes = st.slider(
-            "🔢 Number of Regimes/States",
-            min_value=2,
-            max_value=5,
-            value=3,
-            help="Número de regímenes/estados para los modelos"
-        )
+        # Fijo en 3 regímenes para consistencia
+        st.info("🔢 **Regímenes:** 3 (Uptrend, Sideways, Downtrend)")
+        n_regimes = 3
         
         st.markdown("---")
         
@@ -581,6 +682,11 @@ def market_regime_ml_page():
         - Price/MA ratios
         - High-Low range
         - Returns skewness/kurtosis
+        
+        ### 🎨 Regime Colors
+        - 🟢 **Uptrend**: Verde
+        - 🟡 **Sideways**: Amarillo
+        - 🔴 **Downtrend**: Rojo
         """)
     
     if analyze_btn:
@@ -608,14 +714,20 @@ def market_regime_ml_page():
             # K-Means
             kmeans_labels, kmeans_model, kmeans_metrics = fit_kmeans(X_scaled, n_clusters=n_regimes)
             df_clean['KMeans_Regime'] = kmeans_labels
+            kmeans_mapping, kmeans_stats = map_regimes_to_labels(df_clean, 'KMeans_Regime')
+            df_clean['KMeans_Label'] = df_clean['KMeans_Regime'].map(kmeans_mapping)
             
             # GMM
             gmm_labels, gmm_model, gmm_metrics = fit_gmm(X_scaled, n_components=n_regimes)
             df_clean['GMM_Regime'] = gmm_labels
+            gmm_mapping, gmm_stats = map_regimes_to_labels(df_clean, 'GMM_Regime')
+            df_clean['GMM_Label'] = df_clean['GMM_Regime'].map(gmm_mapping)
             
             # HMM
             hmm_labels, hmm_model, hmm_metrics = fit_hmm(X_scaled, n_states=n_regimes)
             df_clean['HMM_Regime'] = hmm_labels
+            hmm_mapping, hmm_stats = map_regimes_to_labels(df_clean, 'HMM_Regime')
+            df_clean['HMM_Label'] = df_clean['HMM_Regime'].map(hmm_mapping)
             
             st.success("✅ All models trained successfully!")
         
@@ -626,6 +738,7 @@ def market_regime_ml_page():
         st.session_state.gmm_metrics = gmm_metrics
         st.session_state.hmm_metrics = hmm_metrics
         st.session_state.hmm_model = hmm_model
+        st.session_state.hmm_mapping = hmm_mapping
         st.session_state.n_regimes = n_regimes
         st.session_state.ticker = ticker
     
@@ -637,6 +750,7 @@ def market_regime_ml_page():
         gmm_metrics = st.session_state.gmm_metrics
         hmm_metrics = st.session_state.hmm_metrics
         hmm_model = st.session_state.hmm_model
+        hmm_mapping = st.session_state.hmm_mapping
         n_regimes = st.session_state.n_regimes
         ticker = st.session_state.ticker
         
@@ -678,13 +792,16 @@ def market_regime_ml_page():
             st.metric("Date", current.name.strftime('%Y-%m-%d'))
         
         with col2:
-            st.metric("K-Means Regime", f"Regime {int(current['KMeans_Regime'])}")
+            kmeans_label = current['KMeans_Label']
+            st.metric("K-Means", REGIME_LABELS.get(kmeans_label, kmeans_label))
         
         with col3:
-            st.metric("GMM Component", f"Component {int(current['GMM_Regime'])}")
+            gmm_label = current['GMM_Label']
+            st.metric("GMM", REGIME_LABELS.get(gmm_label, gmm_label))
         
         with col4:
-            st.metric("HMM State", f"State {int(current['HMM_Regime'])}")
+            hmm_label = current['HMM_Label']
+            st.metric("HMM", REGIME_LABELS.get(hmm_label, hmm_label))
         
         st.markdown("---")
         
@@ -710,7 +827,7 @@ def market_regime_ml_page():
         st.markdown("## 🔄 HMM Transition Probability Matrix")
         
         with st.spinner("Plotting transition matrix..."):
-            fig3 = plot_hmm_transition_matrix(hmm_model, n_regimes)
+            fig3 = plot_hmm_transition_matrix(hmm_model, hmm_mapping)
             st.pyplot(fig3)
         
         st.markdown("---")
@@ -722,7 +839,19 @@ def market_regime_ml_page():
         
         for model_name, stats_df in regime_analysis.items():
             st.markdown(f"### {model_name}")
-            st.dataframe(stats_df, use_container_width=True)
+            
+            # Aplicar estilo con colores
+            def style_regime_rows(row):
+                if row.name == 'uptrend':
+                    return ['background-color: rgba(0, 255, 136, 0.15)'] * len(row)
+                elif row.name == 'sideways':
+                    return ['background-color: rgba(255, 217, 61, 0.15)'] * len(row)
+                elif row.name == 'downtrend':
+                    return ['background-color: rgba(255, 68, 68, 0.15)'] * len(row)
+                return [''] * len(row)
+            
+            styled_df = stats_df.style.apply(style_regime_rows, axis=1)
+            st.dataframe(styled_df, use_container_width=True)
         
         st.markdown("---")
         
@@ -733,31 +862,38 @@ def market_regime_ml_page():
         
         with col1:
             st.markdown("### K-Means")
-            kmeans_dist = df_clean['KMeans_Regime'].value_counts().sort_index()
-            for regime, count in kmeans_dist.items():
-                pct = (count / len(df_clean)) * 100
-                st.write(f"**Regime {regime}**: {count} weeks ({pct:.1f}%)")
+            kmeans_dist = df_clean['KMeans_Label'].value_counts()
+            for regime_label in ['uptrend', 'sideways', 'downtrend']:
+                if regime_label in kmeans_dist.index:
+                    count = kmeans_dist[regime_label]
+                    pct = (count / len(df_clean)) * 100
+                    st.write(f"**{REGIME_LABELS[regime_label]}**: {count} weeks ({pct:.1f}%)")
         
         with col2:
             st.markdown("### GMM")
-            gmm_dist = df_clean['GMM_Regime'].value_counts().sort_index()
-            for regime, count in gmm_dist.items():
-                pct = (count / len(df_clean)) * 100
-                st.write(f"**Component {regime}**: {count} weeks ({pct:.1f}%)")
+            gmm_dist = df_clean['GMM_Label'].value_counts()
+            for regime_label in ['uptrend', 'sideways', 'downtrend']:
+                if regime_label in gmm_dist.index:
+                    count = gmm_dist[regime_label]
+                    pct = (count / len(df_clean)) * 100
+                    st.write(f"**{REGIME_LABELS[regime_label]}**: {count} weeks ({pct:.1f}%)")
         
         with col3:
             st.markdown("### HMM")
-            hmm_dist = df_clean['HMM_Regime'].value_counts().sort_index()
-            for regime, count in hmm_dist.items():
-                pct = (count / len(df_clean)) * 100
-                st.write(f"**State {regime}**: {count} weeks ({pct:.1f}%)")
+            hmm_dist = df_clean['HMM_Label'].value_counts()
+            for regime_label in ['uptrend', 'sideways', 'downtrend']:
+                if regime_label in hmm_dist.index:
+                    count = hmm_dist[regime_label]
+                    pct = (count / len(df_clean)) * 100
+                    st.write(f"**{REGIME_LABELS[regime_label]}**: {count} weeks ({pct:.1f}%)")
         
         st.markdown("---")
         
         # Exportar datos
         st.markdown("## 💾 Export Data")
         
-        export_cols = ['Close', 'Returns', 'Volatility', 'KMeans_Regime', 'GMM_Regime', 'HMM_Regime']
+        export_cols = ['Close', 'Returns', 'Volatility', 
+                       'KMeans_Label', 'GMM_Label', 'HMM_Label']
         available_cols = [col for col in export_cols if col in df_clean.columns]
         
         csv = df_clean[available_cols].to_csv()
@@ -783,7 +919,7 @@ def market_regime_ml_page():
                 para comenzar el análisis con Machine Learning.
             </p>
             <p style='color: #8E93A1; font-size: 14px; margin: 10px 0 0 0;'>
-                📊 Análisis con K-Means, GMM y HMM | ⏱️ Timeframe: Weekly (1w)
+                📊 Análisis con K-Means, GMM y HMM | ⏱️ Timeframe: Weekly (1w) | 📅 Default: 5 años
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -806,4 +942,3 @@ if __name__ == "__main__":
             </p>
         </div>
         """, unsafe_allow_html=True)
-
