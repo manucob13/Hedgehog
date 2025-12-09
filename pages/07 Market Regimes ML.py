@@ -731,14 +731,16 @@ def market_regime_ml_page():
             
             st.success("✅ All models trained successfully!")
         
-        # Guardar en session state
+        # Guardar en session state - TODAS LAS VARIABLES
         st.session_state.df_clean = df_clean
         st.session_state.X_scaled = X_scaled
         st.session_state.kmeans_metrics = kmeans_metrics
         st.session_state.gmm_metrics = gmm_metrics
         st.session_state.hmm_metrics = hmm_metrics
         st.session_state.hmm_model = hmm_model
-        st.session_state.hmm_mapping = hmm_mapping
+        st.session_state.hmm_mapping = hmm_mapping  # CRÍTICO: guardar hmm_mapping
+        st.session_state.kmeans_mapping = kmeans_mapping  # También guardar los otros
+        st.session_state.gmm_mapping = gmm_mapping
         st.session_state.n_regimes = n_regimes
         st.session_state.ticker = ticker
     
@@ -750,7 +752,7 @@ def market_regime_ml_page():
         gmm_metrics = st.session_state.gmm_metrics
         hmm_metrics = st.session_state.hmm_metrics
         hmm_model = st.session_state.hmm_model
-        hmm_mapping = st.session_state.hmm_mapping
+        hmm_mapping = st.session_state.get('hmm_mapping', {})  # Usar .get() con default
         n_regimes = st.session_state.n_regimes
         ticker = st.session_state.ticker
         
