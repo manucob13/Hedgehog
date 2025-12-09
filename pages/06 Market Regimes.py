@@ -258,41 +258,6 @@ def fit_kmeans(X, n_clusters=3, random_state=42):
     
     return labels, kmeans, metrics
 
-def fit_gmm(X, n_components=3, random_state=42):
-    """Ajusta Gaussian Mixture Model"""
-    gmm = GaussianMixture(n_components=n_components, covariance_type='full', 
-                          random_state=random_state, n_init=10)
-    gmm.fit(X)
-    labels = gmm.predict(X)
-    
-    metrics = {
-        'silhouette': silhouette_score(X, labels),
-        'davies_bouldin': davies_bouldin_score(X, labels),
-        'bic': gmm.bic(X),
-        'aic': gmm.aic(X)
-    }
-    
-    return labels, gmm, metrics
-
-def fit_hmm(X, n_states=3, random_state=42):
-    """Ajusta Hidden Markov Model"""
-    hmm = GaussianHMM(n_components=n_states, covariance_type='full', 
-                      n_iter=100, random_state=random_state)
-    hmm.fit(X)
-    labels = hmm.predict(X)
-    
-    metrics = {
-        'silhouette': silhouette_score(X, labels),
-        'davies_bouldin': davies_bouldin_score(X, labels),
-        'log_likelihood': hmm.score(X)
-    }
-    
-    return labels, hmm, metrics
-
-# =========================================================================
-# MAPEO DE REGÍMENES ML
-# =========================================================================
-
 def map_regimes_to_labels(df_clean, regime_col):
     """
     Mapea los clusters numéricos a labels consistentes (uptrend, sideways, downtrend)
@@ -391,7 +356,7 @@ def analyze_regime(ticker, start_date, lookback_days):
     return df, df_recent
 
 # =========================================================================
-# VISUALIZACIÓN ADX (GRÁFICO DIARIO)
+# VISUALIZACIÓN ADX (GRÁFICO DIARIO) - CONTINUACIÓN DEL CÓDIGO ANTERIOR
 # =========================================================================
 
 def plot_regime_dashboard(df_recent, ticker):
@@ -418,13 +383,10 @@ def plot_regime_dashboard(df_recent, ticker):
     fig = plt.figure(figsize=(24, 16), facecolor='#0E1117')
     gs = fig.add_gridspec(5, 1, height_ratios=[3.8, 1, 1, 1, 1.2], hspace=0.4)
     
-    # =====================================================================
-    # GRÁFICO 1: PRECIO CON REGÍMENES - DISEÑO PREMIUM
-    # =====================================================================
+    # GRÁFICO 1: PRECIO CON REGÍMENES
     ax1 = fig.add_subplot(gs[0])
     ax1.set_facecolor('#1A1D29')
     
-    # Línea de precio con efecto glow
     ax1.plot(df_recent.index, df_recent['Close'], 
              color='#FFFFFF', alpha=0.15, linewidth=6, zorder=1)
     ax1.plot(df_recent.index, df_recent['Close'], 
@@ -432,7 +394,6 @@ def plot_regime_dashboard(df_recent, ticker):
     ax1.plot(df_recent.index, df_recent['Close'], 
              color='#FFFFFF', linewidth=1.5, zorder=3)
     
-    # Puntos de régimen con efecto glow
     for regime_name, color in regime_colors.items():
         mask = df_recent['Regime_Name'] == regime_name
         if mask.sum() > 0:
@@ -453,7 +414,6 @@ def plot_regime_dashboard(df_recent, ticker):
                        linewidth=1.5,
                        zorder=5)
     
-    # SMAs con colores vibrantes
     ax1.plot(df_recent.index, df_recent['SMA_20'], 
              color='#00D9FF', alpha=0.9, linewidth=2.5, linestyle='-',
              label='SMA(20)', zorder=3)
@@ -461,7 +421,6 @@ def plot_regime_dashboard(df_recent, ticker):
              color='#BD93F9', alpha=0.9, linewidth=2.5, linestyle='-',
              label='SMA(50)', zorder=3)
     
-    # Punto actual destacado
     current = df_recent.iloc[-1]
     ax1.scatter(current.name, current['Close'], 
                facecolors='none',
@@ -480,7 +439,6 @@ def plot_regime_dashboard(df_recent, ticker):
                label=f'📍 Actual: {current["Regime_Name"]}', 
                zorder=10)
     
-    # Anotación moderna
     bbox_color = regime_colors[current['Regime_Name']]
     ax1.annotate(f'{current["Regime_Name"]}\n${current["Close"]:.2f}',
                 xy=(current.name, current['Close']),
@@ -499,7 +457,6 @@ def plot_regime_dashboard(df_recent, ticker):
                                connectionstyle='arc3,rad=0.3'),
                 zorder=11)
     
-    # Título elegante
     ax1.text(0.5, 1.10, f'{ticker}', 
             transform=ax1.transAxes,
             fontsize=28, fontweight='bold', 
@@ -523,9 +480,7 @@ def plot_regime_dashboard(df_recent, ticker):
         spine.set_color('#2D3142')
         spine.set_linewidth(2)
     
-    # =====================================================================
-    # GRÁFICO 2: RSI CON DISEÑO MODERNO
-    # =====================================================================
+    # GRÁFICO 2: RSI
     ax2 = fig.add_subplot(gs[1], sharex=ax1)
     ax2.set_facecolor('#1A1D29')
     
@@ -570,13 +525,6 @@ def plot_regime_dashboard(df_recent, ticker):
                      alpha=0.95, 
                      edgecolor='white', 
                      linewidth=2.5))
-    ax2.text(0.14, 0.88, rsi_status, 
-            transform=ax2.transAxes, 
-            fontsize=11, 
-            style='italic',
-            fontweight='600',
-            color=rsi_color,
-            verticalalignment='top')
     
     ax2.set_ylabel('RSI', fontsize=14, fontweight='700', color='#FFFFFF', labelpad=12)
     ax2.set_ylim([0, 100])
@@ -586,9 +534,7 @@ def plot_regime_dashboard(df_recent, ticker):
         spine.set_color('#2D3142')
         spine.set_linewidth(2)
     
-    # =====================================================================
-    # GRÁFICO 3: ADX CON DISEÑO PREMIUM
-    # =====================================================================
+    # GRÁFICO 3: ADX
     ax3 = fig.add_subplot(gs[2], sharex=ax1)
     ax3.set_facecolor('#1A1D29')
     
@@ -602,54 +548,18 @@ def plot_regime_dashboard(df_recent, ticker):
     ax3.axhline(y=25, color='#4ECDC4', linestyle='--', linewidth=2, alpha=0.8)
     ax3.axhline(y=20, color='#FFB86C', linestyle=':', linewidth=1.5, alpha=0.7)
     
-    ax3.fill_between(df_recent.index, 0, 20, alpha=0.12, color='#95A5A6')
-    ax3.fill_between(df_recent.index, 25, 70, alpha=0.12, color='#4ECDC4')
-    
-    ax3.scatter(current.name, current['ADX'], 
-               facecolors='#F8F8F2',
-               edgecolors='white', 
-               s=220,
-               linewidth=4,
-               marker='o',
-               zorder=10)
-    
-    adx_color = '#4ECDC4' if current['ADX'] > 25 else '#FFB86C' if current['ADX'] > 20 else '#95A5A6'
-    trend_strength = 'Strong' if current['ADX'] > 25 else 'Moderate' if current['ADX'] > 20 else 'Weak'
-    
-    ax3.text(0.02, 0.82, f'ADX: {current["ADX"]:.1f}', 
-            transform=ax3.transAxes, 
-            fontsize=12,
-            fontweight='bold',
-            color='white',
-            verticalalignment='top',
-            bbox=dict(boxstyle='round,pad=0.6',
-                     facecolor=adx_color, 
-                     alpha=0.95, 
-                     edgecolor='white', 
-                     linewidth=2))
-    ax3.text(0.12, 0.82, trend_strength, 
-            transform=ax3.transAxes, 
-            fontsize=10,
-            style='italic',
-            fontweight='600',
-            color=adx_color,
-            verticalalignment='top')
-    
     ax3.set_ylabel('ADX / DI', fontsize=14, fontweight='700', color='#FFFFFF', labelpad=12)
     ax3.set_ylim([0, 70])
     legend = ax3.legend(loc='upper left', fontsize=10, framealpha=0.95, 
                        ncol=3, edgecolor='#00D9FF', fancybox=True)
     legend.get_frame().set_facecolor('#1A1D29')
-    legend.get_frame().set_linewidth(2)
     ax3.grid(True, alpha=0.08, linestyle='-', linewidth=1, color='#FFFFFF')
     ax3.tick_params(labelsize=10.5, colors='#B0B0B0', width=1.5)
     for spine in ax3.spines.values():
         spine.set_color('#2D3142')
         spine.set_linewidth(2)
     
-    # =====================================================================
-    # GRÁFICO 4: MACD-V CON BANDAS DE COLOR MEJORADAS
-    # =====================================================================
+    # GRÁFICO 4: MACD-V
     ax4 = fig.add_subplot(gs[3], sharex=ax1)
     ax4.set_facecolor('#1A1D29')
     
@@ -657,121 +567,20 @@ def plot_regime_dashboard(df_recent, ticker):
         macd_signal = df_recent['MACD_V_Signal'].dropna()
         
         if len(macd_signal) > 0:
-            macd_max = macd_signal.max()
-            macd_min = macd_signal.min()
-            macd_range = macd_max - macd_min
-            
-            y_max = macd_max + (macd_range * 0.25)
-            y_min = macd_min - (macd_range * 0.25)
-            
-            ax4.fill_between(df_recent.index, 150, y_max, 
-                             color='#FF6B6B', alpha=0.20, zorder=0)
-            ax4.fill_between(df_recent.index, 50, 150, 
-                             color='#4ECDC4', alpha=0.25, zorder=0)
-            ax4.fill_between(df_recent.index, -50, 50, 
-                             color='#95A5A6', alpha=0.20, zorder=0)
-            ax4.fill_between(df_recent.index, -150, -50, 
-                             color='#EE5A6F', alpha=0.25, zorder=0)
-            ax4.fill_between(df_recent.index, y_min, -150, 
-                             color='#FF6B6B', alpha=0.20, zorder=0)
-            
-            for y_val, color, width in [(150, '#FF6B6B', 2.2), (50, '#4ECDC4', 1.8), 
-                                         (0, '#FFFFFF', 2), (-50, '#EE5A6F', 1.8), 
-                                         (-150, '#FF6B6B', 2.2)]:
-                ax4.axhline(y=y_val, color=color, linestyle='--', linewidth=width, 
-                           alpha=0.9, zorder=2)
-            
             for i in range(1, len(df_recent)):
                 if pd.notna(df_recent['MACD_V_Signal'].iloc[i-1]) and pd.notna(df_recent['MACD_V_Signal'].iloc[i]):
                     x1, x2 = df_recent.index[i-1], df_recent.index[i]
                     y1, y2 = df_recent['MACD_V_Signal'].iloc[i-1], df_recent['MACD_V_Signal'].iloc[i]
                     
-                    if y2 > 150:
-                        color, width = '#FF6B6B', 3
-                    elif y2 > 50:
+                    if y2 > 50:
                         color, width = '#4ECDC4', 2.8
                     elif y2 > -50:
                         color, width = '#95A5A6', 2.5
-                    elif y2 > -150:
-                        color, width = '#EE5A6F', 2.8
                     else:
-                        color, width = '#FF6B6B', 3
+                        color, width = '#EE5A6F', 2.8
                     
                     ax4.plot([x1, x2], [y1, y2], color=color, linewidth=width, 
                             alpha=0.95, zorder=5)
-            
-            if pd.notna(current['MACD_V_Signal']):
-                if current['MACD_V_Signal'] > 150:
-                    current_color = '#FF6B6B'
-                    regime_label = 'RIESGO ALCISTA'
-                elif current['MACD_V_Signal'] > 50:
-                    current_color = '#4ECDC4'
-                    regime_label = 'ALCISTA'
-                elif current['MACD_V_Signal'] > -50:
-                    current_color = '#95A5A6'
-                    regime_label = 'RANGO'
-                elif current['MACD_V_Signal'] > -150:
-                    current_color = '#EE5A6F'
-                    regime_label = 'BAJISTA'
-                else:
-                    current_color = '#FF6B6B'
-                    regime_label = 'RIESGO BAJISTA'
-                
-                ax4.scatter(current.name, current['MACD_V_Signal'], 
-                           facecolors=current_color,
-                           edgecolors='none', 
-                           s=400,
-                           alpha=0.3,
-                           marker='o',
-                           zorder=9)
-                
-                ax4.scatter(current.name, current['MACD_V_Signal'], 
-                           facecolors=current_color,
-                           edgecolors='white', 
-                           s=220,
-                           linewidth=4,
-                           marker='o',
-                           alpha=0.95,
-                           zorder=10)
-                
-                if len(df_recent) >= 2 and pd.notna(df_recent['MACD_V_Signal'].iloc[-2]):
-                    signal_diff = current['MACD_V_Signal'] - df_recent['MACD_V_Signal'].iloc[-2]
-                    signal_direction = '▲' if signal_diff > 0 else '▼'
-                    direction_color = '#4ECDC4' if signal_diff > 0 else '#FF6B6B'
-                    
-                    ax4.text(0.02, 0.22, f'MACD-V: {current["MACD_V_Signal"]:.1f}', 
-                            transform=ax4.transAxes, 
-                            fontsize=12,
-                            fontweight='bold',
-                            color='white',
-                            verticalalignment='top',
-                            bbox=dict(boxstyle='round,pad=0.6',
-                                     facecolor=current_color, 
-                                     alpha=0.95, 
-                                     edgecolor='white', 
-                                     linewidth=2))
-                    
-                    ax4.text(0.02, 0.08, f'{signal_direction} {abs(signal_diff):.1f}', 
-                            transform=ax4.transAxes, 
-                            fontsize=10,
-                            fontweight='bold',
-                            color=direction_color,
-                            verticalalignment='top')
-                    
-                    ax4.text(0.98, 0.12, regime_label, 
-                            transform=ax4.transAxes, 
-                            fontsize=11,
-                            fontweight='bold',
-                            color='white',
-                            verticalalignment='top',
-                            horizontalalignment='right',
-                            bbox=dict(boxstyle='round,pad=0.5',
-                                     facecolor=current_color, 
-                                     alpha=0.95, 
-                                     edgecolor='white', 
-                                     linewidth=2))
-            
-            ax4.set_ylim([y_min, y_max])
     
     ax4.set_ylabel('MACD-V', fontsize=14, fontweight='700', color='#FFFFFF', labelpad=12)
     ax4.grid(True, alpha=0.08, linestyle=':', linewidth=1, color='#FFFFFF')
@@ -780,31 +589,17 @@ def plot_regime_dashboard(df_recent, ticker):
         spine.set_color('#2D3142')
         spine.set_linewidth(2)
     
-    # =====================================================================
-    # GRÁFICO 5: TIMELINE DE REGÍMENES MEJORADO
-    # =====================================================================
+    # GRÁFICO 5: TIMELINE
     ax5 = fig.add_subplot(gs[4], sharex=ax1)
     ax5.set_facecolor('#1A1D29')
     
     regime_order = ['BAJISTA', 'RANGO', 'ALCISTA', 'RIESGO']
-    
-    regime_nums = [regime_order.index(r) for r in df_recent['Regime_Name']]
-    ax5.plot(df_recent.index, regime_nums, 
-            color='#2D3142', linewidth=2, alpha=0.6, zorder=1, linestyle='-')
     
     for regime_name in regime_order:
         mask = df_recent['Regime_Name'] == regime_name
         if mask.sum() > 0:
             color = regime_colors[regime_name]
             regime_num = regime_order.index(regime_name)
-            
-            ax5.scatter(df_recent[mask].index, 
-                       [regime_num] * mask.sum(),
-                       c=color, 
-                       alpha=0.25, 
-                       s=200,
-                       edgecolors='none',
-                       zorder=3)
             ax5.scatter(df_recent[mask].index, 
                        [regime_num] * mask.sum(),
                        c=color, 
@@ -813,15 +608,6 @@ def plot_regime_dashboard(df_recent, ticker):
                        edgecolors='white', 
                        linewidth=1.8,
                        zorder=4)
-    
-    current_regime_num = regime_order.index(current['Regime_Name'])
-    ax5.scatter(current.name, current_regime_num, 
-               facecolors=regime_colors[current['Regime_Name']],
-               edgecolors='white', 
-               s=300,
-               linewidth=4.5,
-               marker='o',
-               zorder=10)
     
     ax5.set_ylabel('Regime', fontsize=14, fontweight='700', color='#FFFFFF', labelpad=12)
     ax5.set_yticks(range(4))
@@ -848,17 +634,13 @@ def plot_weekly_kmeans(df_clean, ticker):
     fig = plt.figure(figsize=(20, 10), facecolor='#0E1117')
     gs = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.3)
     
-    # =====================================================================
     # GRÁFICO 1: PRECIO CON K-MEANS CLUSTERING
-    # =====================================================================
     ax1 = fig.add_subplot(gs[0])
     ax1.set_facecolor('#1A1D29')
     
-    # Línea de precio
     ax1.plot(df_clean.index, df_clean['Close'], color='#FFFFFF', 
              linewidth=1.5, alpha=0.6, zorder=1)
     
-    # Puntos coloreados por régimen K-Means
     for regime_label in ['uptrend', 'sideways', 'downtrend']:
         mask = df_clean['KMeans_Label'] == regime_label
         if mask.any():
@@ -878,9 +660,7 @@ def plot_weekly_kmeans(df_clean, ticker):
         spine.set_color('#2D3142')
         spine.set_linewidth(1.5)
     
-    # =====================================================================
     # GRÁFICO 2: TIMELINE K-MEANS
-    # =====================================================================
     ax2 = fig.add_subplot(gs[1], sharex=ax1)
     ax2.set_facecolor('#1A1D29')
     
@@ -1019,7 +799,7 @@ def market_regime_page():
                 "🎯 Ticker Symbol",
                 value="AAPL",
                 help="Ingresa el símbolo del ticker (ej: AAPL, MSFT, SPY, TSLA)",
-                key="ticker_adx"
+                key="input_ticker_adx"
             ).upper()
             
             st.markdown("---")
@@ -1041,7 +821,7 @@ def market_regime_page():
                 "📆 Fecha Inicio de Datos",
                 value=datetime(2018, 1, 1),
                 help="Fecha de inicio para la descarga de datos históricos completos",
-                key="start_adx"
+                key="input_start_adx"
             )
             
             st.markdown("---")
@@ -1050,7 +830,7 @@ def market_regime_page():
                 "🚀 ANALIZAR RÉGIMEN ADX",
                 type="primary",
                 use_container_width=True,
-                key="sidebar_analyze_adx"
+                key="btn_analyze_adx"
             )
             
             st.markdown("---")
@@ -1077,15 +857,6 @@ def market_regime_page():
             - 🟢 RSI < 30: Zona de oportunidad
             - 🔵 RSI < 25: Oversold (riesgo)
             
-            **🎯 MACD-V (Volatility-Adjusted):**
-            - Fast: 12 | Slow: 26
-            - Signal: 20 | ATR: 26
-            - **>150**: 🟠 Riesgo Alcista
-            - **50-150**: 🟢 Alcista
-            - **-50 a 50**: ⚫ Rango
-            - **-150 a -50**: 🔴 Bajista
-            - **<-150**: 🟠 Riesgo Bajista
-            
             **🎨 Regímenes de Mercado:**
             - 🟢 **ALCISTA**: Tendencia fuerte alcista confirmada
             - 🔴 **BAJISTA**: Tendencia fuerte bajista confirmada
@@ -1105,18 +876,18 @@ def market_regime_page():
                     st.error(f"❌ No se pudieron obtener datos para {ticker_adx}. Verifica el símbolo.")
                     st.stop()
                 
-                st.session_state.last_ticker = ticker_adx
-                st.session_state.df = df
-                st.session_state.df_recent = df_recent
-                st.session_state.lookback_months = lookback_months
+                st.session_state['adx_last_ticker'] = ticker_adx
+                st.session_state['adx_df'] = df
+                st.session_state['adx_df_recent'] = df_recent
+                st.session_state['adx_lookback_months'] = lookback_months
                 st.success(f"✅ Datos cargados exitosamente para {ticker_adx}")
         
-        if 'df' in st.session_state and 'df_recent' in st.session_state:
-            df = st.session_state.df
-            df_recent = st.session_state.df_recent
+        if 'adx_df' in st.session_state and 'adx_df_recent' in st.session_state:
+            df = st.session_state['adx_df']
+            df_recent = st.session_state['adx_df_recent']
             current = df.iloc[-1]
             
-            if 'last_ticker' not in st.session_state or st.session_state.last_ticker != ticker_adx:
+            if 'adx_last_ticker' not in st.session_state or st.session_state['adx_last_ticker'] != ticker_adx:
                 st.warning("⚠️ El ticker ha cambiado. Presiona '🚀 ANALIZAR RÉGIMEN ADX' para actualizar.")
             
             st.markdown("---")
@@ -1196,79 +967,8 @@ def market_regime_page():
             
             st.markdown("---")
             
-            # Recomendación
-            st.markdown("""
-            <div style='text-align: center; margin-bottom: 15px;'>
-                <h3 style='color: #FFB86C; font-size: 24px;'>💡 Recomendación de Trading</h3>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            if current['Regime_Name'] == 'RIESGO':
-                if current['RSI'] > 70:
-                    st.markdown("""
-                    <div style='background: linear-gradient(135deg, #FF6B6B 0%, #EE5A6F 100%); 
-                                padding: 20px; border-radius: 15px; border: 3px solid #FFFFFF;
-                                box-shadow: 0 4px 20px rgba(255, 107, 107, 0.5);'>
-                        <h4 style='color: white; margin: 0;'>⚠️ PRECAUCIÓN EXTREMA</h4>
-                        <p style='color: white; margin: 10px 0 0 0; font-size: 16px;'>
-                            Zona de <strong>SOBRECOMPRA</strong> crítica. Considera tomar ganancias parciales 
-                            o totales. Alto riesgo de corrección inminente.
-                        </p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                else:
-                    st.markdown("""
-                    <div style='background: linear-gradient(135deg, #4ECDC4 0%, #00D9FF 100%); 
-                                padding: 20px; border-radius: 15px; border: 3px solid #FFFFFF;
-                                box-shadow: 0 4px 20px rgba(78, 205, 196, 0.5);'>
-                        <h4 style='color: white; margin: 0;'>💡 OPORTUNIDAD POTENCIAL</h4>
-                        <p style='color: white; margin: 10px 0 0 0; font-size: 16px;'>
-                            Zona de <strong>SOBREVENTA</strong>. Posible rebote técnico. 
-                            Espera confirmación con ADX > 25 y RSI > 30 antes de entrar.
-                        </p>
-                    </div>
-                    """, unsafe_allow_html=True)
-            elif current['Regime_Name'] == 'ALCISTA':
-                st.markdown("""
-                <div style='background: linear-gradient(135deg, #4ECDC4 0%, #00D9FF 100%); 
-                            padding: 20px; border-radius: 15px; border: 3px solid #FFFFFF;
-                            box-shadow: 0 4px 20px rgba(78, 205, 196, 0.5);'>
-                    <h4 style='color: white; margin: 0;'>✅ SEÑAL POSITIVA</h4>
-                    <p style='color: white; margin: 10px 0 0 0; font-size: 16px;'>
-                        Tendencia <strong>ALCISTA</strong> fuerte confirmada. Mantén posiciones largas 
-                        o busca puntos de entrada en retrocesos hacia SMA(20).
-                    </p>
-                </div>
-                """, unsafe_allow_html=True)
-            elif current['Regime_Name'] == 'BAJISTA':
-                st.markdown("""
-                <div style='background: linear-gradient(135deg, #EE5A6F 0%, #FF6B6B 100%); 
-                            padding: 20px; border-radius: 15px; border: 3px solid #FFFFFF;
-                            box-shadow: 0 4px 20px rgba(238, 90, 111, 0.5);'>
-                    <h4 style='color: white; margin: 0;'>🔴 SEÑAL NEGATIVA</h4>
-                    <p style='color: white; margin: 10px 0 0 0; font-size: 16px;'>
-                        Tendencia <strong>BAJISTA</strong> confirmada. Evita posiciones largas. 
-                        Considera posiciones cortas o espera ADX < 20 para entrar.
-                    </p>
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.markdown("""
-                <div style='background: linear-gradient(135deg, #95A5A6 0%, #7F8C8D 100%); 
-                            padding: 20px; border-radius: 15px; border: 3px solid #FFFFFF;
-                            box-shadow: 0 4px 20px rgba(149, 165, 166, 0.5);'>
-                    <h4 style='color: white; margin: 0;'>⚖️ MERCADO LATERAL</h4>
-                    <p style='color: white; margin: 10px 0 0 0; font-size: 16px;'>
-                        Sin dirección clara. Estrategia <strong>MEAN REVERSION</strong> recomendada. 
-                        Opera en los extremos del rango con stops ajustados.
-                    </p>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            st.markdown("---")
-            
             # Gráfico principal
-            lookback_display = st.session_state.get('lookback_months', lookback_months)
+            lookback_display = st.session_state.get('adx_lookback_months', lookback_months)
             st.markdown(f"""
             <div style='text-align: center; margin-bottom: 20px;'>
                 <h2 style='color: #BD93F9; font-size: 28px;'>📈 Análisis Técnico Visual</h2>
@@ -1278,59 +978,12 @@ def market_regime_page():
             </div>
             """, unsafe_allow_html=True)
             
-            fig = plot_regime_dashboard(df_recent, st.session_state.last_ticker)
+            fig = plot_regime_dashboard(df_recent, st.session_state['adx_last_ticker'])
             
             if fig is not None:
                 st.pyplot(fig)
             else:
                 st.error("❌ Error al generar el gráfico. Verifica la integridad de los datos.")
-            
-            st.markdown("---")
-            
-            # Estadísticas adicionales
-            col_stats1, col_stats2, col_stats3, col_stats4 = st.columns(4)
-            
-            with col_stats1:
-                regime_counts = df_recent['Regime_Name'].value_counts()
-                st.markdown("""
-                <div style='background: linear-gradient(135deg, #1A1D29 0%, #2D3142 100%); 
-                            padding: 15px; border-radius: 12px; border: 2px solid #4ECDC4;'>
-                    <h4 style='color: #4ECDC4; margin: 0;'>📊 Distribución</h4>
-                </div>
-                """, unsafe_allow_html=True)
-                for regime, count in regime_counts.items():
-                    percentage = (count / len(df_recent)) * 100
-                    st.write(f"{regime}: {percentage:.1f}%")
-            
-            with col_stats2:
-                volatility = df_recent['Returns'].std() * np.sqrt(252) * 100
-                st.markdown("""
-                <div style='background: linear-gradient(135deg, #1A1D29 0%, #2D3142 100%); 
-                            padding: 15px; border-radius: 12px; border: 2px solid #FFB86C;'>
-                    <h4 style='color: #FFB86C; margin: 0;'>📉 Volatilidad</h4>
-                </div>
-                """, unsafe_allow_html=True)
-                st.metric("Anualizada", f"{volatility:.2f}%")
-            
-            with col_stats3:
-                total_return = ((df_recent['Close'].iloc[-1] / df_recent['Close'].iloc[0]) - 1) * 100
-                st.markdown("""
-                <div style='background: linear-gradient(135deg, #1A1D29 0%, #2D3142 100%); 
-                            padding: 15px; border-radius: 12px; border: 2px solid #BD93F9;'>
-                    <h4 style='color: #BD93F9; margin: 0;'>💰 Retorno</h4>
-                </div>
-                """, unsafe_allow_html=True)
-                st.metric("Período", f"{total_return:+.2f}%")
-            
-            with col_stats4:
-                max_dd = ((df_recent['Close'] / df_recent['Close'].cummax()) - 1).min() * 100
-                st.markdown("""
-                <div style='background: linear-gradient(135deg, #1A1D29 0%, #2D3142 100%); 
-                            padding: 15px; border-radius: 12px; border: 2px solid #FF6B6B;'>
-                    <h4 style='color: #FF6B6B; margin: 0;'>📊 Drawdown</h4>
-                </div>
-                """, unsafe_allow_html=True)
-                st.metric("Máximo", f"{max_dd:.2f}%")
             
             st.markdown("---")
             
@@ -1349,7 +1002,7 @@ def market_regime_page():
             st.download_button(
                 label="📥 Descargar Datos ADX (CSV)",
                 data=csv,
-                file_name=f"market_regime_adx_{st.session_state.last_ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                file_name=f"market_regime_adx_{st.session_state['adx_last_ticker']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv",
                 use_container_width=True
             )
@@ -1400,7 +1053,7 @@ def market_regime_page():
                 "🎯 Ticker Symbol",
                 value="SPY",
                 help="Ingresa el símbolo del ticker (ej: SPY, QQQ, AAPL)",
-                key="ticker_ml"
+                key="input_ticker_ml"
             ).upper()
             
             st.markdown("---")
@@ -1411,7 +1064,7 @@ def market_regime_page():
                 "📆 Start Date",
                 value=default_start,
                 help="Fecha de inicio para descargar datos (por defecto: 5 años)",
-                key="start_ml"
+                key="input_start_ml"
             )
             
             st.markdown("---")
@@ -1425,7 +1078,7 @@ def market_regime_page():
                 "🚀 ANALYZE K-MEANS",
                 type="primary",
                 use_container_width=True,
-                key="analyze_ml"
+                key="btn_analyze_ml"
             )
             
             st.markdown("---")
@@ -1480,21 +1133,21 @@ def market_regime_page():
                 
                 st.success("✅ K-Means model trained successfully!")
             
-            # Guardar en session state
-            st.session_state.df_clean_ml = df_clean
-            st.session_state.X_scaled_ml = X_scaled
-            st.session_state.kmeans_metrics_ml = kmeans_metrics
-            st.session_state.kmeans_mapping_ml = kmeans_mapping
-            st.session_state.n_regimes_ml = n_regimes
-            st.session_state.ticker_ml = ticker_ml
+            # Guardar en session state con nombres diferentes
+            st.session_state['ml_df_clean'] = df_clean
+            st.session_state['ml_X_scaled'] = X_scaled
+            st.session_state['ml_kmeans_metrics'] = kmeans_metrics
+            st.session_state['ml_kmeans_mapping'] = kmeans_mapping
+            st.session_state['ml_n_regimes'] = n_regimes
+            st.session_state['ml_ticker'] = ticker_ml
         
         # Mostrar resultados si existen
-        if 'df_clean_ml' in st.session_state:
-            df_clean = st.session_state.df_clean_ml
-            X_scaled = st.session_state.X_scaled_ml
-            kmeans_metrics = st.session_state.kmeans_metrics_ml
-            n_regimes = st.session_state.n_regimes_ml
-            ticker = st.session_state.ticker_ml
+        if 'ml_df_clean' in st.session_state:
+            df_clean = st.session_state['ml_df_clean']
+            X_scaled = st.session_state['ml_X_scaled']
+            kmeans_metrics = st.session_state['ml_kmeans_metrics']
+            n_regimes = st.session_state['ml_n_regimes']
+            ticker = st.session_state['ml_ticker']
             
             st.markdown("---")
             
