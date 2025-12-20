@@ -144,6 +144,22 @@ def get_historical_prices(ticker, days=7):
 
 def main_tp_calculos():
     
+    # Inicializar session_state para guardar los resultados
+    if 'calculation_done' not in st.session_state:
+        st.session_state.calculation_done = False
+    if 'current_price' not in st.session_state:
+        st.session_state.current_price = None
+    if 'expected_move' not in st.session_state:
+        st.session_state.expected_move = None
+    if 'details' not in st.session_state:
+        st.session_state.details = None
+    if 'selected_ticker' not in st.session_state:
+        st.session_state.selected_ticker = None
+    if 'expiration_date' not in st.session_state:
+        st.session_state.expiration_date = None
+    if 'std_multiplier' not in st.session_state:
+        st.session_state.std_multiplier = None
+    
     # --- TÍTULO PRINCIPAL ---
     st.markdown("<h1><span style='font-size: 1.5em;'>🎯</span> TP Cálculos - Expected Move</h1>", unsafe_allow_html=True)
     st.markdown("""
@@ -240,8 +256,31 @@ def main_tp_calculos():
                 st.error(f"❌ {error}")
                 st.stop()
             
+            # Guardar en session_state
+            st.session_state.calculation_done = True
+            st.session_state.current_price = current_price
+            st.session_state.expected_move = expected_move
+            st.session_state.details = details
+            st.session_state.selected_ticker = selected_ticker
+            st.session_state.expiration_date = expiration_date
+            st.session_state.std_multiplier = std_multiplier
+            
             st.success(f"✅ Expected Move calculado: **${expected_move:.2f}** ({std_multiplier}σ)")
             st.info(f"💰 Precio del Straddle: **${details['straddle_price']:.2f}** ({details['price_type']})")
+    
+    # ==============================================================================
+    # MOSTRAR RESULTADOS SI YA SE CALCULÓ
+    # ==============================================================================
+    
+    if st.session_state.calculation_done:
+        
+        # Recuperar datos del session_state
+        current_price = st.session_state.current_price
+        expected_move = st.session_state.expected_move
+        details = st.session_state.details
+        selected_ticker = st.session_state.selected_ticker
+        expiration_date = st.session_state.expiration_date
+        std_multiplier = st.session_state.std_multiplier
         
         st.markdown("---")
         
