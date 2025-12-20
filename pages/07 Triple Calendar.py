@@ -187,21 +187,66 @@ def main_triple_calendar():
     st.markdown("---")
     
     # ==============================================================================
-    # SECCIÓN 2: CARGA Y PREPARACIÓN DE DATOS
+    # BOTÓN PARA INICIAR EL ESTUDIO
     # ==============================================================================
-    st.header("2. Carga y Preparación de Datos")
-    
-    # BOTÓN PARA FORZAR LA ACTUALIZACIÓN
-    if st.button("🔄 Forzar Actualización (Limpiar Caché de Datos)", key='refresh_triple'):
-        st.cache_data.clear()
-        for key in list(st.session_state.keys()):
-            if key not in ('config_df_triple', 'dte_front_days_triple', 'dte_back_days_triple', 
-                          'ticker_selector_triple', 'fecha_hoy_triple', 'fecha_dte_triple', 'password_correct'): 
-                del st.session_state[key]
-        st.rerun()
     
     # Crear una clave única para los datos basada en el ticker
     datos_key = f'datos_calculados_{selected_ticker}'
+    
+    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1])
+    
+    with col_btn1:
+        if st.button("🚀 Iniciar Estudio y Cálculos", key='iniciar_estudio_triple', type="primary", use_container_width=True):
+            # Marcar que se debe iniciar el estudio
+            st.session_state['iniciar_calculo_triple'] = True
+            st.session_state['ticker_actual_triple'] = selected_ticker
+            st.rerun()
+    
+    with col_btn2:
+        if st.button("🔄 Forzar Actualización (Limpiar Caché)", key='refresh_triple', use_container_width=True):
+            st.cache_data.clear()
+            for key in list(st.session_state.keys()):
+                if key not in ('config_df_triple', 'dte_front_days_triple', 'dte_back_days_triple', 
+                              'ticker_selector_triple', 'fecha_hoy_triple', 'fecha_dte_triple', 'password_correct'): 
+                    del st.session_state[key]
+            st.rerun()
+    
+    with col_btn3:
+        if datos_key in st.session_state:
+            if st.button("🗑️ Limpiar Estudio Actual", key='limpiar_estudio_triple', use_container_width=True):
+                # Eliminar el estudio actual
+                if datos_key in st.session_state:
+                    del st.session_state[datos_key]
+                if 'iniciar_calculo_triple' in st.session_state:
+                    del st.session_state['iniciar_calculo_triple']
+                if 'ticker_actual_triple' in st.session_state:
+                    del st.session_state['ticker_actual_triple']
+                # Limpiar también el semáforo
+                for key in ['df_semaforo_body_triple', 'df_semaforo_footer_triple', 'senal_color_triple', 'config_df_triple']:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                st.rerun()
+    
+    st.markdown("---")
+    
+    # ==============================================================================
+    # VERIFICAR SI SE DEBE INICIAR EL CÁLCULO
+    # ==============================================================================
+    
+    # Verificar si se ha solicitado iniciar el cálculo
+    if 'iniciar_calculo_triple' not in st.session_state or not st.session_state.get('iniciar_calculo_triple', False):
+        st.info("👆 **Selecciona el ticker y la fecha, luego presiona '🚀 Iniciar Estudio y Cálculos' para comenzar el análisis.**")
+        st.stop()
+    
+    # Verificar si el ticker ha cambiado
+    if st.session_state.get('ticker_actual_triple') != selected_ticker:
+        st.warning(f"⚠️ Has cambiado el ticker. Presiona '🚀 Iniciar Estudio y Cálculos' nuevamente para calcular {selected_ticker}.")
+        st.stop()
+    
+    # ==============================================================================
+    # SECCIÓN 2: CARGA Y PREPARACIÓN DE DATOS
+    # ==============================================================================
+    st.header("2. Carga y Preparación de Datos")
     
     if datos_key not in st.session_state:
         
