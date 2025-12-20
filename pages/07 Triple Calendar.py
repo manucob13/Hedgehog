@@ -36,8 +36,8 @@ def get_default_config_df_triple_calendar(rv5d_ayer_val):
             '6. RV_5d Actual', 
             f'7. RV_5d HOY vs. AYER ({rv5d_ayer_val:.4f})'
         ],
-        'Operador': ['==', '>=', '>=', '<=', '>=', '>=', '<'],
-        # Umbrales - RV_5d cambiado a 0.15
+        'Operador': ['==', '>=', '>=', '>=', '>=', '<=', '<'],
+        # Umbrales - RV_5d cambiado a <=0.15
         'Umbral': ['ON', '0.9000', '0.7500', '0.1500', '0.9500', '0.1500', 'RV_AYER'], 
         # Activación - NR/WR en OFF por defecto
         'Activa': [False, True, False, False, True, True, False], 
