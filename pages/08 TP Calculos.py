@@ -279,10 +279,12 @@ def main_tp_calculos():
                 line=dict(color='#00B06B', width=2)
             ))
             
-            # Crear fechas extendidas sin timezone
-            last_date = df_hist_plot.index[-1]
-            exp_datetime = pd.Timestamp(expiration_date)
-            end_datetime = exp_datetime + timedelta(days=3)
+            # Obtener el rango de precios para las líneas verticales
+            y_min = df_hist_plot['Close'].min() * 0.98
+            y_max = df_hist_plot['Close'].max() * 1.02
+            
+            # Convertir expiration_date a datetime para el gráfico
+            exp_datetime = datetime.combine(expiration_date, datetime.min.time())
             
             # Línea horizontal - Rango Superior
             fig.add_hline(
@@ -302,16 +304,31 @@ def main_tp_calculos():
                 annotation_position="right"
             )
             
-            # Línea vertical - Fecha de Expiración
-            fig.add_vline(
+            # Línea vertical - Fecha de Expiración (usando add_shape en lugar de add_vline)
+            fig.add_shape(
+                type="line",
+                x0=exp_datetime,
+                x1=exp_datetime,
+                y0=0,
+                y1=1,
+                yref="paper",
+                line=dict(color="red", width=2, dash="dot")
+            )
+            
+            # Añadir anotación para la fecha de expiración
+            fig.add_annotation(
                 x=exp_datetime,
-                line_dash="dot",
-                line_color="red",
-                annotation_text=expiration_date.strftime('%Y-%m-%d'),
-                annotation_position="top"
+                y=1.02,
+                yref="paper",
+                text=expiration_date.strftime('%Y-%m-%d'),
+                showarrow=False,
+                font=dict(color="red", size=12),
+                bgcolor="rgba(0,0,0,0.5)"
             )
             
             # Configuración del layout
+            end_datetime = exp_datetime + timedelta(days=3)
+            
             fig.update_layout(
                 title=f"Expected Move - {selected_ticker}",
                 xaxis_title="Fecha",
