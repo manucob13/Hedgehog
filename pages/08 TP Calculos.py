@@ -558,8 +558,10 @@ def main_tp_calculos():
             💡 **Rangos de Referencia (1σ):**
             - Precio Actual: **${current_price:.2f}**
             - Expected Move: **±${expected_move_1std:.2f}**
-            - Rango Superior: **${upper_range_1std:.2f}** → Redondeado: **${strike_up_default:.0f}**
-            - Rango Inferior: **${lower_range_1std:.2f}** → Redondeado: **${strike_down_default:.0f}**
+            - Rango Superior (Original): **${upper_range_1std:.2f}**
+            - Rango Inferior (Original): **${lower_range_1std:.2f}**
+            - Strike UP Sugerido (redondeado): **${strike_up_default:.0f}**
+            - Strike DOWN Sugerido (redondeado): **${strike_down_default:.0f}**
             """)
             
             st.markdown("---")
