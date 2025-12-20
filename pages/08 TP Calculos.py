@@ -56,7 +56,7 @@ def get_option_chain_cboe(ticker):
         st.error(f"Error descargando opciones de CBOE: {e}")
         return None
 
-def calculate_expected_move(df_options, expiration_date, current_price):
+def calculate_expected_move(df_options, expiration_date, current_price, std_multiplier=1.0):
     """Calcula el Expected Move basado en el straddle ATM."""
     try:
         # Filtrar por fecha de expiración
@@ -99,8 +99,9 @@ def calculate_expected_move(df_options, expiration_date, current_price):
             straddle_price = call_last + put_last
             price_type = "Last Price"
         
-        # Expected Move = Straddle Price * 0.85 (aproximadamente 1 desviación estándar)
-        expected_move = straddle_price * 0.85
+        # Expected Move = Straddle Price * 1.25 * std_multiplier
+        # 1.25 para 1 desviación estándar completa
+        expected_move = straddle_price * 1.25 * std_multiplier
         
         # Crear diccionario con detalles
         details = {
@@ -114,7 +115,8 @@ def calculate_expected_move(df_options, expiration_date, current_price):
             'put_mid': put_mid,
             'put_last': put_last,
             'straddle_price': straddle_price,
-            'price_type': price_type
+            'price_type': price_type,
+            'std_multiplier': std_multiplier
         }
         
         return expected_move, details, None
@@ -155,7 +157,7 @@ def main_tp_calculos():
     # ==============================================================================
     st.header("1. Configuración")
     
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     
     with col1:
         # Selector de Ticker
@@ -181,6 +183,24 @@ def main_tp_calculos():
             key='expiration_tp'
         )
         st.info(f"📅 Expiración: **{expiration_date.strftime('%Y-%m-%d')}**")
+    
+    with col3:
+        # Selector de Desviaciones Estándar
+        std_options = {
+            "1σ (68% probabilidad)": 1.0,
+            "1.5σ (87% probabilidad)": 1.5,
+            "2σ (95% probabilidad)": 2.0
+        }
+        
+        selected_std_label = st.selectbox(
+            "Desviaciones Estándar",
+            list(std_options.keys()),
+            index=0,
+            key='std_selector_tp'
+        )
+        std_multiplier = std_options[selected_std_label]
+        
+        st.info(f"📈 Multiplicador: **{std_multiplier}σ**")
     
     st.markdown("---")
     
@@ -212,14 +232,15 @@ def main_tp_calculos():
             expected_move, details, error = calculate_expected_move(
                 df_options, 
                 expiration_date, 
-                current_price
+                current_price,
+                std_multiplier
             )
             
             if error:
                 st.error(f"❌ {error}")
                 st.stop()
             
-            st.success(f"✅ Expected Move calculado: **${expected_move:.2f}**")
+            st.success(f"✅ Expected Move calculado: **${expected_move:.2f}** ({std_multiplier}σ)")
             st.info(f"💰 Precio del Straddle: **${details['straddle_price']:.2f}** ({details['price_type']})")
         
         st.markdown("---")
@@ -237,7 +258,7 @@ def main_tp_calculos():
         with col1:
             st.metric("Precio Actual", f"${current_price:.2f}")
         with col2:
-            st.metric("Expected Move", f"${expected_move:.2f}")
+            st.metric(f"Expected Move ({std_multiplier}σ)", f"${expected_move:.2f}")
         with col3:
             st.metric("Rango Superior", f"${upper_range:.2f}", f"+{expected_move:.2f}")
         with col4:
@@ -285,7 +306,7 @@ def main_tp_calculos():
                 'Precio Actual',
                 'Strike ATM',
                 f'Straddle Price ({details["price_type"]})',
-                'Expected Move (±)',
+                f'Expected Move (±) [{std_multiplier}σ]',
                 'Rango Superior',
                 'Rango Inferior',
                 'Movimiento (%)',
@@ -345,7 +366,7 @@ def main_tp_calculos():
                 y=upper_range,
                 line_dash="dot",
                 line_color="steelblue",
-                annotation_text=f"${upper_range:.2f}",
+                annotation_text=f"${upper_range:.2f} (+{std_multiplier}σ)",
                 annotation_position="right"
             )
             
@@ -354,11 +375,20 @@ def main_tp_calculos():
                 y=lower_range,
                 line_dash="dot",
                 line_color="steelblue",
-                annotation_text=f"${lower_range:.2f}",
+                annotation_text=f"${lower_range:.2f} (-{std_multiplier}σ)",
                 annotation_position="right"
             )
             
-            # Línea vertical - Fecha de Expiración (usando add_shape en lugar de add_vline)
+            # Línea horizontal - Precio Actual
+            fig.add_hline(
+                y=current_price,
+                line_dash="dash",
+                line_color="yellow",
+                annotation_text=f"Precio Actual: ${current_price:.2f}",
+                annotation_position="left"
+            )
+            
+            # Línea vertical - Fecha de Expiración
             fig.add_shape(
                 type="line",
                 x0=exp_datetime,
@@ -374,7 +404,7 @@ def main_tp_calculos():
                 x=exp_datetime,
                 y=1.02,
                 yref="paper",
-                text=expiration_date.strftime('%Y-%m-%d'),
+                text=f"Expiración: {expiration_date.strftime('%Y-%m-%d')}",
                 showarrow=False,
                 font=dict(color="red", size=12),
                 bgcolor="rgba(0,0,0,0.5)"
@@ -384,7 +414,7 @@ def main_tp_calculos():
             end_datetime = exp_datetime + timedelta(days=3)
             
             fig.update_layout(
-                title=f"Expected Move - {selected_ticker}",
+                title=f"Expected Move - {selected_ticker} ({std_multiplier}σ)",
                 xaxis_title="Fecha",
                 yaxis_title="Precio",
                 template="plotly_dark",
@@ -404,24 +434,66 @@ def main_tp_calculos():
         st.markdown("---")
         
         # ==============================================================================
-        # SECCIÓN 4: INFORMACIÓN ADICIONAL
+        # SECCIÓN 4: COMPARACIÓN DE DESVIACIONES ESTÁNDAR
         # ==============================================================================
-        st.header("4. Información Adicional")
+        st.header("4. Comparación de Desviaciones Estándar")
+        
+        # Calcular para todas las desviaciones estándar
+        comparison_data = []
+        for std_label, std_val in std_options.items():
+            em = details['straddle_price'] * 1.25 * std_val
+            upper = current_price + em
+            lower = current_price - em
+            pct = (em / current_price) * 100
+            
+            comparison_data.append({
+                'Desviación Estándar': std_label,
+                'Expected Move': f"${em:.2f}",
+                'Rango': f"${lower:.2f} - ${upper:.2f}",
+                'Movimiento (%)': f"±{pct:.2f}%"
+            })
+        
+        df_comparison = pd.DataFrame(comparison_data)
+        
+        st.markdown("""
+        Esta tabla muestra cómo varían los rangos esperados según diferentes niveles de confianza estadística:
+        """)
+        
+        st.dataframe(df_comparison, hide_index=True, use_container_width=True)
+        
+        st.markdown("---")
+        
+        # ==============================================================================
+        # SECCIÓN 5: INFORMACIÓN ADICIONAL
+        # ==============================================================================
+        st.header("5. Información Adicional")
+        
+        # Determinar el nivel de probabilidad según el std_multiplier
+        if std_multiplier == 1.0:
+            prob_text = "68%"
+        elif std_multiplier == 1.5:
+            prob_text = "87%"
+        elif std_multiplier == 2.0:
+            prob_text = "95%"
+        else:
+            prob_text = "N/A"
         
         st.info(f"""
         📌 **Interpretación del Expected Move:**
         
-        - El **Expected Move** representa el rango de precio esperado (±1 desviación estándar) 
+        - El **Expected Move** representa el rango de precio esperado ({std_multiplier} desviación estándar) 
           que el mercado anticipa para la fecha de expiración.
         
         - Este cálculo se basa en el precio del **straddle ATM** (comprar un call y un put 
           al mismo strike más cercano al precio actual).
         
-        - Aproximadamente el **68%** de las veces, el precio debería permanecer dentro de este rango.
+        - Con **{std_multiplier}σ**, aproximadamente el **{prob_text}** de las veces, el precio debería 
+          permanecer dentro de este rango.
         
         - **Ticker:** {selected_ticker}
         - **Precio Actual:** ${current_price:.2f}
-        - **Expected Move:** ±${expected_move:.2f} (±{move_pct:.2f}%)
+        - **Straddle Price:** ${details['straddle_price']:.2f}
+        - **Expected Move ({std_multiplier}σ):** ±${expected_move:.2f} (±{move_pct:.2f}%)
         - **Rango Esperado:** ${lower_range:.2f} - ${upper_range:.2f}
         - **Días hasta Expiración:** {days_to_exp}
         """)
@@ -432,12 +504,26 @@ def main_tp_calculos():
         ### 📚 Fuentes de Datos
         - **Precios de Opciones:** CBOE (Chicago Board Options Exchange)
         - **Precios del Activo:** Yahoo Finance
-        - **Cálculo:** Basado en el método del straddle ATM × 0.85
+        
+        ### 🧮 Fórmula del Expected Move
+        ```
+        Expected Move = Straddle Price × 1.25 × σ
+        ```
+        
+        Donde:
+        - **Straddle Price** = Call Mid + Put Mid (ATM)
+        - **1.25** = Factor de ajuste para 1 desviación estándar completa
+        - **σ** = Multiplicador de desviaciones estándar (1.0, 1.5, o 2.0)
         
         ### 💡 Prioridad de Precios
         1. **Mid Price** (Bid + Ask) / 2 - Preferido cuando está disponible
         2. **Bid Price** - Usado si el mid no está disponible
         3. **Last Price** - Usado como último recurso
+        
+        ### 📊 Niveles de Confianza
+        - **1σ** ≈ 68% de probabilidad (rango más conservador)
+        - **1.5σ** ≈ 87% de probabilidad (rango intermedio)
+        - **2σ** ≈ 95% de probabilidad (rango más amplio)
         """)
 
 # ==============================================================================
