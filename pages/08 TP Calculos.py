@@ -332,7 +332,7 @@ def main_tp_calculos():
         st.markdown("---")
         
         # ==============================================================================
-        # SECCIÓN 3: GRÁFICO
+        # SECCIÓN 3: GRÁFICO - VELAS JAPONESAS
         # ==============================================================================
         st.header("3. Visualización del Expected Move")
         
@@ -349,13 +349,16 @@ def main_tp_calculos():
             if df_hist_plot.index.tz is not None:
                 df_hist_plot.index = df_hist_plot.index.tz_localize(None)
             
-            # Línea del precio histórico
-            fig.add_trace(go.Scatter(
+            # Gráfico de velas japonesas (Candlestick)
+            fig.add_trace(go.Candlestick(
                 x=df_hist_plot.index,
-                y=df_hist_plot['Close'],
-                mode='lines',
+                open=df_hist_plot['Open'],
+                high=df_hist_plot['High'],
+                low=df_hist_plot['Low'],
+                close=df_hist_plot['Close'],
                 name=selected_ticker,
-                line=dict(color='#00B06B', width=2)
+                increasing_line_color='#00B06B',
+                decreasing_line_color='#FF4444'
             ))
             
             # Convertir expiration_date a datetime para el gráfico
@@ -423,7 +426,8 @@ def main_tp_calculos():
                 showlegend=True,
                 xaxis=dict(
                     range=[df_hist_plot.index[0], end_datetime]
-                )
+                ),
+                xaxis_rangeslider_visible=False  # Ocultar el slider de rango
             )
             
             st.plotly_chart(fig, use_container_width=True)
@@ -537,29 +541,30 @@ def main_tp_calculos():
         Configura los strikes y fechas de expiración para generar la estructura de órdenes del Triple Calendar.
         """)
         
-        # Calcular Expected Move de 1 desviación estándar
+        # Calcular Expected Move de 1 desviación estándar (ORIGINAL, sin redondear)
         expected_move_1std = details['straddle_price'] * 1.25
         
-        # Redondear strikes basados en el Expected Move
+        # Calcular los rangos ORIGINALES (sin redondear)
+        upper_range_1std = current_price + expected_move_1std
+        lower_range_1std = current_price - expected_move_1std
+        
+        # Redondear strikes para los valores por defecto de los inputs
         atm_rounded = round(details['atm_strike'] / 5) * 5
-        strike_up_default = round((current_price + expected_move_1std) / 5) * 5
-        strike_down_default = round((current_price - expected_move_1std) / 5) * 5
+        strike_up_default = round(upper_range_1std / 5) * 5
+        strike_down_default = round(lower_range_1std / 5) * 5
         
         col1, col2 = st.columns(2)
         
         with col1:
             st.markdown("#### 📍 Configuración de Strikes")
             
-            # Calcular rangos para referencia
-            upper_range_1std = current_price + expected_move_1std
-            lower_range_1std = current_price - expected_move_1std
-            
+            # MODIFICACIÓN: Mostrar los valores ORIGINALES, no los redondeados
             st.info(f"""
             💡 **Rangos de Referencia (1σ):**
             - Precio Actual: **${current_price:.2f}**
             - Expected Move: **±${expected_move_1std:.2f}**
-            - Rango Superior (Original): **${upper_range_1std:.2f}**
-            - Rango Inferior (Original): **${lower_range_1std:.2f}**
+            - Rango Superior: **${upper_range_1std:.2f}**
+            - Rango Inferior: **${lower_range_1std:.2f}**
             - Strike UP Sugerido (redondeado): **${strike_up_default:.0f}**
             - Strike DOWN Sugerido (redondeado): **${strike_down_default:.0f}**
             """)
@@ -587,8 +592,8 @@ def main_tp_calculos():
             
             st.markdown("---")
             
-            # Strike DOWN
-            st.markdown(f"**Strike DOWN** (Calculado: ${strike_down_default:.0f})")
+            # Strike DOWN - MODIFICACIÓN: Mostrar el valor original
+            st.markdown(f"**Strike DOWN** (Calculado: ${lower_range_1std:.2f})")
             strike_down_input = st.number_input(
                 "Strike DOWN (debajo ATM)",
                 min_value=0.0,
@@ -608,8 +613,8 @@ def main_tp_calculos():
             
             st.markdown("---")
             
-            # Strike UP
-            st.markdown(f"**Strike UP** (Calculado: ${strike_up_default:.0f})")
+            # Strike UP - MODIFICACIÓN: Mostrar el valor original
+            st.markdown(f"**Strike UP** (Calculado: ${upper_range_1std:.2f})")
             strike_up_input = st.number_input(
                 "Strike UP (arriba ATM)",
                 min_value=0.0,
