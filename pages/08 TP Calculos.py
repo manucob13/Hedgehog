@@ -63,7 +63,7 @@ def calculate_expected_move(df_options, expiration_date, current_price):
         df_exp = df_options[df_options['expiry'] == expiration_date].copy()
         
         if df_exp.empty:
-            return None, "No hay datos para esa fecha de expiración"
+            return None, None, "No hay datos para esa fecha de expiración"
         
         # Encontrar el strike más cercano al precio actual (ATM)
         df_exp['distance'] = abs(df_exp['strike'] - current_price)
@@ -74,31 +74,53 @@ def calculate_expected_move(df_options, expiration_date, current_price):
         put_atm = df_exp[(df_exp['strike'] == atm_strike) & (df_exp['opt_type'] == 'P')]
         
         if call_atm.empty or put_atm.empty:
-            return None, "No se encontraron opciones ATM"
+            return None, None, "No se encontraron opciones ATM"
         
-        # Calcular el precio del straddle
+        # Obtener precios
         call_bid = call_atm['bid'].iloc[0]
         call_ask = call_atm['ask'].iloc[0]
+        call_mid = (call_bid + call_ask) / 2
+        call_last = call_atm['last_trade_price'].iloc[0]
+        
         put_bid = put_atm['bid'].iloc[0]
         put_ask = put_atm['ask'].iloc[0]
+        put_mid = (put_bid + put_ask) / 2
+        put_last = put_atm['last_trade_price'].iloc[0]
         
-        # Usar BID si está disponible, sino ASK, sino LAST
-        if call_bid > 0 and put_bid > 0:
+        # Prioridad: MID > BID > LAST
+        # Usar MID si tanto bid como ask están disponibles
+        if call_bid > 0 and call_ask > 0 and put_bid > 0 and put_ask > 0:
+            straddle_price = call_mid + put_mid
+            price_type = "Mid Price"
+        elif call_bid > 0 and put_bid > 0:
             straddle_price = call_bid + put_bid
-        elif call_ask > 0 and put_ask > 0:
-            straddle_price = call_ask + put_ask
+            price_type = "Bid Price"
         else:
-            call_last = call_atm['last_trade_price'].iloc[0]
-            put_last = put_atm['last_trade_price'].iloc[0]
             straddle_price = call_last + put_last
+            price_type = "Last Price"
         
         # Expected Move = Straddle Price * 0.85 (aproximadamente 1 desviación estándar)
         expected_move = straddle_price * 0.85
         
-        return expected_move, None
+        # Crear diccionario con detalles
+        details = {
+            'atm_strike': atm_strike,
+            'call_bid': call_bid,
+            'call_ask': call_ask,
+            'call_mid': call_mid,
+            'call_last': call_last,
+            'put_bid': put_bid,
+            'put_ask': put_ask,
+            'put_mid': put_mid,
+            'put_last': put_last,
+            'straddle_price': straddle_price,
+            'price_type': price_type
+        }
+        
+        return expected_move, details, None
         
     except Exception as e:
-        return None, f"Error calculando Expected Move: {e}"
+        return None, None, f"Error calculando Expected Move: {e}"
 
 @st.cache_data(ttl=300)
 def get_historical_prices(ticker, days=7):
@@ -187,7 +209,7 @@ def main_tp_calculos():
                 st.stop()
             
             # Calcular Expected Move
-            expected_move, error = calculate_expected_move(
+            expected_move, details, error = calculate_expected_move(
                 df_options, 
                 expiration_date, 
                 current_price
@@ -198,6 +220,7 @@ def main_tp_calculos():
                 st.stop()
             
             st.success(f"✅ Expected Move calculado: **${expected_move:.2f}**")
+            st.info(f"💰 Precio del Straddle: **${details['straddle_price']:.2f}** ({details['price_type']})")
         
         st.markdown("---")
         
@@ -220,6 +243,37 @@ def main_tp_calculos():
         with col4:
             st.metric("Rango Inferior", f"${lower_range:.2f}", f"-{expected_move:.2f}")
         
+        # Detalles del Straddle ATM
+        st.markdown("### 💰 Detalles del Straddle ATM")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**📞 CALL ATM**")
+            call_details = {
+                'Strike': f"${details['atm_strike']:.2f}",
+                'Bid': f"${details['call_bid']:.2f}",
+                'Ask': f"${details['call_ask']:.2f}",
+                'Mid': f"${details['call_mid']:.2f}",
+                'Last': f"${details['call_last']:.2f}"
+            }
+            df_call = pd.DataFrame(list(call_details.items()), columns=['Métrica', 'Valor'])
+            st.dataframe(df_call, hide_index=True, use_container_width=True)
+        
+        with col2:
+            st.markdown("**📉 PUT ATM**")
+            put_details = {
+                'Strike': f"${details['atm_strike']:.2f}",
+                'Bid': f"${details['put_bid']:.2f}",
+                'Ask': f"${details['put_ask']:.2f}",
+                'Mid': f"${details['put_mid']:.2f}",
+                'Last': f"${details['put_last']:.2f}"
+            }
+            df_put = pd.DataFrame(list(put_details.items()), columns=['Métrica', 'Valor'])
+            st.dataframe(df_put, hide_index=True, use_container_width=True)
+        
+        st.markdown("---")
+        
         # Tabla resumen
         st.markdown("### 📊 Resumen del Expected Move")
         
@@ -229,6 +283,8 @@ def main_tp_calculos():
         summary_data = {
             'Métrica': [
                 'Precio Actual',
+                'Strike ATM',
+                f'Straddle Price ({details["price_type"]})',
                 'Expected Move (±)',
                 'Rango Superior',
                 'Rango Inferior',
@@ -238,6 +294,8 @@ def main_tp_calculos():
             ],
             'Valor': [
                 f"${current_price:.2f}",
+                f"${details['atm_strike']:.2f}",
+                f"${details['straddle_price']:.2f}",
                 f"${expected_move:.2f}",
                 f"${upper_range:.2f}",
                 f"${lower_range:.2f}",
@@ -278,10 +336,6 @@ def main_tp_calculos():
                 name=selected_ticker,
                 line=dict(color='#00B06B', width=2)
             ))
-            
-            # Obtener el rango de precios para las líneas verticales
-            y_min = df_hist_plot['Close'].min() * 0.98
-            y_max = df_hist_plot['Close'].max() * 1.02
             
             # Convertir expiration_date a datetime para el gráfico
             exp_datetime = datetime.combine(expiration_date, datetime.min.time())
@@ -379,6 +433,11 @@ def main_tp_calculos():
         - **Precios de Opciones:** CBOE (Chicago Board Options Exchange)
         - **Precios del Activo:** Yahoo Finance
         - **Cálculo:** Basado en el método del straddle ATM × 0.85
+        
+        ### 💡 Prioridad de Precios
+        1. **Mid Price** (Bid + Ask) / 2 - Preferido cuando está disponible
+        2. **Bid Price** - Usado si el mid no está disponible
+        3. **Last Price** - Usado como último recurso
         """)
 
 # ==============================================================================
