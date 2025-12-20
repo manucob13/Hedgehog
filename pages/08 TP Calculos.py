@@ -537,47 +537,86 @@ def main_tp_calculos():
         Configura los strikes y fechas de expiración para generar la estructura de órdenes del Triple Calendar.
         """)
         
-        col1, col2, col3 = st.columns(3)
+        # Calcular Expected Move de 1 desviación estándar
+        expected_move_1std = details['straddle_price'] * 1.25
+        
+        # Redondear strikes basados en el Expected Move
+        atm_rounded = round(details['atm_strike'] / 5) * 5
+        strike_up_default = round((current_price + expected_move_1std) / 5) * 5
+        strike_down_default = round((current_price - expected_move_1std) / 5) * 5
+        
+        col1, col2 = st.columns(2)
         
         with col1:
-            st.markdown("#### Strikes (Redondeo a múltiplos de 5)")
+            st.markdown("#### 📍 Configuración de Strikes")
             
-            # Redondear el strike ATM al múltiplo de 5 más cercano
-            atm_rounded = round(details['atm_strike'] / 5) * 5
+            st.info(f"💡 Expected Move (1σ): ±${expected_move_1std:.2f}")
             
+            # Strike ATM
             strike_atm_input = st.number_input(
                 "Strike ATM",
                 min_value=0.0,
                 value=float(atm_rounded),
                 step=5.0,
-                key='strike_atm_tc'
+                key='strike_atm_tc',
+                help="Strike al dinero (ATM)"
             )
             
+            option_type_atm = st.selectbox(
+                "Tipo de Opción ATM",
+                ["PUT", "CALL"],
+                index=0,
+                key='option_type_atm_tc'
+            )
+            
+            st.markdown("---")
+            
+            # Strike DOWN
             strike_down_input = st.number_input(
                 "Strike DOWN (debajo ATM)",
                 min_value=0.0,
-                value=float(atm_rounded - 5),
+                value=float(strike_down_default),
                 step=5.0,
-                key='strike_down_tc'
+                key='strike_down_tc',
+                help="Strike por debajo del ATM basado en Expected Move"
             )
             
+            option_type_down = st.selectbox(
+                "Tipo de Opción DOWN",
+                ["PUT", "CALL"],
+                index=0,
+                key='option_type_down_tc'
+            )
+            
+            st.markdown("---")
+            
+            # Strike UP
             strike_up_input = st.number_input(
                 "Strike UP (arriba ATM)",
                 min_value=0.0,
-                value=float(atm_rounded + 5),
+                value=float(strike_up_default),
                 step=5.0,
-                key='strike_up_tc'
+                key='strike_up_tc',
+                help="Strike por arriba del ATM basado en Expected Move"
+            )
+            
+            option_type_up = st.selectbox(
+                "Tipo de Opción UP",
+                ["CALL", "PUT"],
+                index=0,
+                key='option_type_up_tc'
             )
         
         with col2:
-            st.markdown("#### Fechas de Expiración")
+            st.markdown("#### 📅 Fechas de Expiración")
             
             dte_front_input = st.date_input(
                 "DTE FRONT (Venta)",
                 value=expiration_date,
                 min_value=date.today() + timedelta(days=1),
                 max_value=date.today() + timedelta(days=365),
-                key='dte_front_tc'
+                key='dte_front_tc',
+                help="Fecha de expiración de las opciones vendidas"
             )
             
             # Por defecto, DTE BACK es 7 días después del FRONT
@@ -588,29 +627,23 @@ def main_tp_calculos():
                 value=default_back,
                 min_value=dte_front_input + timedelta(days=1),
                 max_value=date.today() + timedelta(days=365),
-                key='dte_back_tc'
+                key='dte_back_tc',
+                help="Fecha de expiración de las opciones compradas"
             )
             
             days_diff = (dte_back_input - dte_front_input).days
-            st.info(f"📅 Diferencia: **{days_diff} días**")
-        
-        with col3:
-            st.markdown("#### Configuración Adicional")
+            st.success(f"📅 Diferencia: **{days_diff} días**")
+            
+            st.markdown("---")
+            
+            st.markdown("#### 🏷️ Configuración Adicional")
             
             basket_tag = st.text_input(
                 "Basket Tag",
                 value="TripleCal1",
-                key='basket_tag_tc'
+                key='basket_tag_tc',
+                help="Etiqueta para identificar el grupo de órdenes"
             )
-            
-            option_type = st.selectbox(
-                "Tipo de Opción",
-                ["CALL", "PUT"],
-                index=0,
-                key='option_type_tc'
-            )
-            
-            right_letter = "C" if option_type == "CALL" else "P"
         
         st.markdown("---")
         
@@ -623,11 +656,28 @@ def main_tp_calculos():
             # Crear la estructura de órdenes
             orders = []
             
-            # Lista de strikes en orden: DOWN, ATM, UP
-            strikes = [strike_down_input, strike_atm_input, strike_up_input]
+            # Configuración de strikes y tipos
+            strike_configs = [
+                {
+                    'strike': strike_down_input,
+                    'type': option_type_down,
+                    'label': 'DOWN'
+                },
+                {
+                    'strike': strike_atm_input,
+                    'type': option_type_atm,
+                    'label': 'ATM'
+                },
+                {
+                    'strike': strike_up_input,
+                    'type': option_type_up,
+                    'label': 'UP'
+                }
+            ]
             
-            for strike in strikes:
-                strike_int = int(strike)
+            for config in strike_configs:
+                strike_int = int(config['strike'])
+                right_letter = "C" if config['type'] == "CALL" else "P"
                 
                 # SELL en DTE FRONT
                 orders.append({
@@ -682,32 +732,24 @@ def main_tp_calculos():
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                st.metric("Strikes Utilizados", "3")
-                st.write(f"- DOWN: ${strike_down_input:.0f}")
-                st.write(f"- ATM: ${strike_atm_input:.0f}")
-                st.write(f"- UP: ${strike_up_input:.0f}")
+                st.markdown("**📍 Strikes Configurados**")
+                st.write(f"- DOWN: ${strike_down_input:.0f} ({option_type_down})")
+                st.write(f"- ATM: ${strike_atm_input:.0f} ({option_type_atm})")
+                st.write(f"- UP: ${strike_up_input:.0f} ({option_type_up})")
             
             with col2:
-                st.metric("Total de Órdenes", len(df_orders))
-                st.write(f"- SELL (Front): 3 contratos")
-                st.write(f"- BUY (Back): 3 contratos")
+                st.markdown("**📊 Total de Órdenes**")
+                st.metric("Órdenes Totales", len(df_orders))
+                st.write(f"- SELL (Front {dte_front_input.strftime('%Y-%m-%d')}): 3")
+                st.write(f"- BUY (Back {dte_back_input.strftime('%Y-%m-%d')}): 3")
             
             with col3:
-                st.metric("Tipo de Estrategia", "Triple Calendar")
-                st.write(f"- Tipo: {option_type}")
+                st.markdown("**⚙️ Configuración**")
+                st.write(f"- Ticker: {selected_ticker}")
                 st.write(f"- Spread: {days_diff} días")
+                st.write(f"- Basket: {basket_tag}")
             
             st.markdown("---")
-            
-            # Opción para descargar CSV
-            csv = df_orders.to_csv(index=False)
-            st.download_button(
-                label="📥 Descargar Órdenes (CSV)",
-                data=csv,
-                file_name=f"triple_calendar_{selected_ticker}_{dte_front_input.strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
             
             # Mostrar formato en texto para copiar
             st.markdown("### 📝 Formato de Texto (para copiar)")
