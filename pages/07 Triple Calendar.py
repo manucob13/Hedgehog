@@ -591,7 +591,7 @@ def main_triple_calendar():
     date_labels[-1] = spx_filtered.index[-1].strftime('%b %d')
 
     spx_filtered['RV_5d_pct'] = spx_filtered['RV_5d'] * 100
-    UMBRAL_RV = 0.10
+    UMBRAL_RV = 0.15
     spx_filtered['RV_change'] = spx_filtered['RV_5d_pct'].diff()
     is_up = spx_filtered['RV_change'] >= 0
 
