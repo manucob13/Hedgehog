@@ -525,6 +525,198 @@ def main_tp_calculos():
         - **1.5σ** ≈ 87% de probabilidad (rango intermedio)
         - **2σ** ≈ 95% de probabilidad (rango más amplio)
         """)
+        
+        st.markdown("---")
+        
+        # ==============================================================================
+        # SECCIÓN 6: GENERADOR DE ESTRUCTURA TRIPLE CALENDAR
+        # ==============================================================================
+        st.header("6. Generador de Estructura - Triple Calendar")
+        
+        st.markdown("""
+        Configura los strikes y fechas de expiración para generar la estructura de órdenes del Triple Calendar.
+        """)
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("#### Strikes (Redondeo a múltiplos de 5)")
+            
+            # Redondear el strike ATM al múltiplo de 5 más cercano
+            atm_rounded = round(details['atm_strike'] / 5) * 5
+            
+            strike_atm_input = st.number_input(
+                "Strike ATM",
+                min_value=0.0,
+                value=float(atm_rounded),
+                step=5.0,
+                key='strike_atm_tc'
+            )
+            
+            strike_down_input = st.number_input(
+                "Strike DOWN (debajo ATM)",
+                min_value=0.0,
+                value=float(atm_rounded - 5),
+                step=5.0,
+                key='strike_down_tc'
+            )
+            
+            strike_up_input = st.number_input(
+                "Strike UP (arriba ATM)",
+                min_value=0.0,
+                value=float(atm_rounded + 5),
+                step=5.0,
+                key='strike_up_tc'
+            )
+        
+        with col2:
+            st.markdown("#### Fechas de Expiración")
+            
+            dte_front_input = st.date_input(
+                "DTE FRONT (Venta)",
+                value=expiration_date,
+                min_value=date.today() + timedelta(days=1),
+                max_value=date.today() + timedelta(days=365),
+                key='dte_front_tc'
+            )
+            
+            # Por defecto, DTE BACK es 7 días después del FRONT
+            default_back = dte_front_input + timedelta(days=7)
+            
+            dte_back_input = st.date_input(
+                "DTE BACK (Compra)",
+                value=default_back,
+                min_value=dte_front_input + timedelta(days=1),
+                max_value=date.today() + timedelta(days=365),
+                key='dte_back_tc'
+            )
+            
+            days_diff = (dte_back_input - dte_front_input).days
+            st.info(f"📅 Diferencia: **{days_diff} días**")
+        
+        with col3:
+            st.markdown("#### Configuración Adicional")
+            
+            basket_tag = st.text_input(
+                "Basket Tag",
+                value="TripleCal1",
+                key='basket_tag_tc'
+            )
+            
+            option_type = st.selectbox(
+                "Tipo de Opción",
+                ["CALL", "PUT"],
+                index=0,
+                key='option_type_tc'
+            )
+            
+            right_letter = "C" if option_type == "CALL" else "P"
+        
+        st.markdown("---")
+        
+        if st.button("🎯 Generar Estructura de Órdenes", type="primary", use_container_width=True):
+            
+            # Formatear fechas para el símbolo (YYYYMMDD)
+            front_date_str = dte_front_input.strftime("%Y%m%d")
+            back_date_str = dte_back_input.strftime("%Y%m%d")
+            
+            # Crear la estructura de órdenes
+            orders = []
+            
+            # Lista de strikes en orden: DOWN, ATM, UP
+            strikes = [strike_down_input, strike_atm_input, strike_up_input]
+            
+            for strike in strikes:
+                strike_int = int(strike)
+                
+                # SELL en DTE FRONT
+                orders.append({
+                    'Action': 'SELL',
+                    'Symbol': selected_ticker,
+                    'SecType': 'OPT',
+                    'Expiry': front_date_str,
+                    'Strike': strike_int,
+                    'Right': right_letter,
+                    'Basket Tag': basket_tag
+                })
+                
+                # BUY en DTE BACK
+                orders.append({
+                    'Action': 'BUY',
+                    'Symbol': selected_ticker,
+                    'SecType': 'OPT',
+                    'Expiry': back_date_str,
+                    'Strike': strike_int,
+                    'Right': right_letter,
+                    'Basket Tag': basket_tag
+                })
+            
+            # Crear DataFrame
+            df_orders = pd.DataFrame(orders)
+            
+            st.success("✅ Estructura de órdenes generada exitosamente!")
+            
+            st.markdown("### 📋 Tabla de Órdenes - Triple Calendar")
+            
+            # Mostrar la tabla con formato
+            st.dataframe(
+                df_orders,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    'Action': st.column_config.TextColumn('Action', width="small"),
+                    'Symbol': st.column_config.TextColumn('Symbol', width="small"),
+                    'SecType': st.column_config.TextColumn('SecType', width="small"),
+                    'Expiry': st.column_config.TextColumn('Expiry', width="medium"),
+                    'Strike': st.column_config.NumberColumn('Strike', format="%d"),
+                    'Right': st.column_config.TextColumn('Right', width="small"),
+                    'Basket Tag': st.column_config.TextColumn('Basket Tag', width="medium")
+                }
+            )
+            
+            st.markdown("---")
+            
+            # Resumen de la estructura
+            st.markdown("### 📊 Resumen de la Estructura")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Strikes Utilizados", "3")
+                st.write(f"- DOWN: ${strike_down_input:.0f}")
+                st.write(f"- ATM: ${strike_atm_input:.0f}")
+                st.write(f"- UP: ${strike_up_input:.0f}")
+            
+            with col2:
+                st.metric("Total de Órdenes", len(df_orders))
+                st.write(f"- SELL (Front): 3 contratos")
+                st.write(f"- BUY (Back): 3 contratos")
+            
+            with col3:
+                st.metric("Tipo de Estrategia", "Triple Calendar")
+                st.write(f"- Tipo: {option_type}")
+                st.write(f"- Spread: {days_diff} días")
+            
+            st.markdown("---")
+            
+            # Opción para descargar CSV
+            csv = df_orders.to_csv(index=False)
+            st.download_button(
+                label="📥 Descargar Órdenes (CSV)",
+                data=csv,
+                file_name=f"triple_calendar_{selected_ticker}_{dte_front_input.strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+            
+            # Mostrar formato en texto para copiar
+            st.markdown("### 📝 Formato de Texto (para copiar)")
+            
+            text_output = ""
+            for _, row in df_orders.iterrows():
+                text_output += f"{row['Action']}\t{row['Symbol']}\t{row['SecType']}\t{row['Expiry']}\t{row['Strike']}\t{row['Right']}\t{row['Basket Tag']}\n"
+            
+            st.code(text_output, language="text")
 
 # ==============================================================================
 # PUNTO DE ENTRADA PROTEGIDO
