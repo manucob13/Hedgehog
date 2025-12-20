@@ -265,21 +265,24 @@ def main_tp_calculos():
             # Crear el gráfico
             fig = go.Figure()
             
+            # Convertir el índice a timezone-naive
+            df_hist_plot = df_hist.copy()
+            if df_hist_plot.index.tz is not None:
+                df_hist_plot.index = df_hist_plot.index.tz_localize(None)
+            
             # Línea del precio histórico
             fig.add_trace(go.Scatter(
-                x=df_hist.index,
-                y=df_hist['Close'],
+                x=df_hist_plot.index,
+                y=df_hist_plot['Close'],
                 mode='lines',
                 name=selected_ticker,
                 line=dict(color='#00B06B', width=2)
             ))
             
-            # Extender el eje X hasta la fecha de expiración + 3 días
-            extended_dates = pd.date_range(
-                start=df_hist.index[-1],
-                end=expiration_date + timedelta(days=3),
-                freq='D'
-            )
+            # Crear fechas extendidas sin timezone
+            last_date = df_hist_plot.index[-1]
+            exp_datetime = pd.Timestamp(expiration_date)
+            end_datetime = exp_datetime + timedelta(days=3)
             
             # Línea horizontal - Rango Superior
             fig.add_hline(
@@ -301,7 +304,7 @@ def main_tp_calculos():
             
             # Línea vertical - Fecha de Expiración
             fig.add_vline(
-                x=datetime.combine(expiration_date, datetime.min.time()),
+                x=exp_datetime,
                 line_dash="dot",
                 line_color="red",
                 annotation_text=expiration_date.strftime('%Y-%m-%d'),
@@ -318,10 +321,7 @@ def main_tp_calculos():
                 hovermode='x unified',
                 showlegend=True,
                 xaxis=dict(
-                    range=[
-                        df_hist.index[0],
-                        datetime.combine(expiration_date + timedelta(days=3), datetime.min.time())
-                    ]
+                    range=[df_hist_plot.index[0], end_datetime]
                 )
             )
             
