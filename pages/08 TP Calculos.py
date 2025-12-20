@@ -550,7 +550,19 @@ def main_tp_calculos():
         with col1:
             st.markdown("#### 📍 Configuración de Strikes")
             
-            st.info(f"💡 Expected Move (1σ): ±${expected_move_1std:.2f}")
+            # Calcular rangos para referencia
+            upper_range_1std = current_price + expected_move_1std
+            lower_range_1std = current_price - expected_move_1std
+            
+            st.info(f"""
+            💡 **Rangos de Referencia (1σ):**
+            - Precio Actual: **${current_price:.2f}**
+            - Expected Move: **±${expected_move_1std:.2f}**
+            - Rango Superior: **${upper_range_1std:.2f}**
+            - Rango Inferior: **${lower_range_1std:.2f}**
+            """)
+            
+            st.markdown("---")
             
             # Strike ATM
             strike_atm_input = st.number_input(
