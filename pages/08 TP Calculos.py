@@ -558,20 +558,22 @@ def main_tp_calculos():
             💡 **Rangos de Referencia (1σ):**
             - Precio Actual: **${current_price:.2f}**
             - Expected Move: **±${expected_move_1std:.2f}**
-            - Rango Superior: **${upper_range_1std:.2f}**
-            - Rango Inferior: **${lower_range_1std:.2f}**
+            - Rango Superior: **${upper_range_1std:.2f}** → Redondeado: **${strike_up_default:.0f}**
+            - Rango Inferior: **${lower_range_1std:.2f}** → Redondeado: **${strike_down_default:.0f}**
             """)
             
             st.markdown("---")
             
             # Strike ATM
+            st.markdown(f"**Strike ATM** (Calculado: ${atm_rounded:.0f})")
             strike_atm_input = st.number_input(
                 "Strike ATM",
                 min_value=0.0,
                 value=float(atm_rounded),
                 step=5.0,
                 key='strike_atm_tc',
-                help="Strike al dinero (ATM)"
+                help="Strike al dinero (ATM)",
+                label_visibility="collapsed"
             )
             
             option_type_atm = st.selectbox(
@@ -584,13 +586,15 @@ def main_tp_calculos():
             st.markdown("---")
             
             # Strike DOWN
+            st.markdown(f"**Strike DOWN** (Calculado: ${strike_down_default:.0f})")
             strike_down_input = st.number_input(
                 "Strike DOWN (debajo ATM)",
                 min_value=0.0,
                 value=float(strike_down_default),
                 step=5.0,
                 key='strike_down_tc',
-                help="Strike por debajo del ATM basado en Expected Move"
+                help="Strike por debajo del ATM basado en Expected Move",
+                label_visibility="collapsed"
             )
             
             option_type_down = st.selectbox(
@@ -603,13 +607,15 @@ def main_tp_calculos():
             st.markdown("---")
             
             # Strike UP
+            st.markdown(f"**Strike UP** (Calculado: ${strike_up_default:.0f})")
             strike_up_input = st.number_input(
                 "Strike UP (arriba ATM)",
                 min_value=0.0,
                 value=float(strike_up_default),
                 step=5.0,
                 key='strike_up_tc',
-                help="Strike por arriba del ATM basado en Expected Move"
+                help="Strike por arriba del ATM basado en Expected Move",
+                label_visibility="collapsed"
             )
             
             option_type_up = st.selectbox(
