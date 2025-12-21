@@ -611,7 +611,7 @@ def main_tp_calculos():
             st.markdown("---")
             
             # Strike ATM
-            st.markdown(f"**Strike ATM** (Calculado: ${atm_rounded:.0f})")
+            st.markdown(f"**Strike ATM** (Calculado: ${current_price:.0f})")
             strike_atm_input = st.number_input(
                 "Strike ATM",
                 min_value=0.0,
