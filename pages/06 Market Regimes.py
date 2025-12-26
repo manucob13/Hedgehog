@@ -210,7 +210,7 @@ def plot_daily_dashboard(df_recent, ticker):
     
     current = df_recent.iloc[-1]
     ax1.scatter(current.name, current['Close'], facecolors='none', edgecolors=REGIME_COLORS_DAILY[current['Regime_Daily']], s=450, linewidth=5, alpha=0.4, marker='o', zorder=9)
-    ax1.scatter(current.name, current['Close'], facecolors=REGIME_COLORS_DAILY[current['Regime_Daily']], edgecolors='white', s=280, linewidth=4, marker='o', label=f'📍 Actual: {current["Regime_Daily"]}', zorder=10)
+    ax1.scatter(current.name, current['Close'], facecolors=REGIME_COLORS_DAILY[current['Regime_Daily']], edgecolors='white', s=280, linewidth=4, marker='o', label=f'Actual: {current["Regime_Daily"]}', zorder=10)
     
     bbox_color = REGIME_COLORS_DAILY[current['Regime_Daily']]
     ax1.annotate(f'{current["Regime_Daily"]}\n${current["Close"]:.2f}', xy=(current.name, current['Close']), xytext=(25, 40), textcoords='offset points', fontsize=14, fontweight='bold', color='white', bbox=dict(boxstyle='round,pad=1', facecolor=bbox_color, alpha=0.95, edgecolor='white', linewidth=3), arrowprops=dict(arrowstyle='->', lw=3, color=bbox_color, connectionstyle='arc3,rad=0.3'), zorder=11)
@@ -314,7 +314,7 @@ def plot_weekly_dashboard(df_recent, ticker):
     
     current = df_recent.iloc[-1]
     ax1.scatter(current.name, current['Close'], facecolors='none', edgecolors=REGIME_COLORS_WEEKLY[current['Regime_Weekly']], s=450, linewidth=5, alpha=0.4, marker='o', zorder=9)
-    ax1.scatter(current.name, current['Close'], facecolors=REGIME_COLORS_WEEKLY[current['Regime_Weekly']], edgecolors='white', s=280, linewidth=4, marker='o', label=f'📍 Actual: {current["Regime_Weekly"]}', zorder=10)
+    ax1.scatter(current.name, current['Close'], facecolors=REGIME_COLORS_WEEKLY[current['Regime_Weekly']], edgecolors='white', s=280, linewidth=4, marker='o', label=f'Actual: {current["Regime_Weekly"]}', zorder=10)
     
     bbox_color = REGIME_COLORS_WEEKLY[current['Regime_Weekly']]
     ax1.annotate(f'{current["Regime_Weekly"]}\n${current["Close"]:.2f}', xy=(current.name, current['Close']), xytext=(25, 40), textcoords='offset points', fontsize=14, fontweight='bold', color='white', bbox=dict(boxstyle='round,pad=1', facecolor=bbox_color, alpha=0.95, edgecolor='white', linewidth=3), arrowprops=dict(arrowstyle='->', lw=3, color=bbox_color, connectionstyle='arc3,rad=0.3'), zorder=11)
@@ -422,43 +422,43 @@ def market_regime_page():
     </style>
     """, unsafe_allow_html=True)
     
-    st.title("📊 Market Regime Analyzer Pro")
+    st.title("Market Regime Analyzer Pro")
     st.markdown("---")
     
     with st.sidebar:
-        st.markdown("""<div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #4ECDC4 0%, #00D9FF 100%); border-radius: 15px; margin-bottom: 20px;'><h2 style='color: white; margin: 0;'>⚙️ Settings</h2></div>""", unsafe_allow_html=True)
-        ticker = st.text_input("🎯 Ticker Symbol", value="AAPL", help="Ingresa el símbolo del ticker").upper()
+        st.markdown("""<div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #4ECDC4 0%, #00D9FF 100%); border-radius: 15px; margin-bottom: 20px;'><h2 style='color: white; margin: 0;'>Settings</h2></div>""", unsafe_allow_html=True)
+        ticker = st.text_input("Ticker Symbol", value="AAPL", help="Ingresa el simbolo del ticker").upper()
         st.markdown("---")
-        lookback_months = st.slider("📅 Meses a Visualizar", min_value=6, max_value=24, value=6, step=1)
+        lookback_months = st.slider("Meses a Visualizar", min_value=6, max_value=24, value=6, step=1)
         lookback_days = int(lookback_months * 21)
         lookback_weeks = int(lookback_months * 4.33)
         st.markdown("---")
-        start_date = st.date_input("📆 Fecha Inicio de Datos", value=datetime(2018, 1, 1))
+        start_date = st.date_input("Fecha Inicio de Datos", value=datetime(2018, 1, 1))
         st.markdown("---")
-        analizar_btn = st.button("🚀 ANALIZAR MERCADO", type="primary", use_container_width=True)
+        analizar_btn = st.button("ANALIZAR MERCADO", type="primary", use_container_width=True)
         st.markdown("---")
-        st.markdown("""<div style='background: linear-gradient(135deg, #1A1D29 0%, #2D3142 100%); padding: 15px; border-radius: 12px; border: 2px solid #BD93F9;'><h3 style='color: #BD93F9; margin-top: 0;'>📖 Metodología</h3></div>""", unsafe_allow_html=True)
+        st.markdown("""<div style='background: linear-gradient(135deg, #1A1D29 0%, #2D3142 100%); padding: 15px; border-radius: 12px; border: 2px solid #BD93F9;'><h3 style='color: #BD93F9; margin-top: 0;'>Metodologia</h3></div>""", unsafe_allow_html=True)
         st.markdown("""
-        ### 📊 ANÁLISIS DIARIO
+        ### ANALISIS DIARIO
         - **ADX**: Fuerza tendencia (>25)
         - **RSI**: Momentum (75/25 extremos)
-        - **SMAs**: 20 y 50 períodos
-        - **Regímenes**: ALCISTA, BAJISTA, RANGO, RIESGO
+        - **SMAs**: 20 y 50 periodos
+        - **Regimenes**: ALCISTA, BAJISTA, RANGO, RIESGO
         
-        ### 📈 ANÁLISIS SEMANAL
-        - **Donchian**: Canal 20 períodos
-        - **Choppiness**: Índice choppy (61.8/38.2)
+        ### ANALISIS SEMANAL
+        - **Donchian**: Canal 20 periodos
+        - **Choppiness**: Indice choppy (61.8/38.2)
         - **MACD-V**: Normalizado (±150 riesgo)
-        - **SMAs**: 20 y 50 períodos semanales
-        - **Regímenes**: UPTREND, DOWNTREND, SIDEWAYS, RIESGO
+        - **SMAs**: 20 y 50 periodos semanales
+        - **Regimenes**: UPTREND, DOWNTREND, SIDEWAYS, RIESGO
         """)
     
     if analizar_btn:
-        with st.spinner(f"🔄 Descargando datos para {ticker}..."):
+        with st.spinner(f"Descargando datos para {ticker}..."):
             df_daily = download_daily_data(ticker, start_date.strftime('%Y-%m-%d'))
             df_weekly = download_weekly_data(ticker, start_date.strftime('%Y-%m-%d'))
             if df_daily is None or df_weekly is None:
-                st.error(f"❌ No se pudieron obtener datos para {ticker}")
+                st.error(f"No se pudieron obtener datos para {ticker}")
                 st.stop()
             df_daily['Regime_Daily'] = classify_regime_daily(df_daily)
             df_weekly['Regime_Weekly'] = classify_regime_weekly(df_weekly)
@@ -466,7 +466,7 @@ def market_regime_page():
             st.session_state['df_daily'] = df_daily
             st.session_state['df_weekly'] = df_weekly
             st.session_state['lookback_months'] = lookback_months
-            st.success(f"✅ Datos cargados exitosamente para {ticker}")
+            st.success(f"Datos cargados exitosamente para {ticker}")
     
     if 'df_daily' in st.session_state and 'df_weekly' in st.session_state:
         df_daily = st.session_state['df_daily']
@@ -478,57 +478,57 @@ def market_regime_page():
         current_weekly = df_weekly.iloc[-1]
         
         st.markdown("---")
-        st.markdown("""<div style='text-align: center; margin-bottom: 20px;'><h2 style='color: #00D9FF; font-size: 32px; margin: 0;'>📈 ANÁLISIS DIARIO</h2></div>""", unsafe_allow_html=True)
+        st.markdown("""<div style='text-align: center; margin-bottom: 20px;'><h2 style='color: #00D9FF; font-size: 32px; margin: 0;'>ANALISIS DIARIO</h2></div>""", unsafe_allow_html=True)
         
         col1, col2, col3, col4, col5, col6 = st.columns(6)
         with col1:
             regime_emoji = {'ALCISTA': '🟢', 'BAJISTA': '🔴', 'RANGO': '⚫', 'RIESGO': '🟠'}[current_daily['Regime_Daily']]
-            st.metric("RÉGIMEN DIARIO", f"{regime_emoji} {current_daily['Regime_Daily']}")
+            st.metric("REGIMEN DIARIO", f"{regime_emoji} {current_daily['Regime_Daily']}")
         with col2:
             price_change = ((current_daily['Close'] - df_daily['Close'].iloc[-5]) / df_daily['Close'].iloc[-5] * 100)
             st.metric("PRECIO", f"${current_daily['Close']:.2f}", f"{price_change:+.2f}%")
         with col3:
-            adx_status = "🔥 Fuerte" if current_daily['ADX'] > 25 else "⚡ Moderado" if current_daily['ADX'] > 20 else "💤 Débil"
+            adx_status = "Fuerte" if current_daily['ADX'] > 25 else "Moderado" if current_daily['ADX'] > 20 else "Debil"
             st.metric("ADX", f"{current_daily['ADX']:.1f}", adx_status)
         with col4:
-            rsi_status = "🔴 OB" if current_daily['RSI'] > 70 else "🔵 OS" if current_daily['RSI'] < 30 else "⚪ Neutral"
+            rsi_status = "OB" if current_daily['RSI'] > 70 else "OS" if current_daily['RSI'] < 30 else "Neutral"
             st.metric("RSI", f"{current_daily['RSI']:.1f}", rsi_status)
         with col5:
-            sma_status = "📈 Alcista" if current_daily['Close'] > current_daily['SMA_20'] > current_daily['SMA_50'] else "📉 Bajista" if current_daily['Close'] < current_daily['SMA_20'] < current_daily['SMA_50'] else "↔️ Mixto"
+            sma_status = "Alcista" if current_daily['Close'] > current_daily['SMA_20'] > current_daily['SMA_50'] else "Bajista" if current_daily['Close'] < current_daily['SMA_20'] < current_daily['SMA_50'] else "Mixto"
             st.metric("TENDENCIA SMAs", sma_status)
         with col6:
             st.metric("FECHA", current_daily.name.strftime('%Y-%m-%d'), current_daily.name.strftime('%A')[:3])
         
         st.markdown("---")
-        st.markdown(f"""<div style='text-align: center; margin-bottom: 20px;'><h2 style='color: #BD93F9; font-size: 28px;'>📊 Dashboard Técnico Diario</h2><p style='color: #8E93A1; font-size: 16px;'>Últimos {lookback_months} meses • Timeframe: Daily (1d)</p></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div style='text-align: center; margin-bottom: 20px;'><h2 style='color: #BD93F9; font-size: 28px;'>Dashboard Tecnico Diario</h2><p style='color: #8E93A1; font-size: 16px;'>Ultimos {lookback_months} meses - Timeframe: Daily (1d)</p></div>""", unsafe_allow_html=True)
         fig_daily = plot_daily_dashboard(df_daily_recent, ticker)
         st.pyplot(fig_daily)
         
         st.markdown("---")
         st.markdown("---")
         
-        st.markdown("""<div style='text-align: center; margin-bottom: 20px;'><h2 style='color: #4ECDC4; font-size: 32px; margin: 0;'>📊 ANÁLISIS SEMANAL</h2></div>""", unsafe_allow_html=True)
+        st.markdown("""<div style='text-align: center; margin-bottom: 20px;'><h2 style='color: #4ECDC4; font-size: 32px; margin: 0;'>ANALISIS SEMANAL</h2></div>""", unsafe_allow_html=True)
         
         col1, col2, col3, col4, col5, col6 = st.columns(6)
         with col1:
             regime_emoji = {'UPTREND': '🟢', 'DOWNTREND': '🔴', 'SIDEWAYS': '🟡', 'RIESGO': '🟠'}[current_weekly['Regime_Weekly']]
-            st.metric("RÉGIMEN SEMANAL", f"{regime_emoji} {current_weekly['Regime_Weekly']}")
+            st.metric("REGIMEN SEMANAL", f"{regime_emoji} {current_weekly['Regime_Weekly']}")
         with col2:
             st.metric("PRECIO", f"${current_weekly['Close']:.2f}")
         with col3:
-            chop_status = "🟡 Choppy" if current_weekly['Choppiness'] > 61.8 else "🟢 Trending" if current_weekly['Choppiness'] < 38.2 else "⚪ Neutral"
+            chop_status = "Choppy" if current_weekly['Choppiness'] > 61.8 else "Trending" if current_weekly['Choppiness'] < 38.2 else "Neutral"
             st.metric("CHOPPINESS", f"{current_weekly['Choppiness']:.1f}", chop_status)
         with col4:
-            macd_status = "🟠 Extremo" if abs(current_weekly['MACD_V_Signal']) > 150 else "🟢 Alcista" if current_weekly['MACD_V_Signal'] > 0 else "🔴 Bajista"
+            macd_status = "Extremo" if abs(current_weekly['MACD_V_Signal']) > 150 else "Alcista" if current_weekly['MACD_V_Signal'] > 0 else "Bajista"
             st.metric("MACD-V", f"{current_weekly['MACD_V_Signal']:.1f}", macd_status)
         with col5:
             donch_pos = ((current_weekly['Close'] - current_weekly['Donchian_Lower']) / (current_weekly['Donchian_Upper'] - current_weekly['Donchian_Lower']) * 100)
-            st.metric("POSICIÓN DONCHIAN", f"{donch_pos:.0f}%")
+            st.metric("POSICION DONCHIAN", f"{donch_pos:.0f}%")
         with col6:
             st.metric("FECHA", current_weekly.name.strftime('%Y-%m-%d'), "Semanal")
         
         st.markdown("---")
-        st.markdown(f"""<div style='text-align: center; margin-bottom: 20px;'><h2 style='color: #BD93F9; font-size: 28px;'>📊 Dashboard Técnico Semanal</h2><p style='color: #8E93A1; font-size: 16px;'>Últimos {lookback_months} meses • Timeframe: Weekly (1w)</p></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div style='text-align: center; margin-bottom: 20px;'><h2 style='color: #BD93F9; font-size: 28px;'>Dashboard Tecnico Semanal</h2><p style='color: #8E93A1; font-size: 16px;'>Ultimos {lookback_months} meses - Timeframe: Weekly (1w)</p></div>""", unsafe_allow_html=True)
         fig_weekly = plot_weekly_dashboard(df_weekly_recent, ticker)
         st.pyplot(fig_weekly)
         
@@ -538,24 +538,24 @@ def market_regime_page():
         with col1:
             export_cols_daily = ['Close', 'Regime_Daily', 'ADX', 'RSI', 'Plus_DI', 'Minus_DI', 'SMA_20', 'SMA_50']
             csv_daily = df_daily[export_cols_daily].to_csv()
-            st.download_button("📥 Descargar Datos DIARIOS (CSV)", data=csv_daily, file_name=f"regime_daily_{ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", mime="text/csv", use_container_width=True)
+            st.download_button("Descargar Datos DIARIOS (CSV)", data=csv_daily, file_name=f"regime_daily_{ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", mime="text/csv", use_container_width=True)
         with col2:
             export_cols_weekly = ['Close', 'Regime_Weekly', 'Choppiness', 'MACD_V_Signal', 'Donchian_Upper', 'Donchian_Middle', 'Donchian_Lower', 'SMA_20', 'SMA_50']
             csv_weekly = df_weekly[export_cols_weekly].to_csv()
-            st.download_button("📥 Descargar Datos SEMANALES (CSV)", data=csv_weekly, file_name=f"regime_weekly_{ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", mime="text/csv", use_container_width=True)
+            st.download_button("Descargar Datos SEMANALES (CSV)", data=csv_weekly, file_name=f"regime_weekly_{ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", mime="text/csv", use_container_width=True)
     else:
         st.markdown("""
         <div style='text-align: center; padding: 40px; background: linear-gradient(135deg, #1A1D29 0%, #2D3142 100%); 
                     border-radius: 20px; border: 3px solid #4ECDC4; margin-top: 30px;
                     box-shadow: 0 8px 30px rgba(78, 205, 196, 0.3);'>
-            <h2 style='color: #4ECDC4; margin: 0;'>👋 Bienvenido al Market Regime Analyzer Pro</h2>
+            <h2 style='color: #4ECDC4; margin: 0;'>Bienvenido al Market Regime Analyzer Pro</h2>
             <p style='color: #B0B0B0; font-size: 18px; margin: 20px 0;'>
-                Configura los parámetros en el panel lateral y presiona 
-                <strong style='color: #00D9FF;'>'🚀 ANALIZAR MERCADO'</strong> 
-                para comenzar el análisis técnico avanzado.
+                Configura los parametros en el panel lateral y presiona 
+                <strong style='color: #00D9FF;'>ANALIZAR MERCADO</strong> 
+                para comenzar el analisis tecnico avanzado.
             </p>
             <p style='color: #8E93A1; font-size: 14px; margin: 10px 0 0 0;'>
-                📈 Análisis Diario: ADX + RSI + SMAs | 📊 Análisis Semanal: Donchian + Choppiness + MACD-V
+                Analisis Diario: ADX + RSI + SMAs | Analisis Semanal: Donchian + Choppiness + MACD-V
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -566,9 +566,9 @@ if __name__ == "__main__":
     else:
         st.markdown("""
         <div style='text-align: center; padding: 60px 20px;'>
-            <h1 style='color: #FF6B6B; font-size: 48px;'>🔒 Acceso Restringido</h1>
+            <h1 style='color: #FF6B6B; font-size: 48px;'>Acceso Restringido</h1>
             <p style='color: #B0B0B0; font-size: 20px; margin-top: 20px;'>
-                Introduce tus credenciales en el menú lateral para acceder al análisis.
+                Introduce tus credenciales en el menu lateral para acceder al analisis.
             </p>
         </div>
-        """, unsafe_allow_html=True
+        """, unsafe_allow_html=True)
