@@ -151,9 +151,8 @@ def classify_regime_daily(df):
         price = row['Close']
         sma_20 = row['SMA_20']
         sma_50 = row['SMA_50']
-        if rsi >= 75 and adx > 25 and plus_di > minus_di:
-            regime = 'RIESGO'
-        elif rsi <= 25 and adx > 25 and minus_di > plus_di:
+        
+        if rsi >= 75 or rsi <= 25:
             regime = 'RIESGO'
         elif (adx > 25 and plus_di > minus_di and price > sma_20 and sma_20 > sma_50):
             regime = 'ALCISTA'
