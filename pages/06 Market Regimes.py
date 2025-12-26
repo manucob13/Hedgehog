@@ -538,6 +538,10 @@ def market_regime_page():
         with col1:
             export_cols_daily = ['Close', 'Regime_Daily', 'ADX', 'RSI', 'Plus_DI', 'Minus_DI', 'SMA_20', 'SMA_50']
             csv_daily = df_daily[export_cols_daily].to_csv()
+            st.download_button("📥 Descargar Datos DIARIOS (CSV)", data=csv_daily, file_name=f"regime_daily_{ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", mime="text/csv", use_container_width=True)
+        with col2:
+            export_cols_weekly = ['Close', 'Regime_Weekly', 'Choppiness', 'MACD_V_Signal', 'Donchian_Upper', 'Donchian_Middle', 'Donchian_Lower', 'SMA_20', 'SMA_50']
+            csv_weekly = df_weekly[export_cols_weekly].to_csv()
             st.download_button("📥 Descargar Datos SEMANALES (CSV)", data=csv_weekly, file_name=f"regime_weekly_{ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", mime="text/csv", use_container_width=True)
     else:
         st.markdown("""
@@ -567,8 +571,4 @@ if __name__ == "__main__":
                 Introduce tus credenciales en el menú lateral para acceder al análisis.
             </p>
         </div>
-        """, unsafe_allow_html=True) Datos DIARIOS (CSV)", data=csv_daily, file_name=f"regime_daily_{ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", mime="text/csv", use_container_width=True)
-        with col2:
-            export_cols_weekly = ['Close', 'Regime_Weekly', 'Choppiness', 'MACD_V_Signal', 'Donchian_Upper', 'Donchian_Middle', 'Donchian_Lower', 'SMA_20', 'SMA_50']
-            csv_weekly = df_weekly[export_cols_weekly].to_csv()
-            st.download_button("📥 Descargar
+        """, unsafe_allow_html=True
