@@ -12,6 +12,7 @@ warnings.filterwarnings('ignore')
 
 st.set_page_config(page_title="Market Regime Analyzer", layout="wide")
 
+# Colores homogéneos para ambos timeframes
 REGIME_COLORS_DAILY = {
     'RIESGO': '#FF6B6B',
     'BAJISTA': '#EE5A6F',
@@ -21,9 +22,9 @@ REGIME_COLORS_DAILY = {
 
 REGIME_COLORS_WEEKLY = {
     'RIESGO': '#FF6B6B',
-    'DOWNTREND': '#EE5A6F',
-    'SIDEWAYS': '#FFD93D',
-    'UPTREND': '#4ECDC4'
+    'BAJISTA': '#EE5A6F',
+    'RANGO': '#FFD93D',
+    'ALCISTA': '#4ECDC4'
 }
 
 def calculate_adx(df, period=14):
@@ -142,7 +143,16 @@ def download_weekly_data(ticker, start_date='2018-01-01'):
         return None
 
 def classify_regime_daily(df):
+    """
+    Clasificación DIARIA mejorada con jerarquía clara:
+    
+    1. RIESGO (Prioridad Máxima): RSI extremo (>70 o <30)
+    2. ALCISTA: ADX>25 + Plus_DI>Minus_DI + Precio>SMA_20
+    3. BAJISTA: ADX>25 + Minus_DI>Plus_DI + Precio<SMA_20
+    4. RANGO: Todo lo demás (ADX débil, señales mixtas)
+    """
     regimes = []
+    
     for idx, row in df.iterrows():
         adx = row['ADX']
         rsi = row['RSI']
@@ -151,41 +161,78 @@ def classify_regime_daily(df):
         price = row['Close']
         sma_20 = row['SMA_20']
         sma_50 = row['SMA_50']
-        if rsi >= 75:
+        
+        # PRIORIDAD 1: RIESGO - RSI sobrecomprado o sobrevendido
+        if rsi > 70 or rsi < 30:
             regime = 'RIESGO'
-        elif rsi <= 25:
-            regime = 'RIESGO'
-        elif (adx > 25 and plus_di > minus_di and price > sma_20 and sma_20 > sma_50):
+        
+        # PRIORIDAD 2: ALCISTA - Tendencia alcista fuerte
+        # ADX fuerte + DI alcista + precio sobre SMA_20
+        elif adx > 25 and plus_di > minus_di and price > sma_20:
             regime = 'ALCISTA'
-        elif (adx > 25 and minus_di > plus_di and price < sma_20 and sma_20 < sma_50):
+        
+        # PRIORIDAD 3: BAJISTA - Tendencia bajista fuerte
+        # ADX fuerte + DI bajista + precio bajo SMA_20
+        elif adx > 25 and minus_di > plus_di and price < sma_20:
             regime = 'BAJISTA'
+        
+        # PRIORIDAD 4: RANGO - Sin tendencia clara
+        # ADX débil (<25) o señales contradictorias
         else:
             regime = 'RANGO'
+        
         regimes.append(regime)
+    
     return regimes
 
 def classify_regime_weekly(df):
+    """
+    Clasificación SEMANAL mejorada con MACD-V como indicador principal:
+    
+    Basado en Alex Spiroglou (2022) - Usa MACD-V raw (no signal) para mayor velocidad
+    
+    1. RIESGO: MACD-V > 150 o < -150 (sobreextensión extrema)
+    2. RANGO: Choppiness > 61.8 O MACD-V entre -50 y 50
+    3. ALCISTA: MACD-V entre 50 y 150 + Choppiness < 38.2 + Precio > Donchian_Middle
+    4. BAJISTA: MACD-V entre -150 y -50 + Choppiness < 38.2 + Precio < Donchian_Middle
+    """
     regimes = []
+    
     for idx, row in df.iterrows():
-        macd_v = row['MACD_V_Signal']
+        # CAMBIO CRÍTICO: Usar MACD-V raw en lugar de signal (más rápido según Spiroglou)
+        macd_v = row['MACD_V']  # RAW value, not Signal
         chop = row['Choppiness']
         price = row['Close']
         donchian_middle = row['Donchian_Middle']
+        
+        # PRIORIDAD 1: RIESGO - MACD-V extremo
         if macd_v > 150 or macd_v < -150:
             regime = 'RIESGO'
-        elif chop > 61.8:
-            regime = 'SIDEWAYS'
-        elif chop < 38.2 and price > donchian_middle and macd_v > 0:
-            regime = 'UPTREND'
-        elif chop < 38.2 and price < donchian_middle and macd_v < 0:
-            regime = 'DOWNTREND'
-        elif price > donchian_middle and macd_v > 0:
-            regime = 'UPTREND'
-        elif price < donchian_middle and macd_v < 0:
-            regime = 'DOWNTREND'
+        
+        # PRIORIDAD 2: RANGO - Mercado choppy O momentum neutral
+        elif chop > 61.8 or (-50 <= macd_v <= 50):
+            regime = 'RANGO'
+        
+        # PRIORIDAD 3: ALCISTA - Momentum alcista + confirmaciones
+        elif 50 < macd_v <= 150 and chop < 38.2 and price > donchian_middle:
+            regime = 'ALCISTA'
+        
+        # PRIORIDAD 4: BAJISTA - Momentum bajista + confirmaciones
+        elif -150 <= macd_v < -50 and chop < 38.2 and price < donchian_middle:
+            regime = 'BAJISTA'
+        
+        # PRIORIDAD 5: Casos edge - Momentum direccional sin todas las confirmaciones
+        elif macd_v > 50:
+            regime = 'ALCISTA'
+        elif macd_v < -50:
+            regime = 'BAJISTA'
+        
+        # Fallback
         else:
-            regime = 'SIDEWAYS'
+            regime = 'RANGO'
+        
         regimes.append(regime)
+    
     return regimes
 
 def plot_daily_dashboard(df_recent, ticker):
@@ -232,13 +279,11 @@ def plot_daily_dashboard(df_recent, ticker):
     ax2.plot(df_recent.index, df_recent['RSI'], color='#FF79C6', linewidth=2.5, label='RSI', zorder=3)
     ax2.fill_between(df_recent.index, df_recent['RSI'], 50, where=(df_recent['RSI'] >= 50), color='#4ECDC4', alpha=0.2, zorder=1)
     ax2.fill_between(df_recent.index, df_recent['RSI'], 50, where=(df_recent['RSI'] < 50), color='#FF6B6B', alpha=0.2, zorder=1)
-    ax2.axhline(y=75, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8, zorder=2)
-    ax2.axhline(y=70, color='#FFB86C', linestyle=':', linewidth=1.5, alpha=0.7, zorder=2)
+    ax2.axhline(y=70, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8, zorder=2)
     ax2.axhline(y=50, color='#8E93A1', linestyle='-', linewidth=1.5, alpha=0.7, zorder=2)
-    ax2.axhline(y=30, color='#FFB86C', linestyle=':', linewidth=1.5, alpha=0.7, zorder=2)
-    ax2.axhline(y=25, color='#4ECDC4', linestyle='--', linewidth=2, alpha=0.8, zorder=2)
-    ax2.fill_between(df_recent.index, 75, 100, alpha=0.12, color='#FF6B6B', zorder=0)
-    ax2.fill_between(df_recent.index, 0, 25, alpha=0.12, color='#4ECDC4', zorder=0)
+    ax2.axhline(y=30, color='#4ECDC4', linestyle='--', linewidth=2, alpha=0.8, zorder=2)
+    ax2.fill_between(df_recent.index, 70, 100, alpha=0.12, color='#FF6B6B', zorder=0)
+    ax2.fill_between(df_recent.index, 0, 30, alpha=0.12, color='#4ECDC4', zorder=0)
     ax2.scatter(current.name, current['RSI'], facecolors='#FF79C6', edgecolors='white', s=220, linewidth=4, marker='o', zorder=10)
     rsi_color = '#FF6B6B' if current['RSI'] > 70 else '#4ECDC4' if current['RSI'] < 30 else '#8E93A1'
     ax2.text(0.02, 0.88, f'RSI: {current["RSI"]:.1f}', transform=ax2.transAxes, fontsize=13, fontweight='bold', color='white', verticalalignment='top', bbox=dict(boxstyle='round,pad=0.7', facecolor=rsi_color, alpha=0.95, edgecolor='white', linewidth=2.5))
@@ -356,11 +401,12 @@ def plot_weekly_dashboard(df_recent, ticker):
     
     ax3 = fig.add_subplot(gs[2], sharex=ax1)
     ax3.set_facecolor('#1A1D29')
-    if 'MACD_V_Signal' in df_recent.columns and not df_recent['MACD_V_Signal'].isna().all():
+    # CAMBIO: Plotear MACD-V raw (no signal) según recomendación de Spiroglou
+    if 'MACD_V' in df_recent.columns and not df_recent['MACD_V'].isna().all():
         for i in range(1, len(df_recent)):
-            if pd.notna(df_recent['MACD_V_Signal'].iloc[i-1]) and pd.notna(df_recent['MACD_V_Signal'].iloc[i]):
+            if pd.notna(df_recent['MACD_V'].iloc[i-1]) and pd.notna(df_recent['MACD_V'].iloc[i]):
                 x1, x2 = df_recent.index[i-1], df_recent.index[i]
-                y1, y2 = df_recent['MACD_V_Signal'].iloc[i-1], df_recent['MACD_V_Signal'].iloc[i]
+                y1, y2 = df_recent['MACD_V'].iloc[i-1], df_recent['MACD_V'].iloc[i]
                 if y2 > 150:
                     color, width = '#FF6B6B', 3
                 elif y2 > 50:
@@ -372,15 +418,21 @@ def plot_weekly_dashboard(df_recent, ticker):
                 else:
                     color, width = '#FF6B6B', 3
                 ax3.plot([x1, x2], [y1, y2], color=color, linewidth=width, alpha=0.95, zorder=5)
+        # Opcionalmente plotear Signal line como referencia (línea delgada)
+        if 'MACD_V_Signal' in df_recent.columns:
+            ax3.plot(df_recent.index, df_recent['MACD_V_Signal'], color='#FFB86C', linewidth=1.5, alpha=0.5, linestyle='--', label='Signal (ref)', zorder=3)
     ax3.axhline(y=150, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8, label='Risk > 150')
+    ax3.axhline(y=50, color='#4ECDC4', linestyle=':', linewidth=1.5, alpha=0.7, label='Alcista > 50')
     ax3.axhline(y=0, color='#8E93A1', linestyle='-', linewidth=1.5, alpha=0.7)
+    ax3.axhline(y=-50, color='#EE5A6F', linestyle=':', linewidth=1.5, alpha=0.7, label='Bajista < -50')
     ax3.axhline(y=-150, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8, label='Risk < -150')
     ax3.fill_between(df_recent.index, 150, 300, alpha=0.12, color='#FF6B6B', zorder=0)
     ax3.fill_between(df_recent.index, -300, -150, alpha=0.12, color='#FF6B6B', zorder=0)
-    macd_color = '#FF6B6B' if abs(current['MACD_V_Signal']) > 150 else '#4ECDC4' if current['MACD_V_Signal'] > 0 else '#EE5A6F'
-    ax3.text(0.02, 0.88, f'MACD-V: {current["MACD_V_Signal"]:.1f}', transform=ax3.transAxes, fontsize=13, fontweight='bold', color='white', verticalalignment='top', bbox=dict(boxstyle='round,pad=0.7', facecolor=macd_color, alpha=0.95, edgecolor='white', linewidth=2.5))
-    ax3.set_ylabel('MACD-V', fontsize=14, fontweight='700', color='#FFFFFF', labelpad=12)
-    ax3.legend(loc='upper right', fontsize=10, framealpha=0.95)
+    ax3.fill_between(df_recent.index, -50, 50, alpha=0.08, color='#95A5A6', zorder=0)
+    macd_color = '#FF6B6B' if abs(current['MACD_V']) > 150 else '#4ECDC4' if current['MACD_V'] > 50 else '#EE5A6F' if current['MACD_V'] < -50 else '#95A5A6'
+    ax3.text(0.02, 0.88, f'MACD-V: {current["MACD_V"]:.1f}', transform=ax3.transAxes, fontsize=13, fontweight='bold', color='white', verticalalignment='top', bbox=dict(boxstyle='round,pad=0.7', facecolor=macd_color, alpha=0.95, edgecolor='white', linewidth=2.5))
+    ax3.set_ylabel('MACD-V (raw)', fontsize=14, fontweight='700', color='#FFFFFF', labelpad=12)
+    ax3.legend(loc='upper right', fontsize=9, framealpha=0.95, ncol=2)
     ax3.grid(True, alpha=0.08, linestyle=':', linewidth=1, color='#FFFFFF')
     ax3.tick_params(labelsize=10.5, colors='#B0B0B0', width=1.5)
     for spine in ax3.spines.values():
@@ -389,7 +441,7 @@ def plot_weekly_dashboard(df_recent, ticker):
     
     ax4 = fig.add_subplot(gs[3], sharex=ax1)
     ax4.set_facecolor('#1A1D29')
-    regime_order = ['DOWNTREND', 'SIDEWAYS', 'UPTREND', 'RIESGO']
+    regime_order = ['BAJISTA', 'RANGO', 'ALCISTA', 'RIESGO']
     for regime_name in regime_order:
         mask = df_recent['Regime_Weekly'] == regime_name
         if mask.sum() > 0:
@@ -441,16 +493,19 @@ def market_regime_page():
         st.markdown("""
         ### ANALISIS DIARIO
         - **ADX**: Fuerza tendencia (>25)
-        - **RSI**: Momentum (75/25 extremos)
+        - **RSI**: Momentum (70/30 extremos)
         - **SMAs**: 20 y 50 periodos
         - **Regimenes**: ALCISTA, BAJISTA, RANGO, RIESGO
         
         ### ANALISIS SEMANAL
+        - **MACD-V**: Indicador principal
+          - > 150 o < -150: RIESGO
+          - -50 a 50: RANGO
+          - 50 a 150: ALCISTA
+          - -150 a -50: BAJISTA
+        - **Choppiness**: 61.8/38.2
         - **Donchian**: Canal 20 periodos
-        - **Choppiness**: Indice choppy (61.8/38.2)
-        - **MACD-V**: Normalizado (±150 riesgo)
-        - **SMAs**: 20 y 50 periodos semanales
-        - **Regimenes**: UPTREND, DOWNTREND, SIDEWAYS, RIESGO
+        - **Regimenes**: ALCISTA, BAJISTA, RANGO, RIESGO
         """)
     
     if analizar_btn:
@@ -511,7 +566,7 @@ def market_regime_page():
         
         col1, col2, col3, col4, col5, col6 = st.columns(6)
         with col1:
-            regime_emoji = {'UPTREND': '🟢', 'DOWNTREND': '🔴', 'SIDEWAYS': '🟡', 'RIESGO': '🟠'}[current_weekly['Regime_Weekly']]
+            regime_emoji = {'ALCISTA': '🟢', 'BAJISTA': '🔴', 'RANGO': '🟡', 'RIESGO': '🟠'}[current_weekly['Regime_Weekly']]
             st.metric("REGIMEN SEMANAL", f"{regime_emoji} {current_weekly['Regime_Weekly']}")
         with col2:
             st.metric("PRECIO", f"${current_weekly['Close']:.2f}")
@@ -519,8 +574,8 @@ def market_regime_page():
             chop_status = "Choppy" if current_weekly['Choppiness'] > 61.8 else "Trending" if current_weekly['Choppiness'] < 38.2 else "Neutral"
             st.metric("CHOPPINESS", f"{current_weekly['Choppiness']:.1f}", chop_status)
         with col4:
-            macd_status = "Extremo" if abs(current_weekly['MACD_V_Signal']) > 150 else "Alcista" if current_weekly['MACD_V_Signal'] > 0 else "Bajista"
-            st.metric("MACD-V", f"{current_weekly['MACD_V_Signal']:.1f}", macd_status)
+            macd_status = "Extremo" if abs(current_weekly['MACD_V']) > 150 else "Alcista" if current_weekly['MACD_V'] > 50 else "Bajista" if current_weekly['MACD_V'] < -50 else "Neutral"
+            st.metric("MACD-V", f"{current_weekly['MACD_V']:.1f}", macd_status)
         with col5:
             donch_pos = ((current_weekly['Close'] - current_weekly['Donchian_Lower']) / (current_weekly['Donchian_Upper'] - current_weekly['Donchian_Lower']) * 100)
             st.metric("POSICION DONCHIAN", f"{donch_pos:.0f}%")
@@ -540,7 +595,7 @@ def market_regime_page():
             csv_daily = df_daily[export_cols_daily].to_csv()
             st.download_button("Descargar Datos DIARIOS (CSV)", data=csv_daily, file_name=f"regime_daily_{ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", mime="text/csv", use_container_width=True)
         with col2:
-            export_cols_weekly = ['Close', 'Regime_Weekly', 'Choppiness', 'MACD_V_Signal', 'Donchian_Upper', 'Donchian_Middle', 'Donchian_Lower', 'SMA_20', 'SMA_50']
+            export_cols_weekly = ['Close', 'Regime_Weekly', 'Choppiness', 'MACD_V', 'MACD_V_Signal', 'Donchian_Upper', 'Donchian_Middle', 'Donchian_Lower', 'SMA_20', 'SMA_50']
             csv_weekly = df_weekly[export_cols_weekly].to_csv()
             st.download_button("Descargar Datos SEMANALES (CSV)", data=csv_weekly, file_name=f"regime_weekly_{ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", mime="text/csv", use_container_width=True)
     else:
@@ -555,7 +610,7 @@ def market_regime_page():
                 para comenzar el analisis tecnico avanzado.
             </p>
             <p style='color: #8E93A1; font-size: 14px; margin: 10px 0 0 0;'>
-                Analisis Diario: ADX + RSI + SMAs | Analisis Semanal: Donchian + Choppiness + MACD-V
+                Analisis Diario: ADX + RSI + SMAs | Analisis Semanal: MACD-V + Donchian + Choppiness
             </p>
         </div>
         """, unsafe_allow_html=True)
