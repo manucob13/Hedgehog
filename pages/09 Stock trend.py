@@ -107,11 +107,16 @@ def calculate_dynamic_slope_threshold(trend, lookback=20):
     Basado en el movimiento histórico reciente
     """
     if len(trend) < lookback:
-        return trend * 0.002
+        return np.full_like(trend, np.abs(trend).mean() * 0.002)
     
     recent_changes = np.abs(np.diff(trend[-lookback:]))
-    threshold = np.percentile(recent_changes, 40)  # 40th percentile
-    return np.maximum(threshold, trend * 0.0015)  # Mínimo 0.15%
+    threshold_value = np.percentile(recent_changes, 40)  # 40th percentile
+    
+    # Crear array de umbrales con mínimo del 0.15% del valor de tendencia
+    min_threshold = np.abs(trend) * 0.0015
+    threshold_array = np.maximum(threshold_value, min_threshold)
+    
+    return threshold_array
 
 def classify_trend_state(prices, trend, atr, atr_multiplier=1.5, 
                          use_adaptive_bandwidth=True, 
@@ -146,12 +151,11 @@ def classify_trend_state(prices, trend, atr, atr_multiplier=1.5,
     # Cálculo de pendientes
     slopes = np.diff(trend_recalc, prepend=trend_recalc[0])
     
-    # Umbral dinámico si está habilitado
+    # Umbral dinámico
     if use_dynamic_threshold:
-        slope_thresholds = np.array([calculate_dynamic_slope_threshold(trend_recalc, 20) 
-                                     for _ in range(len(trend_recalc))])
+        slope_thresholds = calculate_dynamic_slope_threshold(trend_recalc, 20)
     else:
-        slope_thresholds = trend_recalc * 0.002
+        slope_thresholds = np.abs(trend_recalc) * 0.002
     
     states = np.zeros(len(prices), dtype=int)
     
