@@ -88,6 +88,7 @@ def calculate_macd_v(df, fast_len=12, slow_len=26, signal_len=9, atr_len=26):
     fast_ema = calculate_ema(df['Close'], fast_len)
     slow_ema = calculate_ema(df['Close'], slow_len)
     
+    # Calcular ATR para normalización
     high_low = df['High'] - df['Low']
     high_close = np.abs(df['High'] - df['Close'].shift())
     low_close = np.abs(df['Low'] - df['Close'].shift())
@@ -124,7 +125,7 @@ def calculate_dynamic_slope_threshold(trend, lookback=20):
     return threshold_array
 
 def project_trend(x, trend, periods_ahead=4, lookback_points=10, poly_degree=2):
-    """Proyección de tendencia con corrección de continuidad (Sin Gap)"""
+    """Proyección de tendencia usando extrapolación polinomial"""
     lookback_points = min(lookback_points, len(trend))
     poly_degree = min(poly_degree, lookback_points - 1)
     
@@ -134,13 +135,8 @@ def project_trend(x, trend, periods_ahead=4, lookback_points=10, poly_degree=2):
     poly_coeffs = np.polyfit(x_recent, y_recent, poly_degree)
     polynomial = np.poly1d(poly_coeffs)
     
-    # Calculamos el desfase (offset) para que la proyección empiece exactamente en el último punto real
-    last_real_val = trend[-1]
-    last_x_idx = x[-1]
-    offset = last_real_val - polynomial(last_x_idx)
-    
     x_future = np.arange(len(trend), len(trend) + periods_ahead)
-    y_future = polynomial(x_future) + offset # Aplicamos el offset
+    y_future = polynomial(x_future)
     
     y_fit = polynomial(x_recent)
     residuals = y_recent - y_fit
@@ -160,7 +156,7 @@ def project_atr_bands(trend_projection, atr_current, atr_multiplier=1.5):
 def classify_trend_state(prices, trend, atr, atr_multiplier=1.5, 
                          use_adaptive_bandwidth=True, 
                          use_dynamic_threshold=True):
-    """Sistema de clasificación mejorado con prioridad BAJISTA"""
+    """Sistema de clasificación de tendencia mejorado para detectar BAJISTA correctamente"""
     x = np.arange(len(prices))
     
     if use_adaptive_bandwidth:
@@ -171,6 +167,8 @@ def classify_trend_state(prices, trend, atr, atr_multiplier=1.5,
     
     upper_risk = trend_recalc + (atr * atr_multiplier)
     lower_risk = trend_recalc - (atr * atr_multiplier)
+    
+    # Pendiente actual
     slopes = np.diff(trend_recalc, prepend=trend_recalc[0])
     
     if use_dynamic_threshold:
@@ -179,8 +177,9 @@ def classify_trend_state(prices, trend, atr, atr_multiplier=1.5,
         slope_thresholds = np.abs(trend_recalc) * 0.002
     
     states = np.zeros(len(prices), dtype=int)
+    
     for i in range(len(prices)):
-        # 1. Determinamos dirección base por la pendiente
+        # 1. Determinamos dirección base por la pendiente de la tendencia
         if slopes[i] > slope_thresholds[i]:
             base_state = 1  # ALCISTA
         elif slopes[i] < -slope_thresholds[i]:
@@ -188,14 +187,17 @@ def classify_trend_state(prices, trend, atr, atr_multiplier=1.5,
         else:
             base_state = 0  # LATERAL
 
-        # 2. Refinamos con RIESGO (Priorizando bajista si el precio cae)
+        # 2. Refinamos con RIESGO si el precio está muy fuera de las bandas ATR
+        # Se prioriza RIESGO si el precio está sobreextendido por ARRIBA (posible burbuja)
+        # O si está muy por debajo pero la tendencia aún no ha girado
         if prices[i] > upper_risk[i]:
-            states[i] = 2  # RIESGO
+            states[i] = 2  # RIESGO (Sobrecompra)
         elif prices[i] < lower_risk[i] and base_state != -1:
-            states[i] = 2  # RIESGO (Si no es bajista oficial)
+            states[i] = 2  # RIESGO (Caída brusca sin tendencia confirmada aún)
         else:
             states[i] = base_state
     
+    # Filtro de confirmación suave (evita cambios de un solo punto)
     filtered_states = states.copy()
     for i in range(1, len(states) - 1):
         if states[i] != states[i-1] and states[i] != states[i+1]:
@@ -203,7 +205,7 @@ def classify_trend_state(prices, trend, atr, atr_multiplier=1.5,
     
     return filtered_states, trend_recalc, upper_risk, lower_risk
 
-# ============= DESCARGA Y PROCESAMIENTO =============
+# ============= DESCARGA Y PROCESAMIENTO DE DATOS =============
 @st.cache_data(ttl=3600)
 def download_and_process_data(ticker, period="2y", interval="1wk",
                                atr_period=14, atr_multiplier=1.5,
@@ -212,43 +214,84 @@ def download_and_process_data(ticker, period="2y", interval="1wk",
                                projection_degree=2):
     try:
         data = yf.download(ticker, period=period, interval=interval, progress=False)
+        
         if data.empty or len(data) < 30:
-            return None, "Datos insuficientes"
+            return None, "Datos insuficientes para el análisis"
         
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
         
         prices = data['Close'].values
         x = np.arange(len(prices))
+        
+        # Kernel inicial
         trend_init = nadaraya_watson_kernel(x, prices, bandwidth=8)
         atr = calculate_atr_improved(data, period=atr_period)
-        macd_v, macd_v_signal = calculate_macd_v(data)
+        
+        macd_v, macd_v_signal = calculate_macd_v(data, fast_len=12, slow_len=26, 
+                                                  signal_len=9, atr_len=26)
         
         states, trend_refined, upper_risk, lower_risk = classify_trend_state(
-            prices, trend_init, atr, atr_multiplier, use_adaptive, use_dynamic
+            prices, trend_init, atr, 
+            atr_multiplier=atr_multiplier,
+            use_adaptive_bandwidth=use_adaptive,
+            use_dynamic_threshold=use_dynamic
         )
         
-        x_f, y_f, conf = project_trend(x, trend_refined, projection_periods, projection_lookback, projection_degree)
+        x_future, y_future, projection_confidence = project_trend(
+            x, trend_refined, 
+            periods_ahead=projection_periods,
+            lookback_points=projection_lookback,
+            poly_degree=projection_degree
+        )
         
         atr_current = atr[-1] if not np.isnan(atr[-1]) else np.nanmean(atr[-5:])
-        u_f, l_f = project_atr_bands(y_f, atr_current, atr_multiplier)
+        upper_future, lower_future = project_atr_bands(
+            y_future, atr_current, atr_multiplier
+        )
         
         results = pd.DataFrame({
-            'Date': data.index, 'Close': prices, 'Trend': trend_refined,
-            'ATR': atr, 'Upper_Risk': upper_risk, 'Lower_Risk': lower_risk,
-            'State': states, 'MACD_V': macd_v.values, 'MACD_V_Signal': macd_v_signal.values
+            'Date': data.index,
+            'Close': prices,
+            'Trend': trend_refined,
+            'ATR': atr,
+            'Upper_Risk': upper_risk,
+            'Lower_Risk': lower_risk,
+            'State': states,
+            'MACD_V': macd_v.values,
+            'MACD_V_Signal': macd_v_signal.values
         })
-        results['State_Name'] = results['State'].map({-1: 'BAJISTA', 0: 'LATERAL', 1: 'ALCISTA', 2: 'RIESGO'})
+        
+        last_date = data.index[-1]
+        freq = 'W' if interval == '1wk' else 'D' if interval == '1d' else 'M'
+        
+        future_dates = pd.date_range(
+            start=last_date + pd.Timedelta(days=1),
+            periods=projection_periods,
+            freq=freq
+        )
         
         projection_df = pd.DataFrame({
-            'Date': pd.date_range(start=data.index[-1] + pd.Timedelta(days=1), periods=projection_periods, freq='W'),
-            'Trend_Projection': y_f, 'Upper_Projection': u_f, 'Lower_Projection': l_f
+            'Date': future_dates,
+            'Trend_Projection': y_future,
+            'Upper_Projection': upper_future,
+            'Lower_Projection': lower_future
         })
         
-        metrics = {'projection_confidence': conf, 'projection_change_pct': ((y_f[-1] - prices[-1]) / prices[-1] * 100), 'projection_target': y_f[-1]}
+        state_names = {-1: 'BAJISTA', 0: 'LATERAL', 1: 'ALCISTA', 2: 'RIESGO'}
+        results['State_Name'] = results['State'].map(state_names)
+        
+        metrics = {
+            'projection_confidence': projection_confidence,
+            'projection_change_pct': ((y_future[-1] - prices[-1]) / prices[-1] * 100),
+            'projection_target': y_future[-1],
+            'atr_current': atr_current
+        }
+        
         return (results, projection_df, metrics), None
+        
     except Exception as e:
-        return None, str(e)
+        return None, f"Error al descargar datos: {str(e)}"
 
 # ============= VISUALIZACIÓN =============
 def plot_atr_analysis_with_projection(results, projection_df, metrics, ticker):
@@ -262,59 +305,76 @@ def plot_atr_analysis_with_projection(results, projection_df, metrics, ticker):
     ax1 = fig.add_subplot(gs[0])
     ax1.set_facecolor('#1A1D29')
     
-    # Zonas ATR Históricas
+    # Zonas ATR
     ax1.fill_between(range(len(results)), results['Lower_Risk'], results['Upper_Risk'],
                      color='#FFB86C', alpha=0.08, label='Zona ATR Histórica')
     
-    # Proyección ATR (Continuidad asegurada)
-    proj_x = np.arange(len(results) - 1, len(results) + len(projection_df))
-    p_upper = np.concatenate([[results['Upper_Risk'].iloc[-1]], projection_df['Upper_Projection']])
-    p_lower = np.concatenate([[results['Lower_Risk'].iloc[-1]], projection_df['Lower_Projection']])
-    ax1.fill_between(proj_x, p_lower, p_upper, color='#FFB86C', alpha=0.15, hatch='//', 
-                     label=f'Proyección (Conf: {metrics["projection_confidence"]*100:.0f}%)')
+    # Proyección ATR
+    proj_x_start = len(results) - 1
+    proj_x = np.arange(proj_x_start, proj_x_start + len(projection_df) + 1)
+    proj_upper = np.concatenate([[results['Upper_Risk'].iloc[-1]], projection_df['Upper_Projection'].values])
+    proj_lower = np.concatenate([[results['Lower_Risk'].iloc[-1]], projection_df['Lower_Projection'].values])
+    
+    ax1.fill_between(proj_x, proj_lower, proj_upper,
+                     color='#FFB86C', alpha=0.15, hatch='//',
+                     label=f'Zona Proyectada (Conf: {metrics["projection_confidence"]*100:.0f}%)')
     
     ax1.plot(results['Trend'], color='#00D9FF', linewidth=2.5, label='Tendencia Kernel')
     
-    # Línea de Proyección fluida
-    p_trend = np.concatenate([[results['Trend'].iloc[-1]], projection_df['Trend_Projection']])
-    ax1.plot(proj_x, p_trend, color='#FF6B6B', linewidth=3, linestyle='--', label='Proyección Inercial')
+    proj_trend = np.concatenate([[results['Trend'].iloc[-1]], projection_df['Trend_Projection'].values])
+    ax1.plot(proj_x, proj_trend, color='#FF6B6B', linewidth=3, linestyle='--', label='Proyección')
     
-    ax1.plot(results['Close'], color='#FFFFFF', alpha=0.4, linewidth=1.5, label='Precio')
+    ax1.plot(results['Close'], color='#FFFFFF', alpha=0.6, linewidth=1.5, label='Precio')
     
-    # Estados
-    for val, color in colors_map.items():
-        mask = results['State'] == val
-        if mask.any():
-            ax1.scatter(results[mask].index, results[mask]['Close'], c=color, s=60, edgecolors='white', label=state_names[val])
+    for state_val, color in colors_map.items():
+        mask = results['State'] == state_val
+        if mask.sum() > 0:
+            ax1.scatter(results[mask].index, results[mask]['Close'],
+                       c=color, s=60, alpha=0.8, edgecolors='white', label=state_names[state_val])
     
-    # Anotación
+    # Anotación Precio Actual
+    last_idx = len(results) - 1
+    last_state = results['State'].iloc[-1]
     ax1.annotate(f'{results["State_Name"].iloc[-1]}\n${results["Close"].iloc[-1]:.2f}',
-                xy=(len(results)-1, results['Close'].iloc[-1]), xytext=(-80, -40), textcoords='offset points',
-                fontsize=12, fontweight='bold', color='white', bbox=dict(boxstyle='round', facecolor=colors_map[results['State'].iloc[-1]], alpha=0.9))
+                xy=(last_idx, results['Close'].iloc[-1]),
+                xytext=(-80, -40), textcoords='offset points',
+                fontsize=12, fontweight='bold', color='white',
+                bbox=dict(boxstyle='round,pad=0.8', facecolor=colors_map[last_state], alpha=0.9),
+                arrowprops=dict(arrowstyle='->', color='white'))
 
-    ax1.set_ylabel('Precio ($)', fontsize=14)
+    ax1.set_ylabel('Precio ($)', fontsize=14, color='white')
     ax1.legend(loc='upper left', ncol=2)
+    ax1.grid(alpha=0.1)
 
     # Subplot ATR
     ax2 = fig.add_subplot(gs[1], sharex=ax1)
+    ax2.set_facecolor('#1A1D29')
     ax2.plot(results['ATR'], color='#BD93F9', linewidth=2)
-    ax2.set_ylabel('ATR')
+    ax2.fill_between(range(len(results)), 0, results['ATR'], color='#BD93F9', alpha=0.1)
+    ax2.set_ylabel('ATR (Volatilidad)', color='white')
 
     # Subplot MACD-V
     ax3 = fig.add_subplot(gs[2], sharex=ax1)
-    ax3.plot(results['MACD_V'], color='#4ECDC4', linewidth=2)
+    ax3.set_facecolor('#1A1D29')
+    for i in range(1, len(results)):
+        if pd.notna(results['MACD_V'].iloc[i]):
+            y = results['MACD_V'].iloc[i]
+            color = '#4ECDC4' if y > 50 else '#EE5A6F' if y < -50 else '#95A5A6'
+            ax3.plot([i-1, i], [results['MACD_V'].iloc[i-1], y], color=color, linewidth=2.5)
     ax3.axhline(0, color='white', alpha=0.3)
-    ax3.set_ylabel('MACD-V')
+    ax3.set_ylabel('MACD-V', color='white')
 
     # Subplot Semáforo
     ax4 = fig.add_subplot(gs[3], sharex=ax1)
+    ax4.set_facecolor('#1A1D29')
     regime_order = ['BAJISTA', 'LATERAL', 'ALCISTA', 'RIESGO']
     state_to_y = {'BAJISTA': 0, 'LATERAL': 1, 'ALCISTA': 2, 'RIESGO': 3}
-    for name in regime_order:
-        mask = results['State_Name'] == name
-        if mask.any():
-            st_val = results[mask]['State'].iloc[0]
-            ax4.scatter(results[mask].index, [state_to_y[name]] * mask.sum(), c=colors_map[st_val], s=100)
+    for state_name in regime_order:
+        mask = results['State_Name'] == state_name
+        if mask.sum() > 0:
+            color = colors_map[{-1: -1, 0: 0, 1: 1, 2: 2}[results[mask]['State'].iloc[0]]]
+            ax4.scatter(results[mask].index, [state_to_y[state_name]] * mask.sum(), 
+                       c=color, s=100, edgecolors='white')
     ax4.set_yticks(range(4))
     ax4.set_yticklabels(regime_order)
     
@@ -341,40 +401,48 @@ def main_app():
         interval = col2.selectbox("Intervalo", ["1d", "1wk", "1mo"], index=1)
         
         st.subheader("🔮 Proyección")
-        p_periods = st.slider("Períodos a Proyectar", 1, 12, 4)
-        p_degree = st.selectbox("Modelo", [1, 2, 3], format_func=lambda x: ["Lineal", "Cuadrático", "Cúbico"][x-1], index=1)
-        atr_mult = st.slider("Multiplicador ATR", 0.5, 3.0, 1.5, 0.1)
+        projection_periods = st.slider("Períodos a Proyectar", 1, 12, 4)
+        projection_degree = st.selectbox("Modelo", [1, 2, 3], format_func=lambda x: ["Lineal", "Cuadrático", "Cúbico"][x-1], index=1)
+        
+        atr_multiplier = st.slider("Multiplicador ATR", 0.5, 3.0, 1.5, 0.1)
         analyze_btn = st.button("🚀 ANALIZAR + PROYECTAR", use_container_width=True, type="primary")
 
     if analyze_btn or 'results' in st.session_state:
         if analyze_btn:
             with st.spinner(f"Procesando {ticker}..."):
-                res, err = download_and_process_data(ticker, period, interval, atr_multiplier=atr_mult, projection_periods=p_periods, projection_degree=p_degree)
-                if err: st.error(err)
+                res = download_and_process_data(ticker, period, interval, 
+                                               atr_multiplier=atr_multiplier,
+                                               projection_periods=projection_periods,
+                                               projection_degree=projection_degree)
+                if res[1]: 
+                    st.error(res[1])
                 else:
-                    st.session_state['results'], st.session_state['proj'], st.session_state['met'] = res
+                    st.session_state['results'], st.session_state['proj'], st.session_state['met'] = res[0]
                     st.session_state['ticker'] = ticker
 
         if 'results' in st.session_state:
-            results, projection_df, metrics = st.session_state['results'], st.session_state['proj'], st.session_state['met']
+            results = st.session_state['results']
+            projection_df = st.session_state['proj']
+            metrics = st.session_state['met']
             
+            # Dashboard de métricas
             c1, c2, c3, c4 = st.columns(4)
             cur = results.iloc[-1]
-            state_icons = {'ALCISTA': '🟢', 'BAJISTA': '🔴', 'LATERAL': '⚪', 'RIESGO': '🟠'}
-            c1.metric("ESTADO", f"{state_icons[cur['State_Name']]} {cur['State_Name']}")
+            state_colors = {'ALCISTA': '🟢', 'BAJISTA': '🔴', 'LATERAL': '⚪', 'RIESGO': '🟠'}
+            c1.metric("ESTADO", f"{state_colors[cur['State_Name']]} {cur['State_Name']}")
             c2.metric("PRECIO", f"${cur['Close']:.2f}")
-            c3.metric("TARGET PROY.", f"${metrics['projection_target']:.2f}", f"{metrics['projection_change_pct']:+.1f}%")
+            c3.metric("TARGET PROYECTADO", f"${metrics['projection_target']:.2f}", f"{metrics['projection_change_pct']:+.1f}%")
             c4.metric("CONFIANZA", f"{metrics['projection_confidence']*100:.0f}%")
             
             st.pyplot(plot_atr_analysis_with_projection(results, projection_df, metrics, st.session_state['ticker']))
             
             with st.expander("📝 Interpretación del Analista"):
                 if cur['State_Name'] == 'BAJISTA':
-                    st.warning(f"⚠️ {st.session_state['ticker']} en fase bajista confirmada.")
+                    st.warning(f"⚠️ {st.session_state['ticker']} está en una fase bajista confirmada por la pendiente de la tendencia.")
                 elif cur['State_Name'] == 'ALCISTA':
-                    st.success(f"✅ Tendencia alcista sólida.")
+                    st.success(f"✅ Tendencia alcista sólida. El momentum acompaña el movimiento.")
                 elif cur['State_Name'] == 'RIESGO':
-                    st.error(f"🚨 Alerta de riesgo: Sobreextensión del precio.")
+                    st.error(f"🚨 Alerta de riesgo: El precio está muy alejado de su tendencia histórica. Posible reversión o corrección.")
 
 if __name__ == "__main__":
     if check_password():
