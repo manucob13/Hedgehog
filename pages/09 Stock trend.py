@@ -28,7 +28,6 @@ def check_password():
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        # Login en el sidebar
         with st.sidebar:
             st.markdown("""
             <div style='text-align: center; padding: 20px; 
@@ -46,13 +45,6 @@ def check_password():
     elif not st.session_state["password_correct"]:
         with st.sidebar:
             st.error("❌ Usuario o contraseña incorrectos")
-            st.markdown("""
-            <div style='text-align: center; padding: 20px; 
-                        background: linear-gradient(135deg, #FF6B6B 0%, #FFB86C 100%); 
-                        border-radius: 15px; margin-bottom: 20px;'>
-                <h2 style='color: white; margin: 0;'>🔐 Login</h2>
-            </div>
-            """, unsafe_allow_html=True)
             st.text_input("Usuario", key="username")
             st.text_input("Contraseña", type="password", key="password")
             st.button("Iniciar Sesión", on_click=password_entered, use_container_width=True)
@@ -103,7 +95,6 @@ def calculate_macd_v(df, fast_len=12, slow_len=26, signal_len=9, atr_len=26):
     true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     atr = true_range.rolling(window=atr_len).mean()
     
-    # MACD-V = (MACD / ATR) * 100
     macd = ((fast_ema - slow_ema) / atr) * 100
     signal = calculate_ema(macd, signal_len)
     
@@ -147,7 +138,6 @@ def project_trend(x, trend, periods_ahead=4, lookback_points=10, poly_degree=2):
     x_future = np.arange(len(trend), len(trend) + periods_ahead)
     y_future = polynomial(x_future)
     
-    # Calcular confianza (R²)
     y_fit = polynomial(x_recent)
     residuals = y_recent - y_fit
     ss_res = np.sum(residuals**2)
@@ -166,7 +156,7 @@ def project_atr_bands(trend_projection, atr_current, atr_multiplier=1.5):
 def classify_trend_state(prices, trend, atr, atr_multiplier=1.5, 
                          use_adaptive_bandwidth=True, 
                          use_dynamic_threshold=True):
-    """Sistema de clasificación de tendencia de 4 estados"""
+    """Sistema de clasificación de tendencia mejorado para detectar BAJISTA correctamente"""
     x = np.arange(len(prices))
     
     if use_adaptive_bandwidth:
@@ -178,6 +168,7 @@ def classify_trend_state(prices, trend, atr, atr_multiplier=1.5,
     upper_risk = trend_recalc + (atr * atr_multiplier)
     lower_risk = trend_recalc - (atr * atr_multiplier)
     
+    # Pendiente actual
     slopes = np.diff(trend_recalc, prepend=trend_recalc[0])
     
     if use_dynamic_threshold:
@@ -188,28 +179,25 @@ def classify_trend_state(prices, trend, atr, atr_multiplier=1.5,
     states = np.zeros(len(prices), dtype=int)
     
     for i in range(len(prices)):
-        if prices[i] > upper_risk[i] or prices[i] < lower_risk[i]:
-            if i > 0:
-                price_change = (prices[i] - prices[i-1]) / prices[i-1]
-                if abs(price_change) > 0.03:
-                    states[i] = 2
-                else:
-                    if slopes[i] > slope_thresholds[i]:
-                        states[i] = 1
-                    elif slopes[i] < -slope_thresholds[i]:
-                        states[i] = -1
-                    else:
-                        states[i] = 0
-            else:
-                states[i] = 2
-        elif slopes[i] > slope_thresholds[i]:
-            states[i] = 1
+        # 1. Determinamos dirección base por la pendiente de la tendencia
+        if slopes[i] > slope_thresholds[i]:
+            base_state = 1  # ALCISTA
         elif slopes[i] < -slope_thresholds[i]:
-            states[i] = -1
+            base_state = -1 # BAJISTA
         else:
-            states[i] = 0
+            base_state = 0  # LATERAL
+
+        # 2. Refinamos con RIESGO si el precio está muy fuera de las bandas ATR
+        # Se prioriza RIESGO si el precio está sobreextendido por ARRIBA (posible burbuja)
+        # O si está muy por debajo pero la tendencia aún no ha girado
+        if prices[i] > upper_risk[i]:
+            states[i] = 2  # RIESGO (Sobrecompra)
+        elif prices[i] < lower_risk[i] and base_state != -1:
+            states[i] = 2  # RIESGO (Caída brusca sin tendencia confirmada aún)
+        else:
+            states[i] = base_state
     
-    # Filtro de confirmación
+    # Filtro de confirmación suave (evita cambios de un solo punto)
     filtered_states = states.copy()
     for i in range(1, len(states) - 1):
         if states[i] != states[i-1] and states[i] != states[i+1]:
@@ -224,7 +212,6 @@ def download_and_process_data(ticker, period="2y", interval="1wk",
                                use_adaptive=True, use_dynamic=True,
                                projection_periods=4, projection_lookback=10,
                                projection_degree=2):
-    """Descarga datos y calcula todos los indicadores + PROYECCIÓN"""
     try:
         data = yf.download(ticker, period=period, interval=interval, progress=False)
         
@@ -237,21 +224,20 @@ def download_and_process_data(ticker, period="2y", interval="1wk",
         prices = data['Close'].values
         x = np.arange(len(prices))
         
-        trend = nadaraya_watson_kernel(x, prices, bandwidth=8)
+        # Kernel inicial
+        trend_init = nadaraya_watson_kernel(x, prices, bandwidth=8)
         atr = calculate_atr_improved(data, period=atr_period)
         
-        # Calcular MACD-V
         macd_v, macd_v_signal = calculate_macd_v(data, fast_len=12, slow_len=26, 
                                                   signal_len=9, atr_len=26)
         
         states, trend_refined, upper_risk, lower_risk = classify_trend_state(
-            prices, trend, atr, 
+            prices, trend_init, atr, 
             atr_multiplier=atr_multiplier,
             use_adaptive_bandwidth=use_adaptive,
             use_dynamic_threshold=use_dynamic
         )
         
-        # PROYECCIÓN
         x_future, y_future, projection_confidence = project_trend(
             x, trend_refined, 
             periods_ahead=projection_periods,
@@ -264,7 +250,6 @@ def download_and_process_data(ticker, period="2y", interval="1wk",
             y_future, atr_current, atr_multiplier
         )
         
-        # DataFrame de resultados
         results = pd.DataFrame({
             'Date': data.index,
             'Close': prices,
@@ -277,16 +262,8 @@ def download_and_process_data(ticker, period="2y", interval="1wk",
             'MACD_V_Signal': macd_v_signal.values
         })
         
-        # DataFrame de proyección
         last_date = data.index[-1]
-        if interval == '1wk':
-            freq = 'W'
-        elif interval == '1d':
-            freq = 'D'
-        elif interval == '1mo':
-            freq = 'M'
-        else:
-            freq = 'W'
+        freq = 'W' if interval == '1wk' else 'D' if interval == '1d' else 'M'
         
         future_dates = pd.date_range(
             start=last_date + pd.Timedelta(days=1),
@@ -316,600 +293,157 @@ def download_and_process_data(ticker, period="2y", interval="1wk",
     except Exception as e:
         return None, f"Error al descargar datos: {str(e)}"
 
-# ============= VISUALIZACIÓN CON MACD-V =============
+# ============= VISUALIZACIÓN =============
 def plot_atr_analysis_with_projection(results, projection_df, metrics, ticker):
-    """Gráfico avanzado con proyección + MACD-V"""
     plt.style.use('dark_background')
     fig = plt.figure(figsize=(20, 14), facecolor='#0E1117')
     gs = fig.add_gridspec(4, 1, height_ratios=[4, 1, 1, 0.8], hspace=0.35)
     
-    # Color mapping - MISMO QUE EL EJEMPLO
     colors_map = {1: '#4ECDC4', -1: '#EE5A6F', 0: '#95A5A6', 2: '#FF6B6B'}
     state_names = {1: 'ALCISTA', -1: 'BAJISTA', 0: 'LATERAL', 2: 'RIESGO'}
     
-    # ============= SUBPLOT 1: Precio y Proyección =============
     ax1 = fig.add_subplot(gs[0])
     ax1.set_facecolor('#1A1D29')
     
-    # Zona histórica ATR
+    # Zonas ATR
     ax1.fill_between(range(len(results)), results['Lower_Risk'], results['Upper_Risk'],
-                     color='#FFB86C', alpha=0.08, label='Zona Histórica (ATR)', zorder=1)
+                     color='#FFB86C', alpha=0.08, label='Zona ATR Histórica')
     
-    # Zona proyectada ATR
+    # Proyección ATR
     proj_x_start = len(results) - 1
     proj_x = np.arange(proj_x_start, proj_x_start + len(projection_df) + 1)
     proj_upper = np.concatenate([[results['Upper_Risk'].iloc[-1]], projection_df['Upper_Projection'].values])
     proj_lower = np.concatenate([[results['Lower_Risk'].iloc[-1]], projection_df['Lower_Projection'].values])
     
     ax1.fill_between(proj_x, proj_lower, proj_upper,
-                     color='#FFB86C', alpha=0.15, 
-                     label=f'Zona Proyectada (Conf: {metrics["projection_confidence"]*100:.0f}%)', 
-                     zorder=1, hatch='//')
+                     color='#FFB86C', alpha=0.15, hatch='//',
+                     label=f'Zona Proyectada (Conf: {metrics["projection_confidence"]*100:.0f}%)')
     
-    # Líneas de riesgo
-    ax1.plot(results['Upper_Risk'], color='#FFB86C', linewidth=1.5, 
-             linestyle='--', alpha=0.6, zorder=2)
-    ax1.plot(results['Lower_Risk'], color='#FFB86C', linewidth=1.5, 
-             linestyle='--', alpha=0.6, zorder=2)
-    ax1.plot(proj_x, proj_upper, color='#FF6B6B', linewidth=2, 
-             linestyle=':', alpha=0.8, zorder=2)
-    ax1.plot(proj_x, proj_lower, color='#FF6B6B', linewidth=2, 
-             linestyle=':', alpha=0.8, zorder=2)
+    ax1.plot(results['Trend'], color='#00D9FF', linewidth=2.5, label='Tendencia Kernel')
     
-    # Tendencia
-    ax1.plot(results['Trend'], color='#00D9FF', linewidth=2.5, 
-             label='Tendencia Kernel', zorder=3)
-    
-    # Proyección
     proj_trend = np.concatenate([[results['Trend'].iloc[-1]], projection_df['Trend_Projection'].values])
-    ax1.plot(proj_x, proj_trend, color='#FF6B6B', linewidth=3, 
-             linestyle='--', label=f'Proyección ({len(projection_df)} periodos)', zorder=4,
-             marker='o', markersize=8, markerfacecolor='#FF6B6B', 
-             markeredgecolor='white', markeredgewidth=2)
+    ax1.plot(proj_x, proj_trend, color='#FF6B6B', linewidth=3, linestyle='--', label='Proyección')
     
-    # Precio
-    ax1.plot(results['Close'], color='#FFFFFF', alpha=0.15, linewidth=6, zorder=4)
-    ax1.plot(results['Close'], color='#E0E0E0', alpha=0.4, linewidth=3, zorder=5)
-    ax1.plot(results['Close'], color='#FFFFFF', linewidth=1.5, 
-             label='Precio', zorder=6)
+    ax1.plot(results['Close'], color='#FFFFFF', alpha=0.6, linewidth=1.5, label='Precio')
     
-    # Scatter por estado
     for state_val, color in colors_map.items():
         mask = results['State'] == state_val
         if mask.sum() > 0:
             ax1.scatter(results[mask].index, results[mask]['Close'],
-                       c=color, s=60, alpha=0.7, edgecolors='white',
-                       linewidth=1, label=state_names[state_val], zorder=7)
+                       c=color, s=60, alpha=0.8, edgecolors='white', label=state_names[state_val])
     
-    # Último punto
+    # Anotación Precio Actual
     last_idx = len(results) - 1
     last_state = results['State'].iloc[-1]
-    ax1.scatter(last_idx, results['Close'].iloc[-1],
-               facecolors=colors_map[last_state], edgecolors='white',
-               s=300, linewidth=3, marker='o', zorder=10)
-    
-    # Punto proyección
-    proj_last_idx = proj_x[-1]
-    ax1.scatter(proj_last_idx, projection_df['Trend_Projection'].iloc[-1],
-               facecolors='#FF6B6B', edgecolors='yellow',
-               s=400, linewidth=4, marker='*', zorder=11)
-    
-    # Anotaciones
     ax1.annotate(f'{results["State_Name"].iloc[-1]}\n${results["Close"].iloc[-1]:.2f}',
                 xy=(last_idx, results['Close'].iloc[-1]),
                 xytext=(-80, -40), textcoords='offset points',
                 fontsize=12, fontweight='bold', color='white',
-                bbox=dict(boxstyle='round,pad=0.8', 
-                         facecolor=colors_map[last_state],
-                         alpha=0.95, edgecolor='white', linewidth=2),
-                arrowprops=dict(arrowstyle='->', lw=2.5,
-                               color=colors_map[last_state]),
-                zorder=11)
-    
-    change_pct = metrics['projection_change_pct']
-    arrow_color = '#4ECDC4' if change_pct > 0 else '#FF6B6B'
-    ax1.annotate(f'Target\n${projection_df["Trend_Projection"].iloc[-1]:.2f}\n({change_pct:+.1f}%)',
-                xy=(proj_last_idx, projection_df['Trend_Projection'].iloc[-1]),
-                xytext=(30, 30), textcoords='offset points',
-                fontsize=12, fontweight='bold', color='white',
-                bbox=dict(boxstyle='round,pad=0.8', 
-                         facecolor=arrow_color,
-                         alpha=0.95, edgecolor='yellow', linewidth=3),
-                arrowprops=dict(arrowstyle='->', lw=3, color='yellow'),
-                zorder=12)
-    
-    # Línea HOY
-    ax1.axvline(x=last_idx, color='yellow', linestyle=':', 
-                linewidth=2, alpha=0.5, zorder=1)
-    ax1.text(last_idx, ax1.get_ylim()[1]*0.98, 'HOY', 
-            ha='center', va='top', fontsize=10, fontweight='bold',
-            color='yellow', bbox=dict(boxstyle='round,pad=0.4',
-                                     facecolor='black', alpha=0.7))
-    
-    ax1.text(0.5, 1.10, f'{ticker}', transform=ax1.transAxes, 
-             fontsize=28, fontweight='bold', ha='center', color='#FFFFFF')
-    ax1.text(0.5, 1.05, 'ATR Trend Analysis + Projection', transform=ax1.transAxes, 
-             fontsize=13, style='italic', ha='center', color='#8E93A1')
-    
-    ax1.set_ylabel('Precio ($)', fontsize=14, fontweight='bold', color='#FFFFFF')
-    legend = ax1.legend(loc='upper left', fontsize=9, framealpha=0.95, ncol=2,
-                       edgecolor='#00D9FF', fancybox=True)
-    legend.get_frame().set_facecolor('#1A1D29')
-    legend.get_frame().set_linewidth(2)
-    ax1.grid(True, alpha=0.08, linestyle='-', linewidth=0.8, color='#FFFFFF')
-    ax1.tick_params(labelsize=10, colors='#B0B0B0')
-    for spine in ax1.spines.values():
-        spine.set_color('#2D3142')
-        spine.set_linewidth(2)
-    
-    # ============= SUBPLOT 2: ATR =============
+                bbox=dict(boxstyle='round,pad=0.8', facecolor=colors_map[last_state], alpha=0.9),
+                arrowprops=dict(arrowstyle='->', color='white'))
+
+    ax1.set_ylabel('Precio ($)', fontsize=14, color='white')
+    ax1.legend(loc='upper left', ncol=2)
+    ax1.grid(alpha=0.1)
+
+    # Subplot ATR
     ax2 = fig.add_subplot(gs[1], sharex=ax1)
     ax2.set_facecolor('#1A1D29')
-    
-    ax2.plot(results['ATR'], color='#BD93F9', linewidth=2, label='ATR')
-    ax2.fill_between(range(len(results)), 0, results['ATR'],
-                     color='#BD93F9', alpha=0.2)
-    ax2.axhline(y=metrics['atr_current'], xmin=last_idx/len(results), 
-                color='#BD93F9', linestyle='--', linewidth=2, alpha=0.6)
-    
-    ax2.set_ylabel('ATR', fontsize=12, fontweight='bold', color='#FFFFFF')
-    ax2.legend(loc='upper left', fontsize=9, framealpha=0.95)
-    ax2.grid(True, alpha=0.08)
-    ax2.tick_params(labelsize=9, colors='#B0B0B0')
-    for spine in ax2.spines.values():
-        spine.set_color('#2D3142')
-        spine.set_linewidth(2)
-    
-    # ============= SUBPLOT 3: MACD-V (DEL EJEMPLO) =============
+    ax2.plot(results['ATR'], color='#BD93F9', linewidth=2)
+    ax2.fill_between(range(len(results)), 0, results['ATR'], color='#BD93F9', alpha=0.1)
+    ax2.set_ylabel('ATR (Volatilidad)', color='white')
+
+    # Subplot MACD-V
     ax3 = fig.add_subplot(gs[2], sharex=ax1)
     ax3.set_facecolor('#1A1D29')
-    
-    # Plotear MACD-V raw con colores según valor
     for i in range(1, len(results)):
-        if pd.notna(results['MACD_V'].iloc[i-1]) and pd.notna(results['MACD_V'].iloc[i]):
-            y2 = results['MACD_V'].iloc[i]
-            if y2 > 150:
-                color, width = '#FF6B6B', 3
-            elif y2 > 50:
-                color, width = '#4ECDC4', 2.8
-            elif y2 > -50:
-                color, width = '#95A5A6', 2.5
-            elif y2 > -150:
-                color, width = '#EE5A6F', 2.8
-            else:
-                color, width = '#FF6B6B', 3
-            ax3.plot([i-1, i], 
-                    [results['MACD_V'].iloc[i-1], y2], 
-                    color=color, linewidth=width, alpha=0.95, zorder=5)
-    
-    # Signal line
-    if 'MACD_V_Signal' in results.columns:
-        ax3.plot(results['MACD_V_Signal'], color='#FFB86C', 
-                linewidth=1.5, alpha=0.5, linestyle='--', 
-                label='Signal', zorder=3)
-    
-    # Líneas de referencia
-    ax3.axhline(y=150, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8)
-    ax3.axhline(y=50, color='#4ECDC4', linestyle=':', linewidth=1.5, alpha=0.7)
-    ax3.axhline(y=0, color='#8E93A1', linestyle='-', linewidth=1.5, alpha=0.7)
-    ax3.axhline(y=-50, color='#EE5A6F', linestyle=':', linewidth=1.5, alpha=0.7)
-    ax3.axhline(y=-150, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8)
-    
-    # Zonas coloreadas
-    ax3.fill_between(range(len(results)), 150, 300, alpha=0.12, color='#FF6B6B', zorder=0)
-    ax3.fill_between(range(len(results)), -300, -150, alpha=0.12, color='#FF6B6B', zorder=0)
-    ax3.fill_between(range(len(results)), -50, 50, alpha=0.08, color='#95A5A6', zorder=0)
-    
-    current = results.iloc[-1]
-    macd_color = '#FF6B6B' if abs(current['MACD_V']) > 150 else '#4ECDC4' if current['MACD_V'] > 50 else '#EE5A6F' if current['MACD_V'] < -50 else '#95A5A6'
-    ax3.text(0.02, 0.88, f'MACD-V: {current["MACD_V"]:.1f}', 
-            transform=ax3.transAxes, fontsize=13, fontweight='bold', 
-            color='white', verticalalignment='top', 
-            bbox=dict(boxstyle='round,pad=0.7', facecolor=macd_color, 
-                     alpha=0.95, edgecolor='white', linewidth=2.5))
-    
-    ax3.set_ylabel('MACD-V (raw)', fontsize=12, fontweight='bold', color='#FFFFFF')
-    ax3.legend(loc='upper right', fontsize=9, framealpha=0.95)
-    ax3.grid(True, alpha=0.08, linestyle=':', linewidth=1, color='#FFFFFF')
-    ax3.tick_params(labelsize=9, colors='#B0B0B0')
-    for spine in ax3.spines.values():
-        spine.set_color('#2D3142')
-        spine.set_linewidth(2)
-    
-    # ============= SUBPLOT 4: Semáforo (IGUAL AL EJEMPLO) =============
+        if pd.notna(results['MACD_V'].iloc[i]):
+            y = results['MACD_V'].iloc[i]
+            color = '#4ECDC4' if y > 50 else '#EE5A6F' if y < -50 else '#95A5A6'
+            ax3.plot([i-1, i], [results['MACD_V'].iloc[i-1], y], color=color, linewidth=2.5)
+    ax3.axhline(0, color='white', alpha=0.3)
+    ax3.set_ylabel('MACD-V', color='white')
+
+    # Subplot Semáforo
     ax4 = fig.add_subplot(gs[3], sharex=ax1)
     ax4.set_facecolor('#1A1D29')
-    
     regime_order = ['BAJISTA', 'LATERAL', 'ALCISTA', 'RIESGO']
-    for regime_name in regime_order:
-        state_map = {'BAJISTA': -1, 'LATERAL': 0, 'ALCISTA': 1, 'RIESGO': 2}
-        mask = results['State'] == state_map[regime_name]
+    state_to_y = {'BAJISTA': 0, 'LATERAL': 1, 'ALCISTA': 2, 'RIESGO': 3}
+    for state_name in regime_order:
+        mask = results['State_Name'] == state_name
         if mask.sum() > 0:
-            color = colors_map[state_map[regime_name]]
-            regime_num = regime_order.index(regime_name)
-            ax4.scatter(results[mask].index, [regime_num] * mask.sum(), 
-                       c=color, alpha=0.95, s=110, edgecolors='white', 
-                       linewidth=1.8, zorder=4)
-    
-    ax4.set_ylabel('Estado', fontsize=12, fontweight='bold', color='#FFFFFF')
+            color = colors_map[{-1: -1, 0: 0, 1: 1, 2: 2}[results[mask]['State'].iloc[0]]]
+            ax4.scatter(results[mask].index, [state_to_y[state_name]] * mask.sum(), 
+                       c=color, s=100, edgecolors='white')
     ax4.set_yticks(range(4))
-    ax4.set_yticklabels(regime_order, fontsize=11, fontweight='bold', color='#E0E0E0')
-    ax4.set_xlabel('Periodo', fontsize=12, fontweight='bold', color='#FFFFFF')
-    ax4.grid(True, alpha=0.08, linestyle='-', linewidth=1, color='#FFFFFF', axis='x')
-    ax4.tick_params(labelsize=9, colors='#B0B0B0')
-    for spine in ax4.spines.values():
-        spine.set_color('#2D3142')
-        spine.set_linewidth(2)
+    ax4.set_yticklabels(regime_order)
     
     plt.tight_layout()
     return fig
 
-# ============= INTERFAZ STREAMLIT =============
+# ============= APP PRINCIPAL =============
 def main_app():
-    """Aplicación principal"""
-    # CSS mejorado - TEXTOS VISIBLES
     st.markdown("""
     <style>
     .main { background-color: #0E1117; }
-    .stMetric { 
-        background: linear-gradient(135deg, #1A1D29 0%, #2D3142 100%);
-        padding: 20px;
-        border-radius: 12px;
-        border: 2px solid #4ECDC4;
-        box-shadow: 0 4px 15px rgba(78, 205, 196, 0.2);
-    }
-    .stMetric label { 
-        color: #00D9FF !important; 
-        font-weight: 700 !important; 
-        font-size: 14px !important; 
-    }
-    .stMetric [data-testid="stMetricValue"] { 
-        color: #FFFFFF !important; 
-        font-size: 24px !important; 
-        font-weight: 800 !important; 
-    }
-    .stMetric [data-testid="stMetricDelta"] {
-        color: #4ECDC4 !important;
-        font-size: 16px !important;
-        font-weight: 600 !important;
-    }
-    .projection-box {
-        background: linear-gradient(135deg, #FF6B6B 0%, #FFB86C 100%);
-        padding: 20px;
-        border-radius: 12px;
-        border: 3px solid #FFD700;
-        box-shadow: 0 4px 20px rgba(255, 215, 0, 0.4);
-        color: white;
-        text-align: center;
-    }
-    .stButton>button {
-        background: linear-gradient(135deg, #4ECDC4 0%, #00D9FF 100%);
-        color: white;
-        font-weight: 700;
-        border: none;
-        padding: 12px 24px;
-        border-radius: 10px;
-        box-shadow: 0 4px 15px rgba(78, 205, 196, 0.4);
-        transition: all 0.3s ease;
-    }
-    .stButton>button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 20px rgba(78, 205, 196, 0.6);
-    }
-    h1, h2, h3 { color: #FFFFFF !important; font-weight: 800 !important; }
+    .stMetric { background: #1A1D29; padding: 15px; border-radius: 10px; border: 1px solid #4ECDC4; }
+    h1, h2, h3 { color: white !important; }
     </style>
     """, unsafe_allow_html=True)
     
     st.title("📊 ATR Trend Analyzer Pro + Proyección")
-    st.markdown("Sistema de Detección de Tendencia con Proyección Inercial")
-    st.markdown("---")
     
-    # Sidebar - Configuración
     with st.sidebar:
-        st.markdown("""
-        <div style='text-align: center; padding: 20px; 
-                    background: linear-gradient(135deg, #4ECDC4 0%, #00D9FF 100%); 
-                    border-radius: 15px; margin-bottom: 20px;'>
-            <h2 style='color: white; margin: 0;'>⚙️ Configuración</h2>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        ticker = st.text_input("Ticker Symbol", value="AAPL", 
-                              help="Símbolo del activo").upper()
-        
-        st.markdown("---")
-        
+        st.header("⚙️ Configuración")
+        ticker = st.text_input("Ticker Symbol", value="AAPL").upper()
         col1, col2 = st.columns(2)
-        with col1:
-            period = st.selectbox("Periodo", 
-                                 ["1y", "2y", "5y", "10y"],
-                                 index=1)
-        with col2:
-            interval = st.selectbox("Intervalo",
-                                   ["1d", "1wk", "1mo"],
-                                   index=1)
-        
-        st.markdown("---")
-        
-        st.subheader("Parámetros ATR")
-        atr_period = st.slider("Periodo ATR", 7, 28, 14, 1)
-        atr_multiplier = st.slider("Multiplicador ATR", 0.5, 3.0, 1.5, 0.1)
-        
-        st.markdown("---")
+        period = col1.selectbox("Periodo", ["1y", "2y", "5y", "10y"], index=1)
+        interval = col2.selectbox("Intervalo", ["1d", "1wk", "1mo"], index=1)
         
         st.subheader("🔮 Proyección")
-        projection_periods = st.slider("Períodos a Proyectar", 1, 12, 4, 1)
-        projection_lookback = st.slider("Puntos de Inercia", 5, 20, 10, 1)
-        projection_degree = st.selectbox("Tipo",
-                                        options=[1, 2, 3],
-                                        format_func=lambda x: {1: "Lineal", 2: "Cuadrática", 3: "Cúbica"}[x],
-                                        index=1)
+        projection_periods = st.slider("Períodos a Proyectar", 1, 12, 4)
+        projection_degree = st.selectbox("Modelo", [1, 2, 3], format_func=lambda x: ["Lineal", "Cuadrático", "Cúbico"][x-1], index=1)
         
-        st.markdown("---")
-        
-        st.subheader("Algoritmos")
-        use_adaptive = st.checkbox("Bandwidth Adaptativo", value=True)
-        use_dynamic = st.checkbox("Umbral Dinámico", value=True)
-        
-        st.markdown("---")
-        
-        analyze_btn = st.button("🚀 ANALIZAR + PROYECTAR", type="primary", 
-                               use_container_width=True)
-        
-        st.markdown("---")
-        
-        with st.expander("ℹ️ Metodología"):
-            st.markdown("""
-            **Estados:**
-            - 🟢 ALCISTA: Tendencia alcista
-            - 🔴 BAJISTA: Tendencia bajista
-            - ⚫ LATERAL: Sin dirección
-            - 🟠 RIESGO: Sobreextendido
-            
-            **Indicadores:**
-            - Kernel NW: Suavizado
-            - ATR: Volatilidad
-            - MACD-V: Momentum normalizado
-            - Proyección: Extrapolación polinomial
-            """)
-    
-    # Procesamiento
-    if analyze_btn:
-        with st.spinner(f"Analizando {ticker}..."):
-            result = download_and_process_data(
-                ticker, period, interval,
-                atr_period, atr_multiplier,
-                use_adaptive, use_dynamic,
-                projection_periods, projection_lookback,
-                projection_degree
-            )
-            
-            if result[1]:
-                st.error(f"❌ {result[1]}")
-                return
-            
-            results, projection_df, metrics = result[0]
-            
-            if results is None:
-                st.error("❌ No se pudieron obtener datos")
-                return
-            
-            st.session_state['results'] = results
-            st.session_state['projection_df'] = projection_df
-            st.session_state['metrics'] = metrics
-            st.session_state['ticker'] = ticker
-            st.success(f"✅ {len(results)} periodos + {len(projection_df)} proyectados")
-    
-    # Mostrar resultados
-    if 'results' in st.session_state:
-        results = st.session_state['results']
-        projection_df = st.session_state['projection_df']
-        metrics = st.session_state['metrics']
-        ticker = st.session_state['ticker']
-        
-        st.markdown("---")
-        st.markdown("### 📈 Estado Actual")
-        
-        current = results.iloc[-1]
-        prev = results.iloc[-2] if len(results) > 1 else current
-        
-        col1, col2, col3, col4, col5 = st.columns(5)
-        
-        with col1:
-            state_emoji = {'ALCISTA': '🟢', 'BAJISTA': '🔴', 
-                          'LATERAL': '⚫', 'RIESGO': '🟠'}
-            st.metric("ESTADO", 
-                     f"{state_emoji[current['State_Name']]} {current['State_Name']}")
-        
-        with col2:
-            price_change = ((current['Close'] - prev['Close']) / prev['Close'] * 100)
-            st.metric("PRECIO", f"${current['Close']:.2f}", 
-                     f"{price_change:+.2f}%")
-        
-        with col3:
-            st.metric("ATR", f"${current['ATR']:.2f}")
-        
-        with col4:
-            trend_pos = ((current['Close'] - current['Lower_Risk']) / 
-                        (current['Upper_Risk'] - current['Lower_Risk']) * 100)
-            st.metric("Pos. ATR", f"{trend_pos:.0f}%")
-        
-        with col5:
-            distance = ((current['Close'] - current['Trend']) / current['Trend'] * 100)
-            st.metric("Vs Tend.", f"{distance:+.2f}%")
-        
-        # Métricas proyección
-        st.markdown("---")
-        st.markdown("### 🔮 Proyección")
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            proj_target = projection_df['Trend_Projection'].iloc[-1]
-            st.markdown(f"""
-            <div class='projection-box'>
-                <div style='font-size: 14px; font-weight: bold; color: #FFD700;'>
-                    TARGET
-                </div>
-                <div style='font-size: 28px; font-weight: bold; margin-top: 10px;'>
-                    ${proj_target:.2f}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col2:
-            proj_change = metrics['projection_change_pct']
-            color = '#4ECDC4' if proj_change > 0 else '#FF6B6B'
-            arrow = '↗' if proj_change > 0 else '↘'
-            st.markdown(f"""
-            <div class='projection-box'>
-                <div style='font-size: 14px; font-weight: bold; color: #FFD700;'>
-                    CAMBIO
-                </div>
-                <div style='font-size: 28px; font-weight: bold; margin-top: 10px; color: {color};'>
-                    {arrow} {proj_change:+.1f}%
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col3:
-            conf = metrics['projection_confidence']
-            conf_color = '#4ECDC4' if conf > 0.7 else '#FFB86C' if conf > 0.4 else '#FF6B6B'
-            conf_label = 'Alta' if conf > 0.7 else 'Media' if conf > 0.4 else 'Baja'
-            st.markdown(f"""
-            <div class='projection-box'>
-                <div style='font-size: 14px; font-weight: bold; color: #FFD700;'>
-                    CONFIANZA
-                </div>
-                <div style='font-size: 28px; font-weight: bold; margin-top: 10px; color: {conf_color};'>
-                    {conf*100:.0f}%
-                </div>
-                <div style='font-size: 14px; margin-top: 5px;'>
-                    {conf_label}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col4:
-            date_target = projection_df['Date'].iloc[-1].strftime('%Y-%m-%d')
-            st.markdown(f"""
-            <div class='projection-box'>
-                <div style='font-size: 14px; font-weight: bold; color: #FFD700;'>
-                    FECHA
-                </div>
-                <div style='font-size: 20px; font-weight: bold; margin-top: 10px;'>
-                    {date_target}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        # Gráfico
-        st.markdown("---")
-        st.markdown("### 📊 Análisis Completo")
-        
-        fig = plot_atr_analysis_with_projection(results, projection_df, metrics, ticker)
-        st.pyplot(fig)
-        
-        # Estadísticas
-        st.markdown("---")
-        st.markdown("### 📉 Estadísticas")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.markdown("**Distribución Estados:**")
-            state_counts = results['State_Name'].value_counts()
-            for state, count in state_counts.items():
-                pct = (count / len(results) * 100)
-                st.write(f"- {state}: {count} ({pct:.1f}%)")
-        
-        with col2:
-            st.markdown("**Precio:**")
-            st.write(f"- Máximo: ${results['Close'].max():.2f}")
-            st.write(f"- Mínimo: ${results['Close'].min():.2f}")
-            st.write(f"- Promedio: ${results['Close'].mean():.2f}")
-            st.write(f"- Volatilidad: {results['Close'].std():.2f}")
-        
-        with col3:
-            st.markdown("**ATR:**")
-            st.write(f"- Promedio: ${results['ATR'].mean():.2f}")
-            st.write(f"- Máximo: ${results['ATR'].max():.2f}")
-            st.write(f"- Actual: ${current['ATR']:.2f}")
-        
-        # Interpretación
-        st.markdown("---")
-        st.markdown("### 🤖 Interpretación")
-        
-        interpretation = f"""
-        **Análisis de {ticker}:**
-        
-        - **Estado Actual**: {current['State_Name']}
-        - **Precio**: ${current['Close']:.2f} ({distance:+.1f}% vs tendencia)
-        - **Proyección**: ${proj_target:.2f} ({proj_change:+.1f}%)
-        - **Confianza**: {conf_label} ({conf*100:.0f}%)
-        - **MACD-V**: {current['MACD_V']:.1f}
-        """
-        
-        if proj_change > 5:
-            interpretation += "\n- ⚠️ Proyección alcista significativa (>5%)"
-        elif proj_change < -5:
-            interpretation += "\n- ⚠️ Proyección bajista significativa (<-5%)"
-        
-        if conf < 0.5:
-            interpretation += "\n- ⚠️ Baja confianza, mercado volátil"
-        
-        if current['State_Name'] == 'RIESGO':
-            interpretation += "\n- 🚨 Precio sobreextendido, posible reversión"
-        
-        st.info(interpretation)
-        
-        # Descargar
-        st.markdown("---")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            csv_hist = results.to_csv(index=False)
-            st.download_button(
-                "📥 Datos Históricos (CSV)",
-                data=csv_hist,
-                file_name=f"atr_hist_{ticker}_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-        
-        with col2:
-            csv_proj = projection_df.to_csv(index=False)
-            st.download_button(
-                "🔮 Proyección (CSV)",
-                data=csv_proj,
-                file_name=f"atr_proj_{ticker}_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-    
-    else:
-        st.markdown("""
-        <div style='text-align: center; padding: 60px 20px;
-                    background: linear-gradient(135deg, #1A1D29 0%, #2D3142 100%);
-                    border-radius: 20px; border: 3px solid #4ECDC4;
-                    box-shadow: 0 8px 30px rgba(78, 205, 196, 0.3);
-                    margin-top: 40px;'>
-            <h2 style='color: #4ECDC4; margin: 0;'>
-                👋 ATR Trend Analyzer Pro + Proyección
-            </h2>
-            <p style='color: #B0B0B0; font-size: 18px; margin: 20px 0;'>
-                Sistema avanzado con proyección inercial
-            </p>
-            <p style='color: #8E93A1; font-size: 14px;'>
-                Configura parámetros y presiona 
-                <strong style='color: #00D9FF;'>ANALIZAR + PROYECTAR</strong>
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
+        atr_multiplier = st.slider("Multiplicador ATR", 0.5, 3.0, 1.5, 0.1)
+        analyze_btn = st.button("🚀 ANALIZAR + PROYECTAR", use_container_width=True, type="primary")
 
-# ============= EJECUCIÓN =============
+    if analyze_btn or 'results' in st.session_state:
+        if analyze_btn:
+            with st.spinner(f"Procesando {ticker}..."):
+                res = download_and_process_data(ticker, period, interval, 
+                                               atr_multiplier=atr_multiplier,
+                                               projection_periods=projection_periods,
+                                               projection_degree=projection_degree)
+                if res[1]: 
+                    st.error(res[1])
+                else:
+                    st.session_state['results'], st.session_state['proj'], st.session_state['met'] = res[0]
+                    st.session_state['ticker'] = ticker
+
+        if 'results' in st.session_state:
+            results = st.session_state['results']
+            projection_df = st.session_state['proj']
+            metrics = st.session_state['met']
+            
+            # Dashboard de métricas
+            c1, c2, c3, c4 = st.columns(4)
+            cur = results.iloc[-1]
+            state_colors = {'ALCISTA': '🟢', 'BAJISTA': '🔴', 'LATERAL': '⚪', 'RIESGO': '🟠'}
+            c1.metric("ESTADO", f"{state_colors[cur['State_Name']]} {cur['State_Name']}")
+            c2.metric("PRECIO", f"${cur['Close']:.2f}")
+            c3.metric("TARGET PROYECTADO", f"${metrics['projection_target']:.2f}", f"{metrics['projection_change_pct']:+.1f}%")
+            c4.metric("CONFIANZA", f"{metrics['projection_confidence']*100:.0f}%")
+            
+            st.pyplot(plot_atr_analysis_with_projection(results, projection_df, metrics, st.session_state['ticker']))
+            
+            with st.expander("📝 Interpretación del Analista"):
+                if cur['State_Name'] == 'BAJISTA':
+                    st.warning(f"⚠️ {st.session_state['ticker']} está en una fase bajista confirmada por la pendiente de la tendencia.")
+                elif cur['State_Name'] == 'ALCISTA':
+                    st.success(f"✅ Tendencia alcista sólida. El momentum acompaña el movimiento.")
+                elif cur['State_Name'] == 'RIESGO':
+                    st.error(f"🚨 Alerta de riesgo: El precio está muy alejado de su tendencia histórica. Posible reversión o corrección.")
+
 if __name__ == "__main__":
     if check_password():
         main_app()
-    else:
-        st.stop()
