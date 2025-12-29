@@ -63,11 +63,40 @@ def calculate_macd_v(df, fast_len=12, slow_len=26, signal_len=9, atr_len=26):
 @st.cache_data(ttl=timedelta(hours=1))
 def download_weekly_data(ticker, start_date='2018-01-01'):
     try:
-        data = yf.download(ticker, start=start_date, interval='1wk', progress=False)
-        if data.empty:
+        # Añadir parámetros adicionales para mejorar la descarga
+        data = yf.download(
+            ticker, 
+            start=start_date, 
+            interval='1wk', 
+            progress=False,
+            auto_adjust=True,
+            actions=False,
+            timeout=10
+        )
+        
+        # Validación exhaustiva
+        if data is None or data.empty:
+            st.error(f"⚠️ No se encontraron datos para el ticker '{ticker}'. Verifica que el símbolo sea correcto.")
+            st.info("💡 Intenta con: AAPL, MSFT, GOOGL, TSLA, SPY, QQQ, etc.")
             return None
+        
+        # Verificar que tengamos suficientes datos
+        if len(data) < 50:
+            st.warning(f"⚠️ Datos insuficientes para {ticker} ({len(data)} semanas). Se requieren al menos 50 períodos.")
+            return None
+        
+        # Manejar MultiIndex columns
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
+        
+        # Construir DataFrame con validación
+        required_columns = ['Close', 'Open', 'High', 'Low', 'Volume']
+        missing_cols = [col for col in required_columns if col not in data.columns]
+        
+        if missing_cols:
+            st.error(f"❌ Faltan columnas requeridas: {missing_cols}")
+            return None
+        
         df = pd.DataFrame({
             'Close': data['Close'].squeeze(),
             'Open': data['Open'].squeeze(),
@@ -75,15 +104,45 @@ def download_weekly_data(ticker, start_date='2018-01-01'):
             'Low': data['Low'].squeeze(),
             'Volume': data['Volume'].squeeze()
         }, index=data.index)
+        
+        # Eliminar filas con NaN en columnas críticas
+        df = df.dropna(subset=['Close', 'High', 'Low'])
+        
+        if len(df) < 50:
+            st.warning(f"⚠️ Después de limpiar datos, quedan {len(df)} períodos (mínimo: 50)")
+            return None
+        
+        # Calcular indicadores
         df['SMA_20'] = calculate_sma(df['Close'], 20)
         df['SMA_50'] = calculate_sma(df['Close'], 50)
         df['Donchian_Upper'], df['Donchian_Middle'], df['Donchian_Lower'] = calculate_donchian(df, period=20)
         df['Choppiness'] = calculate_choppiness(df, period=14)
         df['MACD_V'], df['MACD_V_Signal'] = calculate_macd_v(df, fast_len=12, slow_len=26, signal_len=9, atr_len=26)
+        
+        # Eliminar NaN resultantes de cálculos
         df = df.dropna()
+        
+        if len(df) < 30:
+            st.warning(f"⚠️ Después de calcular indicadores, quedan {len(df)} períodos (mínimo recomendado: 30)")
+            return None
+        
         return df
+        
     except Exception as e:
-        st.error(f"Error descargando datos semanales para {ticker}: {str(e)}")
+        error_msg = str(e)
+        st.error(f"❌ Error descargando datos para '{ticker}'")
+        
+        # Mensajes de error más específicos
+        if "404" in error_msg or "Not Found" in error_msg:
+            st.error(f"🔍 Ticker '{ticker}' no encontrado. Verifica el símbolo.")
+            st.info("💡 Ejemplos válidos: AAPL, MSFT, GOOGL, AMZN, TSLA, SPY, QQQ")
+        elif "timeout" in error_msg.lower():
+            st.error("⏱️ Timeout de conexión. Intenta nuevamente.")
+        elif "No data found" in error_msg:
+            st.error(f"📊 No hay datos disponibles para '{ticker}' en el período seleccionado.")
+        else:
+            st.error(f"⚠️ Error técnico: {error_msg}")
+        
         return None
 
 def classify_regime_weekly(df):
@@ -423,6 +482,42 @@ def market_regime_page():
         
         ticker = st.text_input("Ticker Symbol", value="AAPL", help="Ingresa el símbolo del ticker").upper()
         
+        # Validación del ticker
+        if ticker:
+            if len(ticker) > 10:
+                st.warning("⚠️ El ticker parece demasiado largo")
+            elif not ticker.replace('.', '').replace('-', '').isalnum():
+                st.warning("⚠️ El ticker contiene caracteres inválidos")
+        
+        # Sugerencias de tickers populares
+        st.markdown("**Tickers populares:**")
+        col_t1, col_t2, col_t3 = st.columns(3)
+        with col_t1:
+            if st.button("📱 AAPL", key="aapl", use_container_width=True):
+                st.session_state['ticker_input'] = "AAPL"
+                st.rerun()
+            if st.button("🚗 TSLA", key="tsla", use_container_width=True):
+                st.session_state['ticker_input'] = "TSLA"
+                st.rerun()
+        with col_t2:
+            if st.button("💻 MSFT", key="msft", use_container_width=True):
+                st.session_state['ticker_input'] = "MSFT"
+                st.rerun()
+            if st.button("📊 SPY", key="spy", use_container_width=True):
+                st.session_state['ticker_input'] = "SPY"
+                st.rerun()
+        with col_t3:
+            if st.button("🔍 GOOGL", key="googl", use_container_width=True):
+                st.session_state['ticker_input'] = "GOOGL"
+                st.rerun()
+            if st.button("💰 QQQ", key="qqq", use_container_width=True):
+                st.session_state['ticker_input'] = "QQQ"
+                st.rerun()
+        
+        # Actualizar ticker si se seleccionó uno
+        if 'ticker_input' in st.session_state:
+            ticker = st.session_state['ticker_input']
+        
         st.markdown("---")
         
         lookback_months = st.slider(
@@ -507,19 +602,57 @@ def market_regime_page():
     
     if analizar_btn:
         with st.spinner(f"⏳ Descargando datos para {ticker}..."):
+            # Validación previa
+            if not ticker or ticker.strip() == "":
+                st.error("❌ Por favor ingresa un ticker válido")
+                st.stop()
+            
+            if len(ticker) < 1 or len(ticker) > 10:
+                st.error("❌ El ticker debe tener entre 1 y 10 caracteres")
+                st.stop()
+            
+            # Intentar descarga
             df_weekly = download_weekly_data(ticker, start_date.strftime('%Y-%m-%d'))
             
             if df_weekly is None:
                 st.error(f"❌ No se pudieron obtener datos para {ticker}")
+                
+                # Sugerencias adicionales
+                st.markdown("""
+                ---
+                ### 🔍 Sugerencias para resolver el problema:
+                
+                1. **Verifica el símbolo del ticker**
+                   - ¿Es el símbolo correcto? (Ej: AAPL para Apple)
+                   - ¿Está en el mercado correcto? (US, etc.)
+                
+                2. **Prueba con tickers conocidos:**
+                   - **Acciones**: AAPL, MSFT, GOOGL, AMZN, TSLA, NVDA, META
+                   - **ETFs**: SPY, QQQ, DIA, IWM, VTI
+                   - **Índices**: ^GSPC, ^DJI, ^IXIC
+                
+                3. **Verifica la fecha de inicio**
+                   - Algunos tickers nuevos no tienen datos desde 2018
+                   - Intenta con una fecha más reciente
+                
+                4. **Problemas comunes:**
+                   - Ticker delisted (dejó de cotizar)
+                   - Símbolo incorrecto o cambió de nombre
+                   - Problemas temporales con Yahoo Finance
+                """)
                 st.stop()
             
+            # Clasificar regímenes
             df_weekly['Regime_Weekly'] = classify_regime_weekly(df_weekly)
             
+            # Guardar en session state
             st.session_state['ticker'] = ticker
             st.session_state['df_weekly'] = df_weekly
             st.session_state['lookback_months'] = lookback_months
             
+            # Mostrar información de éxito
             st.success(f"✅ Datos cargados exitosamente para {ticker}")
+            st.info(f"📊 {len(df_weekly)} semanas de datos | Desde {df_weekly.index[0].strftime('%Y-%m-%d')} hasta {df_weekly.index[-1].strftime('%Y-%m-%d')}")
     
     if 'df_weekly' in st.session_state:
         df_weekly = st.session_state['df_weekly']
