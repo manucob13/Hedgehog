@@ -12,9 +12,10 @@ warnings.filterwarnings('ignore')
 
 st.set_page_config(page_title="Market Regime Analyzer", layout="wide")
 
-# Colores para regímenes semanales
+# Colores para regímenes semanales (con dos tipos de riesgo)
 REGIME_COLORS_WEEKLY = {
-    'RIESGO': '#FF6B6B',
+    'RIESGO_DONCHIAN': '#FF6B6B',  # Rojo intenso
+    'RIESGO_MACDV': '#FF9F40',      # Naranja
     'BAJISTA': '#EE5A6F',
     'RANGO': '#FFD93D',
     'ALCISTA': '#4ECDC4'
@@ -87,13 +88,15 @@ def download_weekly_data(ticker, start_date='2018-01-01'):
 
 def classify_regime_weekly(df):
     """
-    Clasificación SEMANAL mejorada con lógica equilibrada
+    Clasificación SEMANAL mejorada con DOS tipos de RIESGO
     
     Jerarquía clara:
-    1. RIESGO: Sobreextensión extrema (MACD-V > 150 o < -150)
-    2. RANGO: Mercado choppy (Choppiness > 61.8) Y momentum débil (-50 < MACD-V < 50)
-    3. ALCISTA: MACD-V > 50 (con confirmación de posición Donchian)
-    4. BAJISTA: MACD-V < -50 (con confirmación de posición Donchian)
+    1. RIESGO_DONCHIAN: Precio fuera del canal Donchian (breakout extremo)
+    2. RIESGO_MACDV: MACD-V > 150 o < -150 (momentum extremo)
+    3. RANGO: Choppiness > 61.8 Y momentum débil (-50 < MACD-V < 50)
+    4. ALCISTA: MACD-V > 50 Y Precio >= Donchian_Middle
+    5. BAJISTA: MACD-V < -50 Y Precio <= Donchian_Middle
+    6. RANGO (fallback): Todo lo demás
     """
     regimes = []
     
@@ -101,25 +104,39 @@ def classify_regime_weekly(df):
         macd_v = row['MACD_V']
         chop = row['Choppiness']
         price = row['Close']
+        donchian_upper = row['Donchian_Upper']
+        donchian_lower = row['Donchian_Lower']
         donchian_middle = row['Donchian_Middle']
         
-        # PRIORIDAD 1: RIESGO - Sobreextensión extrema
-        if macd_v > 150 or macd_v < -150:
-            regime = 'RIESGO'
+        # PRIORIDAD 1: RIESGO_DONCHIAN - Precio fuera del canal
+        # Esto indica breakout/breakdown extremo
+        if price > donchian_upper or price < donchian_lower:
+            regime = 'RIESGO_DONCHIAN'
         
-        # PRIORIDAD 2: RANGO - Mercado choppy CON momentum débil
+        # PRIORIDAD 2: RIESGO_MACDV - Momentum extremo
+        # Sobreextensión en el indicador de momentum
+        elif macd_v > 150 or macd_v < -150:
+            regime = 'RIESGO_MACDV'
+        
+        # PRIORIDAD 3: RANGO - Mercado choppy CON momentum débil
         elif chop > 61.8 and -50 <= macd_v <= 50:
             regime = 'RANGO'
         
-        # PRIORIDAD 3: ALCISTA - Momentum alcista
-        elif macd_v > 50:
+        # PRIORIDAD 4: ALCISTA - Momentum alcista + precio en zona superior
+        elif macd_v > 50 and price >= donchian_middle:
             regime = 'ALCISTA'
         
-        # PRIORIDAD 4: BAJISTA - Momentum bajista
+        # PRIORIDAD 5: BAJISTA - Momentum bajista + precio en zona inferior
+        elif macd_v < -50 and price <= donchian_middle:
+            regime = 'BAJISTA'
+        
+        # PRIORIDAD 6: Casos intermedios
+        elif macd_v > 50:
+            regime = 'ALCISTA'
         elif macd_v < -50:
             regime = 'BAJISTA'
         
-        # PRIORIDAD 5: RANGO por defecto - Momentum neutral
+        # PRIORIDAD 7: RANGO por defecto
         else:
             regime = 'RANGO'
         
@@ -153,8 +170,18 @@ def plot_weekly_dashboard(df_recent, ticker):
         if mask.sum() > 0:
             ax1.scatter(df_recent[mask].index, df_recent[mask]['Close'], c=color, alpha=0.15, 
                        s=220, edgecolors='none', zorder=4)
-            ax1.scatter(df_recent[mask].index, df_recent[mask]['Close'], c=color, label=regime_name, 
-                       alpha=0.95, s=85, edgecolors='white', linewidth=1.5, zorder=5)
+            
+            # Etiquetas más descriptivas
+            label_map = {
+                'RIESGO_DONCHIAN': 'RIESGO (Donchian)',
+                'RIESGO_MACDV': 'RIESGO (MACD-V)',
+                'ALCISTA': 'ALCISTA',
+                'BAJISTA': 'BAJISTA',
+                'RANGO': 'RANGO'
+            }
+            ax1.scatter(df_recent[mask].index, df_recent[mask]['Close'], c=color, 
+                       label=label_map[regime_name], alpha=0.95, s=85, edgecolors='white', 
+                       linewidth=1.5, zorder=5)
     
     ax1.plot(df_recent.index, df_recent['SMA_20'], color='#50FA7B', alpha=0.9, linewidth=2.5, 
             label='SMA(20)', zorder=3)
@@ -170,7 +197,8 @@ def plot_weekly_dashboard(df_recent, ticker):
                label=f'Actual: {current["Regime_Weekly"]}', zorder=10)
     
     bbox_color = REGIME_COLORS_WEEKLY[current['Regime_Weekly']]
-    ax1.annotate(f'{current["Regime_Weekly"]}\n${current["Close"]:.2f}', 
+    regime_display = current['Regime_Weekly'].replace('RIESGO_DONCHIAN', 'RIESGO (D)').replace('RIESGO_MACDV', 'RIESGO (M)')
+    ax1.annotate(f'{regime_display}\n${current["Close"]:.2f}', 
                 xy=(current.name, current['Close']), xytext=(25, 40), 
                 textcoords='offset points', fontsize=14, fontweight='bold', color='white', 
                 bbox=dict(boxstyle='round,pad=1', facecolor=bbox_color, alpha=0.95, 
@@ -180,12 +208,12 @@ def plot_weekly_dashboard(df_recent, ticker):
     
     ax1.text(0.5, 1.10, f'{ticker}', transform=ax1.transAxes, fontsize=28, 
             fontweight='bold', ha='center', color='#FFFFFF')
-    ax1.text(0.5, 1.05, 'Weekly Market Regime Analysis', transform=ax1.transAxes, 
+    ax1.text(0.5, 1.05, 'Weekly Market Regime Analysis - Dual Risk Detection', transform=ax1.transAxes, 
             fontsize=13, style='italic', ha='center', color='#8E93A1')
     ax1.set_ylabel('Price ($)', fontsize=15, fontweight='700', color='#FFFFFF', labelpad=12)
-    legend = ax1.legend(loc='upper left', fontsize=10, framealpha=0.95, ncol=3, 
+    legend = ax1.legend(loc='upper left', fontsize=9, framealpha=0.95, ncol=4, 
                        edgecolor='#00D9FF', fancybox=True, borderpad=1.2, 
-                       labelspacing=1, columnspacing=2)
+                       labelspacing=1, columnspacing=1.5)
     legend.get_frame().set_facecolor('#1A1D29')
     legend.get_frame().set_linewidth(2)
     ax1.grid(True, alpha=0.08, linestyle='-', linewidth=1, color='#FFFFFF')
@@ -228,20 +256,17 @@ def plot_weekly_dashboard(df_recent, ticker):
         spine.set_color('#2D3142')
         spine.set_linewidth(2)
     
-    # PANEL 3: MACD-V (MEJORADO - Escala adaptativa)
+    # PANEL 3: MACD-V (Escala adaptativa)
     ax3 = fig.add_subplot(gs[2], sharex=ax1)
     ax3.set_facecolor('#1A1D29')
     
-    # Calcular límites inteligentes para mejor visualización
+    # Calcular límites inteligentes
     macd_min = df_recent['MACD_V'].min()
     macd_max = df_recent['MACD_V'].max()
-    
-    # Expandir límites un 20% para dar espacio visual
     y_range = macd_max - macd_min
     y_min = macd_min - (y_range * 0.2)
     y_max = macd_max + (y_range * 0.2)
     
-    # Asegurar que los límites clave (-150, -50, 50, 150) estén visibles si hay datos cerca
     if macd_max > 100:
         y_max = max(y_max, 180)
     if macd_min < -100:
@@ -253,25 +278,22 @@ def plot_weekly_dashboard(df_recent, ticker):
             x1, x2 = df_recent.index[i-1], df_recent.index[i]
             y1, y2 = df_recent['MACD_V'].iloc[i-1], df_recent['MACD_V'].iloc[i]
             
-            # Color basado en el valor actual
-            if y2 > 150:
-                color, width = '#FF6B6B', 3.5
+            if y2 > 150 or y2 < -150:
+                color, width = '#FF9F40', 3.5  # Naranja para RIESGO_MACDV
             elif y2 > 50:
                 color, width = '#4ECDC4', 3
             elif y2 > -50:
                 color, width = '#95A5A6', 2.5
-            elif y2 > -150:
-                color, width = '#EE5A6F', 3
             else:
-                color, width = '#FF6B6B', 3.5
+                color, width = '#EE5A6F', 3
             
             ax3.plot([x1, x2], [y1, y2], color=color, linewidth=width, alpha=0.95, zorder=5)
     
-    # Líneas de referencia (solo las que están dentro del rango visible)
+    # Líneas de referencia
     if y_max > 150:
-        ax3.axhline(y=150, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8, 
-                   label='Riesgo > 150', zorder=2)
-        ax3.fill_between(df_recent.index, 150, y_max, alpha=0.12, color='#FF6B6B', zorder=0)
+        ax3.axhline(y=150, color='#FF9F40', linestyle='--', linewidth=2, alpha=0.8, 
+                   label='Riesgo MACD-V > 150', zorder=2)
+        ax3.fill_between(df_recent.index, 150, y_max, alpha=0.12, color='#FF9F40', zorder=0)
     
     if y_max > 50:
         ax3.axhline(y=50, color='#4ECDC4', linestyle=':', linewidth=1.5, alpha=0.7, 
@@ -284,26 +306,23 @@ def plot_weekly_dashboard(df_recent, ticker):
                    label='Bajista < -50', zorder=2)
     
     if y_min < -150:
-        ax3.axhline(y=-150, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8, 
-                   label='Riesgo < -150', zorder=2)
-        ax3.fill_between(df_recent.index, y_min, -150, alpha=0.12, color='#FF6B6B', zorder=0)
+        ax3.axhline(y=-150, color='#FF9F40', linestyle='--', linewidth=2, alpha=0.8, 
+                   label='Riesgo MACD-V < -150', zorder=2)
+        ax3.fill_between(df_recent.index, y_min, -150, alpha=0.12, color='#FF9F40', zorder=0)
     
-    # Zona neutral
     neutral_top = min(50, y_max)
     neutral_bottom = max(-50, y_min)
     ax3.fill_between(df_recent.index, neutral_bottom, neutral_top, alpha=0.08, 
                      color='#95A5A6', zorder=0)
     
-    # Signal line (opcional, más sutil)
     if 'MACD_V_Signal' in df_recent.columns:
         ax3.plot(df_recent.index, df_recent['MACD_V_Signal'], color='#FFB86C', 
                 linewidth=1.2, alpha=0.4, linestyle='--', label='Signal', zorder=3)
     
-    # Punto actual
     ax3.scatter(current.name, current['MACD_V'], facecolors='white', edgecolors='#00D9FF', 
                s=220, linewidth=4, marker='o', zorder=10)
     
-    macd_color = '#FF6B6B' if abs(current['MACD_V']) > 150 else '#4ECDC4' if current['MACD_V'] > 50 else '#EE5A6F' if current['MACD_V'] < -50 else '#95A5A6'
+    macd_color = '#FF9F40' if abs(current['MACD_V']) > 150 else '#4ECDC4' if current['MACD_V'] > 50 else '#EE5A6F' if current['MACD_V'] < -50 else '#95A5A6'
     ax3.text(0.02, 0.88, f'MACD-V: {current["MACD_V"]:.1f}', transform=ax3.transAxes, 
             fontsize=13, fontweight='bold', color='white', verticalalignment='top', 
             bbox=dict(boxstyle='round,pad=0.7', facecolor=macd_color, alpha=0.95, 
@@ -321,7 +340,9 @@ def plot_weekly_dashboard(df_recent, ticker):
     # PANEL 4: Timeline de Regímenes
     ax4 = fig.add_subplot(gs[3], sharex=ax1)
     ax4.set_facecolor('#1A1D29')
-    regime_order = ['BAJISTA', 'RANGO', 'ALCISTA', 'RIESGO']
+    regime_order = ['BAJISTA', 'RANGO', 'ALCISTA', 'RIESGO_MACDV', 'RIESGO_DONCHIAN']
+    regime_labels = ['BAJISTA', 'RANGO', 'ALCISTA', 'RIESGO (M)', 'RIESGO (D)']
+    
     for regime_name in regime_order:
         mask = df_recent['Regime_Weekly'] == regime_name
         if mask.sum() > 0:
@@ -331,8 +352,8 @@ def plot_weekly_dashboard(df_recent, ticker):
                        alpha=0.95, s=110, edgecolors='white', linewidth=1.8, zorder=4)
     
     ax4.set_ylabel('Regime', fontsize=14, fontweight='700', color='#FFFFFF', labelpad=12)
-    ax4.set_yticks(range(4))
-    ax4.set_yticklabels(regime_order, fontsize=12, fontweight='700', color='#E0E0E0')
+    ax4.set_yticks(range(5))
+    ax4.set_yticklabels(regime_labels, fontsize=11, fontweight='700', color='#E0E0E0')
     ax4.set_xlabel('Date', fontsize=15, fontweight='700', color='#FFFFFF', labelpad=12)
     ax4.grid(True, alpha=0.08, linestyle='-', linewidth=1, color='#FFFFFF', axis='x')
     ax4.tick_params(labelsize=11, colors='#B0B0B0', width=1.5)
@@ -389,7 +410,7 @@ def market_regime_page():
     </style>
     """, unsafe_allow_html=True)
     
-    st.title("📊 Market Regime Analyzer - Weekly Edition")
+    st.title("📊 Market Regime Analyzer - Dual Risk Detection")
     st.markdown("---")
     
     with st.sidebar:
@@ -408,7 +429,7 @@ def market_regime_page():
             "📅 Meses a Visualizar", 
             min_value=1, 
             max_value=24, 
-            value=3,  # 3 meses por defecto
+            value=3,
             step=1,
             help="Selecciona cuántos meses de datos históricos visualizar"
         )
@@ -434,37 +455,52 @@ def market_regime_page():
         st.markdown("""
         ### 🔍 ANÁLISIS SEMANAL
         
-        **Indicadores Principales:**
-        - **MACD-V** (Momentum Normalizado)
-          - `> 150` o `< -150`: 🟠 RIESGO
-          - `-50` a `50`: ⚫ RANGO
-          - `> 50`: 🟢 ALCISTA
-          - `< -50`: 🔴 BAJISTA
+        **Sistema de Doble Riesgo:**
         
-        - **Choppiness Index**
-          - `> 61.8`: Mercado Choppy
-          - `< 38.2`: Mercado Trending
+        🔴 **RIESGO DONCHIAN**
+        - Precio > Canal Superior
+        - Precio < Canal Inferior
+        - *Breakout extremo del rango*
         
-        - **Donchian Channel** (20 periodos)
-          - Soporte/Resistencia dinámico
-        
-        - **SMAs**: 20 y 50 periodos
+        🟠 **RIESGO MACD-V**
+        - MACD-V > 150 o < -150
+        - *Momentum sobreextendido*
         
         ---
         
-        **🎯 Jerarquía de Regímenes:**
-        1. **RIESGO**: Sobreextensión extrema
-        2. **RANGO**: Choppy + momentum débil
-        3. **ALCISTA/BAJISTA**: Momentum direccional
+        **Otros Regímenes:**
+        
+        🟢 **ALCISTA**
+        - MACD-V > 50
+        - Precio ≥ Donchian Middle
+        
+        🔴 **BAJISTA**
+        - MACD-V < -50
+        - Precio ≤ Donchian Middle
+        
+        🟡 **RANGO**
+        - Choppiness > 61.8
+        - -50 < MACD-V < 50
+        
+        ---
+        
+        **Indicadores:**
+        - **MACD-V**: Momentum normalizado
+        - **Choppiness**: 61.8/38.2 thresholds
+        - **Donchian**: Canal 20 períodos
+        - **SMAs**: 20 y 50 períodos
         """)
         
         st.markdown("---")
         
         st.markdown("""
         <div style='text-align: center; padding: 10px; background: #1A1D29; 
-                    border-radius: 10px; border: 1px solid #4ECDC4;'>
-            <p style='color: #8E93A1; font-size: 12px; margin: 0;'>
-                💡 Basado en metodología de Alex Spiroglou (2022)
+                    border-radius: 10px; border: 1px solid #FF6B6B;'>
+            <p style='color: #FF6B6B; font-size: 11px; margin: 0; font-weight: bold;'>
+                ⚠️ RIESGO DONCHIAN = Precio fuera del canal
+            </p>
+            <p style='color: #FF9F40; font-size: 11px; margin: 5px 0 0 0; font-weight: bold;'>
+                ⚠️ RIESGO MACD-V = Momentum extremo
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -507,9 +543,12 @@ def market_regime_page():
                 'ALCISTA': '🟢',
                 'BAJISTA': '🔴',
                 'RANGO': '🟡',
-                'RIESGO': '🟠'
+                'RIESGO_DONCHIAN': '🔴',
+                'RIESGO_MACDV': '🟠'
             }[current_weekly['Regime_Weekly']]
-            st.metric("RÉGIMEN", f"{regime_emoji} {current_weekly['Regime_Weekly']}")
+            
+            regime_display = current_weekly['Regime_Weekly'].replace('RIESGO_DONCHIAN', 'RIESGO (D)').replace('RIESGO_MACDV', 'RIESGO (M)')
+            st.metric("RÉGIMEN", f"{regime_emoji} {regime_display}")
         
         with col2:
             price_change_pct = ((current_weekly['Close'] - df_weekly['Close'].iloc[-5]) / 
@@ -530,7 +569,16 @@ def market_regime_page():
         with col5:
             donch_pos = ((current_weekly['Close'] - current_weekly['Donchian_Lower']) / 
                         (current_weekly['Donchian_Upper'] - current_weekly['Donchian_Lower']) * 100)
-            st.metric("POSICIÓN DONCHIAN", f"{donch_pos:.0f}%")
+            
+            # Detectar si está fuera del canal
+            if current_weekly['Close'] > current_weekly['Donchian_Upper']:
+                donch_status = "⚠️ ARRIBA"
+            elif current_weekly['Close'] < current_weekly['Donchian_Lower']:
+                donch_status = "⚠️ ABAJO"
+            else:
+                donch_status = f"{donch_pos:.0f}%"
+            
+            st.metric("DONCHIAN", donch_status)
         
         with col6:
             st.metric("FECHA", current_weekly.name.strftime('%Y-%m-%d'), 
@@ -548,7 +596,7 @@ def market_regime_page():
         </div>
         """, unsafe_allow_html=True)
         
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
             alcista_count = regime_counts.get('ALCISTA', 0)
@@ -557,8 +605,8 @@ def market_regime_page():
             <div style='background: linear-gradient(135deg, #4ECDC4 0%, #3DBCB4 100%); 
                         padding: 20px; border-radius: 12px; text-align: center;'>
                 <h2 style='color: white; margin: 0; font-size: 36px;'>{alcista_count}</h2>
-                <p style='color: white; margin: 5px 0 0 0; font-size: 14px;'>
-                    🟢 ALCISTA ({alcista_pct}%)
+                <p style='color: white; margin: 5px 0 0 0; font-size: 13px;'>
+                    🟢 ALCISTA<br>({alcista_pct}%)
                 </p>
             </div>
             """, unsafe_allow_html=True)
@@ -570,8 +618,8 @@ def market_regime_page():
             <div style='background: linear-gradient(135deg, #EE5A6F 0%, #DC4A5F 100%); 
                         padding: 20px; border-radius: 12px; text-align: center;'>
                 <h2 style='color: white; margin: 0; font-size: 36px;'>{bajista_count}</h2>
-                <p style='color: white; margin: 5px 0 0 0; font-size: 14px;'>
-                    🔴 BAJISTA ({bajista_pct}%)
+                <p style='color: white; margin: 5px 0 0 0; font-size: 13px;'>
+                    🔴 BAJISTA<br>({bajista_pct}%)
                 </p>
             </div>
             """, unsafe_allow_html=True)
@@ -583,21 +631,34 @@ def market_regime_page():
             <div style='background: linear-gradient(135deg, #FFD93D 0%, #F0C929 100%); 
                         padding: 20px; border-radius: 12px; text-align: center;'>
                 <h2 style='color: white; margin: 0; font-size: 36px;'>{rango_count}</h2>
-                <p style='color: white; margin: 5px 0 0 0; font-size: 14px;'>
-                    🟡 RANGO ({rango_pct}%)
+                <p style='color: white; margin: 5px 0 0 0; font-size: 13px;'>
+                    🟡 RANGO<br>({rango_pct}%)
                 </p>
             </div>
             """, unsafe_allow_html=True)
         
         with col4:
-            riesgo_count = regime_counts.get('RIESGO', 0)
-            riesgo_pct = regime_pcts.get('RIESGO', 0)
+            riesgo_d_count = regime_counts.get('RIESGO_DONCHIAN', 0)
+            riesgo_d_pct = regime_pcts.get('RIESGO_DONCHIAN', 0)
             st.markdown(f"""
             <div style='background: linear-gradient(135deg, #FF6B6B 0%, #EE5555 100%); 
                         padding: 20px; border-radius: 12px; text-align: center;'>
-                <h2 style='color: white; margin: 0; font-size: 36px;'>{riesgo_count}</h2>
-                <p style='color: white; margin: 5px 0 0 0; font-size: 14px;'>
-                    🟠 RIESGO ({riesgo_pct}%)
+                <h2 style='color: white; margin: 0; font-size: 36px;'>{riesgo_d_count}</h2>
+                <p style='color: white; margin: 5px 0 0 0; font-size: 13px;'>
+                    🔴 RIESGO (D)<br>({riesgo_d_pct}%)
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col5:
+            riesgo_m_count = regime_counts.get('RIESGO_MACDV', 0)
+            riesgo_m_pct = regime_pcts.get('RIESGO_MACDV', 0)
+            st.markdown(f"""
+            <div style='background: linear-gradient(135deg, #FF9F40 0%, #F08B28 100%); 
+                        padding: 20px; border-radius: 12px; text-align: center;'>
+                <h2 style='color: white; margin: 0; font-size: 36px;'>{riesgo_m_count}</h2>
+                <p style='color: white; margin: 5px 0 0 0; font-size: 13px;'>
+                    🟠 RIESGO (M)<br>({riesgo_m_pct}%)
                 </p>
             </div>
             """, unsafe_allow_html=True)
@@ -616,6 +677,95 @@ def market_regime_page():
         
         fig_weekly = plot_weekly_dashboard(df_weekly_recent, ticker)
         st.pyplot(fig_weekly)
+        
+        st.markdown("---")
+        
+        # Análisis detallado
+        st.markdown("""
+        <div style='text-align: center; margin: 20px 0;'>
+            <h3 style='color: #00D9FF;'>💡 Análisis Técnico Detallado</h3>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### 📊 Indicadores Técnicos Actuales")
+            
+            # MACD-V Analysis
+            if current_weekly['MACD_V'] > 150:
+                macd_interpretation = "⚠️ **Sobreextensión alcista extrema** (RIESGO MACD-V) - Alta probabilidad de corrección"
+            elif current_weekly['MACD_V'] > 50:
+                macd_interpretation = "✅ **Momentum alcista fuerte** - Tendencia positiva confirmada"
+            elif current_weekly['MACD_V'] > -50:
+                macd_interpretation = "⚪ **Momentum neutral** - Sin dirección clara definida"
+            elif current_weekly['MACD_V'] > -150:
+                macd_interpretation = "⚠️ **Momentum bajista** - Presión vendedora presente"
+            else:
+                macd_interpretation = "🚨 **Sobreextensión bajista extrema** (RIESGO MACD-V) - Posible rebote técnico"
+            
+            st.markdown(f"**MACD-V:** {macd_interpretation}")
+            
+            # Donchian Position Analysis
+            if current_weekly['Close'] > current_weekly['Donchian_Upper']:
+                donch_interpretation = "🚨 **RIESGO DONCHIAN** - Precio por ENCIMA del canal (breakout extremo)"
+            elif current_weekly['Close'] < current_weekly['Donchian_Lower']:
+                donch_interpretation = "🚨 **RIESGO DONCHIAN** - Precio por DEBAJO del canal (breakdown extremo)"
+            elif donch_pos > 80:
+                donch_interpretation = "🔝 **Zona superior del canal** - Cerca de resistencia"
+            elif donch_pos > 50:
+                donch_interpretation = "📈 **Zona alcista** - Por encima del medio del canal"
+            elif donch_pos > 20:
+                donch_interpretation = "📉 **Zona bajista** - Por debajo del medio del canal"
+            else:
+                donch_interpretation = "🔻 **Zona inferior del canal** - Cerca de soporte"
+            
+            st.markdown(f"**Posición Donchian:** {donch_interpretation}")
+            
+            # Choppiness Analysis
+            if current_weekly['Choppiness'] > 61.8:
+                chop_interpretation = "🔄 **Mercado Choppy** - Evitar estrategias de seguimiento de tendencia"
+            elif current_weekly['Choppiness'] < 38.2:
+                chop_interpretation = "🎯 **Mercado Trending** - Favorable para operar tendencias"
+            else:
+                chop_interpretation = "⚖️ **Mercado Neutral** - Transición entre estados"
+            
+            st.markdown(f"**Choppiness:** {chop_interpretation}")
+        
+        with col2:
+            st.markdown("#### 🎯 Contexto de Mercado")
+            
+            # SMA Trend
+            if current_weekly['Close'] > current_weekly['SMA_20'] > current_weekly['SMA_50']:
+                sma_trend = "📈 **Tendencia alcista confirmada** - Precio > SMA20 > SMA50"
+            elif current_weekly['Close'] < current_weekly['SMA_20'] < current_weekly['SMA_50']:
+                sma_trend = "📉 **Tendencia bajista confirmada** - Precio < SMA20 < SMA50"
+            else:
+                sma_trend = "🔀 **Tendencia mixta** - SMAs entrelazadas, sin dirección clara"
+            
+            st.markdown(f"**SMAs:** {sma_trend}")
+            
+            # Regime interpretation
+            regime_interpretation = {
+                'ALCISTA': "🟢 **Régimen Alcista** - Momentum positivo, favorable para posiciones largas",
+                'BAJISTA': "🔴 **Régimen Bajista** - Momentum negativo, precaución con posiciones largas",
+                'RANGO': "🟡 **Régimen de Rango** - Mercado lateral, operar dentro del rango",
+                'RIESGO_DONCHIAN': "🔴 **Régimen de Riesgo (Donchian)** - Precio fuera del canal, alta probabilidad de reversión",
+                'RIESGO_MACDV': "🟠 **Régimen de Riesgo (MACD-V)** - Momentum sobreextendido, precaución extrema"
+            }
+            
+            st.markdown(f"**Régimen Actual:** {regime_interpretation[current_weekly['Regime_Weekly']]}")
+            
+            # Volatility context
+            recent_volatility = df_weekly_recent['Close'].pct_change().std() * 100
+            if recent_volatility > 5:
+                vol_context = f"⚡ **Alta volatilidad** ({recent_volatility:.1f}%) - Mayor riesgo en operaciones"
+            elif recent_volatility > 2:
+                vol_context = f"📊 **Volatilidad moderada** ({recent_volatility:.1f}%) - Riesgo normal"
+            else:
+                vol_context = f"😌 **Baja volatilidad** ({recent_volatility:.1f}%) - Mercado tranquilo"
+            
+            st.markdown(f"**Volatilidad:** {vol_context}")
         
         st.markdown("---")
         
@@ -644,89 +794,6 @@ def market_regime_page():
                 mime="text/csv",
                 use_container_width=True
             )
-        
-        # Análisis adicional
-        st.markdown("---")
-        st.markdown("""
-        <div style='text-align: center; margin: 20px 0;'>
-            <h3 style='color: #00D9FF;'>💡 Análisis Técnico Detallado</h3>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("#### 📊 Indicadores Técnicos Actuales")
-            
-            # MACD-V Analysis
-            if current_weekly['MACD_V'] > 150:
-                macd_interpretation = "⚠️ **Sobreextensión alcista extrema** - Posible corrección"
-            elif current_weekly['MACD_V'] > 50:
-                macd_interpretation = "✅ **Momentum alcista fuerte** - Tendencia positiva"
-            elif current_weekly['MACD_V'] > -50:
-                macd_interpretation = "⚪ **Momentum neutral** - Sin dirección clara"
-            elif current_weekly['MACD_V'] > -150:
-                macd_interpretation = "⚠️ **Momentum bajista** - Presión vendedora"
-            else:
-                macd_interpretation = "🚨 **Sobreextensión bajista extrema** - Posible rebote"
-            
-            st.markdown(f"**MACD-V:** {macd_interpretation}")
-            
-            # Choppiness Analysis
-            if current_weekly['Choppiness'] > 61.8:
-                chop_interpretation = "🔄 **Mercado Choppy** - Evitar operaciones trending"
-            elif current_weekly['Choppiness'] < 38.2:
-                chop_interpretation = "🎯 **Mercado Trending** - Favorable para seguir tendencia"
-            else:
-                chop_interpretation = "⚖️ **Mercado Neutral** - Transición entre estados"
-            
-            st.markdown(f"**Choppiness:** {chop_interpretation}")
-            
-            # Donchian Position
-            if donch_pos > 80:
-                donch_interpretation = "🔝 **Zona superior** - Cerca de resistencia"
-            elif donch_pos > 50:
-                donch_interpretation = "📈 **Zona alcista** - Por encima del medio"
-            elif donch_pos > 20:
-                donch_interpretation = "📉 **Zona bajista** - Por debajo del medio"
-            else:
-                donch_interpretation = "🔻 **Zona inferior** - Cerca de soporte"
-            
-            st.markdown(f"**Posición Donchian:** {donch_interpretation}")
-        
-        with col2:
-            st.markdown("#### 🎯 Contexto de Mercado")
-            
-            # SMA Trend
-            if current_weekly['Close'] > current_weekly['SMA_20'] > current_weekly['SMA_50']:
-                sma_trend = "📈 **Tendencia alcista confirmada** - Precio > SMA20 > SMA50"
-            elif current_weekly['Close'] < current_weekly['SMA_20'] < current_weekly['SMA_50']:
-                sma_trend = "📉 **Tendencia bajista confirmada** - Precio < SMA20 < SMA50"
-            else:
-                sma_trend = "🔀 **Tendencia mixta** - SMAs entrelazadas"
-            
-            st.markdown(f"**SMAs:** {sma_trend}")
-            
-            # Regime interpretation
-            regime_interpretation = {
-                'ALCISTA': "🟢 **Régimen Alcista** - Momentum positivo, favorable para posiciones largas",
-                'BAJISTA': "🔴 **Régimen Bajista** - Momentum negativo, precaución con largos",
-                'RANGO': "🟡 **Régimen de Rango** - Mercado lateral, operar rangos",
-                'RIESGO': "🟠 **Régimen de Riesgo** - Sobreextensión, posible reversión"
-            }
-            
-            st.markdown(f"**Régimen Actual:** {regime_interpretation[current_weekly['Regime_Weekly']]}")
-            
-            # Volatility context
-            recent_volatility = df_weekly_recent['Close'].pct_change().std() * 100
-            if recent_volatility > 5:
-                vol_context = f"⚡ **Alta volatilidad** ({recent_volatility:.1f}%) - Mayor riesgo"
-            elif recent_volatility > 2:
-                vol_context = f"📊 **Volatilidad moderada** ({recent_volatility:.1f}%)"
-            else:
-                vol_context = f"😌 **Baja volatilidad** ({recent_volatility:.1f}%) - Mercado tranquilo"
-            
-            st.markdown(f"**Volatilidad:** {vol_context}")
     
     else:
         st.markdown("""
@@ -743,7 +810,8 @@ def market_regime_page():
                 para comenzar el análisis técnico semanal avanzado.
             </p>
             <p style='color: #8E93A1; font-size: 14px; margin: 10px 0 0 0;'>
-                📊 Análisis basado en MACD-V + Donchian + Choppiness Index
+                🔴 RIESGO DONCHIAN: Precio fuera del canal<br>
+                🟠 RIESGO MACD-V: Momentum extremo
             </p>
         </div>
         """, unsafe_allow_html=True)
