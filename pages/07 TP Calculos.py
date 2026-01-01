@@ -85,15 +85,15 @@ def calculate_expected_move(df_options, expiration_date, current_price, std_mult
             return None, None, "No se encontraron opciones ATM"
         
         # Obtener precios
-        call_bid = call_atm['bid'].iloc[0]
-        call_ask = call_atm['ask'].iloc[0]
+        call_bid = float(call_atm['bid'].iloc[0])
+        call_ask = float(call_atm['ask'].iloc[0])
         call_mid = (call_bid + call_ask) / 2
-        call_last = call_atm['last_trade_price'].iloc[0]
+        call_last = float(call_atm['last_trade_price'].iloc[0])
         
-        put_bid = put_atm['bid'].iloc[0]
-        put_ask = put_atm['ask'].iloc[0]
+        put_bid = float(put_atm['bid'].iloc[0])
+        put_ask = float(put_atm['ask'].iloc[0])
         put_mid = (put_bid + put_ask) / 2
-        put_last = put_atm['last_trade_price'].iloc[0]
+        put_last = float(put_atm['last_trade_price'].iloc[0])
         
         # Prioridad: MID > BID > LAST
         if call_bid > 0 and call_ask > 0 and put_bid > 0 and put_ask > 0:
@@ -106,10 +106,10 @@ def calculate_expected_move(df_options, expiration_date, current_price, std_mult
             straddle_price = call_last + put_last
             price_type = "Last Price"
         
-        expected_move = straddle_price * 1.25 * std_multiplier
+        expected_move = float(straddle_price * 1.25 * std_multiplier)
         
         details = {
-            'atm_strike': atm_strike,
+            'atm_strike': float(atm_strike),
             'call_bid': call_bid,
             'call_ask': call_ask,
             'call_mid': call_mid,
@@ -126,7 +126,7 @@ def calculate_expected_move(df_options, expiration_date, current_price, std_mult
         return expected_move, details, None
         
     except Exception as e:
-        return None, None, f"Error calculando Expected Move: {e}"
+        return None, None, f"Error calculando Expected Move: {str(e)}"
 
 @st.cache_data(ttl=300)
 def get_historical_prices(ticker, days=7):
@@ -146,9 +146,6 @@ def create_ibkr_basket_csv(ticker, expiration_date, strikes_dict, df_options):
     """
     Crea un CSV para IBKR TWS BasketTrader sin órdenes.
     Solo carga los contratos para que puedas crear órdenes manualmente.
-    
-    Formato para basket sin órdenes:
-    Symbol,SecType,Exchange,Currency,LastTradingDay,Strike,Right,Multiplier
     """
     
     basket_items = []
@@ -161,6 +158,8 @@ def create_ibkr_basket_csv(ticker, expiration_date, strikes_dict, df_options):
     
     # Procesar cada strike
     for strike_label, strike_value in strikes_dict.items():
+        
+        strike_value = float(strike_value)
         
         # Call
         call_data = df_exp[(df_exp['strike'] == strike_value) & (df_exp['opt_type'] == 'C')]
@@ -255,10 +254,10 @@ def main_tp_calculos():
                 return
             
             # Guardar en session_state
-            st.session_state.current_price = current_price
+            st.session_state.current_price = float(current_price)
             st.session_state.df_options = df_options
             st.session_state.ticker = ticker
-            st.session_state.std_multiplier = std_multiplier
+            st.session_state.std_multiplier = float(std_multiplier)
             
             # Obtener fechas de expiración disponibles
             expiration_dates = sorted(df_options['expiry'].unique())
@@ -293,12 +292,18 @@ def main_tp_calculos():
                 st.error(error)
                 return
             
+            if expected_move is None or details is None:
+                st.error("No se pudo calcular el Expected Move")
+                return
+            
             # Calcular strikes
-            current_price = st.session_state.current_price
+            current_price = float(st.session_state.current_price)
+            expected_move = float(expected_move)
+            atm_strike = float(details['atm_strike'])
             
             strikes = {
                 'Upper Strike': round(current_price + expected_move, 2),
-                'ATM Strike': details['atm_strike'],
+                'ATM Strike': atm_strike,
                 'Lower Strike': round(current_price - expected_move, 2)
             }
             
@@ -318,20 +323,23 @@ def main_tp_calculos():
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            st.metric("Expected Move", f"${st.session_state.expected_move:.2f}")
+            em = float(st.session_state.expected_move)
+            st.metric("Expected Move", f"${em:.2f}")
         
         with col2:
-            st.metric("Upper Strike", f"${st.session_state.final_strikes['Upper Strike']:.2f}")
+            upper = float(st.session_state.final_strikes['Upper Strike'])
+            st.metric("Upper Strike", f"${upper:.2f}")
         
         with col3:
-            st.metric("Lower Strike", f"${st.session_state.final_strikes['Lower Strike']:.2f}")
+            lower = float(st.session_state.final_strikes['Lower Strike'])
+            st.metric("Lower Strike", f"${lower:.2f}")
         
         # Tabla de strikes
         st.markdown("#### 📋 Strikes Calculados")
         
         strikes_df = pd.DataFrame({
             'Strike Type': list(st.session_state.final_strikes.keys()),
-            'Strike Price': list(st.session_state.final_strikes.values())
+            'Strike Price': [float(v) for v in st.session_state.final_strikes.values()]
         })
         
         st.dataframe(strikes_df, use_container_width=True, hide_index=True)
@@ -346,6 +354,8 @@ def main_tp_calculos():
         
         for strike_label, strike_value in st.session_state.final_strikes.items():
             
+            strike_value = float(strike_value)
+            
             with st.expander(f"🎯 {strike_label}: ${strike_value:.2f}", expanded=True):
                 
                 col1, col2 = st.columns(2)
@@ -357,12 +367,12 @@ def main_tp_calculos():
                     
                     if not call_data.empty:
                         call_display = pd.DataFrame({
-                            'Bid': [call_data['bid'].iloc[0]],
-                            'Ask': [call_data['ask'].iloc[0]],
-                            'Mid': [(call_data['bid'].iloc[0] + call_data['ask'].iloc[0]) / 2],
-                            'Last': [call_data['last_trade_price'].iloc[0]],
-                            'Volume': [call_data['volume'].iloc[0]],
-                            'Open Int': [call_data['open_interest'].iloc[0]]
+                            'Bid': [float(call_data['bid'].iloc[0])],
+                            'Ask': [float(call_data['ask'].iloc[0])],
+                            'Mid': [(float(call_data['bid'].iloc[0]) + float(call_data['ask'].iloc[0])) / 2],
+                            'Last': [float(call_data['last_trade_price'].iloc[0])],
+                            'Volume': [int(call_data['volume'].iloc[0])],
+                            'Open Int': [int(call_data['open_interest'].iloc[0])]
                         })
                         st.dataframe(call_display, use_container_width=True, hide_index=True)
                     else:
@@ -375,12 +385,12 @@ def main_tp_calculos():
                     
                     if not put_data.empty:
                         put_display = pd.DataFrame({
-                            'Bid': [put_data['bid'].iloc[0]],
-                            'Ask': [put_data['ask'].iloc[0]],
-                            'Mid': [(put_data['bid'].iloc[0] + put_data['ask'].iloc[0]) / 2],
-                            'Last': [put_data['last_trade_price'].iloc[0]],
-                            'Volume': [put_data['volume'].iloc[0]],
-                            'Open Int': [put_data['open_interest'].iloc[0]]
+                            'Bid': [float(put_data['bid'].iloc[0])],
+                            'Ask': [float(put_data['ask'].iloc[0])],
+                            'Mid': [(float(put_data['bid'].iloc[0]) + float(put_data['ask'].iloc[0])) / 2],
+                            'Last': [float(put_data['last_trade_price'].iloc[0])],
+                            'Volume': [int(put_data['volume'].iloc[0])],
+                            'Open Int': [int(put_data['open_interest'].iloc[0])]
                         })
                         st.dataframe(put_display, use_container_width=True, hide_index=True)
                     else:
@@ -451,19 +461,16 @@ def main_tp_calculos():
             ### 📖 Instrucciones paso a paso:
             
             #### 1️⃣ Abrir BasketTrader en TWS
-            
             - Ve a: **Trading Tools → BasketTrader**
             - O usa el atajo: **Ctrl+Shift+B** (Windows) / **Cmd+Shift+B** (Mac)
             
             #### 2️⃣ Importar el archivo CSV
-            
             - Click derecho en el área de BasketTrader
             - Selecciona: **Import Basket...**
             - Busca y selecciona el archivo: `{filename}`
             - Los contratos se cargarán en el basket
             
             #### 3️⃣ Verificar los contratos cargados
-            
             Los contratos aparecerán con:
             - ✅ Symbol: {st.session_state.ticker}
             - ✅ Strike: Upper, ATM, Lower
@@ -472,82 +479,25 @@ def main_tp_calculos():
             - ✅ Precios en tiempo real (Bid, Ask, Mid)
             
             #### 4️⃣ Agregar órdenes MANUALMENTE
-            
             Para cada contrato que quieras operar:
             
-            1. **Click en la columna "Action"**:
-               - Selecciona: `BUY` o `SELL`
-            
-            2. **Click en la columna "Quantity"**:
-               - Ingresa el número de contratos (ej: 1, 2, 5, 10)
-            
-            3. **Click en la columna "Order Type"**:
-               - Selecciona: `LMT` (Limit) o `MKT` (Market)
-            
-            4. **Si elegiste LMT, click en "Lmt Price"**:
-               - Ingresa tu precio deseado
-               - Tip: Usa el precio **Mid** como referencia
-               - Ajusta según quieras: más cerca de Bid (para comprar) o Ask (para vender)
+            1. **Click en la columna "Action"**: Selecciona `BUY` o `SELL`
+            2. **Click en la columna "Quantity"**: Ingresa el número de contratos
+            3. **Click en la columna "Order Type"**: Selecciona `LMT` o `MKT`
+            4. **Si elegiste LMT, click en "Lmt Price"**: Ingresa tu precio deseado
             
             #### 5️⃣ Revisar y transmitir
-            
             - Revisa todas las órdenes en el basket
-            - Verifica: Action, Quantity, Price
             - Cuando estés listo: **Click en "Transmit All"**
-            - O transmite individualmente: Click derecho → Transmit Order
             
-            ---
-            
-            ### 💡 Tips y Recomendaciones:
-            
-            **Estrategia de precios:**
-            - 🟢 **Comprando (BUY)**: Usa precio entre **Mid** y **Bid** para mejor ejecución
-            - 🔴 **Vendiendo (SELL)**: Usa precio entre **Mid** y **Ask** para mejor ejecución
-            - ⚡ **Ejecución rápida**: Usa precio **Ask** (compra) o **Bid** (venta)
-            - 🎯 **Mejor precio**: Usa **LMT** en Mid y espera
-            
-            **Gestión de órdenes:**
-            - Puedes agregar/eliminar contratos del basket antes de transmitir
-            - Puedes modificar precios después de transmitir (si no ejecutaron)
-            - Usa "Preview Order" para ver el impacto antes de transmitir
-            
-            **Spreads y estrategias:**
-            - Para Iron Condor: SELL Upper Call, SELL Lower Put
-            - Para Straddle: BUY ATM Call + BUY ATM Put
-            - Para Strangle: BUY Upper Call + BUY Lower Put
-            
-            ---
-            
-            ### 📚 Columnas del CSV exportado:
-            
-            | Columna | Descripción |
-            |---------|-------------|
-            | Symbol | Ticker del activo ({st.session_state.ticker}) |
-            | SecType | OPT (Tipo: Opción) |
-            | Exchange | SMART (Enrutamiento inteligente de IBKR) |
-            | Currency | USD |
-            | LastTradingDay | Fecha de expiración (formato YYYYMMDD) |
-            | Strike | Precio de ejercicio de la opción |
-            | Right | C (Call) o P (Put) |
-            | Multiplier | 100 (tamaño estándar del contrato) |
-            
-            ---
+            ### 💡 Tips:
+            - 🟢 **Comprando (BUY)**: Usa precio entre **Mid** y **Bid**
+            - 🔴 **Vendiendo (SELL)**: Usa precio entre **Mid** y **Ask**
             
             ### ⚠️ Importante:
-            
             - ✅ Este CSV **NO contiene órdenes preconfiguradas**
             - ✅ Tú tienes **control total** sobre Action, Quantity, y Price
             - ✅ Sin riesgo de **ejecuciones accidentales**
-            - ✅ Ideal para **analizar el mercado** antes de ejecutar
-            - ✅ Precios en **tiempo real** para mejor decisión
-            
-            ---
-            
-            ### 🔗 Referencias útiles:
-            
-            - [IBKR BasketTrader Guide](https://www.interactivebrokers.com/campus/trading-lessons/tws-baskettrader-create-a-basket/)
-            - [CSV Import Format](https://www.interactivebrokers.co.uk/en/software/tws/usersguidebook/getstarted/import_tickers_from_a_file.htm)
-            - [Options Trading](https://www.interactivebrokers.com/en/trading/orders.php)
             """)
 
 # ==============================================================================
