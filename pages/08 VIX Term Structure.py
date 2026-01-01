@@ -25,22 +25,22 @@ def get_vix_spot():
 
 @st.cache_data(ttl=300)
 def get_vix_futures_data():
-    """Descarga datos de futuros con Headers para evitar el Error 403."""
+    """Descarga datos de futuros con Headers avanzados para evitar el Error 403."""
     try:
         url = "https://cdn.cboe.com/api/global/delayed_quotes/futures/VIX.json"
         
-        # Estas cabeceras simulan un navegador real (Chrome en Windows)
+        # Cabeceras completas para simular un navegador real al 100%
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Origin": "https://www.cboe.com",
-            "Referer": "https://www.cboe.com/"
+            "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+            "Referer": "https://www.cboe.com/indices/vix/vix_futures/",
+            "Origin": "https://www.cboe.com"
         }
         
         response = requests.get(url, headers=headers, timeout=15)
         
-        # Si el código no es 200, lanzamos error para el log
+        # Esto lanzará una excepción si hay un error 403 o 404
         response.raise_for_status()
         
         data = response.json()
@@ -49,12 +49,14 @@ def get_vix_futures_data():
             df = pd.DataFrame(data['data']['futures'])
             df['expiry'] = pd.to_datetime(df['expiration_date'])
             df = df.sort_values('expiry').reset_index(drop=True)
-            # Filtramos los primeros 8 meses
+            
+            # Seleccionamos los primeros 8 meses (F1 a F8)
             df = df.head(8)
             df['label'] = [f"F{i+1}" for i in range(len(df))]
             return df
         return None
     except Exception as e:
+        # Mostramos el error específico para depuración
         st.error(f"Error al conectar con CBOE: {e}")
         return None
 
@@ -63,11 +65,10 @@ def get_vix_futures_data():
 # ==============================================================================
 def main_vix_structure():
     st.markdown("<h1><span style='font-size: 1.5em;'>📈</span> VIX Term Structure</h1>", unsafe_allow_html=True)
-    st.markdown("Datos oficiales de futuros provenientes de CBOE (Réplica VIXCentral).")
+    st.markdown("Datos oficiales de futuros provenientes de CBOE (Estilo VIXCentral).")
     st.divider()
 
-    # Spinner de carga
-    with st.spinner('Actualizando datos del mercado...'):
+    with st.spinner('Obteniendo datos de mercado...'):
         df = get_vix_futures_data()
         spot_price = get_vix_spot()
 
@@ -77,17 +78,17 @@ def main_vix_structure():
         
         diff_data = []
         
-        # 1. Comparativa Spot vs F1
+        # 1. Diferencia VIX Spot vs F1
         if spot_price:
-            diff_s_f1 = df.iloc[0]['price'] - spot_price
-            pct_s_f1 = (diff_s_f1 / spot_price) * 100
+            diff_s = df.iloc[0]['price'] - spot_price
+            pct_s = (diff_s / spot_price) * 100
             diff_data.append({
                 "Meses": "Spot - F1",
-                "Diferencia ($)": round(diff_s_f1, 3),
-                "Contango %": f"{round(pct_s_f1, 2)}%"
+                "Diferencia ($)": round(diff_s, 3),
+                "Contango %": f"{round(pct_s, 2)}%"
             })
 
-        # 2. Diferencias entre futuros (F1-F2, F2-F3...)
+        # 2. Diferencias entre meses consecutivos
         for i in range(len(df) - 1):
             m1 = df.iloc[i]
             m2 = df.iloc[i+1]
@@ -100,45 +101,48 @@ def main_vix_structure():
                 "Contango %": f"{round(pct, 2)}%"
             })
         
-        # Métrica F1-F2 destacada
+        # Métrica Contango F1-F2 destacada
         idx_f1f2 = 1 if spot_price else 0
         f1_f2_val = float(diff_data[idx_f1f2]['Contango %'].replace('%',''))
+        
         st.metric("Contango F1-F2", f"{f1_f2_val}%", delta=f"{f1_f2_val}%")
         
+        # Mostrar tabla estática
         st.table(pd.DataFrame(diff_data))
         st.divider()
 
-        # --- GRÁFICO DE 8 MESES ---
-        st.subheader("VIX Futures Curve")
+        # --- GRÁFICO DE ESTRUCTURA DE PLAZOS ---
+        st.subheader("VIX Futures Term Structure")
+
         
-        
-        
+
         fig = go.Figure()
 
-        # Línea de Futuros
+        # Línea de Futuros (F1-F8)
         fig.add_trace(go.Scatter(
             x=df['label'], y=df['price'],
             mode='lines+markers',
-            name='Futures',
+            name='VIX Futures',
             line=dict(color='#1f77b4', width=4),
             marker=dict(size=12, color='#1f77b4', line=dict(width=2, color='white')),
             hovertemplate="<b>%{x}</b><br>Precio: %{y}<extra></extra>"
         ))
 
-        # Punto Spot (Amarillo)
+        # Punto Spot (Índice VIX)
         if spot_price:
             fig.add_trace(go.Scatter(
                 x=["Spot"], y=[spot_price],
                 mode='markers',
                 name='VIX Spot',
-                marker=dict(color='yellow', size=15, symbol='diamond'),
-                hovertemplate="<b>Spot</b><br>Precio: %{y:.2f}<extra></extra>"
+                marker=dict(color='yellow', size=14, symbol='diamond'),
+                hovertemplate="<b>VIX Index</b><br>Precio: %{y:.2f}<extra></extra>"
             ))
 
         fig.update_layout(
-            template="plotly_dark", height=500,
+            template="plotly_dark", 
+            height=500,
             xaxis=dict(title="Mes del Futuro", gridcolor='rgba(255,255,255,0.1)'),
-            yaxis=dict(title="Precio", gridcolor='rgba(255,255,255,0.1)'),
+            yaxis=dict(title="Precio ($)", gridcolor='rgba(255,255,255,0.1)'),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
         st.plotly_chart(fig, use_container_width=True)
@@ -147,8 +151,9 @@ def main_vix_structure():
 # PUNTO DE ENTRADA PROTEGIDO
 # ==============================================================================
 if __name__ == "__main__":
+    
     if check_password():
         main_vix_structure()
     else:
         st.title("🔒 Acceso Restringido")
-        st.info("Por favor, introduce tus credenciales en el menú lateral (sidebar) para acceder.")
+        st.info("Por favor, introduce tus credenciales en el menú lateral (sidebar) para acceder a VIX Term Structure.")
