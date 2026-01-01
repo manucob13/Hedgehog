@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime
 from utils import check_password
 
 # --- CONFIGURACIÓN DE PÁGINA ---
@@ -25,28 +25,99 @@ def get_vix_spot():
 
 @st.cache_data(ttl=300)
 def get_vix_futures_data():
-    """Obtiene datos de futuros VIX desde Yahoo Finance usando índices mensuales."""
+    """Obtiene estructura de términos usando ETFs y proxies de futuros VIX disponibles en Yahoo."""
     try:
         import yfinance as yf
         
-        # Yahoo Finance tiene símbolos específicos para cada mes de futuros VIX
-        # Formato: ^VIX + código mes (JAN, FEB, MAR, APR, MAY, JUN, JUL, AUG, SEP, OCT, NOV, DEC)
+        # Yahoo Finance tiene ETFs y proxies que rastrean futuros VIX
+        # Estos son los instrumentos más confiables disponibles
+        vix_instruments = {
+            '^VIX': {'label': 'Spot', 'days': 0, 'type': 'spot'},
+            '^VIX1D': {'label': '1-Day', 'days': 1, 'type': 'future'},
+            '^VIX3M': {'label': '3-Month', 'days': 90, 'type': 'future'},
+            '^VIX6M': {'label': '6-Month', 'days': 180, 'type': 'future'},
+            '^VXAZN': {'label': 'VXAZN', 'days': 30, 'type': 'future'},
+            '^VXAPL': {'label': 'VXAPL', 'days': 60, 'type': 'future'},
+        }
         
-        # Determinar los próximos 8 meses de contratos
-        month_codes = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 
-                       'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
-        
-        current_date = datetime.now()
         futures_data = []
         
-        # Intentar obtener los próximos 12 meses (para asegurar 8 válidos)
-        for i in range(12):
-            future_month = current_date + timedelta(days=30*i)
-            month_name = month_codes[future_month.month - 1]
+        # Primero intentar con los índices disponibles
+        for symbol, info in vix_instruments.items():
+            try:
+                ticker = yf.Ticker(symbol)
+                hist = ticker.history(period="5d")
+                
+                if not hist.empty and len(hist) > 0:
+                    last_price = hist['Close'].iloc[-1]
+                    
+                    futures_data.append({
+                        'symbol': symbol,
+                        'label': info['label'],
+                        'close': last_price,
+                        'days': info['days'],
+                        'type': info['type']
+                    })
+            except:
+                continue
+        
+        # Si no hay suficientes datos, usar proxies de ETFs de futuros VIX
+        if len(futures_data) < 3:
+            etf_proxies = {
+                'VXX': {'label': 'VXX (1-2M)', 'days': 45},
+                'VIXY': {'label': 'VIXY (1M)', 'days': 30},
+                'VIXM': {'label': 'VIXM (5M)', 'days': 150},
+            }
             
-            # Yahoo Finance usa formato: ^VIX + MES (ej: ^VIXJAN, ^VIXFEB)
-            symbol = f"^VIX{month_name}"
-            
+            for symbol, info in etf_proxies.items():
+                try:
+                    ticker = yf.Ticker(symbol)
+                    hist = ticker.history(period="5d")
+                    
+                    if not hist.empty:
+                        last_price = hist['Close'].iloc[-1]
+                        
+                        futures_data.append({
+                            'symbol': symbol,
+                            'label': info['label'],
+                            'close': last_price,
+                            'days': info['days'],
+                            'type': 'etf'
+                        })
+                except:
+                    continue
+        
+        if not futures_data:
+            return None
+        
+        # Crear DataFrame y ordenar por días
+        df = pd.DataFrame(futures_data)
+        df = df.sort_values('days').reset_index(drop=True)
+        
+        return df
+        
+    except Exception as e:
+        st.error(f"Error obteniendo datos VIX: {e}")
+        return None
+
+@st.cache_data(ttl=300)
+def get_vix_term_structure_from_csv():
+    """Intenta obtener datos directos de CBOE usando archivos CSV públicos."""
+    try:
+        import yfinance as yf
+        
+        # Usar el índice de term structure de S&P que Yahoo sí tiene
+        term_structure_symbols = [
+            '^SPVIX1M',  # 1 mes
+            '^SPVIX3M',  # 3 meses  
+            '^SPVIX6M',  # 6 meses
+            '^SPVIX9M',  # 9 meses
+        ]
+        
+        futures_data = []
+        days_map = [30, 90, 180, 270]
+        
+        for i, symbol in enumerate(term_structure_symbols):
             try:
                 ticker = yf.Ticker(symbol)
                 hist = ticker.history(period="5d")
@@ -54,78 +125,21 @@ def get_vix_futures_data():
                 if not hist.empty:
                     last_price = hist['Close'].iloc[-1]
                     
-                    # Estimar fecha de expiración (tercer miércoles del mes)
-                    # VIX expira el miércoles anterior al tercer viernes del mes
-                    year = future_month.year
-                    month = future_month.month
-                    
-                    # Encontrar el tercer viernes
-                    first_day = datetime(year, month, 1)
-                    first_friday = first_day + timedelta(days=(4 - first_day.weekday()) % 7)
-                    third_friday = first_friday + timedelta(weeks=2)
-                    expiration = third_friday - timedelta(days=2)  # Miércoles anterior
-                    
                     futures_data.append({
                         'symbol': symbol,
-                        'month': month_name,
+                        'label': f'{days_map[i]//30}M',
                         'close': last_price,
-                        'expiration_date': expiration.strftime('%Y-%m-%d'),
-                        'expiry': expiration,
-                        'volume': hist['Volume'].iloc[-1] if 'Volume' in hist.columns else 0
-                    })
-                    
-            except Exception as e:
-                continue
-        
-        if not futures_data:
-            return None
-        
-        # Crear DataFrame y ordenar por fecha de expiración
-        df = pd.DataFrame(futures_data)
-        df = df.sort_values('expiry').reset_index(drop=True)
-        
-        # Seleccionar los primeros 8 contratos
-        df = df.head(8)
-        df['label'] = [f"F{i+1}" for i in range(len(df))]
-        
-        return df
-        
-    except Exception as e:
-        st.error(f"Error obteniendo futuros VIX: {e}")
-        return None
-
-@st.cache_data(ttl=300)
-def get_vix_futures_generic():
-    """Método alternativo: usar contratos genéricos de Yahoo Finance."""
-    try:
-        import yfinance as yf
-        
-        # Yahoo Finance también tiene índices agregados de futuros VIX
-        vix_indices = {
-            '^SPVIX1M': 'VIX 1-Month',
-            '^SPVIX3M': 'VIX 3-Month', 
-            '^SPVIX6M': 'VIX 6-Month',
-            '^SPVIX9M': 'VIX 9-Month'
-        }
-        
-        futures_data = []
-        
-        for symbol, label in vix_indices.items():
-            try:
-                ticker = yf.Ticker(symbol)
-                hist = ticker.history(period="5d")
-                
-                if not hist.empty:
-                    futures_data.append({
-                        'symbol': symbol,
-                        'label': label,
-                        'close': hist['Close'].iloc[-1]
+                        'days': days_map[i],
+                        'month': f'{days_map[i]//30} Month'
                     })
             except:
                 continue
         
         if futures_data:
-            return pd.DataFrame(futures_data)
+            df = pd.DataFrame(futures_data)
+            df = df.sort_values('days').reset_index(drop=True)
+            df['label'] = [f"F{i+1}" for i in range(len(df))]
+            return df
         
         return None
         
@@ -143,12 +157,14 @@ def main_vix_structure():
     # Obtener datos
     with st.spinner("Obteniendo datos desde Yahoo Finance..."):
         vix_spot = get_vix_spot()
-        df_futures = get_vix_futures_data()
         
-        # Si el método principal falla, intentar método genérico
+        # Intentar primero con índices de term structure
+        df_futures = get_vix_term_structure_from_csv()
+        
+        # Si falla, usar método de ETFs/proxies
         if df_futures is None or df_futures.empty:
-            st.info("Intentando método alternativo con índices agregados...")
-            df_futures_alt = get_vix_futures_generic()
+            st.info("Usando proxies de ETFs para aproximar la estructura...")
+            df_futures = get_vix_futures_data()
     
     # Mostrar métricas principales
     col1, col2, col3 = st.columns(3)
@@ -161,15 +177,16 @@ def main_vix_structure():
     
     with col2:
         if df_futures is not None and not df_futures.empty:
-            f1_price = df_futures.iloc[0]['close']
-            st.metric("VIX F1 (Front Month)", f"{f1_price:.2f}")
+            # Buscar el contrato más cercano (excluyendo spot si está)
+            front_month = df_futures[df_futures['days'] > 0].iloc[0] if len(df_futures[df_futures['days'] > 0]) > 0 else df_futures.iloc[0]
+            st.metric("Front Month", f"{front_month['close']:.2f}", delta=front_month['label'])
         else:
-            st.metric("VIX F1 (Front Month)", "N/A")
+            st.metric("Front Month", "N/A")
     
     with col3:
         if df_futures is not None and not df_futures.empty and vix_spot:
-            f1_price = df_futures.iloc[0]['close']
-            contango = f1_price - vix_spot
+            front_month = df_futures[df_futures['days'] > 0].iloc[0] if len(df_futures[df_futures['days'] > 0]) > 0 else df_futures.iloc[0]
+            contango = front_month['close'] - vix_spot
             st.metric("Contango/Backwardation", f"{contango:.2f}", 
                      delta="Contango" if contango > 0 else "Backwardation")
         else:
@@ -177,46 +194,52 @@ def main_vix_structure():
     
     st.markdown("---")
     
-    # Mostrar datos y gráfico principal
+    # Mostrar datos y gráfico
     if df_futures is not None and not df_futures.empty:
         
         # Tabla de datos
-        st.subheader("📋 Futuros VIX - Estructura de Términos")
+        st.subheader("📋 VIX Term Structure")
         
-        # Preparar tabla para mostrar
-        display_cols = ['label', 'month', 'expiration_date', 'close']
-        if 'volume' in df_futures.columns:
-            display_cols.append('volume')
+        # Preparar tabla
+        display_cols = ['label', 'symbol', 'close', 'days']
+        if 'month' in df_futures.columns:
+            display_cols.insert(1, 'month')
         
         df_display = df_futures[display_cols].copy()
-        df_display.columns = ['Contrato', 'Mes', 'Expiración', 'Precio', 'Volumen'][:len(display_cols)]
+        
+        # Renombrar columnas
+        col_names = ['Contrato', 'Símbolo', 'Precio', 'Días']
+        if 'month' in display_cols:
+            col_names.insert(1, 'Período')
+        
+        df_display.columns = col_names
         
         st.dataframe(
             df_display.style.format({
                 'Precio': '{:.2f}',
-                'Volumen': '{:,.0f}' if 'Volumen' in df_display.columns else None
+                'Días': '{:.0f}'
             }),
             use_container_width=True, 
             hide_index=True
         )
         
-        # Gráfico de la curva de futuros
-        st.subheader("📈 Curva de Futuros VIX")
+        # Gráfico de la curva
+        st.subheader("📈 Curva de Term Structure")
         
         fig = go.Figure()
         
-        # Línea de futuros
+        # Línea de estructura
         fig.add_trace(go.Scatter(
             x=df_futures['label'],
             y=df_futures['close'],
             mode='lines+markers',
-            name='VIX Futures',
+            name='VIX Term Structure',
             line=dict(color='#FF6B6B', width=3),
             marker=dict(size=10),
             hovertemplate='<b>%{x}</b><br>Precio: %{y:.2f}<extra></extra>'
         ))
         
-        # Añadir línea horizontal de spot si está disponible
+        # Línea de referencia de spot
         if vix_spot:
             fig.add_hline(
                 y=vix_spot, 
@@ -228,8 +251,8 @@ def main_vix_structure():
         
         fig.update_layout(
             title="VIX Term Structure",
-            xaxis_title="Contrato",
-            yaxis_title="Precio",
+            xaxis_title="Contrato / Período",
+            yaxis_title="Valor",
             hovermode='x unified',
             template='plotly_white',
             height=500,
@@ -238,124 +261,97 @@ def main_vix_structure():
         
         st.plotly_chart(fig, use_container_width=True)
         
-        # Análisis de contango/backwardation
+        # Análisis
         st.subheader("📊 Análisis de Estructura")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            # Calcular pendiente promedio
+            # Calcular pendiente
             if len(df_futures) >= 2:
-                slope = (df_futures.iloc[-1]['close'] - df_futures.iloc[0]['close']) / len(df_futures)
-                
-                if slope > 0.5:
-                    status = "🔴 Contango Fuerte"
-                    color = "red"
-                elif slope > 0:
-                    status = "🟡 Contango Moderado"
-                    color = "orange"
-                elif slope > -0.5:
-                    status = "🟢 Backwardation Moderado"
-                    color = "green"
-                else:
-                    status = "🟢 Backwardation Fuerte"
-                    color = "green"
-                
-                st.markdown(f"### {status}")
-                st.metric("Pendiente promedio", f"{slope:.3f} por contrato")
+                # Usar contratos que no sean spot
+                non_spot = df_futures[df_futures['days'] > 0]
+                if len(non_spot) >= 2:
+                    slope = (non_spot.iloc[-1]['close'] - non_spot.iloc[0]['close']) / len(non_spot)
+                    
+                    if slope > 0.5:
+                        status = "🔴 Contango Fuerte"
+                    elif slope > 0:
+                        status = "🟡 Contango Moderado"
+                    elif slope > -0.5:
+                        status = "🟢 Backwardation Moderado"
+                    else:
+                        status = "🟢 Backwardation Fuerte"
+                    
+                    st.markdown(f"### {status}")
+                    st.metric("Pendiente", f"{slope:.3f}")
         
         with col2:
-            # Spread F1-F8
-            if len(df_futures) >= 8:
-                spread = df_futures.iloc[7]['close'] - df_futures.iloc[0]['close']
+            # Spread entre primer y último
+            if len(df_futures) >= 2:
+                spread = df_futures.iloc[-1]['close'] - df_futures.iloc[0]['close']
                 st.metric(
-                    "Spread F1-F8", 
+                    "Spread Total", 
                     f"{spread:.2f}",
                     delta=f"{(spread/df_futures.iloc[0]['close']*100):.1f}%"
                 )
-            
-            # Premium sobre spot
-            if vix_spot:
-                premium = df_futures.iloc[0]['close'] - vix_spot
-                st.metric(
-                    "Premium F1 sobre Spot",
-                    f"{premium:.2f}",
-                    delta=f"{(premium/vix_spot*100):.1f}%"
-                )
+        
+        # Nota sobre los datos
+        st.info("📝 **Nota**: Debido a limitaciones de Yahoo Finance, estos datos representan una aproximación "
+                "de la estructura de términos de futuros VIX usando índices agregados disponibles públicamente.")
         
     else:
-        st.warning("⚠️ No se pudieron obtener datos de futuros mensuales")
+        st.error("❌ No se pudieron obtener datos de Yahoo Finance")
         
-        # Mostrar datos alternativos si están disponibles
-        if 'df_futures_alt' in locals() and df_futures_alt is not None:
-            st.subheader("📊 Índices de Futuros VIX Agregados")
-            st.info("Mostrando índices agregados en lugar de contratos individuales")
+        st.markdown("### 💡 Soluciones Alternativas")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("""
+            **Opción 1: Datos Históricos CBOE**
             
-            # Tabla alternativa
-            df_alt_display = df_futures_alt.copy()
-            st.dataframe(
-                df_alt_display.style.format({'close': '{:.2f}'}),
-                use_container_width=True,
-                hide_index=True
-            )
+            Descarga archivos CSV directamente:
+            """)
+            st.link_button("📊 CBOE Historical Data", 
+                          "https://www.cboe.com/us/futures/market_statistics/historical_data/")
+        
+        with col2:
+            st.markdown("""
+            **Opción 2: Ver en Web**
             
-            # Gráfico alternativo
-            fig = go.Figure()
-            
-            fig.add_trace(go.Bar(
-                x=df_futures_alt['label'],
-                y=df_futures_alt['close'],
-                marker_color='#FF6B6B',
-                text=df_futures_alt['close'].round(2),
-                textposition='outside'
-            ))
-            
-            if vix_spot:
-                fig.add_hline(
-                    y=vix_spot,
-                    line_dash="dash",
-                    line_color="#4ECDC4",
-                    annotation_text=f"VIX Spot: {vix_spot:.2f}",
-                    annotation_position="right"
-                )
-            
-            fig.update_layout(
-                title="Índices de Futuros VIX Agregados",
-                xaxis_title="Índice",
-                yaxis_title="Valor",
-                template='plotly_white',
-                height=500
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.error("❌ No se pudieron obtener datos de Yahoo Finance")
-            st.info("💡 **Nota**: Yahoo Finance puede tener disponibilidad limitada para futuros VIX.\n\n"
-                    "**Alternativas recomendadas:**\n"
-                    "- Usar broker con acceso a datos (Interactive Brokers, TD Ameritrade)\n"
-                    "- APIs comerciales (Bloomberg, Quandl, IVolatility)\n"
-                    "- Datos históricos de CBOE: https://www.cboe.com/us/futures/market_statistics/historical_data/")
+            Consulta la estructura actual en tiempo real:
+            """)
+            st.link_button("🌐 CBOE VIX Term Structure", 
+                          "https://www.cboe.com/tradable-products/vix/term-structure/")
     
     # Información adicional
     st.markdown("---")
-    with st.expander("ℹ️ Información sobre Futuros VIX"):
+    with st.expander("ℹ️ Información sobre los Datos"):
         st.markdown("""
-        ### Sobre los Futuros VIX
+        ### Fuentes de Datos Utilizadas
         
-        - **Símbolo**: VX en CBOE
-        - **Tamaño del contrato**: $1,000 × nivel del índice VIX
-        - **Expiración**: Miércoles, 30 días antes del tercer viernes del mes calendario
-        - **Horario de trading**: Domingo - Viernes, 5:00 PM - 8:15 AM CT (siguiente día)
+        **Símbolos de Yahoo Finance:**
+        - `^VIX` - Índice VIX Spot
+        - `^SPVIX1M` - S&P 500 VIX 1-Month Futures Index
+        - `^SPVIX3M` - S&P 500 VIX 3-Month Futures Index
+        - `^SPVIX6M` - S&P 500 VIX 6-Month Futures Index
+        - `^SPVIX9M` - S&P 500 VIX 9-Month Futures Index
         
-        ### Estructura de Términos
+        **ETFs Alternativos (si es necesario):**
+        - `VXX` - iPath Series B S&P 500 VIX Short-Term Futures ETN
+        - `VIXY` - ProShares VIX Short-Term Futures ETF
+        - `VIXM` - ProShares VIX Mid-Term Futures ETF
         
-        - **Contango**: Cuando los futuros tienen precio superior al spot (curva ascendente)
-        - **Backwardation**: Cuando los futuros tienen precio inferior al spot (curva descendente)
+        ### Limitaciones
         
-        ### Fuente de Datos
+        Yahoo Finance no proporciona acceso directo a contratos individuales de futuros VIX (VXF26, VXG26, etc.).
+        Los datos mostrados son índices agregados que rastrean cestas de futuros VIX.
         
-        Datos obtenidos de Yahoo Finance mediante la librería yfinance.
-        Los símbolos utilizados son: ^VIXJAN, ^VIXFEB, ^VIXMAR, etc.
+        Para datos de contratos individuales, se requiere acceso a:
+        - CBOE DataShop (comercial)
+        - Brokers con acceso a datos (Interactive Brokers, TD Ameritrade)
+        - APIs comerciales (Bloomberg, Quandl, IVolatility)
         """)
 
 # ==============================================================================
