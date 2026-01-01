@@ -165,7 +165,7 @@ def main_triple_calendar():
     
     with col1:
         # Selector de Ticker
-        ticker_options = ['SPX', 'SPY', 'QQQ']
+        ticker_options = ['QQQ', 'SPX', 'SPY']
         selected_ticker = st.selectbox(
             "Selecciona el Ticker",
             ticker_options,
