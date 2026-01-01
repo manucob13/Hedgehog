@@ -7,10 +7,59 @@ from datetime import datetime
 from utils import check_password
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="VIX Term Structure - VIX Central", layout="wide")
+st.set_page_config(page_title="VIX Term Structure", layout="wide")
+
+# CSS personalizado para mejorar la presentación
+st.markdown("""
+    <style>
+    /* Estilos generales */
+    .main {
+        background-color: #0E1117;
+    }
+    
+    /* Título principal */
+    .vix-title {
+        font-size: 2.5rem;
+        font-weight: 700;
+        color: #FFFFFF;
+        text-align: center;
+        margin-bottom: 0.5rem;
+        font-family: 'Arial', sans-serif;
+    }
+    
+    .vix-subtitle {
+        font-size: 0.9rem;
+        color: #8B949E;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    
+    /* Métricas personalizadas */
+    div[data-testid="stMetricValue"] {
+        font-size: 2rem;
+        font-weight: 600;
+    }
+    
+    /* Mejorar tablas */
+    .dataframe {
+        font-size: 0.9rem;
+    }
+    
+    /* Secciones */
+    .section-title {
+        font-size: 1.3rem;
+        font-weight: 600;
+        color: #FFFFFF;
+        margin-top: 2rem;
+        margin-bottom: 1rem;
+        padding-left: 0.5rem;
+        border-left: 4px solid #4A90E2;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 # ==============================================================================
-# OBTENCIÓN DE DATOS DESDE VIX CENTRAL (WEB SCRAPING)
+# OBTENCIÓN DE DATOS
 # ==============================================================================
 
 @st.cache_data(ttl=300)
@@ -26,7 +75,7 @@ def get_vix_spot():
 
 @st.cache_data(ttl=300)
 def scrape_vix_central():
-    """Extrae datos de futuros VIX desde VIX Central mediante web scraping."""
+    """Extrae datos de futuros VIX desde VIX Central."""
     try:
         url = "http://vixcentral.com/"
         
@@ -39,31 +88,20 @@ def scrape_vix_central():
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
         
-        # Parsear HTML
         soup = BeautifulSoup(response.content, 'html.parser')
-        
-        # Buscar la tabla con los datos de futuros
-        # VIX Central tiene los datos en un script o tabla específica
-        # Intentar encontrar los datos en el HTML
         
         futures_data = []
         
-        # Método 1: Buscar en scripts que contengan los datos
+        # Buscar datos en scripts
         scripts = soup.find_all('script')
         for script in scripts:
             if script.string and 'VIX' in str(script.string):
-                # Intentar extraer datos del script
                 script_text = script.string
                 
-                # VIX Central suele tener los datos en formato JavaScript
-                # Buscar patrones como: data = [16.5, 18.49, 19.68, ...]
                 import re
-                
-                # Buscar arrays de números
                 numbers = re.findall(r'\d+\.\d+', script_text)
                 
                 if len(numbers) >= 8:
-                    # Tomar los primeros 8-9 valores que suelen ser los futuros
                     months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug']
                     
                     for i, (month, price) in enumerate(zip(months, numbers[:8])):
@@ -77,12 +115,12 @@ def scrape_vix_central():
                     if futures_data:
                         break
         
-        # Método 2: Buscar en tabla HTML directamente
+        # Fallback: buscar en tablas
         if not futures_data:
             tables = soup.find_all('table')
             for table in tables:
                 rows = table.find_all('tr')
-                for row in rows[1:]:  # Saltar header
+                for row in rows[1:]:
                     cols = row.find_all('td')
                     if len(cols) >= 2:
                         try:
@@ -111,35 +149,28 @@ def scrape_vix_central():
         return None
         
     except Exception as e:
-        st.error(f"Error extrayendo datos de VIX Central: {e}")
+        st.error(f"Error extrayendo datos: {e}")
         return None
 
 @st.cache_data(ttl=300)
 def get_vix_futures_alternative():
-    """Método alternativo: extraer de otro sitio o usar datos simulados para demo."""
+    """Genera estructura aproximada basada en VIX spot."""
     try:
         import yfinance as yf
         
-        # Obtener VIX spot como referencia
         vix = yf.Ticker("^VIX")
         vix_spot = vix.history(period="1d")['Close'].iloc[-1]
         
-        # Construir una curva aproximada basada en promedios históricos
-        # Típicamente los futuros VIX cotizan en contango
         months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug']
-        
-        # Crear estructura de contango típica (esto es aproximado)
-        # Usualmente F1 está 10-15% sobre spot, y aumenta gradualmente
         futures_data = []
         
         for i, month in enumerate(months):
-            # Contango típico: aumenta ~2-3% por mes
             premium = 1 + (0.025 * (i + 1))
             price = vix_spot * premium
             
             futures_data.append({
                 'month': month,
-                'price': round(price, 2),
+                'price': round(price, 3),
                 'label': f'F{i+1}',
                 'contract': month
             })
@@ -151,156 +182,195 @@ def get_vix_futures_alternative():
         return None
 
 # ==============================================================================
-# FUNCIÓN PRINCIPAL (CONTENIDO DE LA APP)
+# FUNCIÓN PRINCIPAL
 # ==============================================================================
 
 def main_vix_structure():
-    st.markdown("<h1 style='text-align: center;'>📊 VIX Futures Term Structure</h1>", unsafe_allow_html=True)
-    st.caption("Fuente: VIX Central (vixcentral.com)")
-    st.markdown("---")
+    
+    # Título mejorado
+    st.markdown('<h1 class="vix-title">VIX Futures Term Structure</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="vix-subtitle">Source: CBOE Delayed Quotes · vixcentral.com</p>', unsafe_allow_html=True)
     
     # Obtener datos
-    with st.spinner("Obteniendo datos de futuros VIX..."):
+    with st.spinner("Obteniendo datos..."):
         vix_spot = get_vix_spot()
         df_futures = scrape_vix_central()
         
-        # Si falla el scraping, usar método alternativo
         if df_futures is None or df_futures.empty:
-            st.warning("⚠️ No se pudo acceder a VIX Central. Usando estructura aproximada...")
             df_futures = get_vix_futures_alternative()
     
-    # Mostrar métricas principales
     if df_futures is not None and not df_futures.empty:
         
-        col1, col2, col3 = st.columns(3)
+        # ========== MÉTRICAS PRINCIPALES ==========
+        col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
         
         with col1:
             if vix_spot:
-                st.metric("VIX Spot", f"{vix_spot:.2f}")
-            else:
-                st.metric("VIX Spot", "N/A")
+                st.metric(
+                    label="VIX Spot",
+                    value=f"{vix_spot:.2f}",
+                    delta=None
+                )
         
         with col2:
             f1_price = df_futures.iloc[0]['price']
-            st.metric("F1 (Front Month)", f"{f1_price:.2f}", delta=df_futures.iloc[0]['month'])
-        
-        with col3:
             if vix_spot:
-                contango = f1_price - vix_spot
-                contango_pct = (contango / vix_spot) * 100
+                f1_diff = f1_price - vix_spot
                 st.metric(
-                    "Contango/Backwardation", 
-                    f"{contango:.2f}",
-                    delta=f"{contango_pct:.1f}%"
+                    label="F1 (Front Month)",
+                    value=f"{f1_price:.2f}",
+                    delta=f"{f1_diff:+.2f}"
                 )
             else:
-                st.metric("Contango", "N/A")
+                st.metric(
+                    label="F1 (Front Month)",
+                    value=f"{f1_price:.2f}"
+                )
         
-        st.markdown("---")
+        with col3:
+            if len(df_futures) >= 8:
+                f8_price = df_futures.iloc[7]['price']
+                total_contango = f8_price - f1_price
+                total_contango_pct = (total_contango / f1_price) * 100
+                
+                st.metric(
+                    label="Total Contango (F1→F8)",
+                    value=f"{total_contango_pct:.2f}%",
+                    delta=f"{total_contango:+.2f} pts"
+                )
         
-        # Gráfico principal - ESTILO VIX CENTRAL
-        st.subheader("📈 VIX Futures Term Structure")
+        with col4:
+            if len(df_futures) >= 7:
+                m7_price = df_futures.iloc[6]['price']
+                m4_price = df_futures.iloc[3]['price']
+                m7_m4_contango = m7_price - m4_price
+                m7_m4_pct = (m7_m4_contango / m4_price) * 100
+                
+                st.metric(
+                    label="M7 to M4 Contango",
+                    value=f"{m7_m4_pct:.2f}%",
+                    delta=f"{m7_m4_contango:+.2f} pts"
+                )
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # ========== GRÁFICO PRINCIPAL ==========
+        st.markdown('<div class="section-title">📈 VIX Futures Term Structure</div>', unsafe_allow_html=True)
         
         fig = go.Figure()
         
-        # Línea de futuros (línea azul como en VIX Central)
+        # Línea de futuros
         fig.add_trace(go.Scatter(
             x=df_futures['month'],
             y=df_futures['price'],
             mode='lines+markers+text',
             name='VIX Futures',
-            line=dict(color='#4A90E2', width=3),
-            marker=dict(size=10, color='#4A90E2'),
+            line=dict(color='#4A90E2', width=3.5),
+            marker=dict(
+                size=12,
+                color='#4A90E2',
+                line=dict(color='#FFFFFF', width=2)
+            ),
             text=df_futures['price'].round(2),
             textposition='top center',
-            textfont=dict(size=11, color='#333'),
-            hovertemplate='<b>%{x}</b><br>Precio: %{y:.3f}<extra></extra>'
+            textfont=dict(size=11, color='#FFFFFF', family='Arial'),
+            hovertemplate='<b>%{x}</b><br>Price: %{y:.3f}<extra></extra>'
         ))
         
-        # Línea horizontal de VIX Spot (línea verde punteada como en VIX Central)
+        # Línea de VIX Spot
         if vix_spot:
             fig.add_hline(
                 y=vix_spot,
                 line_dash="dash",
                 line_color="#27AE60",
-                line_width=2,
+                line_width=2.5,
                 annotation_text=f"VIX Index: {vix_spot:.2f}",
                 annotation_position="right",
-                annotation=dict(font=dict(size=12, color="#27AE60"))
+                annotation=dict(
+                    font=dict(size=13, color="#27AE60", family='Arial'),
+                    bgcolor="rgba(39, 174, 96, 0.1)",
+                    bordercolor="#27AE60",
+                    borderwidth=1,
+                    borderpad=4
+                )
             )
         
-        # Personalización para que se vea como VIX Central
+        # Personalización del layout
         fig.update_layout(
-            title={
-                'text': "VIX Futures Term Structure",
-                'x': 0.5,
-                'xanchor': 'center',
-                'font': {'size': 20, 'color': '#333'}
-            },
+            title=None,
             xaxis_title="Future Month",
             yaxis_title="Volatility",
             hovermode='x unified',
-            template='plotly_white',
-            height=550,
+            template='plotly_dark',
+            height=500,
             showlegend=False,
-            plot_bgcolor='#FAFAFA',
+            paper_bgcolor='#0E1117',
+            plot_bgcolor='#1A1D24',
+            font=dict(color='#FFFFFF', family='Arial'),
             xaxis=dict(
                 showgrid=True,
-                gridcolor='#E0E0E0',
-                zeroline=False
+                gridcolor='rgba(255, 255, 255, 0.1)',
+                zeroline=False,
+                linecolor='rgba(255, 255, 255, 0.2)',
+                title_font=dict(size=14)
             ),
             yaxis=dict(
                 showgrid=True,
-                gridcolor='#E0E0E0',
-                zeroline=False
+                gridcolor='rgba(255, 255, 255, 0.1)',
+                zeroline=False,
+                linecolor='rgba(255, 255, 255, 0.2)',
+                title_font=dict(size=14)
             ),
-            margin=dict(t=80, b=60, l=60, r=60)
+            margin=dict(t=20, b=60, l=60, r=80)
         )
         
         st.plotly_chart(fig, use_container_width=True)
         
-        # Tabla de datos detallada
-        st.subheader("📋 Datos de Contratos de Futuros VIX")
+        st.markdown("<br>", unsafe_allow_html=True)
         
-        # Calcular contango/backwardation para cada contrato
-        df_display = df_futures.copy()
+        # ========== TABLA DE DATOS ==========
+        st.markdown('<div class="section-title">📋 Datos de Contratos de Futuros VIX</div>', unsafe_allow_html=True)
         
-        # Calcular diferencias y porcentajes
+        # Preparar datos de la tabla
+        df_table = df_futures.copy()
+        
+        # Calcular métricas
+        df_table['diff_prev'] = df_table['price'].diff().fillna(0)
+        df_table['pct_contango'] = (df_table['price'].pct_change() * 100).fillna(0)
+        
         if vix_spot:
-            df_display['diff_spot'] = df_display['price'] - vix_spot
-            df_display['pct_spot'] = ((df_display['price'] - vix_spot) / vix_spot * 100).round(2)
+            df_table['diff_spot'] = df_table['price'] - vix_spot
+            df_table['pct_spot'] = ((df_table['price'] - vix_spot) / vix_spot * 100)
         
-        # Calcular diferencia entre contratos consecutivos
-        df_display['diff_prev'] = df_display['price'].diff().round(3)
-        df_display['pct_contango'] = (df_display['price'].pct_change() * 100).round(2)
-        
-        # Preparar tabla para mostrar
+        # Crear tabla formateada
         table_data = pd.DataFrame({
-            'Contrato': df_display['label'],
-            'Mes': df_display['month'],
-            'Precio': df_display['price'].round(3),
-            'Diff vs Anterior': df_display['diff_prev'].fillna(0).round(3),
-            '% Contango': df_display['pct_contango'].fillna(0).round(2),
+            'Contrato': df_table['label'],
+            'Mes': df_table['month'],
+            'Precio': df_table['price'].apply(lambda x: f"{x:.3f}"),
+            'Diff vs Anterior': df_table['diff_prev'].apply(lambda x: f"{x:+.3f}" if x != 0 else "0"),
+            '% Contango': df_table['pct_contango'].apply(lambda x: f"{x:+.2f}%" if x != 0 else "0%"),
         })
         
         if vix_spot:
-            table_data['Diff vs Spot'] = df_display['diff_spot'].round(3)
-            table_data['% vs Spot'] = df_display['pct_spot'].round(2)
+            table_data['Diff vs Spot'] = df_table['diff_spot'].apply(lambda x: f"{x:+.3f}")
+            table_data['% vs Spot'] = df_table['pct_spot'].apply(lambda x: f"{x:+.2f}%")
         
+        # Mostrar tabla con estilo
         st.dataframe(
             table_data,
             use_container_width=True,
-            hide_index=True
+            hide_index=True,
+            height=350
         )
         
-        # Análisis de contango
-        st.markdown("---")
-        st.subheader("📊 Análisis de Estructura")
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # ========== ANÁLISIS DE ESTRUCTURA ==========
+        st.markdown('<div class="section-title">📊 Análisis de Estructura</div>', unsafe_allow_html=True)
         
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            # Contango M7 a M4
             if len(df_futures) >= 7:
                 m7_m4_contango = df_futures.iloc[6]['price'] - df_futures.iloc[3]['price']
                 m7_m4_pct = (m7_m4_contango / df_futures.iloc[3]['price'] * 100)
@@ -308,76 +378,45 @@ def main_vix_structure():
                 st.metric(
                     "Month 7 to 4 contango",
                     f"{m7_m4_pct:.2f}%",
-                    delta=f"{m7_m4_contango:.2f} pts"
+                    delta=f"{m7_m4_contango:+.2f} pts",
+                    delta_color="normal"
                 )
         
         with col2:
-            # Contango total (M1 a M8)
             if len(df_futures) >= 8:
                 total_contango = df_futures.iloc[7]['price'] - df_futures.iloc[0]['price']
                 total_pct = (total_contango / df_futures.iloc[0]['price'] * 100)
                 
                 st.metric(
-                    "Total contango (F1-F8)",
+                    "Total contango (F1→F8)",
                     f"{total_pct:.2f}%",
-                    delta=f"{total_contango:.2f} pts"
+                    delta=f"{total_contango:+.2f} pts",
+                    delta_color="normal"
                 )
         
         with col3:
-            # Promedio de contango por mes
             if len(df_futures) >= 2:
-                avg_contango = df_display['diff_prev'].mean()
+                avg_contango = df_table['diff_prev'].mean()
                 
                 st.metric(
                     "Avg contango por mes",
-                    f"{avg_contango:.3f} pts"
+                    f"{avg_contango:.3f} pts",
+                    delta=None
                 )
         
     else:
         st.error("❌ No se pudieron obtener datos de futuros VIX")
         
-        st.markdown("### 💡 Visita VIX Central directamente")
-        st.link_button("🌐 VIX Central", "http://vixcentral.com/")
+        col1, col2 = st.columns(2)
         
-        st.info("""
-        **Nota**: Para obtener datos de contratos individuales de futuros VIX necesitas:
+        with col1:
+            st.link_button("🌐 VIX Central", "http://vixcentral.com/", use_container_width=True)
         
-        1. **VIX Central** (vixcentral.com) - Gratuito, actualización diaria
-        2. **CBOE DataShop** - Comercial, datos en tiempo real
-        3. **Broker con acceso a datos** - Interactive Brokers, TD Ameritrade
-        4. **APIs comerciales** - Bloomberg, Quandl, IVolatility
-        """)
-    
-    # Footer con información
-    st.markdown("---")
-    with st.expander("ℹ️ Sobre los Datos y Metodología"):
-        st.markdown("""
-        ### Fuente de Datos
-        
-        Los datos son extraídos de **VIX Central** (vixcentral.com), que obtiene cotizaciones 
-        de futuros VIX de CBOE y las actualiza diariamente.
-        
-        ### Contratos de Futuros VIX
-        
-        - **Símbolo**: VX en CBOE
-        - **Tamaño**: $1,000 × nivel del índice VIX  
-        - **Expiración**: Miércoles, 30 días antes del 3er viernes del mes
-        - **Meses**: Los próximos 8 meses de contratos
-        
-        ### Interpretación
-        
-        - **Contango (positivo)**: Futuros cotizan sobre el spot → mercado espera volatilidad creciente
-        - **Backwardation (negativo)**: Futuros bajo el spot → mercado espera volatilidad decreciente
-        - **Curva pronunciada**: Mayor incertidumbre a largo plazo
-        - **Curva plana**: Expectativas estables
-        
-        ### Actualización
-        
-        Los datos se actualizan cada 5 minutos (cache de 300 segundos).
-        """)
+        with col2:
+            st.link_button("📊 CBOE Data", "https://www.cboe.com/tradable-products/vix/term-structure/", use_container_width=True)
 
 # ==============================================================================
-# PUNTO DE ENTRADA PROTEGIDO
+# PUNTO DE ENTRADA
 # ==============================================================================
 if __name__ == "__main__":
     
@@ -385,4 +424,4 @@ if __name__ == "__main__":
         main_vix_structure()
     else:
         st.title("🔒 Acceso Restringido")
-        st.info("Por favor, introduce tus credenciales en el menú lateral (sidebar) para acceder a VIX Term Structure.")
+        st.info("Por favor, introduce tus credenciales en el menú lateral (sidebar) para acceder.")
