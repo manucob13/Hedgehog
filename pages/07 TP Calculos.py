@@ -5,6 +5,7 @@ from datetime import date, timedelta, datetime
 import requests
 import plotly.graph_objects as go
 from utils import check_password
+import io
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="TP Cálculos - Expected Move", layout="wide")
@@ -137,6 +138,20 @@ def get_historical_prices(ticker, days=7):
     except Exception as e:
         st.error(f"Error obteniendo datos históricos: {e}")
         return None
+
+def generate_ibkr_basket_csv(orders_df):
+    """Convierte el DataFrame de órdenes a formato CSV de IBKR Basket."""
+    # Crear un buffer de string para el CSV
+    output = io.StringIO()
+    
+    # Escribir el CSV sin índice
+    orders_df.to_csv(output, index=False)
+    
+    # Obtener el contenido del CSV
+    csv_content = output.getvalue()
+    output.close()
+    
+    return csv_content
 
 # ==============================================================================
 # FUNCIÓN PRINCIPAL - TP CÁLCULOS
@@ -577,7 +592,8 @@ def main_tp_calculos():
         st.header("6. Generador de Estructura - Triple Calendar")
         
         st.markdown("""
-        Configura los strikes y fechas de expiración para generar la estructura de órdenes del Triple Calendar.
+        Configura los strikes y fechas de expiración para generar un archivo CSV en formato **IBKR Basket** 
+        que podrás descargar y ejecutar manualmente en tu broker.
         """)
         
         # Calcular Expected Move de 1 desviación estándar (ORIGINAL, sin redondear)
@@ -597,7 +613,6 @@ def main_tp_calculos():
         with col1:
             st.markdown("#### 📍 Configuración de Strikes")
             
-            # MODIFICACIÓN: Mostrar los valores ORIGINALES, no los redondeados
             st.info(f"""
             💡 **Rangos de Referencia (1σ):**
             - Precio Actual: **${current_price:.2f}**
@@ -631,7 +646,7 @@ def main_tp_calculos():
             
             st.markdown("---")
             
-            # Strike DOWN - MODIFICACIÓN: Mostrar el valor original
+            # Strike DOWN
             st.markdown(f"**Strike DOWN** (Calculado: ${lower_range_1std:.2f})")
             strike_down_input = st.number_input(
                 "Strike DOWN (debajo ATM)",
@@ -652,7 +667,7 @@ def main_tp_calculos():
             
             st.markdown("---")
             
-            # Strike UP - MODIFICACIÓN: Mostrar el valor original
+            # Strike UP
             st.markdown(f"**Strike UP** (Calculado: ${upper_range_1std:.2f})")
             strike_up_input = st.number_input(
                 "Strike UP (arriba ATM)",
@@ -708,16 +723,29 @@ def main_tp_calculos():
                 key='basket_tag_tc',
                 help="Etiqueta para identificar el grupo de órdenes"
             )
+            
+            st.markdown("---")
+            
+            st.markdown("#### 📦 Cantidad de Contratos")
+            
+            quantity_input = st.number_input(
+                "Cantidad por orden",
+                min_value=1,
+                value=1,
+                step=1,
+                key='quantity_tc',
+                help="Número de contratos por cada orden"
+            )
         
         st.markdown("---")
         
-        if st.button("🎯 Generar Estructura de Órdenes", type="primary", use_container_width=True):
+        if st.button("🎯 Generar CSV para IBKR", type="primary", use_container_width=True):
             
             # Formatear fechas para el símbolo (YYYYMMDD)
             front_date_str = dte_front_input.strftime("%Y%m%d")
             back_date_str = dte_back_input.strftime("%Y%m%d")
             
-            # Crear la estructura de órdenes
+            # Crear la estructura de órdenes en formato IBKR Basket
             orders = []
             
             # Configuración de strikes y tipos
@@ -746,31 +774,40 @@ def main_tp_calculos():
                 # SELL en DTE FRONT
                 orders.append({
                     'Action': 'SELL',
+                    'Quantity': quantity_input,
                     'Symbol': selected_ticker,
                     'SecType': 'OPT',
                     'Expiry': front_date_str,
                     'Strike': strike_int,
                     'Right': right_letter,
-                    'Basket Tag': basket_tag
+                    'Exchange': 'SMART',
+                    'Currency': 'USD',
+                    'BasketTag': basket_tag
                 })
                 
                 # BUY en DTE BACK
                 orders.append({
                     'Action': 'BUY',
+                    'Quantity': quantity_input,
                     'Symbol': selected_ticker,
                     'SecType': 'OPT',
                     'Expiry': back_date_str,
                     'Strike': strike_int,
                     'Right': right_letter,
-                    'Basket Tag': basket_tag
+                    'Exchange': 'SMART',
+                    'Currency': 'USD',
+                    'BasketTag': basket_tag
                 })
             
-            # Crear DataFrame
-            df_orders = pd.DataFrame(orders)
+            # Crear DataFrame con el orden de columnas específico de IBKR
+            df_orders = pd.DataFrame(orders, columns=[
+                'Action', 'Quantity', 'Symbol', 'SecType', 'Expiry', 
+                'Strike', 'Right', 'Exchange', 'Currency', 'BasketTag'
+            ])
             
             st.success("✅ Estructura de órdenes generada exitosamente!")
             
-            st.markdown("### 📋 Tabla de Órdenes - Triple Calendar")
+            st.markdown("### 📋 Vista Previa - IBKR Basket Orders")
             
             # Mostrar la tabla con formato
             st.dataframe(
@@ -779,14 +816,37 @@ def main_tp_calculos():
                 use_container_width=True,
                 column_config={
                     'Action': st.column_config.TextColumn('Action', width="small"),
+                    'Quantity': st.column_config.NumberColumn('Quantity', format="%d", width="small"),
                     'Symbol': st.column_config.TextColumn('Symbol', width="small"),
                     'SecType': st.column_config.TextColumn('SecType', width="small"),
                     'Expiry': st.column_config.TextColumn('Expiry', width="medium"),
                     'Strike': st.column_config.NumberColumn('Strike', format="%d"),
                     'Right': st.column_config.TextColumn('Right', width="small"),
-                    'Basket Tag': st.column_config.TextColumn('Basket Tag', width="medium")
+                    'Exchange': st.column_config.TextColumn('Exchange', width="small"),
+                    'Currency': st.column_config.TextColumn('Currency', width="small"),
+                    'BasketTag': st.column_config.TextColumn('BasketTag', width="medium")
                 }
             )
+            
+            st.markdown("---")
+            
+            # Generar el CSV
+            csv_content = generate_ibkr_basket_csv(df_orders)
+            
+            # Nombre del archivo
+            filename = f"IBKR_Basket_{selected_ticker}_{basket_tag}_{date.today().strftime('%Y%m%d')}.csv"
+            
+            # Botón de descarga
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                st.download_button(
+                    label="📥 Descargar CSV para IBKR",
+                    data=csv_content,
+                    file_name=filename,
+                    mime="text/csv",
+                    type="primary",
+                    use_container_width=True
+                )
             
             st.markdown("---")
             
@@ -810,19 +870,32 @@ def main_tp_calculos():
             with col3:
                 st.markdown("**⚙️ Configuración**")
                 st.write(f"- Ticker: {selected_ticker}")
+                st.write(f"- Cantidad: {quantity_input} contratos")
                 st.write(f"- Spread: {days_diff} días")
                 st.write(f"- Basket: {basket_tag}")
             
             st.markdown("---")
             
-            # Mostrar formato en texto para copiar
-            st.markdown("### 📝 Formato de Texto (para copiar)")
+            # Instrucciones de uso
+            st.markdown("### 📝 Instrucciones para importar en IBKR")
             
-            text_output = ""
-            for _, row in df_orders.iterrows():
-                text_output += f"{row['Action']}\t{row['Symbol']}\t{row['SecType']}\t{row['Expiry']}\t{row['Strike']}\t{row['Right']}\t{row['Basket Tag']}\n"
+            st.info("""
+            **Pasos para importar el archivo CSV en Interactive Brokers:**
             
-            st.code(text_output, language="text")
+            1. Descarga el archivo CSV usando el botón de arriba
+            2. En TWS (Trader Workstation), ve a **Trading Tools → Basket Trader**
+            3. Click en **Import Basket**
+            4. Selecciona el archivo CSV descargado
+            5. Revisa las órdenes importadas
+            6. Ajusta los precios límite según el mercado actual
+            7. Transmite las órdenes cuando estés listo
+            
+            ⚠️ **Importante:** 
+            - Este archivo solo contiene la estructura de las órdenes
+            - Deberás ingresar los precios manualmente en IBKR
+            - Verifica todos los detalles antes de transmitir
+            - Asegúrate de tener suficiente margen disponible
+            """)
 
 # ==============================================================================
 # PUNTO DE ENTRADA PROTEGIDO
