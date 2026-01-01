@@ -3,34 +3,10 @@ import pandas as pd
 import requests
 import plotly.graph_objects as go
 from datetime import datetime
+from utils import check_password
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="VIX Term Structure - CBOE", layout="wide")
-
-# ==============================================================================
-# FUNCIÓN DE AUTENTICACIÓN (SIGUIENDO TU EJEMPLO)
-# ==============================================================================
-def check_password():
-    """Retorna True si el usuario ingresó la contraseña correcta."""
-    if "authenticated" not in st.session_state:
-        st.session_state.authenticated = False
-
-    if st.session_state.authenticated:
-        return True
-
-    # Login en el sidebar como en tu ejemplo
-    with st.sidebar:
-        st.title("🔒 Acceso")
-        password_input = st.text_input("Introduce la contraseña", type="password")
-        
-        if st.button("Ingresar"):
-            # Aquí busca en st.secrets["password"]
-            if password_input == st.secrets["password"]:
-                st.session_state.authenticated = True
-                st.rerun()
-            else:
-                st.error("⚠️ Contraseña incorrecta")
-    return False
 
 # ==============================================================================
 # OBTENCIÓN DE DATOS CBOE
@@ -111,10 +87,10 @@ def main_vix_structure():
 # PUNTO DE ENTRADA PROTEGIDO (IDÉNTICO A TU EJEMPLO)
 # ==============================================================================
 if __name__ == "__main__":
-    # Si el password es correcto (usando la lógica del sidebar)
+    
     if check_password():
         main_vix_structure()
     else:
-        # Mensaje de bloqueo igual que en 07 TP Calculos.py
         st.title("🔒 Acceso Restringido")
-        st.info("Por favor, introduce tus credenciales en el menú lateral (sidebar) para acceder.")
+        st.info("Por favor, introduce tus credenciales en el menú lateral (sidebar) para acceder a VIX Term Structure.")
+    
