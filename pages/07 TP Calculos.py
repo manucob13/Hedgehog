@@ -196,7 +196,7 @@ def main_tp_calculos():
         selected_ticker = st.selectbox(
             "Selecciona el Ticker",
             ticker_options,
-            index=1,  # SPY por defecto
+            index=0,  # SPY por defecto
             key='ticker_tp'
         )
         st.info(f"📊 Ticker seleccionado: **{selected_ticker}**")
