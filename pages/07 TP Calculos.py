@@ -177,7 +177,7 @@ def main_tp_calculos():
     
     with col1:
         # Selector de Ticker
-        ticker_options = ['SPX', 'SPY', 'QQQ', 'XSP']
+        ticker_options = ['QQQ', 'SPX']
         selected_ticker = st.selectbox(
             "Selecciona el Ticker",
             ticker_options,
