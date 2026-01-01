@@ -34,7 +34,6 @@ def get_option_chain_cboe(ticker):
         url = f"https://cdn.cboe.com/api/global/delayed_quotes/options/{ticker}.json"
         response = requests.get(url, timeout=10)
         response.raise_for_status()
-        
         data = response.json()
         
         if 'data' in data and 'options' in data['data']:
@@ -140,64 +139,6 @@ def get_historical_prices(ticker, days=7):
         return None
 
 # ==============================================================================
-# NUEVA FUNCIÓN: CREAR CSV PARA IBKR BASKETTRADER
-# ==============================================================================
-
-def create_ibkr_basket_csv(ticker, expiration_date, strikes_dict, df_options):
-    """
-    Crea un CSV para IBKR TWS BasketTrader sin órdenes.
-    Solo carga los contratos para que puedas crear órdenes manualmente.
-    """
-    
-    basket_items = []
-    
-    # Convertir fecha a formato YYYYMMDD
-    expiry_str = expiration_date.strftime("%Y%m%d")
-    
-    # Filtrar opciones para la fecha de expiración seleccionada
-    df_exp = df_options[df_options['expiry'] == expiration_date].copy()
-    
-    # Procesar cada strike
-    for strike_label, strike_value in strikes_dict.items():
-        
-        strike_value = float(strike_value)
-        
-        # Call
-        call_data = df_exp[(df_exp['strike'] == strike_value) & (df_exp['opt_type'] == 'C')]
-        
-        if not call_data.empty:
-            basket_items.append({
-                'Symbol': ticker,
-                'SecType': 'OPT',
-                'Exchange': 'SMART',
-                'Currency': 'USD',
-                'LastTradingDay': expiry_str,
-                'Strike': strike_value,
-                'Right': 'C',
-                'Multiplier': '100',
-                'Description': f'{strike_label} Call'
-            })
-        
-        # Put
-        put_data = df_exp[(df_exp['strike'] == strike_value) & (df_exp['opt_type'] == 'P')]
-        
-        if not put_data.empty:
-            basket_items.append({
-                'Symbol': ticker,
-                'SecType': 'OPT',
-                'Exchange': 'SMART',
-                'Currency': 'USD',
-                'LastTradingDay': expiry_str,
-                'Strike': strike_value,
-                'Right': 'P',
-                'Multiplier': '100',
-                'Description': f'{strike_label} Put'
-            })
-    
-    df_basket = pd.DataFrame(basket_items)
-    return df_basket
-
-# ==============================================================================
 # FUNCIÓN PRINCIPAL - TP CÁLCULOS
 # ==============================================================================
 
@@ -220,430 +161,673 @@ def main_tp_calculos():
         st.session_state.std_multiplier = None
     
     # --- TÍTULO PRINCIPAL ---
-    st.markdown("<h1 style='text-align: center; color: #2E86AB;'>🎯 TP Cálculos - Expected Move</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #666;'>Calcula el movimiento esperado basado en el straddle ATM</p>", unsafe_allow_html=True)
+    st.markdown("<h1><span style='font-size: 1.5em;'>🎯</span> TP Cálculos - Expected Move</h1>", unsafe_allow_html=True)
+    st.markdown("""
+    Esta herramienta calcula el **Expected Move** (movimiento esperado) de un activo basándose 
+    en los precios de las opciones (straddle ATM) para una fecha de expiración específica.
+    """)
     st.markdown("---")
     
-    # --- SECCIÓN 1: INPUTS ---
-    st.subheader("📊 1. Configuración de Parámetros")
+    # ==============================================================================
+    # SECCIÓN 1: CONFIGURACIÓN
+    # ==============================================================================
+    st.header("1. Configuración")
     
-    col1, col2, col3 = st.columns([2, 2, 1])
+    col1, col2, col3 = st.columns(3)
     
     with col1:
-        ticker_input = st.text_input(
-            "Ticker del activo",
-            value="SPY",
-            help="Introduce el símbolo del activo (ej: SPY, QQQ, AAPL)"
-        ).upper()
+        # Selector de Ticker
+        ticker_options = ['QQQ', 'SPX']
+        selected_ticker = st.selectbox(
+            "Selecciona el Ticker",
+            ticker_options,
+            index=1,  # SPY por defecto
+            key='ticker_tp'
+        )
+        st.info(f"📊 Ticker seleccionado: **{selected_ticker}**")
     
     with col2:
-        std_input = st.number_input(
-            "Multiplicador de Desviación Estándar (σ)",
-            min_value=0.5,
-            max_value=3.0,
-            value=1.0,
-            step=0.1,
-            help="1.0 = 68% de probabilidad, 2.0 = 95% de probabilidad"
+        # Selector de Fecha de Expiración
+        min_date = date.today() + timedelta(days=1)
+        max_date = date.today() + timedelta(days=365)
+        
+        expiration_date = st.date_input(
+            "Fecha de Expiración",
+            value=min_date,
+            min_value=min_date,
+            max_value=max_date,
+            key='expiration_tp'
         )
+        st.info(f"📅 Expiración: **{expiration_date.strftime('%Y-%m-%d')}**")
     
     with col3:
-        st.markdown("<br>", unsafe_allow_html=True)
-        btn_calculate = st.button("🚀 Calcular", type="primary", use_container_width=True)
+        # Selector de Desviaciones Estándar
+        std_options = {
+            "1σ (68% probabilidad)": 1.0,
+            "1.5σ (87% probabilidad)": 1.5,
+            "2σ (95% probabilidad)": 2.0
+        }
+        
+        selected_std_label = st.selectbox(
+            "Desviaciones Estándar",
+            list(std_options.keys()),
+            index=0,
+            key='std_selector_tp'
+        )
+        std_multiplier = std_options[selected_std_label]
+        
+        st.info(f"📈 Multiplicador: **{std_multiplier}σ**")
     
-    # --- SECCIÓN 2: CÁLCULO ---
-    if btn_calculate:
-        with st.spinner("⏳ Obteniendo datos del mercado..."):
+    st.markdown("---")
+    
+    # ==============================================================================
+    # BOTÓN PARA CALCULAR
+    # ==============================================================================
+    
+    if st.button("🚀 Calcular Expected Move", type="primary", use_container_width=True):
+        
+        with st.spinner(f"Obteniendo datos de {selected_ticker}..."):
             
             # Obtener precio actual
-            current_price = get_current_price(ticker_input)
+            current_price = get_current_price(selected_ticker)
             
             if current_price is None:
-                st.error("❌ No se pudo obtener el precio actual del ticker. Verifica que el símbolo sea correcto.")
+                st.error("❌ No se pudo obtener el precio actual del activo.")
                 st.stop()
+            
+            st.success(f"✅ Precio actual de {selected_ticker}: **${current_price:.2f}**")
             
             # Obtener cadena de opciones
-            df_options = get_option_chain_cboe(ticker_input)
+            df_options = get_option_chain_cboe(selected_ticker)
             
             if df_options is None or df_options.empty:
-                st.error("❌ No se pudieron obtener datos de opciones desde CBOE.")
+                st.error("❌ No se pudieron obtener los datos de opciones desde CBOE.")
                 st.stop()
-            
-            # Obtener fechas de expiración disponibles
-            available_expiries = sorted(df_options['expiry'].unique())
-            
-            # Guardar en session_state
-            st.session_state.selected_ticker = ticker_input
-            st.session_state.current_price = current_price
-            st.session_state.std_multiplier = std_input
-            st.session_state.df_options = df_options
-            st.session_state.available_expiries = available_expiries
-            
-            st.success(f"✅ Datos obtenidos correctamente para {ticker_input}")
-            st.info(f"💲 Precio actual: **${current_price:.2f}** | Expiraciones disponibles: **{len(available_expiries)}**")
-    
-    # --- SECCIÓN 3: SELECCIÓN DE EXPIRACIÓN ---
-    if st.session_state.get('available_expiries') is not None:
-        
-        st.markdown("---")
-        st.subheader("📅 2. Seleccionar Fecha de Expiración")
-        
-        selected_expiry = st.selectbox(
-            "Elige la fecha de expiración",
-            options=st.session_state.available_expiries,
-            format_func=lambda x: f"{x.strftime('%Y-%m-%d')} ({(x - date.today()).days} días hasta expiración)"
-        )
-        
-        if st.button("📐 Calcular Strikes", type="primary"):
             
             # Calcular Expected Move
             expected_move, details, error = calculate_expected_move(
-                st.session_state.df_options,
-                selected_expiry,
-                st.session_state.current_price,
-                st.session_state.std_multiplier
+                df_options, 
+                expiration_date, 
+                current_price,
+                std_multiplier
             )
             
             if error:
                 st.error(f"❌ {error}")
                 st.stop()
             
-            # Calcular strikes
-            upper_strike = st.session_state.current_price + expected_move
-            lower_strike = st.session_state.current_price - expected_move
-            atm_strike = details['atm_strike']
-            
-            # Guardar resultados
-            st.session_state.expiration_date = selected_expiry
+            # Guardar en session_state
+            st.session_state.calculation_done = True
+            st.session_state.current_price = current_price
             st.session_state.expected_move = expected_move
             st.session_state.details = details
-            st.session_state.upper_strike = upper_strike
-            st.session_state.lower_strike = lower_strike
-            st.session_state.atm_strike = atm_strike
-            st.session_state.calculation_done = True
+            st.session_state.selected_ticker = selected_ticker
+            st.session_state.expiration_date = expiration_date
+            st.session_state.std_multiplier = std_multiplier
+            
+            st.success(f"✅ Expected Move calculado: **${expected_move:.2f}** ({std_multiplier}σ)")
+            st.info(f"💰 Precio del Straddle: **${details['straddle_price']:.2f}** ({details['price_type']})")
     
-    # --- SECCIÓN 4: RESULTADOS ---
+    # ==============================================================================
+    # MOSTRAR RESULTADOS SI YA SE CALCULÓ
+    # ==============================================================================
+    
     if st.session_state.calculation_done:
         
-        st.markdown("---")
-        st.subheader("✅ 3. Resultados del Expected Move")
+        # Recuperar datos del session_state
+        current_price = st.session_state.current_price
+        expected_move = st.session_state.expected_move
+        details = st.session_state.details
+        selected_ticker = st.session_state.selected_ticker
+        expiration_date = st.session_state.expiration_date
+        std_multiplier = st.session_state.std_multiplier
         
-        # Métricas principales
+        st.markdown("---")
+        
+        # ==============================================================================
+        # SECCIÓN 2: RESULTADOS
+        # ==============================================================================
+        st.header("2. Resultados del Expected Move")
+        
+        upper_range = current_price + expected_move
+        lower_range = current_price - expected_move
+        
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric(
-                label="Expected Move",
-                value=f"${st.session_state.expected_move:.2f}",
-                delta=f"{(st.session_state.expected_move / st.session_state.current_price * 100):.2f}%"
-            )
-        
+            st.metric("Precio Actual", f"${current_price:.2f}")
         with col2:
-            st.metric(
-                label="Upper Strike",
-                value=f"${st.session_state.upper_strike:.2f}",
-                delta=f"+{st.session_state.expected_move:.2f}"
-            )
-        
+            st.metric(f"Expected Move ({std_multiplier}σ)", f"${expected_move:.2f}")
         with col3:
-            st.metric(
-                label="ATM Strike",
-                value=f"${st.session_state.atm_strike:.2f}",
-                delta="Current"
-            )
-        
+            st.metric("Rango Superior", f"${upper_range:.2f}", f"+{expected_move:.2f}")
         with col4:
-            st.metric(
-                label="Lower Strike",
-                value=f"${st.session_state.lower_strike:.2f}",
-                delta=f"-{st.session_state.expected_move:.2f}"
-            )
+            st.metric("Rango Inferior", f"${lower_range:.2f}", f"-{expected_move:.2f}")
         
-        # Detalles del straddle
-        st.markdown("#### 📋 Detalles del Straddle ATM")
+        # Detalles del Straddle ATM
+        st.markdown("### 💰 Detalles del Straddle ATM")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            st.markdown("**📈 CALL ATM**")
-            call_df = pd.DataFrame({
-                'Métrica': ['Bid', 'Ask', 'Mid', 'Last'],
-                'Valor': [
-                    f"${st.session_state.details['call_bid']:.2f}",
-                    f"${st.session_state.details['call_ask']:.2f}",
-                    f"${st.session_state.details['call_mid']:.2f}",
-                    f"${st.session_state.details['call_last']:.2f}"
-                ]
-            })
-            st.dataframe(call_df, hide_index=True, use_container_width=True)
+            st.markdown("**📞 CALL ATM**")
+            call_details = {
+                'Strike': f"${details['atm_strike']:.2f}",
+                'Bid': f"${details['call_bid']:.2f}",
+                'Ask': f"${details['call_ask']:.2f}",
+                'Mid': f"${details['call_mid']:.2f}",
+                'Last': f"${details['call_last']:.2f}"
+            }
+            df_call = pd.DataFrame(list(call_details.items()), columns=['Métrica', 'Valor'])
+            st.dataframe(df_call, hide_index=True, use_container_width=True)
         
         with col2:
             st.markdown("**📉 PUT ATM**")
-            put_df = pd.DataFrame({
-                'Métrica': ['Bid', 'Ask', 'Mid', 'Last'],
-                'Valor': [
-                    f"${st.session_state.details['put_bid']:.2f}",
-                    f"${st.session_state.details['put_ask']:.2f}",
-                    f"${st.session_state.details['put_mid']:.2f}",
-                    f"${st.session_state.details['put_last']:.2f}"
-                ]
-            })
-            st.dataframe(put_df, hide_index=True, use_container_width=True)
+            put_details = {
+                'Strike': f"${details['atm_strike']:.2f}",
+                'Bid': f"${details['put_bid']:.2f}",
+                'Ask': f"${details['put_ask']:.2f}",
+                'Mid': f"${details['put_mid']:.2f}",
+                'Last': f"${details['put_last']:.2f}"
+            }
+            df_put = pd.DataFrame(list(put_details.items()), columns=['Métrica', 'Valor'])
+            st.dataframe(df_put, hide_index=True, use_container_width=True)
         
-        st.info(f"💡 **Precio del Straddle utilizado:** ${st.session_state.details['straddle_price']:.2f} ({st.session_state.details['price_type']})")
-        
-        # --- GRÁFICO DE VISUALIZACIÓN ---
         st.markdown("---")
-        st.subheader("📊 4. Visualización del Expected Move")
         
-        # Crear gráfico
-        fig = go.Figure()
+        # Tabla resumen
+        st.markdown("### 📊 Resumen del Expected Move")
         
-        # Línea del precio actual
-        fig.add_shape(
-            type="line",
-            x0=st.session_state.current_price,
-            y0=0,
-            x1=st.session_state.current_price,
-            y1=1,
-            line=dict(color="blue", width=3, dash="solid"),
-            name="Precio Actual"
-        )
+        days_to_exp = (expiration_date - date.today()).days
+        move_pct = (expected_move / current_price) * 100
         
-        # Línea del upper strike
-        fig.add_shape(
-            type="line",
-            x0=st.session_state.upper_strike,
-            y0=0,
-            x1=st.session_state.upper_strike,
-            y1=1,
-            line=dict(color="green", width=2, dash="dash"),
-            name="Upper Strike"
-        )
-        
-        # Línea del lower strike
-        fig.add_shape(
-            type="line",
-            x0=st.session_state.lower_strike,
-            y0=0,
-            x1=st.session_state.lower_strike,
-            y1=1,
-            line=dict(color="red", width=2, dash="dash"),
-            name="Lower Strike"
-        )
-        
-        # Zona del expected move
-        fig.add_vrect(
-            x0=st.session_state.lower_strike,
-            x1=st.session_state.upper_strike,
-            fillcolor="lightgreen",
-            opacity=0.2,
-            layer="below",
-            line_width=0
-        )
-        
-        # Configuración del gráfico
-        fig.update_layout(
-            title=f"Expected Move para {st.session_state.selected_ticker}",
-            xaxis_title="Precio",
-            yaxis_title="",
-            height=300,
-            showlegend=False,
-            yaxis=dict(showticklabels=False),
-            xaxis=dict(
-                range=[
-                    st.session_state.lower_strike - 10,
-                    st.session_state.upper_strike + 10
-                ]
-            )
-        )
-        
-        # Añadir anotaciones
-        fig.add_annotation(
-            x=st.session_state.current_price,
-            y=0.9,
-            text=f"Actual: ${st.session_state.current_price:.2f}",
-            showarrow=False,
-            font=dict(color="blue", size=12)
-        )
-        
-        fig.add_annotation(
-            x=st.session_state.upper_strike,
-            y=0.7,
-            text=f"Upper: ${st.session_state.upper_strike:.2f}",
-            showarrow=False,
-            font=dict(color="green", size=10)
-        )
-        
-        fig.add_annotation(
-            x=st.session_state.lower_strike,
-            y=0.7,
-            text=f"Lower: ${st.session_state.lower_strike:.2f}",
-            showarrow=False,
-            font=dict(color="red", size=10)
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # --- TABLA DE STRIKES Y OPCIONES ---
-        st.markdown("---")
-        st.subheader("🎯 5. Datos de Opciones por Strike")
-        
-        df_exp = st.session_state.df_options[
-            st.session_state.df_options['expiry'] == st.session_state.expiration_date
-        ].copy()
-        
-        strikes_dict = {
-            'Upper Strike': st.session_state.upper_strike,
-            'ATM Strike': st.session_state.atm_strike,
-            'Lower Strike': st.session_state.lower_strike
+        summary_data = {
+            'Métrica': [
+                'Precio Actual',
+                'Strike ATM',
+                f'Straddle Price ({details["price_type"]})',
+                f'Expected Move (±) [{std_multiplier}σ]',
+                'Rango Superior',
+                'Rango Inferior',
+                'Movimiento (%)',
+                'Días hasta Expiración',
+                'Fecha de Expiración'
+            ],
+            'Valor': [
+                f"${current_price:.2f}",
+                f"${details['atm_strike']:.2f}",
+                f"${details['straddle_price']:.2f}",
+                f"${expected_move:.2f}",
+                f"${upper_range:.2f}",
+                f"${lower_range:.2f}",
+                f"±{move_pct:.2f}%",
+                f"{days_to_exp} días",
+                expiration_date.strftime('%Y-%m-%d')
+            ]
         }
         
-        for strike_label, strike_value in strikes_dict.items():
-            
-            with st.expander(f"📍 {strike_label}: ${strike_value:.2f}", expanded=True):
-                
-                col1, col2 = st.columns(2)
-                
-                # CALLS
-                with col1:
-                    st.markdown("**📈 CALL**")
-                    
-                    call_data = df_exp[
-                        (df_exp['strike'] == strike_value) & 
-                        (df_exp['opt_type'] == 'C')
-                    ]
-                    
-                    if not call_data.empty:
-                        call_table = pd.DataFrame({
-                            'Métrica': ['Bid', 'Ask', 'Mid', 'Last', 'Volume', 'Open Int'],
-                            'Valor': [
-                                f"${call_data['bid'].iloc[0]:.2f}",
-                                f"${call_data['ask'].iloc[0]:.2f}",
-                                f"${call_data['Mid_price'].iloc[0]:.2f}",
-                                f"${call_data['last_trade_price'].iloc[0]:.2f}",
-                                f"{int(call_data['volume'].iloc[0]):,}",
-                                f"{int(call_data['open_interest'].iloc[0]):,}"
-                            ]
-                        })
-                        st.dataframe(call_table, hide_index=True, use_container_width=True)
-                    else:
-                        st.warning("No hay datos disponibles para este strike")
-                
-                # PUTS
-                with col2:
-                    st.markdown("**📉 PUT**")
-                    
-                    put_data = df_exp[
-                        (df_exp['strike'] == strike_value) & 
-                        (df_exp['opt_type'] == 'P')
-                    ]
-                    
-                    if not put_data.empty:
-                        put_table = pd.DataFrame({
-                            'Métrica': ['Bid', 'Ask', 'Mid', 'Last', 'Volume', 'Open Int'],
-                            'Valor': [
-                                f"${put_data['bid'].iloc[0]:.2f}",
-                                f"${put_data['ask'].iloc[0]:.2f}",
-                                f"${put_data['Mid_price'].iloc[0]:.2f}",
-                                f"${put_data['last_trade_price'].iloc[0]:.2f}",
-                                f"{int(put_data['volume'].iloc[0]):,}",
-                                f"{int(put_data['open_interest'].iloc[0]):,}"
-                            ]
-                        })
-                        st.dataframe(put_table, hide_index=True, use_container_width=True)
-                    else:
-                        st.warning("No hay datos disponibles para este strike")
-        
-        # ==============================================================================
-        # NUEVA SECCIÓN: EXPORTAR CSV PARA IBKR BASKETTRADER
-        # ==============================================================================
+        df_summary = pd.DataFrame(summary_data)
+        st.dataframe(df_summary, hide_index=True, use_container_width=True)
         
         st.markdown("---")
-        st.subheader("💾 6. Exportar para IBKR TWS BasketTrader")
         
-        st.info("""
-        **📝 Exportación para BasketTrader (sin órdenes preconfiguradas)**
-        - Carga los contratos en TWS BasketTrader para análisis
-        - NO crea órdenes automáticamente
-        - Verás precios Bid/Ask/Mid en tiempo real
-        - Tú agregas manualmente: Action (BUY/SELL), Quantity, y LmtPrice
-        - Control total sobre cuándo y a qué precio operar
+        # ==============================================================================
+        # SECCIÓN 3: GRÁFICO - VELAS JAPONESAS
+        # ==============================================================================
+        st.header("3. Visualización del Expected Move")
+        
+        # Obtener datos históricos
+        df_hist = get_historical_prices(selected_ticker, days=7)
+        
+        if df_hist is not None and not df_hist.empty:
+            
+            # Crear el gráfico
+            fig = go.Figure()
+            
+            # Convertir el índice a timezone-naive
+            df_hist_plot = df_hist.copy()
+            if df_hist_plot.index.tz is not None:
+                df_hist_plot.index = df_hist_plot.index.tz_localize(None)
+            
+            # Gráfico de velas japonesas (Candlestick)
+            fig.add_trace(go.Candlestick(
+                x=df_hist_plot.index,
+                open=df_hist_plot['Open'],
+                high=df_hist_plot['High'],
+                low=df_hist_plot['Low'],
+                close=df_hist_plot['Close'],
+                name=selected_ticker,
+                increasing_line_color='#00B06B',
+                decreasing_line_color='#FF4444'
+            ))
+            
+            # Convertir expiration_date a datetime para el gráfico
+            exp_datetime = datetime.combine(expiration_date, datetime.min.time())
+            
+            # Línea horizontal - Rango Superior
+            fig.add_hline(
+                y=upper_range,
+                line_dash="dot",
+                line_color="steelblue",
+                annotation_text=f"${upper_range:.2f} (+{std_multiplier}σ)",
+                annotation_position="right"
+            )
+            
+            # Línea horizontal - Rango Inferior
+            fig.add_hline(
+                y=lower_range,
+                line_dash="dot",
+                line_color="steelblue",
+                annotation_text=f"${lower_range:.2f} (-{std_multiplier}σ)",
+                annotation_position="right"
+            )
+            
+            # Línea horizontal - Precio Actual
+            fig.add_hline(
+                y=current_price,
+                line_dash="dash",
+                line_color="yellow",
+                annotation_text=f"Precio Actual: ${current_price:.2f}",
+                annotation_position="left"
+            )
+            
+            # Línea vertical - Fecha de Expiración
+            fig.add_shape(
+                type="line",
+                x0=exp_datetime,
+                x1=exp_datetime,
+                y0=0,
+                y1=1,
+                yref="paper",
+                line=dict(color="red", width=2, dash="dot")
+            )
+            
+            # Añadir anotación para la fecha de expiración
+            fig.add_annotation(
+                x=exp_datetime,
+                y=1.02,
+                yref="paper",
+                text=f"Expiración: {expiration_date.strftime('%Y-%m-%d')}",
+                showarrow=False,
+                font=dict(color="red", size=12),
+                bgcolor="rgba(0,0,0,0.5)"
+            )
+            
+            # Configuración del layout
+            end_datetime = exp_datetime + timedelta(days=3)
+            
+            fig.update_layout(
+                title=f"Expected Move - {selected_ticker} ({std_multiplier}σ)",
+                xaxis_title="Fecha",
+                yaxis_title="Precio",
+                template="plotly_dark",
+                height=500,
+                hovermode='x unified',
+                showlegend=True,
+                xaxis=dict(
+                    range=[df_hist_plot.index[0], end_datetime]
+                ),
+                xaxis_rangeslider_visible=False  # Ocultar el slider de rango
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+        else:
+            st.warning("⚠️ No se pudieron obtener datos históricos para el gráfico.")
+        
+        st.markdown("---")
+        
+        # ==============================================================================
+        # SECCIÓN 4: COMPARACIÓN DE DESVIACIONES ESTÁNDAR
+        # ==============================================================================
+        st.header("4. Comparación de Desviaciones Estándar")
+        
+        # Calcular para todas las desviaciones estándar
+        comparison_data = []
+        for std_label, std_val in std_options.items():
+            em = details['straddle_price'] * 1.25 * std_val
+            upper = current_price + em
+            lower = current_price - em
+            pct = (em / current_price) * 100
+            
+            comparison_data.append({
+                'Desviación Estándar': std_label,
+                'Expected Move': f"${em:.2f}",
+                'Rango': f"${lower:.2f} - ${upper:.2f}",
+                'Movimiento (%)': f"±{pct:.2f}%"
+            })
+        
+        df_comparison = pd.DataFrame(comparison_data)
+        
+        st.markdown("""
+        Esta tabla muestra cómo varían los rangos esperados según diferentes niveles de confianza estadística:
         """)
         
-        # Preparar diccionario de strikes para la función
-        strikes_for_export = {
-            'Upper Strike': float(st.session_state.upper_strike),
-            'ATM Strike': float(st.session_state.atm_strike),
-            'Lower Strike': float(st.session_state.lower_strike)
-        }
-        
-        # Crear el basket CSV
-        df_basket = create_ibkr_basket_csv(
-            st.session_state.selected_ticker,
-            st.session_state.expiration_date,
-            strikes_for_export,
-            st.session_state.df_options
-        )
-        
-        # Mostrar preview
-        st.markdown("#### 👁️ Vista Previa - Contratos para BasketTrader")
-        
-        preview_cols = ['Symbol', 'SecType', 'Strike', 'Right', 'LastTradingDay', 'Exchange', 'Description']
-        st.dataframe(
-            df_basket[preview_cols],
-            use_container_width=True,
-            hide_index=True,
-            height=300
-        )
-        
-        with st.expander("📋 Ver formato completo del CSV"):
-            st.dataframe(df_basket, use_container_width=True, hide_index=True)
+        st.dataframe(df_comparison, hide_index=True, use_container_width=True)
         
         st.markdown("---")
         
-        # Botón de descarga
-        col1, col2, col3 = st.columns([2, 1, 2])
+        # ==============================================================================
+        # SECCIÓN 5: INFORMACIÓN ADICIONAL
+        # ==============================================================================
+        st.header("5. Información Adicional")
         
-        with col2:
-            df_export = df_basket.drop(columns=['Description'])
-            csv_data = df_export.to_csv(index=False)
+        # Determinar el nivel de probabilidad según el std_multiplier
+        if std_multiplier == 1.0:
+            prob_text = "68%"
+        elif std_multiplier == 1.5:
+            prob_text = "87%"
+        elif std_multiplier == 2.0:
+            prob_text = "95%"
+        else:
+            prob_text = "N/A"
+        
+        st.info(f"""
+        📌 **Interpretación del Expected Move:**
+        
+        - El **Expected Move** representa el rango de precio esperado ({std_multiplier} desviación estándar) 
+          que el mercado anticipa para la fecha de expiración.
+        
+        - Este cálculo se basa en el precio del **straddle ATM** (comprar un call y un put 
+          al mismo strike más cercano al precio actual).
+        
+        - Con **{std_multiplier}σ**, aproximadamente el **{prob_text}** de las veces, el precio debería 
+          permanecer dentro de este rango.
+        
+        - **Ticker:** {selected_ticker}
+        - **Precio Actual:** ${current_price:.2f}
+        - **Straddle Price:** ${details['straddle_price']:.2f}
+        - **Expected Move ({std_multiplier}σ):** ±${expected_move:.2f} (±{move_pct:.2f}%)
+        - **Rango Esperado:** ${lower_range:.2f} - ${upper_range:.2f}
+        - **Días hasta Expiración:** {days_to_exp}
+        """)
+        
+        st.markdown("---")
+        
+        st.markdown("""
+        ### 📚 Fuentes de Datos
+        - **Precios de Opciones:** CBOE (Chicago Board Options Exchange)
+        - **Precios del Activo:** Yahoo Finance
+        
+        ### 🧮 Fórmula del Expected Move
+        ```
+        Expected Move = Straddle Price × 1.25 × σ
+        ```
+        
+        Donde:
+        - **Straddle Price** = Call Mid + Put Mid (ATM)
+        - **1.25** = Factor de ajuste para 1 desviación estándar completa
+        - **σ** = Multiplicador de desviaciones estándar (1.0, 1.5, o 2.0)
+        
+        ### 💡 Prioridad de Precios
+        1. **Mid Price** (Bid + Ask) / 2 - Preferido cuando está disponible
+        2. **Bid Price** - Usado si el mid no está disponible
+        3. **Last Price** - Usado como último recurso
+        
+        ### 📊 Niveles de Confianza
+        - **1σ** ≈ 68% de probabilidad (rango más conservador)
+        - **1.5σ** ≈ 87% de probabilidad (rango intermedio)
+        - **2σ** ≈ 95% de probabilidad (rango más amplio)
+        """)
+        
+        st.markdown("---")
+        
+        # ==============================================================================
+        # SECCIÓN 6: GENERADOR DE ESTRUCTURA TRIPLE CALENDAR
+        # ==============================================================================
+        st.header("6. Generador de Estructura - Triple Calendar")
+        
+        st.markdown("""
+        Configura los strikes y fechas de expiración para generar la estructura de órdenes del Triple Calendar.
+        """)
+        
+        # Calcular Expected Move de 1 desviación estándar (ORIGINAL, sin redondear)
+        expected_move_1std = details['straddle_price'] * 1.25
+        
+        # Calcular los rangos ORIGINALES (sin redondear)
+        upper_range_1std = current_price + expected_move_1std
+        lower_range_1std = current_price - expected_move_1std
+        
+        # Redondear strikes para los valores por defecto de los inputs
+        atm_rounded = round(details['atm_strike'] / 5) * 5
+        strike_up_default = round(upper_range_1std / 5) * 5
+        strike_down_default = round(lower_range_1std / 5) * 5
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### 📍 Configuración de Strikes")
             
-            filename = f"{st.session_state.selected_ticker}_{st.session_state.expiration_date}_basket.csv"
+            # MODIFICACIÓN: Mostrar los valores ORIGINALES, no los redondeados
+            st.info(f"""
+            💡 **Rangos de Referencia (1σ):**
+            - Precio Actual: **${current_price:.2f}**
+            - Expected Move: **±${expected_move_1std:.2f}**
+            - Rango Superior: **${upper_range_1std:.2f}**
+            - Rango Inferior: **${lower_range_1std:.2f}**
+            - Strike UP Sugerido (redondeado): **${strike_up_default:.0f}**
+            - Strike DOWN Sugerido (redondeado): **${strike_down_default:.0f}**
+            """)
             
-            st.download_button(
-                label="📥 Descargar CSV",
-                data=csv_data,
-                file_name=filename,
-                mime="text/csv",
-                type="primary",
-                use_container_width=True
+            st.markdown("---")
+            
+            # Strike ATM
+            st.markdown(f"**Strike ATM** (Precio actual: ${current_price:.0f})")
+            strike_atm_input = st.number_input(
+                "Strike ATM",
+                min_value=0.0,
+                value=float(atm_rounded),
+                step=5.0,
+                key='strike_atm_tc',
+                help="Strike al dinero (ATM)",
+                label_visibility="collapsed"
+            )
+            
+            option_type_atm = st.selectbox(
+                "Tipo de Opción ATM",
+                ["PUT", "CALL"],
+                index=0,
+                key='option_type_atm_tc'
+            )
+            
+            st.markdown("---")
+            
+            # Strike DOWN - MODIFICACIÓN: Mostrar el valor original
+            st.markdown(f"**Strike DOWN** (Calculado: ${lower_range_1std:.2f})")
+            strike_down_input = st.number_input(
+                "Strike DOWN (debajo ATM)",
+                min_value=0.0,
+                value=float(strike_down_default),
+                step=5.0,
+                key='strike_down_tc',
+                help="Strike por debajo del ATM basado en Expected Move",
+                label_visibility="collapsed"
+            )
+            
+            option_type_down = st.selectbox(
+                "Tipo de Opción DOWN",
+                ["PUT", "CALL"],
+                index=0,
+                key='option_type_down_tc'
+            )
+            
+            st.markdown("---")
+            
+            # Strike UP - MODIFICACIÓN: Mostrar el valor original
+            st.markdown(f"**Strike UP** (Calculado: ${upper_range_1std:.2f})")
+            strike_up_input = st.number_input(
+                "Strike UP (arriba ATM)",
+                min_value=0.0,
+                value=float(strike_up_default),
+                step=5.0,
+                key='strike_up_tc',
+                help="Strike por arriba del ATM basado en Expected Move",
+                label_visibility="collapsed"
+            )
+            
+            option_type_up = st.selectbox(
+                "Tipo de Opción UP",
+                ["CALL", "PUT"],
+                index=0,
+                key='option_type_up_tc'
             )
         
-        # Instrucciones
-        with st.expander("ℹ️ Cómo usar el CSV en IBKR TWS BasketTrader"):
-            st.markdown(f"""
-            ### 📖 Instrucciones:
+        with col2:
+            st.markdown("#### 📅 Fechas de Expiración")
             
-            1. **Abrir BasketTrader**: Trading Tools → BasketTrader
-            2. **Importar**: Click derecho → Import Basket → Selecciona `{filename}`
-            3. **Verificar contratos**: Verás {st.session_state.selected_ticker} con los 3 strikes y sus Calls/Puts
-            4. **Agregar órdenes manualmente**:
-               - Action: BUY o SELL
-               - Quantity: Número de contratos
-               - Order Type: LMT o MKT
-               - Lmt Price: Tu precio deseado (usa Mid como referencia)
-            5. **Transmitir**: Revisa y transmite cuando estés listo
+            dte_front_input = st.date_input(
+                "DTE FRONT (Venta)",
+                value=expiration_date,
+                min_value=date.today() + timedelta(days=1),
+                max_value=date.today() + timedelta(days=365),
+                key='dte_front_tc',
+                help="Fecha de expiración de las opciones vendidas"
+            )
             
-            **💡 Tips:**
-            - Comprando: precio entre Mid y Bid
-            - Vendiendo: precio entre Mid y Ask
+            # Por defecto, DTE BACK es 7 días después del FRONT
+            default_back = dte_front_input + timedelta(days=7)
             
-            **⚠️ Importante:** Este CSV NO contiene órdenes. Tú las creas manualmente con total control.
-            """)
+            dte_back_input = st.date_input(
+                "DTE BACK (Compra)",
+                value=default_back,
+                min_value=dte_front_input + timedelta(days=1),
+                max_value=date.today() + timedelta(days=365),
+                key='dte_back_tc',
+                help="Fecha de expiración de las opciones compradas"
+            )
+            
+            days_diff = (dte_back_input - dte_front_input).days
+            st.success(f"📅 Diferencia: **{days_diff} días**")
+            
+            st.markdown("---")
+            
+            st.markdown("#### 🏷️ Configuración Adicional")
+            
+            basket_tag = st.text_input(
+                "Basket Tag",
+                value="TripleCal1",
+                key='basket_tag_tc',
+                help="Etiqueta para identificar el grupo de órdenes"
+            )
+        
+        st.markdown("---")
+        
+        if st.button("🎯 Generar Estructura de Órdenes", type="primary", use_container_width=True):
+            
+            # Formatear fechas para el símbolo (YYYYMMDD)
+            front_date_str = dte_front_input.strftime("%Y%m%d")
+            back_date_str = dte_back_input.strftime("%Y%m%d")
+            
+            # Crear la estructura de órdenes
+            orders = []
+            
+            # Configuración de strikes y tipos
+            strike_configs = [
+                {
+                    'strike': strike_down_input,
+                    'type': option_type_down,
+                    'label': 'DOWN'
+                },
+                {
+                    'strike': strike_atm_input,
+                    'type': option_type_atm,
+                    'label': 'ATM'
+                },
+                {
+                    'strike': strike_up_input,
+                    'type': option_type_up,
+                    'label': 'UP'
+                }
+            ]
+            
+            for config in strike_configs:
+                strike_int = int(config['strike'])
+                right_letter = "C" if config['type'] == "CALL" else "P"
+                
+                # SELL en DTE FRONT
+                orders.append({
+                    'Action': 'SELL',
+                    'Symbol': selected_ticker,
+                    'SecType': 'OPT',
+                    'Expiry': front_date_str,
+                    'Strike': strike_int,
+                    'Right': right_letter,
+                    'Basket Tag': basket_tag
+                })
+                
+                # BUY en DTE BACK
+                orders.append({
+                    'Action': 'BUY',
+                    'Symbol': selected_ticker,
+                    'SecType': 'OPT',
+                    'Expiry': back_date_str,
+                    'Strike': strike_int,
+                    'Right': right_letter,
+                    'Basket Tag': basket_tag
+                })
+            
+            # Crear DataFrame
+            df_orders = pd.DataFrame(orders)
+            
+            st.success("✅ Estructura de órdenes generada exitosamente!")
+            
+            st.markdown("### 📋 Tabla de Órdenes - Triple Calendar")
+            
+            # Mostrar la tabla con formato
+            st.dataframe(
+                df_orders,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    'Action': st.column_config.TextColumn('Action', width="small"),
+                    'Symbol': st.column_config.TextColumn('Symbol', width="small"),
+                    'SecType': st.column_config.TextColumn('SecType', width="small"),
+                    'Expiry': st.column_config.TextColumn('Expiry', width="medium"),
+                    'Strike': st.column_config.NumberColumn('Strike', format="%d"),
+                    'Right': st.column_config.TextColumn('Right', width="small"),
+                    'Basket Tag': st.column_config.TextColumn('Basket Tag', width="medium")
+                }
+            )
+            
+            st.markdown("---")
+            
+            # Resumen de la estructura
+            st.markdown("### 📊 Resumen de la Estructura")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.markdown("**📍 Strikes Configurados**")
+                st.write(f"- DOWN: ${strike_down_input:.0f} ({option_type_down})")
+                st.write(f"- ATM: ${strike_atm_input:.0f} ({option_type_atm})")
+                st.write(f"- UP: ${strike_up_input:.0f} ({option_type_up})")
+            
+            with col2:
+                st.markdown("**📊 Total de Órdenes**")
+                st.metric("Órdenes Totales", len(df_orders))
+                st.write(f"- SELL (Front {dte_front_input.strftime('%Y-%m-%d')}): 3")
+                st.write(f"- BUY (Back {dte_back_input.strftime('%Y-%m-%d')}): 3")
+            
+            with col3:
+                st.markdown("**⚙️ Configuración**")
+                st.write(f"- Ticker: {selected_ticker}")
+                st.write(f"- Spread: {days_diff} días")
+                st.write(f"- Basket: {basket_tag}")
+            
+            st.markdown("---")
+            
+            # Mostrar formato en texto para copiar
+            st.markdown("### 📝 Formato de Texto (para copiar)")
+            
+            text_output = ""
+            for _, row in df_orders.iterrows():
+                text_output += f"{row['Action']}\t{row['Symbol']}\t{row['SecType']}\t{row['Expiry']}\t{row['Strike']}\t{row['Right']}\t{row['Basket Tag']}\n"
+            
+            st.code(text_output, language="text")
 
 # ==============================================================================
 # PUNTO DE ENTRADA PROTEGIDO
 # ==============================================================================
+
 if __name__ == "__main__":
     
     if check_password():
