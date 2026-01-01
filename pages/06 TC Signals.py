@@ -206,8 +206,7 @@ def main_triple_calendar():
         if st.button("🔄 Forzar Actualización (Limpiar Caché)", key='refresh_triple', use_container_width=True):
             st.cache_data.clear()
             for key in list(st.session_state.keys()):
-                if key not in ('config_df_triple', 'dte_front_days_triple', 'dte_back_days_triple', 
-                              'ticker_selector_triple', 'fecha_hoy_triple', 'fecha_dte_triple', 'password_correct'): 
+                if key not in ('config_df_triple', 'ticker_selector_triple', 'fecha_hoy_triple', 'password_correct'): 
                     del st.session_state[key]
             st.rerun()
     
@@ -475,92 +474,11 @@ def main_triple_calendar():
         st.info("Presione '🚀 Recalcular Semáforo' para ver el análisis completo.")
 
     st.markdown("---")
-
-    # ==============================================================================
-    # SECCIÓN 6: DTEs PARA TRIPLE CALENDAR (CON FECHA CONFIGURABLE)
-    # ==============================================================================
-    st.header("6. DTEs (Days To Expiration) - Triple Calendar")
-    
-    # Inicializar valores con 21 y 28 por defecto
-    if 'dte_front_days_triple' not in st.session_state:
-        st.session_state['dte_front_days_triple'] = 21
-    if 'dte_back_days_triple' not in st.session_state:
-        st.session_state['dte_back_days_triple'] = 28
-    
-    # Nueva fecha configurable para cálculo de DTEs (independiente de la fecha de datos)
-    if 'fecha_dte_triple' not in st.session_state:
-        st.session_state['fecha_dte_triple'] = date.today()
-    
-    col_fecha_dte = st.columns([1])[0]
-    with col_fecha_dte:
-        fecha_dte = st.date_input(
-            "📅 Fecha Base para Cálculo de DTEs",
-            value=st.session_state['fecha_dte_triple'],
-            max_value=date.today() + timedelta(days=365),
-            key='fecha_dte_input_triple',
-            help="Esta fecha se usa como referencia para calcular las fechas de vencimiento"
-        )
-        st.session_state['fecha_dte_triple'] = fecha_dte
-    
-    st.markdown("---")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        dte_front_days = st.number_input(
-            "DTE Front (días)", 
-            min_value=1, 
-            max_value=365, 
-            value=st.session_state['dte_front_days_triple'], 
-            key='dte_front_input_triple'
-        )
-        st.session_state['dte_front_days_triple'] = dte_front_days
-
-    with col2:
-        dte_back_days = st.number_input(
-            "DTE Back (días)", 
-            min_value=1, 
-            max_value=365, 
-            value=st.session_state['dte_back_days_triple'], 
-            key='dte_back_input_triple'
-        )
-        st.session_state['dte_back_days_triple'] = dte_back_days
-        
-    # Cálculo de fechas usando la fecha DTE seleccionada
-    dte_front_date = fecha_dte + timedelta(days=dte_front_days)
-    dte_back_date = fecha_dte + timedelta(days=dte_back_days)
-
-    dte_data = {
-        'Concepto': ['Fecha Base (Hoy)', 'DTE FRONT', 'DTE BACK', 'Rango de Días'],
-        'Valor': [
-            fecha_dte.strftime('%Y-%m-%d'), 
-            dte_front_date.strftime('%Y-%m-%d'), 
-            dte_back_date.strftime('%Y-%m-%d'),
-            f"{dte_front_days} - {dte_back_days} días"
-        ]
-    }
-    
-    df_dte = pd.DataFrame(dte_data)
-    
-    st.markdown("---")
-    st.dataframe(df_dte, hide_index=True, use_container_width=True)
-    
-    # Información adicional
-    st.info(f"""
-    📊 **Configuración Triple Calendar:**
-    - Ticker: {selected_ticker}
-    - Fecha Base: {fecha_dte.strftime('%Y-%m-%d')}
-    - Front Month: ~{dte_front_days} días ({dte_front_date.strftime('%Y-%m-%d')})
-    - Back Month: ~{dte_back_days} días ({dte_back_date.strftime('%Y-%m-%d')})
-    - Diferencia: {dte_back_days - dte_front_days} días entre vencimientos
-    """)
-    
-    st.markdown("---")
     
     # ==============================================================================
-    # SECCIÓN 7: GRÁFICOS DE ANÁLISIS TÉCNICO
+    # SECCIÓN 6: GRÁFICOS DE ANÁLISIS TÉCNICO
     # ==============================================================================
-    st.header("7. Gráficos de Análisis Técnico Combinados")
+    st.header("6. Gráficos de Análisis Técnico Combinados")
     
     # --- CONTROLES DE FECHA PARA GRÁFICOS ---
     st.sidebar.header("⚙️ Configuración del Gráfico")
