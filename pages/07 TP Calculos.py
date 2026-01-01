@@ -6,6 +6,7 @@ import requests
 import plotly.graph_objects as go
 from utils import check_password
 import io
+import yfinance as yf
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="TP Cálculos - Expected Move", layout="wide")
