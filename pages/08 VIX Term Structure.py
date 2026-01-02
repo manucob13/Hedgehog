@@ -282,25 +282,34 @@ def main_vix_structure():
             text=df_futures['price'].round(2),
             textposition='top center',
             textfont=dict(size=11, color='#FFFFFF', family='Arial'),
-            hovertemplate='<b>%{x}</b><br>Price: %{y:.3f}<extra></extra>'
+            hovertemplate='<b>%{x}</b><br>Price: %{y:.3f}<extra></extra>',
+            showlegend=False,
+            name=''
         ))
         
         # Línea de VIX Spot
         if vix_spot:
-            fig.add_hline(
+            fig.add_shape(
+                type="line",
+                x0=df_futures['month'].iloc[0],
+                x1=df_futures['month'].iloc[-1],
+                y0=vix_spot,
+                y1=vix_spot,
+                line=dict(color="#27AE60", width=2.5, dash="dash")
+            )
+            
+            fig.add_annotation(
+                x=df_futures['month'].iloc[-1],
                 y=vix_spot,
-                line_dash="dash",
-                line_color="#27AE60",
-                line_width=2.5,
-                annotation_text=f"VIX Index: {vix_spot:.2f}",
-                annotation_position="bottom right",
-                annotation=dict(
-                    font=dict(size=12, color="#27AE60", family='Arial'),
-                    bgcolor="rgba(39, 174, 96, 0.15)",
-                    bordercolor="#27AE60",
-                    borderwidth=1.5,
-                    borderpad=6
-                )
+                text=f"VIX Index: {vix_spot:.2f}",
+                showarrow=False,
+                xanchor="right",
+                yanchor="bottom",
+                font=dict(size=12, color="#27AE60", family='Arial'),
+                bgcolor="rgba(39, 174, 96, 0.15)",
+                bordercolor="#27AE60",
+                borderwidth=1.5,
+                borderpad=6
             )
         
         # Personalización del layout
@@ -332,7 +341,7 @@ def main_vix_structure():
             margin=dict(t=20, b=60, l=60, r=80)
         )
         
-        st.plotly_chart(fig, use_container_width=True, key="vix_chart")
+        st.plotly_chart(fig, use_container_width=True, key="vix_chart", config={'displayModeBar': False})
         
         st.markdown("<br>", unsafe_allow_html=True)
         
