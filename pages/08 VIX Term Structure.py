@@ -283,8 +283,7 @@ def main_vix_structure():
             textposition='top center',
             textfont=dict(size=11, color='#FFFFFF', family='Arial'),
             hovertemplate='<b>%{x}</b><br>Price: %{y:.3f}<extra></extra>',
-            showlegend=False,
-            name=''
+            showlegend=False
         ))
         
         # Línea de VIX Spot
