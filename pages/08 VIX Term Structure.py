@@ -273,7 +273,6 @@ def main_vix_structure():
             x=df_futures['month'],
             y=df_futures['price'],
             mode='lines+markers+text',
-            name='VIX Futures',
             line=dict(color='#4A90E2', width=3.5),
             marker=dict(
                 size=12,
@@ -283,8 +282,7 @@ def main_vix_structure():
             text=df_futures['price'].round(2),
             textposition='top center',
             textfont=dict(size=11, color='#FFFFFF', family='Arial'),
-            hovertemplate='<b>%{x}</b><br>Price: %{y:.3f}<extra></extra>',
-            showlegend=False
+            hovertemplate='<b>%{x}</b><br>Price: %{y:.3f}<extra></extra>'
         ))
         
         # Línea de VIX Spot
