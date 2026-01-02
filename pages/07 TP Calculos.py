@@ -6,7 +6,6 @@ import requests
 import plotly.graph_objects as go
 from utils import check_password
 import io
-import yfinance as yf
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="TP Cálculos - Expected Move", layout="wide")
@@ -20,7 +19,14 @@ def get_current_price(ticker):
     """Obtiene el precio actual del ticker desde Yahoo Finance."""
     try:
         import yfinance as yf
-        stock = yf.Ticker(ticker)
+        
+        # Convertir ticker para Yahoo Finance
+        if ticker == 'SPX':
+            yf_ticker = '^SPX'
+        else:
+            yf_ticker = ticker
+        
+        stock = yf.Ticker(yf_ticker)
         data = stock.history(period="1d")
         if not data.empty:
             return data['Close'].iloc[-1]
@@ -131,7 +137,14 @@ def get_historical_prices(ticker, days=7):
     """Obtiene precios históricos del ticker."""
     try:
         import yfinance as yf
-        stock = yf.Ticker(ticker)
+        
+        # Convertir ticker para Yahoo Finance
+        if ticker == 'SPX':
+            yf_ticker = '^SPX'
+        else:
+            yf_ticker = ticker
+        
+        stock = yf.Ticker(yf_ticker)
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
         df = stock.history(start=start_date, end=end_date)
@@ -854,7 +867,7 @@ def main_tp_calculos():
             csv_content = generate_ibkr_basket_csv(df_orders)
             
             # Nombre del archivo
-            filename = f"IBKR_Basket_{selected_ticker}_{basket_tag}_{date.today().strftime('%Y%m%d')}.csv"
+            filename = f"IBKR_{selected_ticker}_TP_{date.today().strftime('%d_%m_%Y')}.csv"
             
             # Botón de descarga
             col1, col2, col3 = st.columns([1, 2, 1])
@@ -1186,7 +1199,7 @@ def main_tp_calculos():
                 csv_content_adj = generate_ibkr_basket_csv(df_orders_adj)
                 
                 # Nombre del archivo
-                filename_adj = f"IBKR_Adjustment_{selected_ticker}_{basket_tag_adj}_{date.today().strftime('%Y%m%d')}.csv"
+                filename_adj = f"IBKR_{selected_ticker}_ADJ_{date.today().strftime('%d_%m_%Y')}.csv"
                 
                 # Botón de descarga
                 col1, col2, col3 = st.columns([1, 2, 1])
