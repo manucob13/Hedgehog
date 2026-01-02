@@ -187,9 +187,18 @@ def get_vix_futures_alternative():
 
 def main_vix_structure():
     
-    # Título mejorado
-    st.markdown('<h1 class="vix-title">VIX Futures Term Structure</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="vix-subtitle">Source: CBOE Delayed Quotes · vixcentral.com</p>', unsafe_allow_html=True)
+    # Título mejorado con botón de refresh
+    col_title, col_refresh = st.columns([6, 1])
+    
+    with col_title:
+        st.markdown('<h1 class="vix-title">VIX Futures Term Structure</h1>', unsafe_allow_html=True)
+        st.markdown('<p class="vix-subtitle">Source: CBOE Delayed Quotes · vixcentral.com</p>', unsafe_allow_html=True)
+    
+    with col_refresh:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("🔄 Refrescar Datos", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
     
     # Obtener datos
     with st.spinner("Obteniendo datos..."):
@@ -274,7 +283,8 @@ def main_vix_structure():
             text=df_futures['price'].round(2),
             textposition='top center',
             textfont=dict(size=11, color='#FFFFFF', family='Arial'),
-            hovertemplate='<b>%{x}</b><br>Price: %{y:.3f}<extra></extra>'
+            hovertemplate='<b>%{x}</b><br>Price: %{y:.3f}<extra></extra>',
+            showlegend=False
         ))
         
         # Línea de VIX Spot
@@ -285,13 +295,13 @@ def main_vix_structure():
                 line_color="#27AE60",
                 line_width=2.5,
                 annotation_text=f"VIX Index: {vix_spot:.2f}",
-                annotation_position="right",
+                annotation_position="bottom right",
                 annotation=dict(
-                    font=dict(size=13, color="#27AE60", family='Arial'),
-                    bgcolor="rgba(39, 174, 96, 0.1)",
+                    font=dict(size=12, color="#27AE60", family='Arial'),
+                    bgcolor="rgba(39, 174, 96, 0.15)",
                     bordercolor="#27AE60",
-                    borderwidth=1,
-                    borderpad=4
+                    borderwidth=1.5,
+                    borderpad=6
                 )
             )
         
@@ -324,7 +334,7 @@ def main_vix_structure():
             margin=dict(t=20, b=60, l=60, r=80)
         )
         
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="vix_chart")
         
         st.markdown("<br>", unsafe_allow_html=True)
         
