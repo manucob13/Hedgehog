@@ -312,9 +312,13 @@ def main_vix_structure():
                 borderpad=6
             )
         
-        # Personalización del layout
+        # Personalización del layout - AQUÍ ESTÁ EL CAMBIO CLAVE
         fig.update_layout(
-            title=None,
+            title=dict(
+                text="",  # Título vacío explícitamente
+                x=0.5,
+                xanchor='center'
+            ),
             xaxis_title="Future Month",
             yaxis_title="Volatility",
             hovermode='x unified',
