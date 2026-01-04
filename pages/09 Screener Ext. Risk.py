@@ -16,7 +16,7 @@ _yfinance_lock = Lock()
 
 st.set_page_config(
     page_title="Mean Reversion Screener",
-    page_icon="🎯",
+    page_icon="🦔",
     layout="wide"
 )
 
