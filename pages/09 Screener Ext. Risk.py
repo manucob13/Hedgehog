@@ -71,12 +71,27 @@ def calculate_macd_v(df, fast_len=12, slow_len=26, signal_len=9, atr_len=26):
         return None, None
 
 def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_period=20, 
-                   zscore_threshold=2.5, bb_threshold_upper=1.1, bb_threshold_lower=-0.1):
+                   zscore_threshold=2.5, bb_threshold_upper=1.1, bb_threshold_lower=-0.1, 
+                   use_lock=True):
     """Analiza un ticker buscando sobreextensión estadística"""
     try:
-        # SINCRONIZAR descarga para evitar race conditions en yfinance
-        with _yfinance_lock:
-            # Descargar datos con auto_adjust y deshabilitar caché
+        # SINCRONIZAR descarga para evitar race conditions en yfinance (si use_lock=True)
+        if use_lock:
+            with _yfinance_lock:
+                data = yf.download(
+                    ticker, 
+                    period=period, 
+                    interval=interval, 
+                    progress=False,
+                    auto_adjust=True, 
+                    actions=False,
+                    prepost=False,
+                    threads=False
+                )
+                if not data.empty:
+                    data = data.copy(deep=True)
+        else:
+            # Sin lock (más rápido pero puede tener problemas)
             data = yf.download(
                 ticker, 
                 period=period, 
@@ -85,14 +100,15 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
                 auto_adjust=True, 
                 actions=False,
                 prepost=False,
-                threads=False  # Deshabilitar threads internos de yfinance
+                threads=False
             )
-            
-            # INMEDIATAMENTE hacer copia profunda para evitar referencias compartidas
             if not data.empty:
                 data = data.copy(deep=True)
         
-        if data.empty or len(data) < 50:
+        if data.empty:
+            return None
+            
+        if len(data) < 50:
             return None
         
         # Asegurar que tenemos las columnas necesarias
@@ -146,11 +162,13 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
             return None
         
         # FILTRO PRINCIPAL: Z-Score >= 2.5 o <= -2.5
-        if abs(current_zscore) < zscore_threshold:
+        zscore_check = abs(current_zscore) >= zscore_threshold
+        if not zscore_check:
             return None
         
         # FILTRO SECUNDARIO: Bollinger %B fuera de bandas
-        if not (current_bb_percent >= bb_threshold_upper or current_bb_percent <= bb_threshold_lower):
+        bb_check = current_bb_percent >= bb_threshold_upper or current_bb_percent <= bb_threshold_lower
+        if not bb_check:
             return None
         
         # Determinar tipo de señal
@@ -195,14 +213,17 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
             'ID': f"{ticker}_{timestamp}"
         }
     except Exception as e:
-        # Log error para debugging
-        print(f"Error analyzing {ticker}: {str(e)}")
-        return None
+        # Log error con más detalle
+        print(f"Error analyzing {ticker}: {type(e).__name__}: {str(e)}")
+        raise  # Re-raise para que se capture en scan_tickers
 
-def scan_tickers(tickers_list, max_workers=5, **kwargs):
+def scan_tickers(tickers_list, max_workers=5, use_lock=True, **kwargs):
     """Escanea múltiples tickers en paralelo con sincronización"""
     results = []
     errors = []
+    filtered_out = []  # Tickers que no pasaron filtros
+    download_errors = []  # Errores de descarga
+    
     progress_bar = st.progress(0)
     status_text = st.empty()
     
@@ -210,10 +231,10 @@ def scan_tickers(tickers_list, max_workers=5, **kwargs):
     completed = 0
     
     # Usar menos workers ya que las descargas están sincronizadas
-    effective_workers = min(max_workers, 5)
+    effective_workers = min(max_workers, 5) if use_lock else max_workers
     
     with ThreadPoolExecutor(max_workers=effective_workers) as executor:
-        futures = {executor.submit(analyze_ticker, ticker, **kwargs): ticker 
+        futures = {executor.submit(analyze_ticker, ticker, use_lock=use_lock, **kwargs): ticker 
                    for ticker in tickers_list}
         
         for future in as_completed(futures):
@@ -227,16 +248,46 @@ def scan_tickers(tickers_list, max_workers=5, **kwargs):
                 result = future.result()
                 if result is not None:
                     results.append(result)
+                else:
+                    filtered_out.append(ticker)
             except Exception as e:
-                errors.append(f"{ticker}: {str(e)}")
+                error_msg = str(e)
+                if "download" in error_msg.lower() or "fetch" in error_msg.lower():
+                    download_errors.append(f"{ticker}: {error_msg}")
+                else:
+                    errors.append(f"{ticker}: {error_msg}")
     
     progress_bar.empty()
     status_text.empty()
     
-    if errors and len(errors) > 0:
-        with st.expander(f"⚠️ Errores en {len(errors)} tickers"):
-            for error in errors[:10]:  # Mostrar solo los primeros 10
+    # Mostrar estadísticas detalladas
+    st.info(f"""
+    📊 **Estadísticas del Escaneo:**
+    - Total analizado: {total}
+    - ✅ Detectados: {len(results)}
+    - 🔍 Filtrados (no cumplen): {len(filtered_out)}
+    - ❌ Errores de descarga: {len(download_errors)}
+    - ⚠️ Otros errores: {len(errors)}
+    """)
+    
+    # Mostrar errores de descarga
+    if download_errors and len(download_errors) > 0:
+        with st.expander(f"❌ Errores de descarga ({len(download_errors)} tickers)"):
+            for error in download_errors[:20]:
                 st.caption(error)
+    
+    # Mostrar otros errores
+    if errors and len(errors) > 0:
+        with st.expander(f"⚠️ Otros errores ({len(errors)} tickers)"):
+            for error in errors[:20]:
+                st.caption(error)
+    
+    # Mostrar muestra de tickers filtrados si modo debug
+    if st.session_state.get('debug_mode', False) and len(filtered_out) > 0:
+        with st.expander(f"🔍 Tickers filtrados - Muestra ({min(10, len(filtered_out))} de {len(filtered_out)})"):
+            st.write("Estos tickers se descargaron correctamente pero no cumplieron los criterios:")
+            for ticker in filtered_out[:10]:
+                st.caption(f"- {ticker}")
     
     return results
 
@@ -529,10 +580,78 @@ def main_app():
         debug_mode = st.checkbox("🐛 Modo Debug", value=False, 
                                 help="Muestra información adicional para diagnóstico")
         
+        # Opción experimental para deshabilitar lock
+        if debug_mode:
+            disable_lock = st.checkbox("⚠️ Deshabilitar Lock (experimental)", value=False,
+                                      help="Puede causar duplicados pero es más rápido")
+            if disable_lock:
+                st.session_state['disable_lock'] = True
+            elif 'disable_lock' in st.session_state:
+                del st.session_state['disable_lock']
+        
         if debug_mode:
             st.session_state['debug_mode'] = True
         elif 'debug_mode' in st.session_state:
             del st.session_state['debug_mode']
+        
+        st.markdown("---")
+        
+        # Test individual ticker
+        if debug_mode:
+            st.markdown("#### 🔬 Test Individual")
+            test_ticker = st.text_input("Ticker a probar:", "AAPL")
+            if st.button("🧪 Probar Ticker", use_container_width=True):
+                with st.spinner(f"Analizando {test_ticker}..."):
+                    result = analyze_ticker(
+                        test_ticker,
+                        period=period,
+                        interval=interval,
+                        zscore_threshold=zscore_threshold,
+                        bb_threshold_upper=bb_threshold_upper,
+                        bb_threshold_lower=bb_threshold_lower,
+                        use_lock=False  # No necesitamos lock para un solo ticker
+                    )
+                    
+                    if result:
+                        st.success(f"✅ {test_ticker} PASA los filtros!")
+                        st.json({
+                            'Z-Score': result['Z-Score'],
+                            'BB_%B': result['BB_%B'],
+                            'MACD_V': result['MACD_V'],
+                            'Type': result['Type'],
+                            'Strength': result['Strength']
+                        })
+                    else:
+                        st.warning(f"⚠️ {test_ticker} NO pasa los filtros")
+                        st.info("Probando con filtros más relajados...")
+                        
+                        # Probar sin filtros para ver valores
+                        try:
+                            data = yf.download(test_ticker, period=period, interval=interval, 
+                                             progress=False, auto_adjust=True, actions=False)
+                            if not data.empty and len(data) >= 50:
+                                bb_sma, bb_upper, bb_lower, bb_percent = calculate_bollinger_bands(data, period=20, std_dev=2.5)
+                                zscore = calculate_zscore(data, period=20)
+                                macd_v, _ = calculate_macd_v(data)
+                                
+                                current_zscore = float(zscore.iloc[-1])
+                                current_bb = float(bb_percent.iloc[-1])
+                                current_macdv = float(macd_v.iloc[-1]) if macd_v is not None else 0
+                                
+                                st.info(f"""
+                                **Valores actuales:**
+                                - Z-Score: {current_zscore:.2f} (necesita ≥{zscore_threshold} o ≤{-zscore_threshold})
+                                - BB %B: {current_bb:.2f} (necesita >{bb_threshold_upper} o <{bb_threshold_lower})
+                                - MACD-V: {current_macdv:.1f}
+                                
+                                **¿Por qué NO pasa?**
+                                {'❌ Z-Score insuficiente' if abs(current_zscore) < zscore_threshold else '✅ Z-Score OK'}
+                                {'❌ BB %B dentro de bandas' if bb_threshold_lower < current_bb < bb_threshold_upper else '✅ BB %B OK'}
+                                """)
+                            else:
+                                st.error("No se pudieron descargar suficientes datos")
+                        except Exception as e:
+                            st.error(f"Error: {str(e)}")
         
         st.markdown("---")
         
@@ -555,10 +674,18 @@ def main_app():
         tickers_list = tickers_df['Ticker'].tolist()
         st.info(f"📊 Analizando {len(tickers_list)} tickers...")
         
+        # Obtener debug_mode del session_state
+        debug_mode = st.session_state.get('debug_mode', False)
+        disable_lock = st.session_state.get('disable_lock', False)
+        
+        if disable_lock:
+            st.warning("⚠️ Lock deshabilitado - puede haber duplicados pero será más rápido")
+        
         with st.spinner("Analizando..."):
             results = scan_tickers(
                 tickers_list, 
                 max_workers=max_workers,
+                use_lock=not disable_lock,
                 period=period,
                 interval=interval,
                 zscore_threshold=zscore_threshold,
@@ -571,7 +698,7 @@ def main_app():
             st.success(f"✅ {len(results)} tickers detectados con sobreextensión estadística")
             
             # Mostrar debug info si está activado
-            if 'debug_mode' in locals() and debug_mode:
+            if debug_mode:
                 with st.expander("🐛 Información de Debug"):
                     st.write(f"**Total tickers analizados:** {len(tickers_list)}")
                     st.write(f"**Tickers detectados:** {len(results)}")
@@ -614,6 +741,46 @@ def main_app():
                         })
         else:
             st.warning("⚠️ No se encontraron tickers con las condiciones especificadas")
+            
+            # Sugerencias
+            st.info(f"""
+            **💡 Sugerencias para encontrar más resultados:**
+            
+            1️⃣ **Relajar Z-Score:** Actual = {zscore_threshold}σ → Prueba con 2.0σ o 2.2σ
+            
+            2️⃣ **Relajar BB %B:** Actual = {bb_threshold:.2f} → Prueba con 0.05 o 0.0
+            
+            3️⃣ **Cambiar periodo:** Actual = {period} → Prueba con "3mo" o "1y"
+            
+            4️⃣ **Usar modo Debug:** Activa el checkbox "🐛 Modo Debug" para probar tickers individuales
+            
+            5️⃣ **Verificar datos:** Es posible que el mercado no tenga valores muy sobreextendidos en este momento
+            
+            📊 Recuerda: Los filtros detectan sobreextensión **estadísticamente significativa** (2.5σ = eventos raros)
+            """)
+            
+            # Ofrecer probar con filtros más relajados
+            if st.button("🔄 Intentar con filtros más relajados (Z-Score 2.0σ, BB 0.05)", type="secondary"):
+                st.info("Re-ejecutando con filtros más relajados...")
+                disable_lock_relaxed = st.session_state.get('disable_lock', False)
+                with st.spinner("Analizando..."):
+                    results_relaxed = scan_tickers(
+                        tickers_list, 
+                        max_workers=max_workers,
+                        use_lock=not disable_lock_relaxed,
+                        period=period,
+                        interval=interval,
+                        zscore_threshold=2.0,
+                        bb_threshold_upper=1.05,
+                        bb_threshold_lower=-0.05
+                    )
+                
+                if results_relaxed:
+                    st.session_state['scan_results'] = results_relaxed
+                    st.success(f"✅ {len(results_relaxed)} tickers encontrados con filtros relajados")
+                    st.rerun()
+                else:
+                    st.error("❌ Incluso con filtros relajados no se encontraron resultados")
     
     # Resultados - TABLA PRINCIPAL
     if 'scan_results' in st.session_state:
