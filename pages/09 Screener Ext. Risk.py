@@ -138,13 +138,25 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         zscore = calculate_zscore(df_copy, period=zscore_period)
         macd_v, macd_v_signal = calculate_macd_v(df_copy)
         
-        # FIX: Verificación robusta sin ambigüedad
+        # FIX: Usar try-except para manejar cualquier tipo de objeto de pandas
         if zscore is None:
             return None
-        if len(zscore) == 0:
-            return None
-        # Contar valores válidos (no-NaN) - devuelve un int, sin ambigüedad
-        if zscore.notna().sum() == 0:
+        
+        # Intentar obtener el último valor directamente
+        try:
+            # Si es DataFrame, obtener la primera columna
+            if isinstance(zscore, pd.DataFrame):
+                zscore = zscore.iloc[:, 0]
+            
+            # Verificar que tengamos datos válidos
+            if len(zscore) == 0:
+                return None
+            
+            # Intentar obtener el último valor
+            test_value = zscore.iloc[-1]
+            if pd.isna(test_value):
+                return None
+        except (IndexError, KeyError, AttributeError):
             return None
         
         # Hacer copias independientes de las series antes de extraer valores
