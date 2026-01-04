@@ -138,13 +138,13 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         zscore = calculate_zscore(df_copy, period=zscore_period)
         macd_v, macd_v_signal = calculate_macd_v(df_copy)
         
-        # FIX: Separar las verificaciones de None y .isna().all()
+        # FIX: Verificación robusta sin ambigüedad
         if zscore is None:
             return None
         if len(zscore) == 0:
             return None
-        # Convertir explícitamente a bool para evitar ambigüedad
-        if bool(zscore.isna().all()):
+        # Contar valores válidos (no-NaN) - devuelve un int, sin ambigüedad
+        if zscore.notna().sum() == 0:
             return None
         
         # Hacer copias independientes de las series antes de extraer valores
