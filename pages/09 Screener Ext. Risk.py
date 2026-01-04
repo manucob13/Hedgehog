@@ -170,45 +170,34 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         if macd_v_signal is not None:
             macd_v_signal = macd_v_signal.copy(deep=True)
         
-        # Valores actuales - asegurar que sean escalares, no Series
-        # Usar .values[-1] para obtener el valor numpy directamente
-        current_price = float(data['Close'].values[-1])
+        # Valores actuales - función helper para extraer valor escalar de forma segura
+        def get_scalar_value(series_or_df, default=0.0):
+            """Extrae un valor escalar del último elemento de forma segura"""
+            try:
+                if series_or_df is None:
+                    return default
+                
+                # Obtener último valor
+                val = series_or_df.iloc[-1]
+                
+                # Si es Series, obtener el primer elemento
+                if isinstance(val, pd.Series):
+                    val = val.iloc[0]
+                
+                # Si es DataFrame, obtener elemento [0,0]
+                if isinstance(val, pd.DataFrame):
+                    val = val.iloc[0, 0]
+                
+                # Convertir a float
+                return float(val) if pd.notna(val) else default
+            except:
+                return default
         
-        # Para zscore, bb_percent: si son DataFrame, tomar primera columna
-        if isinstance(zscore, pd.DataFrame):
-            current_zscore = float(zscore.iloc[-1, 0])
-        else:
-            current_zscore = float(zscore.values[-1])
-        
-        if isinstance(bb_percent, pd.DataFrame):
-            current_bb_percent = float(bb_percent.iloc[-1, 0])
-        else:
-            current_bb_percent = float(bb_percent.values[-1])
-        
-        # FIX: Usar try-except para macd_v y signal sin comparaciones ambiguas
-        try:
-            if macd_v is not None:
-                if isinstance(macd_v, pd.DataFrame):
-                    val = macd_v.iloc[-1, 0]
-                else:
-                    val = macd_v.values[-1]
-                current_macdv = float(val) if pd.notna(val) else 0.0
-            else:
-                current_macdv = 0.0
-        except:
-            current_macdv = 0.0
-        
-        try:
-            if macd_v_signal is not None:
-                if isinstance(macd_v_signal, pd.DataFrame):
-                    val = macd_v_signal.iloc[-1, 0]
-                else:
-                    val = macd_v_signal.values[-1]
-                current_signal = float(val) if pd.notna(val) else 0.0
-            else:
-                current_signal = 0.0
-        except:
-            current_signal = 0.0
+        current_price = get_scalar_value(data['Close'])
+        current_zscore = get_scalar_value(zscore)
+        current_bb_percent = get_scalar_value(bb_percent)
+        current_macdv = get_scalar_value(macd_v, 0.0)
+        current_signal = get_scalar_value(macd_v_signal, 0.0)
         
         # Validar que los valores son numéricos y razonables
         if not all(pd.notna([current_price, current_zscore, current_bb_percent])):
