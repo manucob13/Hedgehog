@@ -170,15 +170,28 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         if macd_v_signal is not None:
             macd_v_signal = macd_v_signal.copy(deep=True)
         
-        # Valores actuales - convertir a tipos nativos de Python (no numpy)
-        current_price = float(data['Close'].iloc[-1])
-        current_zscore = float(zscore.iloc[-1])
-        current_bb_percent = float(bb_percent.iloc[-1])
+        # Valores actuales - asegurar que sean escalares, no Series
+        # Usar .values[-1] para obtener el valor numpy directamente
+        current_price = float(data['Close'].values[-1])
+        
+        # Para zscore, bb_percent: si son DataFrame, tomar primera columna
+        if isinstance(zscore, pd.DataFrame):
+            current_zscore = float(zscore.iloc[-1, 0])
+        else:
+            current_zscore = float(zscore.values[-1])
+        
+        if isinstance(bb_percent, pd.DataFrame):
+            current_bb_percent = float(bb_percent.iloc[-1, 0])
+        else:
+            current_bb_percent = float(bb_percent.values[-1])
         
         # FIX: Usar try-except para macd_v y signal sin comparaciones ambiguas
         try:
             if macd_v is not None:
-                val = macd_v.iloc[-1]
+                if isinstance(macd_v, pd.DataFrame):
+                    val = macd_v.iloc[-1, 0]
+                else:
+                    val = macd_v.values[-1]
                 current_macdv = float(val) if pd.notna(val) else 0.0
             else:
                 current_macdv = 0.0
@@ -187,7 +200,10 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         
         try:
             if macd_v_signal is not None:
-                val = macd_v_signal.iloc[-1]
+                if isinstance(macd_v_signal, pd.DataFrame):
+                    val = macd_v_signal.iloc[-1, 0]
+                else:
+                    val = macd_v_signal.values[-1]
                 current_signal = float(val) if pd.notna(val) else 0.0
             else:
                 current_signal = 0.0
