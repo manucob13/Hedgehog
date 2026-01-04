@@ -178,33 +178,46 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         if macd_v_signal is not None:
             macd_v_signal = macd_v_signal.copy(deep=True)
         
-        # Valores actuales - ahora que las funciones garantizan Series simples
-        def get_last_value(series, default=0.0):
-            """Extrae el último valor de una Serie simple"""
-            if series is None:
-                return default
-            try:
-                # Asegurar que es Serie
-                if isinstance(series, pd.DataFrame):
-                    series = series.squeeze()
-                
-                # Obtener último valor usando item() que siempre devuelve escalar
-                last_val = series.iloc[-1]
-                
-                # Convertir a float nativo de Python
-                if hasattr(last_val, 'item'):
-                    return float(last_val.item())
-                else:
-                    return float(last_val)
-            except Exception as e:
-                st.warning(f"Error extrayendo valor: {e}")
-                return default
+        # Valores actuales - extraer DIRECTAMENTE como numpy scalars
+        try:
+            # Usar .to_numpy()[-1] que siempre devuelve numpy scalar
+            current_price = data['Close'].to_numpy()[-1]
+            current_price = float(current_price)
+        except Exception as e:
+            st.error(f"Error en current_price: {e}")
+            return None
         
-        current_price = get_last_value(data['Close'])
-        current_zscore = get_last_value(zscore)
-        current_bb_percent = get_last_value(bb_percent)
-        current_macdv = get_last_value(macd_v, 0.0)
-        current_signal = get_last_value(macd_v_signal, 0.0)
+        try:
+            current_zscore = zscore.to_numpy()[-1]
+            current_zscore = float(current_zscore)
+        except Exception as e:
+            st.error(f"Error en current_zscore: {e}")
+            return None
+        
+        try:
+            current_bb_percent = bb_percent.to_numpy()[-1]
+            current_bb_percent = float(current_bb_percent)
+        except Exception as e:
+            st.error(f"Error en current_bb_percent: {e}")
+            return None
+        
+        try:
+            if macd_v is not None:
+                current_macdv = macd_v.to_numpy()[-1]
+                current_macdv = float(current_macdv) if not np.isnan(current_macdv) else 0.0
+            else:
+                current_macdv = 0.0
+        except:
+            current_macdv = 0.0
+        
+        try:
+            if macd_v_signal is not None:
+                current_signal = macd_v_signal.to_numpy()[-1]
+                current_signal = float(current_signal) if not np.isnan(current_signal) else 0.0
+            else:
+                current_signal = 0.0
+        except:
+            current_signal = 0.0
         
         # Validar que los valores son numéricos y razonables
         if not all(pd.notna([current_price, current_zscore, current_bb_percent])):
