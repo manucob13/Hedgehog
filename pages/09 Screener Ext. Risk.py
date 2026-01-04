@@ -170,39 +170,42 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         if macd_v_signal is not None:
             macd_v_signal = macd_v_signal.copy(deep=True)
         
-        # Valores actuales - usar .iat para acceso directo a escalares
-        def safe_get_last(obj, default=0.0):
-            """Extrae el último valor de forma ultra-segura"""
+        # Valores actuales - con debugging explícito
+        def safe_get_last(obj, name="unknown", default=0.0):
+            """Extrae el último valor con debugging"""
             if obj is None:
                 return default
             try:
-                # Método 1: usar .iat (acceso indexado más rápido)
-                if hasattr(obj, 'iat'):
-                    val = obj.iat[-1]
-                    # Si val es todavía una Serie/DF, recursivo
-                    if isinstance(val, (pd.Series, pd.DataFrame)):
-                        return safe_get_last(val, default)
-                    return float(val) if pd.notna(val) else default
+                # Debug: imprimir tipo
+                print(f"DEBUG {name}: tipo={type(obj)}, shape={getattr(obj, 'shape', 'N/A')}")
                 
-                # Método 2: convertir a lista y tomar último
-                if hasattr(obj, 'tolist'):
-                    lst = obj.tolist()
-                    if isinstance(lst, list) and len(lst) > 0:
-                        val = lst[-1]
-                        if isinstance(val, (list, tuple)) and len(val) > 0:
-                            val = val[0]
-                        return float(val) if not pd.isna(val) else default
+                # Si es Series, acceder directamente al valor
+                if isinstance(obj, pd.Series):
+                    idx = len(obj) - 1
+                    val = obj.iloc[idx]
+                    print(f"DEBUG {name}: valor extraído={val}, tipo_val={type(val)}")
+                    # Si el valor es otro objeto pandas, convertir a item()
+                    if hasattr(val, 'item'):
+                        return float(val.item())
+                    return float(val)
                 
-                # Método 3: último recurso - forzar conversión
+                # Si es DataFrame, tomar primera columna
+                if isinstance(obj, pd.DataFrame):
+                    print(f"DEBUG {name}: es DataFrame, columnas={obj.columns.tolist()}")
+                    col = obj.iloc[:, 0]
+                    return safe_get_last(col, f"{name}_col0", default)
+                
+                # Último recurso
                 return float(obj)
-            except:
+            except Exception as e:
+                print(f"ERROR en {name}: {str(e)}")
                 return default
         
-        current_price = safe_get_last(data['Close'])
-        current_zscore = safe_get_last(zscore)
-        current_bb_percent = safe_get_last(bb_percent)
-        current_macdv = safe_get_last(macd_v, 0.0)
-        current_signal = safe_get_last(macd_v_signal, 0.0)
+        current_price = safe_get_last(data['Close'], "Close")
+        current_zscore = safe_get_last(zscore, "zscore")
+        current_bb_percent = safe_get_last(bb_percent, "bb_percent")
+        current_macdv = safe_get_last(macd_v, "macd_v", 0.0)
+        current_signal = safe_get_last(macd_v_signal, "signal", 0.0)
         
         # Validar que los valores son numéricos y razonables
         if not all(pd.notna([current_price, current_zscore, current_bb_percent])):
