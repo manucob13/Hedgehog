@@ -7,6 +7,7 @@ from datetime import datetime
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
+from utils import check_password
 
 warnings.filterwarnings('ignore')
 
@@ -16,50 +17,6 @@ st.set_page_config(
     page_icon="🔍",
     layout="wide"
 )
-
-# ============= FUNCIONES DE AUTENTICACIÓN =============
-def check_password():
-    """Verifica credenciales usando secrets de Streamlit"""
-    def password_entered():
-        if (st.session_state["username"] == st.secrets["credentials"]["username"] and
-            st.session_state["password"] == st.secrets["credentials"]["password"]):
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]
-            del st.session_state["username"]
-        else:
-            st.session_state["password_correct"] = False
-
-    if "password_correct" not in st.session_state:
-        with st.sidebar:
-            st.markdown("""
-            <div style='text-align: center; padding: 20px; 
-                        background: linear-gradient(135deg, #FF6B6B 0%, #FFB86C 100%); 
-                        border-radius: 15px; margin-bottom: 20px;'>
-                <h2 style='color: white; margin: 0;'>🔒 Login</h2>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            st.text_input("Usuario", key="username")
-            st.text_input("Contraseña", type="password", key="password")
-            st.button("Iniciar Sesión", on_click=password_entered, use_container_width=True)
-        return False
-    
-    elif not st.session_state["password_correct"]:
-        with st.sidebar:
-            st.error("❌ Usuario o contraseña incorrectos")
-            st.markdown("""
-            <div style='text-align: center; padding: 20px; 
-                        background: linear-gradient(135deg, #FF6B6B 0%, #FFB86C 100%); 
-                        border-radius: 15px; margin-bottom: 20px;'>
-                <h2 style='color: white; margin: 0;'>🔒 Login</h2>
-            </div>
-            """, unsafe_allow_html=True)
-            st.text_input("Usuario", key="username")
-            st.text_input("Contraseña", type="password", key="password")
-            st.button("Iniciar Sesión", on_click=password_entered, use_container_width=True)
-        return False
-    else:
-        return True
 
 # ============= FUNCIONES TÉCNICAS =============
 def calculate_ema(data, period):
