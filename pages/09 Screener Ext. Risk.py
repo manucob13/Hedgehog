@@ -174,8 +174,25 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         current_price = float(data['Close'].iloc[-1])
         current_zscore = float(zscore.iloc[-1])
         current_bb_percent = float(bb_percent.iloc[-1])
-        current_macdv = float(macd_v.iloc[-1]) if macd_v is not None and not pd.isna(macd_v.iloc[-1]) else 0.0
-        current_signal = float(macd_v_signal.iloc[-1]) if macd_v_signal is not None and not pd.isna(macd_v_signal.iloc[-1]) else 0.0
+        
+        # FIX: Usar try-except para macd_v y signal sin comparaciones ambiguas
+        try:
+            if macd_v is not None:
+                val = macd_v.iloc[-1]
+                current_macdv = float(val) if pd.notna(val) else 0.0
+            else:
+                current_macdv = 0.0
+        except:
+            current_macdv = 0.0
+        
+        try:
+            if macd_v_signal is not None:
+                val = macd_v_signal.iloc[-1]
+                current_signal = float(val) if pd.notna(val) else 0.0
+            else:
+                current_signal = 0.0
+        except:
+            current_signal = 0.0
         
         # Validar que los valores son numéricos y razonables
         if not all(pd.notna([current_price, current_zscore, current_bb_percent])):
