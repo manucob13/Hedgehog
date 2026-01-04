@@ -31,25 +31,33 @@ def calculate_sma(data, period):
 
 def calculate_bollinger_bands(df, period=20, std_dev=2.5):
     """Calcula Bollinger Bands y %B"""
-    sma = calculate_sma(df['Close'], period)
-    std = df['Close'].rolling(window=period).std()
+    # Asegurar que Close es una Serie, no DataFrame
+    close = df['Close'].squeeze() if isinstance(df['Close'], pd.DataFrame) else df['Close']
+    
+    sma = calculate_sma(close, period)
+    std = close.rolling(window=period).std()
     
     upper_band = sma + (std_dev * std)
     lower_band = sma - (std_dev * std)
     
     # %B: Posición relativa dentro de las bandas
-    percent_b = (df['Close'] - lower_band) / (upper_band - lower_band)
+    percent_b = (close - lower_band) / (upper_band - lower_band)
     
-    return sma, upper_band, lower_band, percent_b
+    # Asegurar que todo son Series simples
+    return sma.squeeze(), upper_band.squeeze(), lower_band.squeeze(), percent_b.squeeze()
 
 def calculate_zscore(df, period=20):
     """Calcula Z-Score: (Precio - Media) / Desviación Estándar"""
-    sma = calculate_sma(df['Close'], period)
-    std = df['Close'].rolling(window=period).std()
+    # Asegurar que Close es una Serie, no DataFrame
+    close = df['Close'].squeeze() if isinstance(df['Close'], pd.DataFrame) else df['Close']
     
-    zscore = (df['Close'] - sma) / std
+    sma = calculate_sma(close, period)
+    std = close.rolling(window=period).std()
     
-    return zscore
+    zscore = (close - sma) / std
+    
+    # Asegurar que retorna Serie simple
+    return zscore.squeeze()
 
 def calculate_macd_v(df, fast_len=12, slow_len=26, signal_len=9, atr_len=26):
     """Calcula MACD-V (MACD normalizado por ATR)"""
@@ -170,42 +178,33 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         if macd_v_signal is not None:
             macd_v_signal = macd_v_signal.copy(deep=True)
         
-        # Valores actuales - con debugging explícito
-        def safe_get_last(obj, name="unknown", default=0.0):
-            """Extrae el último valor con debugging"""
-            if obj is None:
+        # Valores actuales - ahora que las funciones garantizan Series simples
+        def get_last_value(series, default=0.0):
+            """Extrae el último valor de una Serie simple"""
+            if series is None:
                 return default
             try:
-                # Debug: imprimir tipo
-                print(f"DEBUG {name}: tipo={type(obj)}, shape={getattr(obj, 'shape', 'N/A')}")
+                # Asegurar que es Serie
+                if isinstance(series, pd.DataFrame):
+                    series = series.squeeze()
                 
-                # Si es Series, acceder directamente al valor
-                if isinstance(obj, pd.Series):
-                    idx = len(obj) - 1
-                    val = obj.iloc[idx]
-                    print(f"DEBUG {name}: valor extraído={val}, tipo_val={type(val)}")
-                    # Si el valor es otro objeto pandas, convertir a item()
-                    if hasattr(val, 'item'):
-                        return float(val.item())
-                    return float(val)
+                # Obtener último valor usando item() que siempre devuelve escalar
+                last_val = series.iloc[-1]
                 
-                # Si es DataFrame, tomar primera columna
-                if isinstance(obj, pd.DataFrame):
-                    print(f"DEBUG {name}: es DataFrame, columnas={obj.columns.tolist()}")
-                    col = obj.iloc[:, 0]
-                    return safe_get_last(col, f"{name}_col0", default)
-                
-                # Último recurso
-                return float(obj)
+                # Convertir a float nativo de Python
+                if hasattr(last_val, 'item'):
+                    return float(last_val.item())
+                else:
+                    return float(last_val)
             except Exception as e:
-                print(f"ERROR en {name}: {str(e)}")
+                st.warning(f"Error extrayendo valor: {e}")
                 return default
         
-        current_price = safe_get_last(data['Close'], "Close")
-        current_zscore = safe_get_last(zscore, "zscore")
-        current_bb_percent = safe_get_last(bb_percent, "bb_percent")
-        current_macdv = safe_get_last(macd_v, "macd_v", 0.0)
-        current_signal = safe_get_last(macd_v_signal, "signal", 0.0)
+        current_price = get_last_value(data['Close'])
+        current_zscore = get_last_value(zscore)
+        current_bb_percent = get_last_value(bb_percent)
+        current_macdv = get_last_value(macd_v, 0.0)
+        current_signal = get_last_value(macd_v_signal, 0.0)
         
         # Validar que los valores son numéricos y razonables
         if not all(pd.notna([current_price, current_zscore, current_bb_percent])):
