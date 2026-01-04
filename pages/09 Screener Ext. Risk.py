@@ -118,7 +118,12 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         
         # Obtener nombre de la compañía (también con lock)
         try:
-            with _yfinance_lock:
+            if use_lock:
+                with _yfinance_lock:
+                    ticker_info = yf.Ticker(ticker)
+                    info = ticker_info.info
+                    company_name = info.get('longName') or info.get('shortName') or ticker
+            else:
                 ticker_info = yf.Ticker(ticker)
                 info = ticker_info.info
                 company_name = info.get('longName') or info.get('shortName') or ticker
@@ -133,7 +138,10 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         zscore = calculate_zscore(df_copy, period=zscore_period)
         macd_v, macd_v_signal = calculate_macd_v(df_copy)
         
-        if zscore is None or zscore.isna().all():
+        # FIX: Separar las verificaciones de None y .isna().all()
+        if zscore is None:
+            return None
+        if zscore.isna().all():
             return None
         
         # Hacer copias independientes de las series antes de extraer valores
@@ -215,14 +223,14 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
     except Exception as e:
         # Log error con más detalle
         print(f"Error analyzing {ticker}: {type(e).__name__}: {str(e)}")
-        raise  # Re-raise para que se capture en scan_tickers
+        raise
 
 def scan_tickers(tickers_list, max_workers=5, use_lock=True, **kwargs):
     """Escanea múltiples tickers en paralelo con sincronización"""
     results = []
     errors = []
-    filtered_out = []  # Tickers que no pasaron filtros
-    download_errors = []  # Errores de descarga
+    filtered_out = []
+    download_errors = []
     
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -230,7 +238,6 @@ def scan_tickers(tickers_list, max_workers=5, use_lock=True, **kwargs):
     total = len(tickers_list)
     completed = 0
     
-    # Usar menos workers ya que las descargas están sincronizadas
     effective_workers = min(max_workers, 5) if use_lock else max_workers
     
     with ThreadPoolExecutor(max_workers=effective_workers) as executor:
@@ -260,7 +267,6 @@ def scan_tickers(tickers_list, max_workers=5, use_lock=True, **kwargs):
     progress_bar.empty()
     status_text.empty()
     
-    # Mostrar estadísticas detalladas
     st.info(f"""
     📊 **Estadísticas del Escaneo:**
     - Total analizado: {total}
@@ -270,19 +276,16 @@ def scan_tickers(tickers_list, max_workers=5, use_lock=True, **kwargs):
     - ⚠️ Otros errores: {len(errors)}
     """)
     
-    # Mostrar errores de descarga
     if download_errors and len(download_errors) > 0:
         with st.expander(f"❌ Errores de descarga ({len(download_errors)} tickers)"):
             for error in download_errors[:20]:
                 st.caption(error)
     
-    # Mostrar otros errores
     if errors and len(errors) > 0:
         with st.expander(f"⚠️ Otros errores ({len(errors)} tickers)"):
             for error in errors[:20]:
                 st.caption(error)
     
-    # Mostrar muestra de tickers filtrados si modo debug
     if st.session_state.get('debug_mode', False) and len(filtered_out) > 0:
         with st.expander(f"🔍 Tickers filtrados - Muestra ({min(10, len(filtered_out))} de {len(filtered_out)})"):
             st.write("Estos tickers se descargaron correctamente pero no cumplieron los criterios:")
@@ -301,16 +304,14 @@ def plot_ticker_analysis(ticker_data):
     ticker = ticker_data['Ticker']
     company_name = ticker_data.get('Company', ticker)
     
-    # Validar datos
     if data is None or len(data) == 0:
         st.error(f"No hay datos disponibles para {ticker}")
         return None
     
-    # ============= PANEL 1: PRECIO + BOLLINGER BANDS =============
+    # PANEL 1: PRECIO + BOLLINGER BANDS
     ax1 = fig.add_subplot(gs[0])
     ax1.set_facecolor('#1A1D29')
     
-    # Bandas Bollinger
     bb_lower = ticker_data.get('BB_Lower')
     bb_upper = ticker_data.get('BB_Upper')
     bb_sma = ticker_data.get('BB_SMA')
@@ -325,11 +326,9 @@ def plot_ticker_analysis(ticker_data):
         ax1.plot(data.index, bb_lower, color='#FFB86C', 
                 linewidth=2, linestyle='--', alpha=0.7, zorder=2)
     
-    # Precio
     ax1.plot(data.index, data['Close'], color='#FFFFFF', linewidth=2.5, 
             label='Precio', zorder=3)
     
-    # Marcar punto actual
     current_color = '#FF6B6B' if ticker_data['Type'] == 'SOBRECOMPRA' else '#4ECDC4'
     ax1.scatter(data.index[-1], data['Close'].iloc[-1], 
                color=current_color, s=200, edgecolors='white', 
@@ -346,14 +345,13 @@ def plot_ticker_analysis(ticker_data):
         spine.set_color('#2D3142')
         spine.set_linewidth(1.5)
     
-    # ============= PANEL 2: Z-SCORE =============
+    # PANEL 2: Z-SCORE
     ax2 = fig.add_subplot(gs[1], sharex=ax1)
     ax2.set_facecolor('#1A1D29')
     
     zscore = ticker_data.get('ZScore_Series')
     
     if zscore is not None and len(zscore) > 0:
-        # Colorear línea según nivel
         for i in range(1, len(zscore)):
             if pd.notna(zscore.iloc[i-1]) and pd.notna(zscore.iloc[i]):
                 y2 = zscore.iloc[i]
@@ -370,20 +368,17 @@ def plot_ticker_analysis(ticker_data):
                         [zscore.iloc[i-1], y2], 
                         color=color, linewidth=width, alpha=0.95, zorder=5)
         
-        # Niveles de referencia
         ax2.axhline(y=3, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8, label='±3σ')
         ax2.axhline(y=2.5, color='#FFB86C', linestyle='--', linewidth=2, alpha=0.8, label='±2.5σ')
         ax2.axhline(y=0, color='#8E93A1', linestyle='-', linewidth=1.5, alpha=0.7)
         ax2.axhline(y=-2.5, color='#FFB86C', linestyle='--', linewidth=2, alpha=0.8)
         ax2.axhline(y=-3, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8)
         
-        # Áreas de fondo
         ax2.fill_between(data.index, 2.5, 5, alpha=0.12, color='#FFB86C', zorder=0)
         ax2.fill_between(data.index, -5, -2.5, alpha=0.12, color='#FFB86C', zorder=0)
         ax2.fill_between(data.index, 3, 5, alpha=0.15, color='#FF6B6B', zorder=0)
         ax2.fill_between(data.index, -5, -3, alpha=0.15, color='#FF6B6B', zorder=0)
         
-        # Valor actual
         current_zscore = ticker_data['Z-Score']
         zscore_color = '#FF6B6B' if abs(current_zscore) > 3 else '#FFB86C' if abs(current_zscore) > 2.5 else '#FFD93D'
         ax2.text(0.02, 0.95, f'Z-Score: {current_zscore:.2f}σ', 
@@ -402,7 +397,7 @@ def plot_ticker_analysis(ticker_data):
         spine.set_color('#2D3142')
         spine.set_linewidth(1.5)
     
-    # ============= PANEL 3: MACD-V =============
+    # PANEL 3: MACD-V
     ax3 = fig.add_subplot(gs[2], sharex=ax1)
     ax3.set_facecolor('#1A1D29')
     
@@ -410,7 +405,6 @@ def plot_ticker_analysis(ticker_data):
     signal = ticker_data.get('Signal_Series')
     
     if macd_v is not None and len(macd_v) > 0 and not macd_v.isna().all():
-        # Colorear línea MACD-V
         for i in range(1, len(macd_v)):
             if pd.notna(macd_v.iloc[i-1]) and pd.notna(macd_v.iloc[i]):
                 y2 = macd_v.iloc[i]
@@ -429,12 +423,10 @@ def plot_ticker_analysis(ticker_data):
                         [macd_v.iloc[i-1], y2], 
                         color=color, linewidth=width, alpha=0.95, zorder=5)
         
-        # Línea de señal
         if signal is not None and len(signal) > 0:
             ax3.plot(data.index, signal, color='#FFB86C', linewidth=1.5, 
                     alpha=0.5, linestyle='--', zorder=3)
         
-        # Niveles y áreas
         ax3.axhline(y=150, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8)
         ax3.axhline(y=0, color='#8E93A1', linestyle='-', linewidth=1.5, alpha=0.7)
         ax3.axhline(y=-150, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8)
@@ -456,15 +448,13 @@ def plot_ticker_analysis(ticker_data):
         spine.set_color('#2D3142')
         spine.set_linewidth(1.5)
     
-    # ============= PANEL 4: BOLLINGER %B =============
+    # PANEL 4: BOLLINGER %B
     ax4 = fig.add_subplot(gs[3], sharex=ax1)
     ax4.set_facecolor('#1A1D29')
     
     bb_percent = ticker_data.get('BB_%B')
     
-    # VALIDACIÓN CRÍTICA: Verificar que bb_percent existe y tiene datos
     if bb_percent is not None and hasattr(bb_percent, '__len__') and len(bb_percent) > 0:
-        # Colorear línea según posición
         for i in range(1, len(bb_percent)):
             if pd.notna(bb_percent.iloc[i-1]) and pd.notna(bb_percent.iloc[i]):
                 y2 = bb_percent.iloc[i]
@@ -483,16 +473,13 @@ def plot_ticker_analysis(ticker_data):
                         [bb_percent.iloc[i-1], y2], 
                         color=color, linewidth=width, alpha=0.95, zorder=5)
         
-        # Niveles de referencia
         ax4.axhline(y=1.0, color='#FFB86C', linestyle='--', linewidth=2, alpha=0.8, label='Banda Superior')
         ax4.axhline(y=0.5, color='#BD93F9', linestyle='-', linewidth=1.5, alpha=0.7, label='Media')
         ax4.axhline(y=0.0, color='#4ECDC4', linestyle='--', linewidth=2, alpha=0.8, label='Banda Inferior')
         
-        # Áreas de fondo
         ax4.fill_between(data.index, 1.0, 1.5, alpha=0.12, color='#FFB86C', zorder=0)
         ax4.fill_between(data.index, -0.5, 0.0, alpha=0.12, color='#4ECDC4', zorder=0)
         
-        # Valor actual
         current_bb = ticker_data.get('BB_%B', 0)
         bb_color = '#FF6B6B' if current_bb > 1.1 or current_bb < -0.1 else '#FFB86C' if current_bb > 1.0 else '#4ECDC4' if current_bb < 0 else '#95A5A6'
         ax4.text(0.02, 0.95, f'%B: {current_bb:.2f}', 
@@ -515,7 +502,6 @@ def plot_ticker_analysis(ticker_data):
     plt.tight_layout()
     return fig
 
-# ============= INTERFAZ STREAMLIT =============
 def main_app():
     """Aplicación principal del screener"""
     st.markdown("""
@@ -537,7 +523,6 @@ def main_app():
     st.markdown("**Detecta valores sobreextendidos estadísticamente (2.5σ)**")
     st.markdown("---")
     
-    # Sidebar
     with st.sidebar:
         st.markdown("""
         <div style='text-align: center; padding: 20px; 
@@ -576,11 +561,9 @@ def main_app():
         
         st.markdown("---")
         
-        # Debug mode
         debug_mode = st.checkbox("🐛 Modo Debug", value=False, 
                                 help="Muestra información adicional para diagnóstico")
         
-        # Opción experimental para deshabilitar lock
         if debug_mode:
             disable_lock = st.checkbox("⚠️ Deshabilitar Lock (experimental)", value=False,
                                       help="Puede causar duplicados pero es más rápido")
@@ -596,7 +579,6 @@ def main_app():
         
         st.markdown("---")
         
-        # Test individual ticker
         if debug_mode:
             st.markdown("#### 🔬 Test Individual")
             test_ticker = st.text_input("Ticker a probar:", "AAPL")
@@ -609,7 +591,7 @@ def main_app():
                         zscore_threshold=zscore_threshold,
                         bb_threshold_upper=bb_threshold_upper,
                         bb_threshold_lower=bb_threshold_lower,
-                        use_lock=False  # No necesitamos lock para un solo ticker
+                        use_lock=False
                     )
                     
                     if result:
@@ -625,7 +607,6 @@ def main_app():
                         st.warning(f"⚠️ {test_ticker} NO pasa los filtros")
                         st.info("Probando con filtros más relajados...")
                         
-                        # Probar sin filtros para ver valores
                         try:
                             data = yf.download(test_ticker, period=period, interval=interval, 
                                              progress=False, auto_adjust=True, actions=False)
@@ -657,7 +638,6 @@ def main_app():
         
         scan_button = st.button("🚀 ESCANEAR", type="primary", use_container_width=True)
     
-    # Escaneo
     if scan_button:
         st.markdown("### 🔄 Escaneando tickers...")
         
@@ -674,7 +654,6 @@ def main_app():
         tickers_list = tickers_df['Ticker'].tolist()
         st.info(f"📊 Analizando {len(tickers_list)} tickers...")
         
-        # Obtener debug_mode del session_state
         debug_mode = st.session_state.get('debug_mode', False)
         disable_lock = st.session_state.get('disable_lock', False)
         
@@ -697,14 +676,12 @@ def main_app():
             st.session_state['scan_results'] = results
             st.success(f"✅ {len(results)} tickers detectados con sobreextensión estadística")
             
-            # Mostrar debug info si está activado
             if debug_mode:
                 with st.expander("🐛 Información de Debug"):
                     st.write(f"**Total tickers analizados:** {len(tickers_list)}")
                     st.write(f"**Tickers detectados:** {len(results)}")
                     st.write(f"**Tasa de detección:** {len(results)/len(tickers_list)*100:.1f}%")
                     
-                    # Verificar IDs únicos
                     ids = [r['ID'] for r in results]
                     unique_ids = len(set(ids))
                     st.write(f"**IDs únicos:** {unique_ids} de {len(ids)}")
@@ -713,7 +690,6 @@ def main_app():
                     else:
                         st.success("✅ Todos los IDs son únicos")
                     
-                    # Verificar precios únicos por ticker
                     ticker_prices = {}
                     for r in results:
                         tick = r['Ticker']
@@ -724,7 +700,6 @@ def main_app():
                         else:
                             ticker_prices[tick] = price
                     
-                    # Mostrar primeros resultados
                     st.write("**Muestra de datos (primer resultado):**")
                     if len(results) > 0:
                         first = results[0]
@@ -742,7 +717,6 @@ def main_app():
         else:
             st.warning("⚠️ No se encontraron tickers con las condiciones especificadas")
             
-            # Sugerencias
             st.info(f"""
             **💡 Sugerencias para encontrar más resultados:**
             
@@ -759,7 +733,6 @@ def main_app():
             📊 Recuerda: Los filtros detectan sobreextensión **estadísticamente significativa** (2.5σ = eventos raros)
             """)
             
-            # Ofrecer probar con filtros más relajados
             if st.button("🔄 Intentar con filtros más relajados (Z-Score 2.0σ, BB 0.05)", type="secondary"):
                 st.info("Re-ejecutando con filtros más relajados...")
                 disable_lock_relaxed = st.session_state.get('disable_lock', False)
@@ -782,11 +755,9 @@ def main_app():
                 else:
                     st.error("❌ Incluso con filtros relajados no se encontraron resultados")
     
-    # Resultados - TABLA PRINCIPAL
     if 'scan_results' in st.session_state:
         results = st.session_state['scan_results']
         
-        # DataFrame ordenado
         df_results = pd.DataFrame([
             {
                 'Ticker': r['Ticker'],
@@ -802,10 +773,8 @@ def main_app():
             for r in results
         ])
         
-        # Ordenar por Fuerza (mayor extensión primero)
         df_results = df_results.sort_values('Fuerza (σ)', ascending=False).reset_index(drop=True)
         
-        # Verificar duplicados en modo debug
         if st.session_state.get('debug_mode', False):
             duplicates = df_results[df_results.duplicated(subset=['Precio', 'Z-Score', 'BB %B'], keep=False)]
             if len(duplicates) > 0:
@@ -816,7 +785,6 @@ def main_app():
         st.markdown("---")
         st.markdown("### 📊 Resultados del Escaneo")
         
-        # Resumen
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Total Detectados", len(results))
@@ -829,10 +797,8 @@ def main_app():
         
         st.markdown("---")
         
-        # TABLA INTERACTIVA
         st.markdown("#### 📋 Click en un ticker para ver el gráfico")
         
-        # Usar st.dataframe con evento on_select
         event = st.dataframe(
             df_results,
             use_container_width=True,
@@ -852,7 +818,6 @@ def main_app():
             }
         )
         
-        # CSV Download
         csv = df_results.to_csv(index=False)
         st.download_button(
             "📥 Descargar CSV",
@@ -863,7 +828,6 @@ def main_app():
         
         st.markdown("---")
         
-        # GRÁFICO DEBAJO DE LA TABLA
         if len(event.selection.rows) > 0:
             selected_idx = event.selection.rows[0]
             selected_ticker = df_results.iloc[selected_idx]['Ticker']
