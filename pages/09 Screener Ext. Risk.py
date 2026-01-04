@@ -141,7 +141,10 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         # FIX: Separar las verificaciones de None y .isna().all()
         if zscore is None:
             return None
-        if zscore.isna().all():
+        if len(zscore) == 0:
+            return None
+        # Convertir explícitamente a bool para evitar ambigüedad
+        if bool(zscore.isna().all()):
             return None
         
         # Hacer copias independientes de las series antes de extraer valores
