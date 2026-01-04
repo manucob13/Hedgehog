@@ -34,8 +34,6 @@ def calculate_bollinger_bands(df, period=20, std_dev=2.5):
     lower_band = sma - (std_dev * std)
     
     # %B: Posición relativa dentro de las bandas
-    # %B > 1 = precio sobre banda superior
-    # %B < 0 = precio bajo banda inferior
     percent_b = (df['Close'] - lower_band) / (upper_band - lower_band)
     
     return sma, upper_band, lower_band, percent_b
@@ -108,14 +106,14 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         # Determinar tipo de señal
         if current_zscore > zscore_threshold and current_bb_percent > bb_threshold_upper:
             signal_type = 'SOBRECOMPRA'
-            signal_strength = min(current_zscore, 5.0)  # Cap at 5σ
+            signal_strength = min(current_zscore, 5.0)
         elif current_zscore < -zscore_threshold and current_bb_percent < bb_threshold_lower:
             signal_type = 'SOBREVENTA'
             signal_strength = min(abs(current_zscore), 5.0)
         else:
             return None
         
-        # Confirmación MACD-V (opcional pero suma puntos)
+        # Confirmación MACD-V
         macdv_confirms = False
         if signal_type == 'SOBRECOMPRA' and current_macdv > 150:
             macdv_confirms = True
@@ -173,7 +171,7 @@ def scan_tickers(tickers_list, max_workers=10, **kwargs):
     return results
 
 def plot_ticker_analysis(ticker_data):
-    """Genera gráfico completo con 4 paneles: Precio+BB, Z-Score, MACD-V, BB %B"""
+    """Genera gráfico completo con 4 paneles"""
     plt.style.use('dark_background')
     fig = plt.figure(figsize=(18, 14), facecolor='#0E1117')
     gs = fig.add_gridspec(4, 1, height_ratios=[2.5, 1, 1, 1], hspace=0.3)
@@ -181,19 +179,29 @@ def plot_ticker_analysis(ticker_data):
     data = ticker_data['Data']
     ticker = ticker_data['Ticker']
     
+    # Validar datos
+    if data is None or len(data) == 0:
+        st.error(f"No hay datos disponibles para {ticker}")
+        return None
+    
     # ============= PANEL 1: PRECIO + BOLLINGER BANDS =============
     ax1 = fig.add_subplot(gs[0])
     ax1.set_facecolor('#1A1D29')
     
     # Bandas Bollinger
-    ax1.fill_between(data.index, ticker_data['BB_Lower'], ticker_data['BB_Upper'],
-                     color='#FFB86C', alpha=0.1, label='Bollinger Bands (2.5σ)', zorder=1)
-    ax1.plot(data.index, ticker_data['BB_Upper'], color='#FFB86C', 
-            linewidth=2, linestyle='--', alpha=0.7, zorder=2)
-    ax1.plot(data.index, ticker_data['BB_SMA'], color='#BD93F9', 
-            linewidth=2.5, label='SMA(20)', zorder=2)
-    ax1.plot(data.index, ticker_data['BB_Lower'], color='#FFB86C', 
-            linewidth=2, linestyle='--', alpha=0.7, zorder=2)
+    bb_lower = ticker_data.get('BB_Lower')
+    bb_upper = ticker_data.get('BB_Upper')
+    bb_sma = ticker_data.get('BB_SMA')
+    
+    if bb_lower is not None and bb_upper is not None:
+        ax1.fill_between(data.index, bb_lower, bb_upper,
+                         color='#FFB86C', alpha=0.1, label='Bollinger Bands (2.5σ)', zorder=1)
+        ax1.plot(data.index, bb_upper, color='#FFB86C', 
+                linewidth=2, linestyle='--', alpha=0.7, zorder=2)
+        ax1.plot(data.index, bb_sma, color='#BD93F9', 
+                linewidth=2.5, label='SMA(20)', zorder=2)
+        ax1.plot(data.index, bb_lower, color='#FFB86C', 
+                linewidth=2, linestyle='--', alpha=0.7, zorder=2)
     
     # Precio
     ax1.plot(data.index, data['Close'], color='#FFFFFF', linewidth=2.5, 
@@ -220,46 +228,47 @@ def plot_ticker_analysis(ticker_data):
     ax2 = fig.add_subplot(gs[1], sharex=ax1)
     ax2.set_facecolor('#1A1D29')
     
-    zscore = ticker_data['ZScore_Series']
+    zscore = ticker_data.get('ZScore_Series')
     
-    # Colorear línea según nivel
-    for i in range(1, len(zscore)):
-        if pd.notna(zscore.iloc[i-1]) and pd.notna(zscore.iloc[i]):
-            y2 = zscore.iloc[i]
-            if abs(y2) > 3:
-                color, width = '#FF6B6B', 3.5
-            elif abs(y2) > 2.5:
-                color, width = '#FFB86C', 3
-            elif abs(y2) > 2:
-                color, width = '#FFD93D', 2.5
-            else:
-                color, width = '#95A5A6', 2
-            
-            ax2.plot([data.index[i-1], data.index[i]], 
-                    [zscore.iloc[i-1], y2], 
-                    color=color, linewidth=width, alpha=0.95, zorder=5)
-    
-    # Niveles de referencia
-    ax2.axhline(y=3, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8, label='±3σ')
-    ax2.axhline(y=2.5, color='#FFB86C', linestyle='--', linewidth=2, alpha=0.8, label='±2.5σ')
-    ax2.axhline(y=0, color='#8E93A1', linestyle='-', linewidth=1.5, alpha=0.7)
-    ax2.axhline(y=-2.5, color='#FFB86C', linestyle='--', linewidth=2, alpha=0.8)
-    ax2.axhline(y=-3, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8)
-    
-    # Áreas de fondo
-    ax2.fill_between(data.index, 2.5, 5, alpha=0.12, color='#FFB86C', zorder=0)
-    ax2.fill_between(data.index, -5, -2.5, alpha=0.12, color='#FFB86C', zorder=0)
-    ax2.fill_between(data.index, 3, 5, alpha=0.15, color='#FF6B6B', zorder=0)
-    ax2.fill_between(data.index, -5, -3, alpha=0.15, color='#FF6B6B', zorder=0)
-    
-    # Valor actual
-    current_zscore = ticker_data['Z-Score']
-    zscore_color = '#FF6B6B' if abs(current_zscore) > 3 else '#FFB86C' if abs(current_zscore) > 2.5 else '#FFD93D'
-    ax2.text(0.02, 0.95, f'Z-Score: {current_zscore:.2f}σ', 
-            transform=ax2.transAxes, fontsize=13, fontweight='bold', 
-            color='white', verticalalignment='top',
-            bbox=dict(boxstyle='round,pad=0.7', facecolor=zscore_color, 
-                     alpha=0.95, edgecolor='white', linewidth=2))
+    if zscore is not None and len(zscore) > 0:
+        # Colorear línea según nivel
+        for i in range(1, len(zscore)):
+            if pd.notna(zscore.iloc[i-1]) and pd.notna(zscore.iloc[i]):
+                y2 = zscore.iloc[i]
+                if abs(y2) > 3:
+                    color, width = '#FF6B6B', 3.5
+                elif abs(y2) > 2.5:
+                    color, width = '#FFB86C', 3
+                elif abs(y2) > 2:
+                    color, width = '#FFD93D', 2.5
+                else:
+                    color, width = '#95A5A6', 2
+                
+                ax2.plot([data.index[i-1], data.index[i]], 
+                        [zscore.iloc[i-1], y2], 
+                        color=color, linewidth=width, alpha=0.95, zorder=5)
+        
+        # Niveles de referencia
+        ax2.axhline(y=3, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8, label='±3σ')
+        ax2.axhline(y=2.5, color='#FFB86C', linestyle='--', linewidth=2, alpha=0.8, label='±2.5σ')
+        ax2.axhline(y=0, color='#8E93A1', linestyle='-', linewidth=1.5, alpha=0.7)
+        ax2.axhline(y=-2.5, color='#FFB86C', linestyle='--', linewidth=2, alpha=0.8)
+        ax2.axhline(y=-3, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8)
+        
+        # Áreas de fondo
+        ax2.fill_between(data.index, 2.5, 5, alpha=0.12, color='#FFB86C', zorder=0)
+        ax2.fill_between(data.index, -5, -2.5, alpha=0.12, color='#FFB86C', zorder=0)
+        ax2.fill_between(data.index, 3, 5, alpha=0.15, color='#FF6B6B', zorder=0)
+        ax2.fill_between(data.index, -5, -3, alpha=0.15, color='#FF6B6B', zorder=0)
+        
+        # Valor actual
+        current_zscore = ticker_data['Z-Score']
+        zscore_color = '#FF6B6B' if abs(current_zscore) > 3 else '#FFB86C' if abs(current_zscore) > 2.5 else '#FFD93D'
+        ax2.text(0.02, 0.95, f'Z-Score: {current_zscore:.2f}σ', 
+                transform=ax2.transAxes, fontsize=13, fontweight='bold', 
+                color='white', verticalalignment='top',
+                bbox=dict(boxstyle='round,pad=0.7', facecolor=zscore_color, 
+                         alpha=0.95, edgecolor='white', linewidth=2))
     
     ax2.set_ylabel('Z-Score (σ)', fontsize=12, fontweight='bold', color='#FFFFFF')
     ax2.set_ylim([-5, 5])
@@ -275,10 +284,10 @@ def plot_ticker_analysis(ticker_data):
     ax3 = fig.add_subplot(gs[2], sharex=ax1)
     ax3.set_facecolor('#1A1D29')
     
-    macd_v = ticker_data['MACD_V_Series']
-    signal = ticker_data['Signal_Series']
+    macd_v = ticker_data.get('MACD_V_Series')
+    signal = ticker_data.get('Signal_Series')
     
-    if macd_v is not None and not macd_v.isna().all():
+    if macd_v is not None and len(macd_v) > 0 and not macd_v.isna().all():
         # Colorear línea MACD-V
         for i in range(1, len(macd_v)):
             if pd.notna(macd_v.iloc[i-1]) and pd.notna(macd_v.iloc[i]):
@@ -299,24 +308,15 @@ def plot_ticker_analysis(ticker_data):
                         color=color, linewidth=width, alpha=0.95, zorder=5)
         
         # Línea de señal
-        if signal is not None:
+        if signal is not None and len(signal) > 0:
             ax3.plot(data.index, signal, color='#FFB86C', linewidth=1.5, 
                     alpha=0.5, linestyle='--', zorder=3)
         
-        # Niveles de referencia
+        # Niveles y áreas
         ax3.axhline(y=150, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8)
-        ax3.axhline(y=50, color='#4ECDC4', linestyle=':', linewidth=1.5, alpha=0.7)
         ax3.axhline(y=0, color='#8E93A1', linestyle='-', linewidth=1.5, alpha=0.7)
-        ax3.axhline(y=-50, color='#EE5A6F', linestyle=':', linewidth=1.5, alpha=0.7)
         ax3.axhline(y=-150, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8)
         
-        # Áreas de fondo
-        y_max = ax3.get_ylim()[1]
-        y_min = ax3.get_ylim()[0]
-        ax3.fill_between(data.index, 150, y_max, alpha=0.12, color='#FF6B6B', zorder=0)
-        ax3.fill_between(data.index, y_min, -150, alpha=0.12, color='#FF6B6B', zorder=0)
-        
-        # Valor actual
         current_macdv = ticker_data['MACD_V']
         macd_color = '#FF6B6B' if abs(current_macdv) > 150 else '#4ECDC4' if current_macdv > 50 else '#EE5A6F' if current_macdv < -50 else '#95A5A6'
         confirm_text = " ✓" if ticker_data['MACDV_Confirm'] else ""
@@ -325,13 +325,6 @@ def plot_ticker_analysis(ticker_data):
                 color='white', verticalalignment='top',
                 bbox=dict(boxstyle='round,pad=0.7', facecolor=macd_color, 
                          alpha=0.95, edgecolor='white', linewidth=2))
-        
-        # Leyenda Signal
-        ax3.text(0.98, 0.95, 'Signal', 
-                transform=ax3.transAxes, fontsize=10, 
-                color='#FFB86C', verticalalignment='top', horizontalalignment='right',
-                bbox=dict(boxstyle='round,pad=0.4', facecolor='#1A1D29', 
-                         alpha=0.8, edgecolor='#FFB86C', linewidth=1))
     
     ax3.set_ylabel('MACD-V', fontsize=12, fontweight='bold', color='#FFFFFF')
     ax3.grid(True, alpha=0.1, linestyle=':', linewidth=1)
@@ -345,44 +338,46 @@ def plot_ticker_analysis(ticker_data):
     ax4 = fig.add_subplot(gs[3], sharex=ax1)
     ax4.set_facecolor('#1A1D29')
     
-    bb_percent = ticker_data['BB_%B']
+    bb_percent = ticker_data.get('BB_%B')
     
-    # Colorear línea según posición
-    for i in range(1, len(bb_percent)):
-        if pd.notna(bb_percent.iloc[i-1]) and pd.notna(bb_percent.iloc[i]):
-            y2 = bb_percent.iloc[i]
-            if y2 > 1.2:
-                color, width = '#FF6B6B', 3.5
-            elif y2 > 1.0:
-                color, width = '#FFB86C', 3
-            elif y2 < -0.2:
-                color, width = '#FF6B6B', 3.5
-            elif y2 < 0:
-                color, width = '#4ECDC4', 3
-            else:
-                color, width = '#95A5A6', 2
-            
-            ax4.plot([data.index[i-1], data.index[i]], 
-                    [bb_percent.iloc[i-1], y2], 
-                    color=color, linewidth=width, alpha=0.95, zorder=5)
-    
-    # Niveles de referencia
-    ax4.axhline(y=1.0, color='#FFB86C', linestyle='--', linewidth=2, alpha=0.8, label='Banda Superior')
-    ax4.axhline(y=0.5, color='#BD93F9', linestyle='-', linewidth=1.5, alpha=0.7, label='Media')
-    ax4.axhline(y=0.0, color='#4ECDC4', linestyle='--', linewidth=2, alpha=0.8, label='Banda Inferior')
-    
-    # Áreas de fondo
-    ax4.fill_between(data.index, 1.0, 1.5, alpha=0.12, color='#FFB86C', zorder=0)
-    ax4.fill_between(data.index, -0.5, 0.0, alpha=0.12, color='#4ECDC4', zorder=0)
-    
-    # Valor actual
-    current_bb = ticker_data['BB_%B']
-    bb_color = '#FF6B6B' if current_bb > 1.1 or current_bb < -0.1 else '#FFB86C' if current_bb > 1.0 else '#4ECDC4' if current_bb < 0 else '#95A5A6'
-    ax4.text(0.02, 0.95, f'%B: {current_bb:.2f}', 
-            transform=ax4.transAxes, fontsize=13, fontweight='bold', 
-            color='white', verticalalignment='top',
-            bbox=dict(boxstyle='round,pad=0.7', facecolor=bb_color, 
-                     alpha=0.95, edgecolor='white', linewidth=2))
+    # VALIDACIÓN CRÍTICA: Verificar que bb_percent existe y tiene datos
+    if bb_percent is not None and hasattr(bb_percent, '__len__') and len(bb_percent) > 0:
+        # Colorear línea según posición
+        for i in range(1, len(bb_percent)):
+            if pd.notna(bb_percent.iloc[i-1]) and pd.notna(bb_percent.iloc[i]):
+                y2 = bb_percent.iloc[i]
+                if y2 > 1.2:
+                    color, width = '#FF6B6B', 3.5
+                elif y2 > 1.0:
+                    color, width = '#FFB86C', 3
+                elif y2 < -0.2:
+                    color, width = '#FF6B6B', 3.5
+                elif y2 < 0:
+                    color, width = '#4ECDC4', 3
+                else:
+                    color, width = '#95A5A6', 2
+                
+                ax4.plot([data.index[i-1], data.index[i]], 
+                        [bb_percent.iloc[i-1], y2], 
+                        color=color, linewidth=width, alpha=0.95, zorder=5)
+        
+        # Niveles de referencia
+        ax4.axhline(y=1.0, color='#FFB86C', linestyle='--', linewidth=2, alpha=0.8, label='Banda Superior')
+        ax4.axhline(y=0.5, color='#BD93F9', linestyle='-', linewidth=1.5, alpha=0.7, label='Media')
+        ax4.axhline(y=0.0, color='#4ECDC4', linestyle='--', linewidth=2, alpha=0.8, label='Banda Inferior')
+        
+        # Áreas de fondo
+        ax4.fill_between(data.index, 1.0, 1.5, alpha=0.12, color='#FFB86C', zorder=0)
+        ax4.fill_between(data.index, -0.5, 0.0, alpha=0.12, color='#4ECDC4', zorder=0)
+        
+        # Valor actual
+        current_bb = ticker_data.get('BB_%B', 0)
+        bb_color = '#FF6B6B' if current_bb > 1.1 or current_bb < -0.1 else '#FFB86C' if current_bb > 1.0 else '#4ECDC4' if current_bb < 0 else '#95A5A6'
+        ax4.text(0.02, 0.95, f'%B: {current_bb:.2f}', 
+                transform=ax4.transAxes, fontsize=13, fontweight='bold', 
+                color='white', verticalalignment='top',
+                bbox=dict(boxstyle='round,pad=0.7', facecolor=bb_color, 
+                         alpha=0.95, edgecolor='white', linewidth=2))
     
     ax4.set_ylabel('Bollinger %B', fontsize=12, fontweight='bold', color='#FFFFFF')
     ax4.set_xlabel('Fecha', fontsize=13, fontweight='bold', color='#FFFFFF')
@@ -404,19 +399,6 @@ def main_app():
     st.markdown("""
     <style>
     .main { background-color: #0E1117; }
-    .ticker-card {
-        background: linear-gradient(135deg, #1A1D29 0%, #2D3142 100%);
-        padding: 12px;
-        border-radius: 8px;
-        border-left: 4px solid;
-        margin: 8px 0;
-        cursor: pointer;
-        transition: all 0.3s ease;
-    }
-    .ticker-card:hover {
-        transform: translateX(5px);
-        box-shadow: 0 4px 15px rgba(78, 205, 196, 0.3);
-    }
     .stButton>button { 
         background: linear-gradient(135deg, #4ECDC4 0%, #00D9FF 100%); 
         color: white; 
@@ -457,11 +439,8 @@ def main_app():
         st.markdown("---")
         st.subheader("📊 Filtros Estadísticos")
         
-        zscore_threshold = st.slider("Z-Score Mínimo (σ)", 2.0, 4.0, 2.5, 0.1,
-                                    help="Desviaciones estándar del precio vs media")
-        
-        bb_threshold = st.slider("BB %B Threshold", 0.0, 0.5, 0.1, 0.05,
-                                help="Distancia más allá de las bandas (0.0 = justo en banda, 0.1 = 10% más allá)")
+        zscore_threshold = st.slider("Z-Score Mínimo (σ)", 2.0, 4.0, 2.5, 0.1)
+        bb_threshold = st.slider("BB %B Threshold", 0.0, 0.5, 0.1, 0.05)
         
         bb_threshold_upper = 1.0 + bb_threshold
         bb_threshold_lower = 0.0 - bb_threshold
@@ -475,29 +454,6 @@ def main_app():
         st.markdown("---")
         
         scan_button = st.button("🚀 ESCANEAR", type="primary", use_container_width=True)
-        
-        st.markdown("---")
-        
-        with st.expander("ℹ️ Metodología"):
-            st.markdown(f"""
-            **Filtros Principales:**
-            
-            1️⃣ **Z-Score ≥ {zscore_threshold}σ**
-            - Mide desviaciones estándar del precio
-            - {zscore_threshold}σ = ~{(1 - 2*(1-0.9938))*100:.1f}% de confianza estadística
-            
-            2️⃣ **Bollinger %B fuera de bandas**
-            - %B > {bb_threshold_upper:.2f}: Sobre banda superior
-            - %B < {bb_threshold_lower:.2f}: Bajo banda inferior
-            - Distancia: {bb_threshold*100:.0f}% más allá de las bandas
-            - Bandas a 2.5 desviaciones estándar
-            
-            3️⃣ **MACD-V (Confirmación)**
-            - > 150 o < -150: Confirma sobreextensión
-            - Opcional pero suma fuerza a la señal
-            
-            **Objetivo:** Encontrar valores con alta probabilidad de reversión a la media.
-            """)
     
     # Escaneo
     if scan_button:
@@ -533,98 +489,85 @@ def main_app():
         else:
             st.warning("⚠️ No se encontraron tickers con las condiciones especificadas")
     
-    # Resultados
+    # Resultados - TABLA PRINCIPAL
     if 'scan_results' in st.session_state:
         results = st.session_state['scan_results']
         
-        # DataFrame
+        # DataFrame ordenado
         df_results = pd.DataFrame([
             {
                 'Ticker': r['Ticker'],
                 'Tipo': r['Type'],
-                'Z-Score': r['Z-Score'],
-                'BB_%B': r['BB_%B'],
-                'MACD_V': r['MACD_V'],
-                'Precio': r['Price'],
-                'Fuerza': r['Strength'],
+                'Fuerza (σ)': round(r['Strength'], 2),
+                'Z-Score': round(r['Z-Score'], 2),
+                'BB %B': round(r['BB_%B'], 2),
+                'MACD-V': round(r['MACD_V'], 1),
+                'Precio': round(r['Price'], 2),
                 'Confirm': '✓' if r['MACDV_Confirm'] else ''
             }
             for r in results
         ])
         
-        df_results = df_results.sort_values('Fuerza', ascending=False)
+        # Ordenar por Fuerza (mayor extensión primero)
+        df_results = df_results.sort_values('Fuerza (σ)', ascending=False).reset_index(drop=True)
+        
+        st.markdown("---")
+        st.markdown("### 📊 Resultados del Escaneo")
+        
+        # Resumen
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Detectados", len(results))
+        with col2:
+            sobrecompra = len([r for r in results if r['Type'] == 'SOBRECOMPRA'])
+            st.metric("Sobrecompra", sobrecompra, delta_color="inverse")
+        with col3:
+            sobreventa = len([r for r in results if r['Type'] == 'SOBREVENTA'])
+            st.metric("Sobreventa", sobreventa, delta_color="normal")
         
         st.markdown("---")
         
-        # Layout
-        col_list, col_chart = st.columns([1, 3])
+        # TABLA INTERACTIVA
+        st.markdown("#### 📋 Click en un ticker para ver el gráfico")
         
-        with col_list:
-            st.markdown("### 📋 Tickers Detectados")
-            
-            # Resumen
-            sobrecompra = len([r for r in results if r['Type'] == 'SOBRECOMPRA'])
-            sobreventa = len([r for r in results if r['Type'] == 'SOBREVENTA'])
-            
-            st.markdown(f"""
-            <div style='background: #1A1D29; padding: 15px; border-radius: 10px; margin-bottom: 15px;'>
-                <div style='display: flex; justify-content: space-between;'>
-                    <div style='text-align: center;'>
-                        <div style='color: #FF6B6B; font-size: 24px; font-weight: bold;'>{sobrecompra}</div>
-                        <div style='color: #B0B0B0; font-size: 12px;'>Sobrecompra</div>
-                    </div>
-                    <div style='text-align: center;'>
-                        <div style='color: #4ECDC4; font-size: 24px; font-weight: bold;'>{sobreventa}</div>
-                        <div style='color: #B0B0B0; font-size: 12px;'>Sobreventa</div>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Lista clickeable
-            for idx, row in df_results.iterrows():
-                ticker_data = next((r for r in results if r['Ticker'] == row['Ticker']), None)
-                if ticker_data:
-                    color = '#FF6B6B' if row['Tipo'] == 'SOBRECOMPRA' else '#4ECDC4'
-                    
-                    if st.button(
-                        f"{row['Ticker']} • {row['Z-Score']:.1f}σ",
-                        key=f"btn_{row['Ticker']}",
-                        use_container_width=True
-                    ):
-                        st.session_state['selected_ticker'] = ticker_data
-                    
-                    confirm_badge = "✓" if row['Confirm'] else ""
-                    st.markdown(f"""
-                    <div class='ticker-card' style='border-left-color: {color};'>
-                        <div style='display: flex; justify-content: space-between; align-items: center;'>
-                            <div>
-                                <div style='font-size: 16px; font-weight: bold; color: white;'>{row['Ticker']} {confirm_badge}</div>
-                                <div style='font-size: 11px; color: #8E93A1;'>${row['Precio']:.2f}</div>
-                            </div>
-                            <div style='text-align: right;'>
-                                <div style='font-size: 18px; font-weight: bold; color: {color};'>{row['Z-Score']:.1f}σ</div>
-                                <div style='font-size: 10px; color: #B0B0B0;'>%B: {row['BB_%B']:.2f}</div>
-                            </div>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            st.markdown("---")
-            csv = df_results.to_csv(index=False)
-            st.download_button(
-                "📥 Descargar CSV",
-                data=csv,
-                file_name=f"mean_reversion_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+        # Usar st.dataframe con evento on_select
+        event = st.dataframe(
+            df_results,
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            column_config={
+                "Ticker": st.column_config.TextColumn("Ticker", width="small"),
+                "Tipo": st.column_config.TextColumn("Tipo", width="medium"),
+                "Fuerza (σ)": st.column_config.NumberColumn("Fuerza (σ)", format="%.2f"),
+                "Z-Score": st.column_config.NumberColumn("Z-Score", format="%.2f"),
+                "BB %B": st.column_config.NumberColumn("BB %B", format="%.2f"),
+                "MACD-V": st.column_config.NumberColumn("MACD-V", format="%.1f"),
+                "Precio": st.column_config.NumberColumn("Precio", format="$%.2f"),
+                "Confirm": st.column_config.TextColumn("Confirm", width="small"),
+            }
+        )
         
-        with col_chart:
-            if 'selected_ticker' in st.session_state:
-                ticker_data = st.session_state['selected_ticker']
-                
-                st.markdown(f"### 📈 {ticker_data['Ticker']}")
+        # CSV Download
+        csv = df_results.to_csv(index=False)
+        st.download_button(
+            "📥 Descargar CSV",
+            data=csv,
+            file_name=f"mean_reversion_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv"
+        )
+        
+        st.markdown("---")
+        
+        # GRÁFICO DEBAJO DE LA TABLA
+        if len(event.selection.rows) > 0:
+            selected_idx = event.selection.rows[0]
+            selected_ticker = df_results.iloc[selected_idx]['Ticker']
+            ticker_data = next((r for r in results if r['Ticker'] == selected_ticker), None)
+            
+            if ticker_data:
+                st.markdown(f"### 📈 Análisis Detallado: {selected_ticker}")
                 
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
@@ -637,19 +580,15 @@ def main_app():
                     confirm_icon = "✅" if ticker_data['MACDV_Confirm'] else "⚪"
                     st.metric("MACD-V", f"{ticker_data['MACD_V']:.0f} {confirm_icon}")
                 
-                fig = plot_ticker_analysis(ticker_data)
-                st.pyplot(fig)
-            else:
-                st.markdown("""
-                <div style='text-align: center; padding: 80px 20px;
-                            background: linear-gradient(135deg, #1A1D29 0%, #2D3142 100%);
-                            border-radius: 15px; border: 2px dashed #4ECDC4;'>
-                    <h2 style='color: #4ECDC4; margin: 0;'>👈 Selecciona un ticker</h2>
-                    <p style='color: #8E93A1; margin-top: 15px;'>
-                        Click en la lista para ver análisis completo
-                    </p>
-                </div>
-                """, unsafe_allow_html=True)
+                with st.spinner(f"Generando gráfico para {selected_ticker}..."):
+                    try:
+                        fig = plot_ticker_analysis(ticker_data)
+                        if fig:
+                            st.pyplot(fig)
+                    except Exception as e:
+                        st.error(f"Error al generar gráfico: {str(e)}")
+        else:
+            st.info("👆 Selecciona un ticker en la tabla para ver su gráfico detallado")
     
     else:
         st.markdown("""
