@@ -6,9 +6,13 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 from utils import check_password
 
 warnings.filterwarnings('ignore')
+
+# Lock global para sincronizar descargas de yfinance
+_yfinance_lock = Lock()
 
 st.set_page_config(
     page_title="Mean Reversion Screener",
@@ -70,30 +74,76 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
                    zscore_threshold=2.5, bb_threshold_upper=1.1, bb_threshold_lower=-0.1):
     """Analiza un ticker buscando sobreextensión estadística"""
     try:
-        data = yf.download(ticker, period=period, interval=interval, progress=False)
+        # SINCRONIZAR descarga para evitar race conditions en yfinance
+        with _yfinance_lock:
+            # Descargar datos con auto_adjust y deshabilitar caché
+            data = yf.download(
+                ticker, 
+                period=period, 
+                interval=interval, 
+                progress=False,
+                auto_adjust=True, 
+                actions=False,
+                prepost=False,
+                threads=False  # Deshabilitar threads internos de yfinance
+            )
+            
+            # INMEDIATAMENTE hacer copia profunda para evitar referencias compartidas
+            if not data.empty:
+                data = data.copy(deep=True)
         
         if data.empty or len(data) < 50:
             return None
         
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
+        # Asegurar que tenemos las columnas necesarias
+        required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+        if not all(col in data.columns for col in required_cols):
+            return None
         
-        # Calcular indicadores
+        # Obtener nombre de la compañía (también con lock)
+        try:
+            with _yfinance_lock:
+                ticker_info = yf.Ticker(ticker)
+                info = ticker_info.info
+                company_name = info.get('longName') or info.get('shortName') or ticker
+        except:
+            company_name = ticker
+        
+        # Calcular indicadores (trabajar sobre copias)
+        df_copy = data.copy(deep=True)
         bb_sma, bb_upper, bb_lower, bb_percent = calculate_bollinger_bands(
-            data, period=bb_period, std_dev=2.5
+            df_copy, period=bb_period, std_dev=2.5
         )
-        zscore = calculate_zscore(data, period=zscore_period)
-        macd_v, macd_v_signal = calculate_macd_v(data)
+        zscore = calculate_zscore(df_copy, period=zscore_period)
+        macd_v, macd_v_signal = calculate_macd_v(df_copy)
         
         if zscore is None or zscore.isna().all():
             return None
         
-        # Valores actuales
-        current_price = data['Close'].iloc[-1]
-        current_zscore = zscore.iloc[-1]
-        current_bb_percent = bb_percent.iloc[-1]
-        current_macdv = macd_v.iloc[-1] if macd_v is not None else 0
-        current_signal = macd_v_signal.iloc[-1] if macd_v_signal is not None else 0
+        # Hacer copias independientes de las series antes de extraer valores
+        bb_sma = bb_sma.copy(deep=True)
+        bb_upper = bb_upper.copy(deep=True)
+        bb_lower = bb_lower.copy(deep=True)
+        bb_percent = bb_percent.copy(deep=True)
+        zscore = zscore.copy(deep=True)
+        if macd_v is not None:
+            macd_v = macd_v.copy(deep=True)
+        if macd_v_signal is not None:
+            macd_v_signal = macd_v_signal.copy(deep=True)
+        
+        # Valores actuales - convertir a tipos nativos de Python (no numpy)
+        current_price = float(data['Close'].iloc[-1])
+        current_zscore = float(zscore.iloc[-1])
+        current_bb_percent = float(bb_percent.iloc[-1])
+        current_macdv = float(macd_v.iloc[-1]) if macd_v is not None and not pd.isna(macd_v.iloc[-1]) else 0.0
+        current_signal = float(macd_v_signal.iloc[-1]) if macd_v_signal is not None and not pd.isna(macd_v_signal.iloc[-1]) else 0.0
+        
+        # Validar que los valores son numéricos y razonables
+        if not all(pd.notna([current_price, current_zscore, current_bb_percent])):
+            return None
+        
+        if current_price <= 0:
+            return None
         
         # FILTRO PRINCIPAL: Z-Score >= 2.5 o <= -2.5
         if abs(current_zscore) < zscore_threshold:
@@ -120,53 +170,73 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         elif signal_type == 'SOBREVENTA' and current_macdv < -150:
             macdv_confirms = True
         
+        # Timestamp único para identificar este análisis específico
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+        
         return {
-            'Ticker': ticker,
+            'Ticker': str(ticker),
+            'Company': str(company_name),
             'Price': current_price,
             'Z-Score': current_zscore,
             'BB_%B': current_bb_percent,
             'MACD_V': current_macdv,
             'Signal': current_signal,
-            'Type': signal_type,
+            'Type': str(signal_type),
             'Strength': signal_strength,
-            'MACDV_Confirm': macdv_confirms,
+            'MACDV_Confirm': bool(macdv_confirms),
             'Date': data.index[-1],
-            'Data': data,
-            'BB_SMA': bb_sma,
-            'BB_Upper': bb_upper,
-            'BB_Lower': bb_lower,
-            'ZScore_Series': zscore,
-            'MACD_V_Series': macd_v,
-            'Signal_Series': macd_v_signal
+            'Data': data.copy(deep=True),
+            'BB_SMA': bb_sma.copy(deep=True),
+            'BB_Upper': bb_upper.copy(deep=True),
+            'BB_Lower': bb_lower.copy(deep=True),
+            'ZScore_Series': zscore.copy(deep=True),
+            'MACD_V_Series': macd_v.copy(deep=True) if macd_v is not None else None,
+            'Signal_Series': macd_v_signal.copy(deep=True) if macd_v_signal is not None else None,
+            'ID': f"{ticker}_{timestamp}"
         }
     except Exception as e:
+        # Log error para debugging
+        print(f"Error analyzing {ticker}: {str(e)}")
         return None
 
-def scan_tickers(tickers_list, max_workers=10, **kwargs):
-    """Escanea múltiples tickers en paralelo"""
+def scan_tickers(tickers_list, max_workers=5, **kwargs):
+    """Escanea múltiples tickers en paralelo con sincronización"""
     results = []
+    errors = []
     progress_bar = st.progress(0)
     status_text = st.empty()
     
     total = len(tickers_list)
     completed = 0
     
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    # Usar menos workers ya que las descargas están sincronizadas
+    effective_workers = min(max_workers, 5)
+    
+    with ThreadPoolExecutor(max_workers=effective_workers) as executor:
         futures = {executor.submit(analyze_ticker, ticker, **kwargs): ticker 
                    for ticker in tickers_list}
         
         for future in as_completed(futures):
+            ticker = futures[future]
             completed += 1
             progress = completed / total
             progress_bar.progress(progress)
             status_text.text(f"Analizando: {completed}/{total} tickers ({progress*100:.1f}%)")
             
-            result = future.result()
-            if result is not None:
-                results.append(result)
+            try:
+                result = future.result()
+                if result is not None:
+                    results.append(result)
+            except Exception as e:
+                errors.append(f"{ticker}: {str(e)}")
     
     progress_bar.empty()
     status_text.empty()
+    
+    if errors and len(errors) > 0:
+        with st.expander(f"⚠️ Errores en {len(errors)} tickers"):
+            for error in errors[:10]:  # Mostrar solo los primeros 10
+                st.caption(error)
     
     return results
 
@@ -178,6 +248,7 @@ def plot_ticker_analysis(ticker_data):
     
     data = ticker_data['Data']
     ticker = ticker_data['Ticker']
+    company_name = ticker_data.get('Company', ticker)
     
     # Validar datos
     if data is None or len(data) == 0:
@@ -213,7 +284,7 @@ def plot_ticker_analysis(ticker_data):
                color=current_color, s=200, edgecolors='white', 
                linewidth=3, zorder=10, label='Actual')
     
-    ax1.set_title(f'{ticker} - ${ticker_data["Price"]:.2f} | {ticker_data["Type"]} ({ticker_data["Strength"]:.1f}σ)', 
+    ax1.set_title(f'{ticker} - {company_name}\n${ticker_data["Price"]:.2f} | {ticker_data["Type"]} ({ticker_data["Strength"]:.1f}σ)', 
                   fontsize=18, fontweight='bold', color='#FFFFFF', pad=15)
     ax1.set_ylabel('Precio ($)', fontsize=13, fontweight='bold', color='#FFFFFF')
     ax1.legend(loc='upper left', fontsize=10, framealpha=0.9)
@@ -449,7 +520,19 @@ def main_app():
         
         st.markdown("---")
         
-        max_workers = st.slider("Threads paralelos", 5, 20, 10, 1)
+        max_workers = st.slider("Threads paralelos", 3, 10, 5, 1,
+                               help="Recomendado: 3-5 threads (con sincronización de descargas)")
+        
+        st.markdown("---")
+        
+        # Debug mode
+        debug_mode = st.checkbox("🐛 Modo Debug", value=False, 
+                                help="Muestra información adicional para diagnóstico")
+        
+        if debug_mode:
+            st.session_state['debug_mode'] = True
+        elif 'debug_mode' in st.session_state:
+            del st.session_state['debug_mode']
         
         st.markdown("---")
         
@@ -486,6 +569,49 @@ def main_app():
         if results:
             st.session_state['scan_results'] = results
             st.success(f"✅ {len(results)} tickers detectados con sobreextensión estadística")
+            
+            # Mostrar debug info si está activado
+            if 'debug_mode' in locals() and debug_mode:
+                with st.expander("🐛 Información de Debug"):
+                    st.write(f"**Total tickers analizados:** {len(tickers_list)}")
+                    st.write(f"**Tickers detectados:** {len(results)}")
+                    st.write(f"**Tasa de detección:** {len(results)/len(tickers_list)*100:.1f}%")
+                    
+                    # Verificar IDs únicos
+                    ids = [r['ID'] for r in results]
+                    unique_ids = len(set(ids))
+                    st.write(f"**IDs únicos:** {unique_ids} de {len(ids)}")
+                    if unique_ids != len(ids):
+                        st.error("⚠️ ¡ADVERTENCIA! Hay IDs duplicados (problema de concurrencia)")
+                    else:
+                        st.success("✅ Todos los IDs son únicos")
+                    
+                    # Verificar precios únicos por ticker
+                    ticker_prices = {}
+                    for r in results:
+                        tick = r['Ticker']
+                        price = r['Price']
+                        if tick in ticker_prices:
+                            if ticker_prices[tick] == price:
+                                st.warning(f"⚠️ {tick} aparece con el mismo precio: ${price}")
+                        else:
+                            ticker_prices[tick] = price
+                    
+                    # Mostrar primeros resultados
+                    st.write("**Muestra de datos (primer resultado):**")
+                    if len(results) > 0:
+                        first = results[0]
+                        st.json({
+                            'ID': first['ID'],
+                            'Ticker': first['Ticker'],
+                            'Company': first.get('Company', 'N/A'),
+                            'Price': first['Price'],
+                            'Z-Score': first['Z-Score'],
+                            'BB_%B': first['BB_%B'],
+                            'MACD_V': first['MACD_V'],
+                            'Data_Shape': str(first['Data'].shape),
+                            'Date': str(first['Date'])
+                        })
         else:
             st.warning("⚠️ No se encontraron tickers con las condiciones especificadas")
     
@@ -497,6 +623,7 @@ def main_app():
         df_results = pd.DataFrame([
             {
                 'Ticker': r['Ticker'],
+                'Compañía': r.get('Company', r['Ticker'])[:40] + '...' if len(r.get('Company', r['Ticker'])) > 40 else r.get('Company', r['Ticker']),
                 'Tipo': r['Type'],
                 'Fuerza (σ)': round(r['Strength'], 2),
                 'Z-Score': round(r['Z-Score'], 2),
@@ -510,6 +637,14 @@ def main_app():
         
         # Ordenar por Fuerza (mayor extensión primero)
         df_results = df_results.sort_values('Fuerza (σ)', ascending=False).reset_index(drop=True)
+        
+        # Verificar duplicados en modo debug
+        if st.session_state.get('debug_mode', False):
+            duplicates = df_results[df_results.duplicated(subset=['Precio', 'Z-Score', 'BB %B'], keep=False)]
+            if len(duplicates) > 0:
+                st.warning(f"⚠️ Se detectaron {len(duplicates)} posibles duplicados en los datos")
+                with st.expander("Ver duplicados detectados"):
+                    st.dataframe(duplicates)
         
         st.markdown("---")
         st.markdown("### 📊 Resultados del Escaneo")
@@ -539,6 +674,7 @@ def main_app():
             selection_mode="single-row",
             column_config={
                 "Ticker": st.column_config.TextColumn("Ticker", width="small"),
+                "Compañía": st.column_config.TextColumn("Compañía", width="large"),
                 "Tipo": st.column_config.TextColumn("Tipo", width="medium"),
                 "Fuerza (σ)": st.column_config.NumberColumn("Fuerza (σ)", format="%.2f"),
                 "Z-Score": st.column_config.NumberColumn("Z-Score", format="%.2f"),
