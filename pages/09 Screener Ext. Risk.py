@@ -78,6 +78,52 @@ def calculate_macd_v(df, fast_len=12, slow_len=26, signal_len=9, atr_len=26):
     except Exception as e:
         return None, None
 
+def safe_extract_value(series_or_df, index=-1):
+    """
+    Extrae un valor escalar de una Serie o DataFrame de pandas de forma segura.
+    Maneja múltiples formatos que yfinance puede devolver.
+    """
+    try:
+        # Si es None, devolver None
+        if series_or_df is None:
+            return None
+        
+        # Si ya es un escalar numpy o python, devolverlo
+        if np.isscalar(series_or_df):
+            return float(series_or_df) if not pd.isna(series_or_df) else None
+        
+        # Si es DataFrame, obtener la primera columna
+        if isinstance(series_or_df, pd.DataFrame):
+            if series_or_df.empty:
+                return None
+            # Aplanar si tiene múltiples niveles de columnas
+            if isinstance(series_or_df.columns, pd.MultiIndex):
+                series_or_df = series_or_df.iloc[:, 0]
+            else:
+                series_or_df = series_or_df.squeeze()
+        
+        # Si es Series
+        if isinstance(series_or_df, pd.Series):
+            if len(series_or_df) == 0:
+                return None
+            value = series_or_df.iloc[index]
+        else:
+            # Último intento: convertir a numpy y extraer
+            arr = np.asarray(series_or_df)
+            if arr.size == 0:
+                return None
+            value = arr.flat[index]
+        
+        # Convertir a float
+        if pd.isna(value):
+            return None
+        
+        return float(value)
+        
+    except Exception as e:
+        print(f"Error extrayendo valor: {type(e).__name__}: {str(e)}")
+        return None
+
 def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_period=20, 
                    zscore_threshold=2.5, bb_threshold_upper=1.1, bb_threshold_lower=-0.1, 
                    use_lock=True):
@@ -99,7 +145,6 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
                 if not data.empty:
                     data = data.copy(deep=True)
         else:
-            # Sin lock (más rápido pero puede tener problemas)
             data = yf.download(
                 ticker, 
                 period=period, 
@@ -119,10 +164,19 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         if len(data) < 50:
             return None
         
+        # Limpiar columnas MultiIndex si existen
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+        
         # Asegurar que tenemos las columnas necesarias
         required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
         if not all(col in data.columns for col in required_cols):
             return None
+        
+        # Convertir todas las columnas a Series simples
+        for col in required_cols:
+            if isinstance(data[col], pd.DataFrame):
+                data[col] = data[col].squeeze()
         
         # Obtener nombre de la compañía (también con lock)
         try:
@@ -146,81 +200,28 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         zscore = calculate_zscore(df_copy, period=zscore_period)
         macd_v, macd_v_signal = calculate_macd_v(df_copy)
         
-        # FIX: Usar try-except para manejar cualquier tipo de objeto de pandas
-        if zscore is None:
-            return None
-        
-        # Intentar obtener el último valor directamente
-        try:
-            # Si es DataFrame, obtener la primera columna
-            if isinstance(zscore, pd.DataFrame):
-                zscore = zscore.iloc[:, 0]
-            
-            # Verificar que tengamos datos válidos
-            if len(zscore) == 0:
-                return None
-            
-            # Intentar obtener el último valor
-            test_value = zscore.iloc[-1]
-            if pd.isna(test_value):
-                return None
-        except (IndexError, KeyError, AttributeError):
+        # Verificar que tenemos datos válidos
+        if zscore is None or len(zscore) == 0:
             return None
         
         # Hacer copias independientes de las series antes de extraer valores
-        bb_sma = bb_sma.copy(deep=True)
-        bb_upper = bb_upper.copy(deep=True)
-        bb_lower = bb_lower.copy(deep=True)
-        bb_percent = bb_percent.copy(deep=True)
-        zscore = zscore.copy(deep=True)
-        if macd_v is not None:
-            macd_v = macd_v.copy(deep=True)
-        if macd_v_signal is not None:
-            macd_v_signal = macd_v_signal.copy(deep=True)
+        bb_sma = bb_sma.copy(deep=True) if bb_sma is not None else None
+        bb_upper = bb_upper.copy(deep=True) if bb_upper is not None else None
+        bb_lower = bb_lower.copy(deep=True) if bb_lower is not None else None
+        bb_percent = bb_percent.copy(deep=True) if bb_percent is not None else None
+        zscore = zscore.copy(deep=True) if zscore is not None else None
+        macd_v = macd_v.copy(deep=True) if macd_v is not None else None
+        macd_v_signal = macd_v_signal.copy(deep=True) if macd_v_signal is not None else None
         
-        # Valores actuales - extraer DIRECTAMENTE como numpy scalars
-        try:
-            # Usar .to_numpy()[-1] que siempre devuelve numpy scalar
-            current_price = data['Close'].to_numpy()[-1]
-            current_price = float(current_price)
-        except Exception as e:
-            st.error(f"Error en current_price: {e}")
-            return None
+        # Extraer valores actuales usando la función segura
+        current_price = safe_extract_value(data['Close'])
+        current_zscore = safe_extract_value(zscore)
+        current_bb_percent = safe_extract_value(bb_percent)
+        current_macdv = safe_extract_value(macd_v) or 0.0
+        current_signal = safe_extract_value(macd_v_signal) or 0.0
         
-        try:
-            current_zscore = zscore.to_numpy()[-1]
-            current_zscore = float(current_zscore)
-        except Exception as e:
-            st.error(f"Error en current_zscore: {e}")
-            return None
-        
-        try:
-            current_bb_percent = bb_percent.to_numpy()[-1]
-            current_bb_percent = float(current_bb_percent)
-        except Exception as e:
-            st.error(f"Error en current_bb_percent: {e}")
-            return None
-        
-        try:
-            if macd_v is not None:
-                current_macdv = macd_v.to_numpy()[-1]
-                current_macdv = float(current_macdv) if not np.isnan(current_macdv) else 0.0
-            else:
-                current_macdv = 0.0
-        except:
-            current_macdv = 0.0
-        
-        try:
-            if macd_v_signal is not None:
-                current_signal = macd_v_signal.to_numpy()[-1]
-                current_signal = float(current_signal) if not np.isnan(current_signal) else 0.0
-            else:
-                current_signal = 0.0
-        except:
-            current_signal = 0.0
-        
-        # Validar que los valores son numéricos y razonables
-        if not all(pd.notna([current_price, current_zscore, current_bb_percent])):
+        # Validar que obtuvimos valores válidos
+        if current_price is None or current_zscore is None or current_bb_percent is None:
             return None
         
         if current_price <= 0:
@@ -269,10 +270,10 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
             'MACDV_Confirm': bool(macdv_confirms),
             'Date': data.index[-1],
             'Data': data.copy(deep=True),
-            'BB_SMA': bb_sma.copy(deep=True),
-            'BB_Upper': bb_upper.copy(deep=True),
-            'BB_Lower': bb_lower.copy(deep=True),
-            'ZScore_Series': zscore.copy(deep=True),
+            'BB_SMA': bb_sma.copy(deep=True) if bb_sma is not None else None,
+            'BB_Upper': bb_upper.copy(deep=True) if bb_upper is not None else None,
+            'BB_Lower': bb_lower.copy(deep=True) if bb_lower is not None else None,
+            'ZScore_Series': zscore.copy(deep=True) if zscore is not None else None,
             'MACD_V_Series': macd_v.copy(deep=True) if macd_v is not None else None,
             'Signal_Series': macd_v_signal.copy(deep=True) if macd_v_signal is not None else None,
             'ID': f"{ticker}_{timestamp}"
@@ -280,7 +281,7 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
     except Exception as e:
         # Log error con más detalle
         print(f"Error analyzing {ticker}: {type(e).__name__}: {str(e)}")
-        raise
+        return None
 
 def scan_tickers(tickers_list, max_workers=5, use_lock=True, **kwargs):
     """Escanea múltiples tickers en paralelo con sincronización"""
@@ -668,24 +669,31 @@ def main_app():
                             data = yf.download(test_ticker, period=period, interval=interval, 
                                              progress=False, auto_adjust=True, actions=False)
                             if not data.empty and len(data) >= 50:
+                                # Limpiar MultiIndex si existe
+                                if isinstance(data.columns, pd.MultiIndex):
+                                    data.columns = data.columns.get_level_values(0)
+                                
                                 bb_sma, bb_upper, bb_lower, bb_percent = calculate_bollinger_bands(data, period=20, std_dev=2.5)
                                 zscore = calculate_zscore(data, period=20)
                                 macd_v, _ = calculate_macd_v(data)
                                 
-                                current_zscore = float(zscore.iloc[-1])
-                                current_bb = float(bb_percent.iloc[-1])
-                                current_macdv = float(macd_v.iloc[-1]) if macd_v is not None else 0
+                                current_zscore = safe_extract_value(zscore)
+                                current_bb = safe_extract_value(bb_percent)
+                                current_macdv = safe_extract_value(macd_v) or 0.0
                                 
-                                st.info(f"""
-                                **Valores actuales:**
-                                - Z-Score: {current_zscore:.2f} (necesita ≥{zscore_threshold} o ≤{-zscore_threshold})
-                                - BB %B: {current_bb:.2f} (necesita >{bb_threshold_upper} o <{bb_threshold_lower})
-                                - MACD-V: {current_macdv:.1f}
-                                
-                                **¿Por qué NO pasa?**
-                                {'❌ Z-Score insuficiente' if abs(current_zscore) < zscore_threshold else '✅ Z-Score OK'}
-                                {'❌ BB %B dentro de bandas' if bb_threshold_lower < current_bb < bb_threshold_upper else '✅ BB %B OK'}
-                                """)
+                                if current_zscore is not None and current_bb is not None:
+                                    st.info(f"""
+                                    **Valores actuales:**
+                                    - Z-Score: {current_zscore:.2f} (necesita ≥{zscore_threshold} o ≤{-zscore_threshold})
+                                    - BB %B: {current_bb:.2f} (necesita >{bb_threshold_upper} o <{bb_threshold_lower})
+                                    - MACD-V: {current_macdv:.1f}
+                                    
+                                    **¿Por qué NO pasa?**
+                                    {'❌ Z-Score insuficiente' if abs(current_zscore) < zscore_threshold else '✅ Z-Score OK'}
+                                    {'❌ BB %B dentro de bandas' if bb_threshold_lower < current_bb < bb_threshold_upper else '✅ BB %B OK'}
+                                    """)
+                                else:
+                                    st.error("No se pudieron extraer los valores correctamente")
                             else:
                                 st.error("No se pudieron descargar suficientes datos")
                         except Exception as e:
