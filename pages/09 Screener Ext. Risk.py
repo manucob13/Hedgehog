@@ -460,11 +460,13 @@ def main_app():
         zscore_threshold = st.slider("Z-Score Mínimo (σ)", 2.0, 4.0, 2.5, 0.1,
                                     help="Desviaciones estándar del precio vs media")
         
-        bb_threshold_upper = st.slider("BB %B Superior", 1.0, 1.5, 1.1, 0.05,
-                                      help="Umbral para precio sobre banda superior")
+        bb_threshold = st.slider("BB %B Threshold", 0.0, 0.5, 0.1, 0.05,
+                                help="Distancia más allá de las bandas (0.0 = justo en banda, 0.1 = 10% más allá)")
         
-        bb_threshold_lower = st.slider("BB %B Inferior", -0.5, 0.0, -0.1, 0.05,
-                                      help="Umbral para precio bajo banda inferior")
+        bb_threshold_upper = 1.0 + bb_threshold
+        bb_threshold_lower = 0.0 - bb_threshold
+        
+        st.caption(f"📊 Superior: %B > {bb_threshold_upper:.2f} | Inferior: %B < {bb_threshold_lower:.2f}")
         
         st.markdown("---")
         
@@ -485,8 +487,9 @@ def main_app():
             - {zscore_threshold}σ = ~{(1 - 2*(1-0.9938))*100:.1f}% de confianza estadística
             
             2️⃣ **Bollinger %B fuera de bandas**
-            - %B > {bb_threshold_upper}: Sobre banda superior
-            - %B < {bb_threshold_lower}: Bajo banda inferior
+            - %B > {bb_threshold_upper:.2f}: Sobre banda superior
+            - %B < {bb_threshold_lower:.2f}: Bajo banda inferior
+            - Distancia: {bb_threshold*100:.0f}% más allá de las bandas
             - Bandas a 2.5 desviaciones estándar
             
             3️⃣ **MACD-V (Confirmación)**
