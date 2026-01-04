@@ -170,34 +170,26 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         if macd_v_signal is not None:
             macd_v_signal = macd_v_signal.copy(deep=True)
         
-        # Valores actuales - función helper para extraer valor escalar de forma segura
-        def get_scalar_value(series_or_df, default=0.0):
-            """Extrae un valor escalar del último elemento de forma segura"""
+        # Valores actuales - enfoque ultra-simple y robusto
+        def extract_last_value(obj, default=0.0):
+            """Extrae el último valor como float de cualquier objeto pandas"""
+            if obj is None:
+                return default
             try:
-                if series_or_df is None:
+                # Flatten a numpy array y tomar último
+                arr = np.array(obj).flatten()
+                if len(arr) == 0:
                     return default
-                
-                # Obtener último valor
-                val = series_or_df.iloc[-1]
-                
-                # Si es Series, obtener el primer elemento
-                if isinstance(val, pd.Series):
-                    val = val.iloc[0]
-                
-                # Si es DataFrame, obtener elemento [0,0]
-                if isinstance(val, pd.DataFrame):
-                    val = val.iloc[0, 0]
-                
-                # Convertir a float
-                return float(val) if pd.notna(val) else default
+                val = arr[-1]
+                return float(val) if not np.isnan(val) else default
             except:
                 return default
         
-        current_price = get_scalar_value(data['Close'])
-        current_zscore = get_scalar_value(zscore)
-        current_bb_percent = get_scalar_value(bb_percent)
-        current_macdv = get_scalar_value(macd_v, 0.0)
-        current_signal = get_scalar_value(macd_v_signal, 0.0)
+        current_price = extract_last_value(data['Close'])
+        current_zscore = extract_last_value(zscore)
+        current_bb_percent = extract_last_value(bb_percent)
+        current_macdv = extract_last_value(macd_v, 0.0)
+        current_signal = extract_last_value(macd_v_signal, 0.0)
         
         # Validar que los valores son numéricos y razonables
         if not all(pd.notna([current_price, current_zscore, current_bb_percent])):
