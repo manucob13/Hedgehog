@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from utils import (
     fetch_data, 
+    fetch_data_with_ticker,
     calculate_indicators, 
     preparar_datos_markov,
     calculate_nr_wr_signal,
@@ -238,7 +239,7 @@ def main_triple_calendar():
         
         with st.spinner(f"Descargando datos históricos de {selected_ticker} y calculando indicadores..."):
             # CORRECCIÓN CRÍTICA: Pasar el ticker a fetch_data
-            df_raw = fetch_data(ticker=selected_ticker)
+            df_raw = fetch_data_with_ticker(ticker=selected_ticker)
             spx = calculate_indicators(df_raw)
             endog_final, exog_tvtp_final = preparar_datos_markov(spx)
 
