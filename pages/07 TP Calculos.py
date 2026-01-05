@@ -96,6 +96,7 @@ def calculate_expected_move(df_options, expiration_date, current_price, std_mult
         put_last = put_atm['last_trade_price'].iloc[0]
         
         # Prioridad: MID > BID > LAST
+        # Usar MID si tanto bid como ask están disponibles
         if call_bid > 0 and call_ask > 0 and put_bid > 0 and put_ask > 0:
             straddle_price = call_mid + put_mid
             price_type = "Mid Price"
@@ -107,6 +108,7 @@ def calculate_expected_move(df_options, expiration_date, current_price, std_mult
             price_type = "Last Price"
         
         # Expected Move = Straddle Price * 1.25 * std_multiplier
+        # 1.25 para 1 desviación estándar completa
         expected_move = straddle_price * 1.25 * std_multiplier
         
         # Crear diccionario con detalles
@@ -136,6 +138,7 @@ def get_historical_prices(ticker, days=7):
     try:
         import yfinance as yf
         
+        # Convertir ticker para Yahoo Finance
         if ticker == 'SPX':
             yf_ticker = '^SPX'
         else:
@@ -152,10 +155,16 @@ def get_historical_prices(ticker, days=7):
 
 def generate_ibkr_basket_csv(orders_df):
     """Convierte el DataFrame de órdenes a formato CSV de IBKR Basket."""
+    # Crear un buffer de string para el CSV
     output = io.StringIO()
+    
+    # Escribir el CSV sin índice
     orders_df.to_csv(output, index=False)
+    
+    # Obtener el contenido del CSV
     csv_content = output.getvalue()
     output.close()
+    
     return csv_content
 
 # ==============================================================================
@@ -164,7 +173,7 @@ def generate_ibkr_basket_csv(orders_df):
 
 def main_tp_calculos():
     
-    # Inicializar session_state
+    # Inicializar session_state para guardar los resultados
     if 'calculation_done' not in st.session_state:
         st.session_state.calculation_done = False
     if 'current_price' not in st.session_state:
@@ -196,16 +205,18 @@ def main_tp_calculos():
     col1, col2, col3 = st.columns(3)
     
     with col1:
+        # Selector de Ticker
         ticker_options = ['QQQ', 'SPX']
         selected_ticker = st.selectbox(
             "Selecciona el Ticker",
             ticker_options,
-            index=0,
+            index=0,  # QQQ por defecto
             key='ticker_tp'
         )
         st.info(f"📊 Ticker seleccionado: **{selected_ticker}**")
     
     with col2:
+        # Selector de Fecha de Expiración
         min_date = date.today() + timedelta(days=1)
         max_date = date.today() + timedelta(days=365)
         
@@ -219,6 +230,7 @@ def main_tp_calculos():
         st.info(f"📅 Expiración: **{expiration_date.strftime('%Y-%m-%d')}**")
     
     with col3:
+        # Selector de Desviaciones Estándar
         std_options = {
             "1σ (68% probabilidad)": 1.0,
             "1.5σ (87% probabilidad)": 1.5,
@@ -245,6 +257,7 @@ def main_tp_calculos():
         
         with st.spinner(f"Obteniendo datos de {selected_ticker}..."):
             
+            # Obtener precio actual
             current_price = get_current_price(selected_ticker)
             
             if current_price is None:
@@ -253,12 +266,14 @@ def main_tp_calculos():
             
             st.success(f"✅ Precio actual de {selected_ticker}: **${current_price:.2f}**")
             
+            # Obtener cadena de opciones
             df_options = get_option_chain_cboe(selected_ticker)
             
             if df_options is None or df_options.empty:
                 st.error("❌ No se pudieron obtener los datos de opciones desde CBOE.")
                 st.stop()
             
+            # Calcular Expected Move
             expected_move, details, error = calculate_expected_move(
                 df_options, 
                 expiration_date, 
@@ -270,6 +285,7 @@ def main_tp_calculos():
                 st.error(f"❌ {error}")
                 st.stop()
             
+            # Guardar en session_state
             st.session_state.calculation_done = True
             st.session_state.current_price = current_price
             st.session_state.expected_move = expected_move
@@ -282,11 +298,12 @@ def main_tp_calculos():
             st.info(f"💰 Precio del Straddle: **${details['straddle_price']:.2f}** ({details['price_type']})")
     
     # ==============================================================================
-    # MOSTRAR RESULTADOS
+    # MOSTRAR RESULTADOS SI YA SE CALCULÓ
     # ==============================================================================
     
     if st.session_state.calculation_done:
         
+        # Recuperar datos del session_state
         current_price = st.session_state.current_price
         expected_move = st.session_state.expected_move
         details = st.session_state.details
@@ -315,6 +332,7 @@ def main_tp_calculos():
         with col4:
             st.metric("Rango Inferior", f"${lower_range:.2f}", f"-{expected_move:.2f}")
         
+        # Detalles del Straddle ATM
         st.markdown("### 💰 Detalles del Straddle ATM")
         
         col1, col2 = st.columns(2)
@@ -345,6 +363,7 @@ def main_tp_calculos():
         
         st.markdown("---")
         
+        # Tabla resumen
         st.markdown("### 📊 Resumen del Expected Move")
         
         days_to_exp = (expiration_date - date.today()).days
@@ -381,20 +400,24 @@ def main_tp_calculos():
         st.markdown("---")
         
         # ==============================================================================
-        # SECCIÓN 3: GRÁFICO
+        # SECCIÓN 3: GRÁFICO - VELAS JAPONESAS
         # ==============================================================================
         st.header("3. Visualización del Expected Move")
         
+        # Obtener datos históricos
         df_hist = get_historical_prices(selected_ticker, days=7)
         
         if df_hist is not None and not df_hist.empty:
             
+            # Crear el gráfico
             fig = go.Figure()
             
+            # Convertir el índice a timezone-naive
             df_hist_plot = df_hist.copy()
             if df_hist_plot.index.tz is not None:
                 df_hist_plot.index = df_hist_plot.index.tz_localize(None)
             
+            # Gráfico de velas japonesas (Candlestick)
             fig.add_trace(go.Candlestick(
                 x=df_hist_plot.index,
                 open=df_hist_plot['Open'],
@@ -406,8 +429,10 @@ def main_tp_calculos():
                 decreasing_line_color='#FF4444'
             ))
             
+            # Convertir expiration_date a datetime para el gráfico
             exp_datetime = datetime.combine(expiration_date, datetime.min.time())
             
+            # Línea horizontal - Rango Superior
             fig.add_hline(
                 y=upper_range,
                 line_dash="dot",
@@ -416,6 +441,7 @@ def main_tp_calculos():
                 annotation_position="right"
             )
             
+            # Línea horizontal - Rango Inferior
             fig.add_hline(
                 y=lower_range,
                 line_dash="dot",
@@ -424,6 +450,7 @@ def main_tp_calculos():
                 annotation_position="right"
             )
             
+            # Línea horizontal - Precio Actual
             fig.add_hline(
                 y=current_price,
                 line_dash="dash",
@@ -432,6 +459,7 @@ def main_tp_calculos():
                 annotation_position="left"
             )
             
+            # Línea vertical - Fecha de Expiración
             fig.add_shape(
                 type="line",
                 x0=exp_datetime,
@@ -442,6 +470,7 @@ def main_tp_calculos():
                 line=dict(color="red", width=2, dash="dot")
             )
             
+            # Añadir anotación para la fecha de expiración
             fig.add_annotation(
                 x=exp_datetime,
                 y=1.02,
@@ -452,6 +481,7 @@ def main_tp_calculos():
                 bgcolor="rgba(0,0,0,0.5)"
             )
             
+            # Configuración del layout
             end_datetime = exp_datetime + timedelta(days=3)
             
             fig.update_layout(
@@ -462,8 +492,10 @@ def main_tp_calculos():
                 height=500,
                 hovermode='x unified',
                 showlegend=True,
-                xaxis=dict(range=[df_hist_plot.index[0], end_datetime]),
-                xaxis_rangeslider_visible=False
+                xaxis=dict(
+                    range=[df_hist_plot.index[0], end_datetime]
+                ),
+                xaxis_rangeslider_visible=False  # Ocultar el slider de rango
             )
             
             st.plotly_chart(fig, use_container_width=True)
@@ -474,10 +506,11 @@ def main_tp_calculos():
         st.markdown("---")
         
         # ==============================================================================
-        # SECCIÓN 4: COMPARACIÓN
+        # SECCIÓN 4: COMPARACIÓN DE DESVIACIONES ESTÁNDAR
         # ==============================================================================
         st.header("4. Comparación de Desviaciones Estándar")
         
+        # Calcular para todas las desviaciones estándar
         comparison_data = []
         for std_label, std_val in std_options.items():
             em = details['straddle_price'] * 1.25 * std_val
@@ -503,10 +536,11 @@ def main_tp_calculos():
         st.markdown("---")
         
         # ==============================================================================
-        # SECCIÓN 5: INFORMACIÓN
+        # SECCIÓN 5: INFORMACIÓN ADICIONAL
         # ==============================================================================
         st.header("5. Información Adicional")
         
+        # Determinar el nivel de probabilidad según el std_multiplier
         if std_multiplier == 1.0:
             prob_text = "68%"
         elif std_multiplier == 1.5:
@@ -566,7 +600,7 @@ def main_tp_calculos():
         
         st.markdown("---")
         
-        # Inicializar variables para punto 7
+        # Guardar strikes del punto 6 en session_state para el punto 7
         if 'strike_atm_p6' not in st.session_state:
             st.session_state.strike_atm_p6 = None
         if 'strike_up_p6' not in st.session_state:
@@ -579,7 +613,7 @@ def main_tp_calculos():
             st.session_state.dte_back_p6 = None
         
         # ==============================================================================
-        # SECCIÓN 6: TRIPLE CALENDAR
+        # SECCIÓN 6: GENERADOR DE ESTRUCTURA TRIPLE CALENDAR
         # ==============================================================================
         st.header("6. Generador de Estructura - Triple Calendar")
         
@@ -588,10 +622,14 @@ def main_tp_calculos():
         que podrás descargar y ejecutar manualmente en tu broker.
         """)
         
+        # Calcular Expected Move de 1 desviación estándar (ORIGINAL, sin redondear)
         expected_move_1std = details['straddle_price'] * 1.25
+        
+        # Calcular los rangos ORIGINALES (sin redondear)
         upper_range_1std = current_price + expected_move_1std
         lower_range_1std = current_price - expected_move_1std
         
+        # Redondear strikes para los valores por defecto de los inputs
         atm_rounded = round(details['atm_strike'] / 5) * 5
         strike_up_default = round(upper_range_1std / 5) * 5
         strike_down_default = round(lower_range_1std / 5) * 5
@@ -613,6 +651,7 @@ def main_tp_calculos():
             
             st.markdown("---")
             
+            # Strike ATM
             st.markdown(f"**Strike ATM** (Precio actual: ${current_price:.0f})")
             strike_atm_input = st.number_input(
                 "Strike ATM",
@@ -633,6 +672,7 @@ def main_tp_calculos():
             
             st.markdown("---")
             
+            # Strike DOWN
             st.markdown(f"**Strike DOWN** (Calculado: ${lower_range_1std:.2f})")
             strike_down_input = st.number_input(
                 "Strike DOWN (debajo ATM)",
@@ -653,6 +693,7 @@ def main_tp_calculos():
             
             st.markdown("---")
             
+            # Strike UP
             st.markdown(f"**Strike UP** (Calculado: ${upper_range_1std:.2f})")
             strike_up_input = st.number_input(
                 "Strike UP (arriba ATM)",
@@ -683,6 +724,7 @@ def main_tp_calculos():
                 help="Fecha de expiración de las opciones vendidas"
             )
             
+            # Por defecto, DTE BACK es 7 días después del FRONT
             default_back = dte_front_input + timedelta(days=7)
             
             dte_back_input = st.date_input(
@@ -725,34 +767,50 @@ def main_tp_calculos():
         
         if st.button("🎯 Generar CSV para IBKR", type="primary", use_container_width=True):
             
+            # Guardar strikes y DTEs en session_state para el punto 7
             st.session_state.strike_atm_p6 = strike_atm_input
             st.session_state.strike_up_p6 = strike_up_input
             st.session_state.strike_down_p6 = strike_down_input
             st.session_state.dte_front_p6 = dte_front_input
             st.session_state.dte_back_p6 = dte_back_input
             
+            # Formatear fechas para el símbolo (YYYYMMDD)
             front_date_str = dte_front_input.strftime("%Y%m%d")
             back_date_str = dte_back_input.strftime("%Y%m%d")
             
+            # Crear la estructura de órdenes en formato IBKR Basket
             orders = []
             
+            # Configuración de strikes y tipos
             strike_configs = [
-                {'strike': strike_down_input, 'type': option_type_down, 'label': 'DOWN'},
-                {'strike': strike_atm_input, 'type': option_type_atm, 'label': 'ATM'},
-                {'strike': strike_up_input, 'type': option_type_up, 'label': 'UP'}
+                {
+                    'strike': strike_down_input,
+                    'type': option_type_down,
+                    'label': 'DOWN'
+                },
+                {
+                    'strike': strike_atm_input,
+                    'type': option_type_atm,
+                    'label': 'ATM'
+                },
+                {
+                    'strike': strike_up_input,
+                    'type': option_type_up,
+                    'label': 'UP'
+                }
             ]
             
             for config in strike_configs:
                 strike_int = int(config['strike'])
                 right_letter = "C" if config['type'] == "CALL" else "P"
                 
-                # SELL - FRONT
+                # SELL en DTE FRONT
                 orders.append({
                     'Action': 'SELL',
                     'Quantity': quantity_input,
                     'Symbol': selected_ticker,
                     'SecType': 'OPT',
-                    'LastTradingDayOrContractMonth': front_date_str,
+                    'Expiry': front_date_str,
                     'Strike': strike_int,
                     'Right': right_letter,
                     'Exchange': 'SMART',
@@ -760,13 +818,13 @@ def main_tp_calculos():
                     'BasketTag': basket_tag
                 })
                 
-                # BUY - BACK
+                # BUY en DTE BACK
                 orders.append({
                     'Action': 'BUY',
                     'Quantity': quantity_input,
                     'Symbol': selected_ticker,
                     'SecType': 'OPT',
-                    'LastTradingDayOrContractMonth': back_date_str,
+                    'Expiry': back_date_str,
                     'Strike': strike_int,
                     'Right': right_letter,
                     'Exchange': 'SMART',
@@ -774,8 +832,9 @@ def main_tp_calculos():
                     'BasketTag': basket_tag
                 })
             
+            # Crear DataFrame con el orden de columnas específico de IBKR
             df_orders = pd.DataFrame(orders, columns=[
-                'Action', 'Quantity', 'Symbol', 'SecType', 'LastTradingDayOrContractMonth', 
+                'Action', 'Quantity', 'Symbol', 'SecType', 'Expiry', 
                 'Strike', 'Right', 'Exchange', 'Currency', 'BasketTag'
             ])
             
@@ -783,6 +842,7 @@ def main_tp_calculos():
             
             st.markdown("### 📋 Vista Previa - IBKR Basket Orders")
             
+            # Mostrar la tabla con formato
             st.dataframe(
                 df_orders,
                 hide_index=True,
@@ -792,7 +852,7 @@ def main_tp_calculos():
                     'Quantity': st.column_config.NumberColumn('Quantity', format="%d", width="small"),
                     'Symbol': st.column_config.TextColumn('Symbol', width="small"),
                     'SecType': st.column_config.TextColumn('SecType', width="small"),
-                    'LastTradingDayOrContractMonth': st.column_config.TextColumn('Expiry', width="medium"),
+                    'Expiry': st.column_config.TextColumn('Expiry', width="medium"),
                     'Strike': st.column_config.NumberColumn('Strike', format="%d"),
                     'Right': st.column_config.TextColumn('Right', width="small"),
                     'Exchange': st.column_config.TextColumn('Exchange', width="small"),
@@ -803,9 +863,13 @@ def main_tp_calculos():
             
             st.markdown("---")
             
+            # Generar el CSV
             csv_content = generate_ibkr_basket_csv(df_orders)
+            
+            # Nombre del archivo
             filename = f"IBKR_{selected_ticker}_TP_{date.today().strftime('%d_%m_%Y')}.csv"
             
+            # Botón de descarga
             col1, col2, col3 = st.columns([1, 2, 1])
             with col2:
                 st.download_button(
@@ -819,6 +883,7 @@ def main_tp_calculos():
             
             st.markdown("---")
             
+            # Resumen de la estructura
             st.markdown("### 📊 Resumen de la Estructura")
             
             col1, col2, col3 = st.columns(3)
@@ -844,6 +909,7 @@ def main_tp_calculos():
             
             st.markdown("---")
             
+            # Instrucciones de uso
             st.markdown("### 📝 Instrucciones para importar en IBKR")
             
             st.info("""
@@ -876,7 +942,10 @@ def main_tp_calculos():
         y el Expected Move (1σ). Úsalo para ajustar tu posición o abrir nuevas posiciones.
         """)
         
+        # Calcular Expected Move de 1 desviación estándar
         expected_move_1std_adj = details['straddle_price'] * 1.25
+        
+        # Obtener precio actual actualizado
         current_price_adj = get_current_price(selected_ticker)
         
         if current_price_adj is None:
@@ -884,10 +953,12 @@ def main_tp_calculos():
         else:
             st.success(f"✅ Precio actual actualizado: **${current_price_adj:.2f}**")
             
+            # Calcular strikes de ajuste (sin redondear aún)
             strike_adj_up_calc = current_price_adj + expected_move_1std_adj
             strike_adj_down_calc = current_price_adj - expected_move_1std_adj
             strike_adj_atm_calc = current_price_adj
             
+            # Redondear strikes
             strike_adj_up_rounded = round(strike_adj_up_calc / 5) * 5
             strike_adj_down_rounded = round(strike_adj_down_calc / 5) * 5
             strike_adj_atm_rounded = round(strike_adj_atm_calc / 5) * 5
@@ -908,6 +979,7 @@ def main_tp_calculos():
             with col1:
                 st.markdown("#### 📍 Configuración del Strike de Ajuste")
                 
+                # Inputs para strikes (usar valores del punto 6 si existen, sino usar los calculados)
                 default_atm = st.session_state.strike_atm_p6 if st.session_state.strike_atm_p6 else strike_adj_atm_rounded
                 default_up = st.session_state.strike_up_p6 if st.session_state.strike_up_p6 else strike_adj_up_rounded
                 default_down = st.session_state.strike_down_p6 if st.session_state.strike_down_p6 else strike_adj_down_rounded
@@ -959,6 +1031,7 @@ def main_tp_calculos():
                 
                 strike_ref_selected = strike_comparison_options[selected_strike_ref_label]
                 
+                # Determinar tipo de opción basado en la comparación
                 if current_price_adj < strike_ref_selected:
                     suggested_option_type = "PUT"
                     suggested_strike_calc = current_price_adj - expected_move_1std_adj
@@ -1001,6 +1074,7 @@ def main_tp_calculos():
             with col2:
                 st.markdown("#### 📅 Fechas de Expiración")
                 
+                # Usar las mismas fechas del punto 6 si existen
                 default_front = st.session_state.dte_front_p6 if st.session_state.dte_front_p6 else expiration_date
                 default_back = st.session_state.dte_back_p6 if st.session_state.dte_back_p6 else (expiration_date + timedelta(days=7))
                 
@@ -1053,21 +1127,23 @@ def main_tp_calculos():
             
             if st.button("🎯 Generar CSV de Ajuste", type="primary", use_container_width=True):
                 
+                # Formatear fechas
                 front_date_adj_str = dte_front_adj.strftime("%Y%m%d")
                 back_date_adj_str = dte_back_adj.strftime("%Y%m%d")
                 
+                # Crear estructura de órdenes para el ajuste
                 orders_adj = []
                 
                 strike_int_adj = int(strike_adjustment)
                 right_letter_adj = "C" if option_type_adjustment == "CALL" else "P"
                 
-                # SELL - FRONT
+                # SELL en DTE FRONT
                 orders_adj.append({
                     'Action': 'SELL',
                     'Quantity': quantity_adj,
                     'Symbol': selected_ticker,
                     'SecType': 'OPT',
-                    'LastTradingDayOrContractMonth': front_date_adj_str,
+                    'Expiry': front_date_adj_str,
                     'Strike': strike_int_adj,
                     'Right': right_letter_adj,
                     'Exchange': 'SMART',
@@ -1075,13 +1151,13 @@ def main_tp_calculos():
                     'BasketTag': basket_tag_adj
                 })
                 
-                # BUY - BACK
+                # BUY en DTE BACK
                 orders_adj.append({
                     'Action': 'BUY',
                     'Quantity': quantity_adj,
                     'Symbol': selected_ticker,
                     'SecType': 'OPT',
-                    'LastTradingDayOrContractMonth': back_date_adj_str,
+                    'Expiry': back_date_adj_str,
                     'Strike': strike_int_adj,
                     'Right': right_letter_adj,
                     'Exchange': 'SMART',
@@ -1089,8 +1165,9 @@ def main_tp_calculos():
                     'BasketTag': basket_tag_adj
                 })
                 
+                # Crear DataFrame
                 df_orders_adj = pd.DataFrame(orders_adj, columns=[
-                    'Action', 'Quantity', 'Symbol', 'SecType', 'LastTradingDayOrContractMonth', 
+                    'Action', 'Quantity', 'Symbol', 'SecType', 'Expiry', 
                     'Strike', 'Right', 'Exchange', 'Currency', 'BasketTag'
                 ])
                 
@@ -1107,7 +1184,7 @@ def main_tp_calculos():
                         'Quantity': st.column_config.NumberColumn('Quantity', format="%d", width="small"),
                         'Symbol': st.column_config.TextColumn('Symbol', width="small"),
                         'SecType': st.column_config.TextColumn('SecType', width="small"),
-                        'LastTradingDayOrContractMonth': st.column_config.TextColumn('Expiry', width="medium"),
+                        'Expiry': st.column_config.TextColumn('Expiry', width="medium"),
                         'Strike': st.column_config.NumberColumn('Strike', format="%d"),
                         'Right': st.column_config.TextColumn('Right', width="small"),
                         'Exchange': st.column_config.TextColumn('Exchange', width="small"),
@@ -1118,9 +1195,13 @@ def main_tp_calculos():
                 
                 st.markdown("---")
                 
+                # Generar CSV
                 csv_content_adj = generate_ibkr_basket_csv(df_orders_adj)
+                
+                # Nombre del archivo
                 filename_adj = f"IBKR_{selected_ticker}_ADJ_{date.today().strftime('%d_%m_%Y')}.csv"
                 
+                # Botón de descarga
                 col1, col2, col3 = st.columns([1, 2, 1])
                 with col2:
                     st.download_button(
@@ -1134,6 +1215,7 @@ def main_tp_calculos():
                 
                 st.markdown("---")
                 
+                # Resumen
                 st.markdown("### 📊 Resumen del Ajuste")
                 
                 col1, col2, col3 = st.columns(3)
