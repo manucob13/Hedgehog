@@ -314,324 +314,6 @@ def main_tp_calculos():
         st.markdown("---")
         
         # ==============================================================================
-        # SECCIÓN 7: AJUSTES
-        # ==============================================================================
-        st.header("7. Ajustes - Generador de Calendar Individual")
-        
-        st.markdown("""
-        Esta sección te permite generar un **Calendar Spread individual** basado en el precio actual del mercado 
-        y el Expected Move (1σ). Úsalo para ajustar tu posición o abrir nuevas posiciones.
-        """)
-        
-        # Calcular Expected Move de 1 desviación estándar
-        expected_move_1std_adj = details['straddle_price'] * 1.25
-        
-        # Obtener precio actual actualizado
-        current_price_adj = get_current_price(selected_ticker)
-        
-        if current_price_adj is None:
-            st.warning("⚠️ No se pudo obtener el precio actual para calcular el ajuste.")
-        else:
-            st.success(f"✅ Precio actual actualizado: **${current_price_adj:.2f}**")
-            
-            # Calcular strikes de ajuste (sin redondear aún)
-            strike_adj_up_calc = current_price_adj + expected_move_1std_adj
-            strike_adj_down_calc = current_price_adj - expected_move_1std_adj
-            strike_adj_atm_calc = current_price_adj
-            
-            # Redondear strikes
-            strike_adj_up_rounded = round(strike_adj_up_calc / 5) * 5
-            strike_adj_down_rounded = round(strike_adj_down_calc / 5) * 5
-            strike_adj_atm_rounded = round(strike_adj_atm_calc / 5) * 5
-            
-            st.info(f"""
-            💡 **Cálculos de Ajuste (1σ):**
-            - Precio Actual: **${current_price_adj:.2f}**
-            - Expected Move (1σ): **±${expected_move_1std_adj:.2f}**
-            - Strike UP Calculado: **${strike_adj_up_calc:.2f}** → Redondeado: **${strike_adj_up_rounded:.0f}**
-            - Strike ATM Calculado: **${strike_adj_atm_calc:.2f}** → Redondeado: **${strike_adj_atm_rounded:.0f}**
-            - Strike DOWN Calculado: **${strike_adj_down_calc:.2f}** → Redondeado: **${strike_adj_down_rounded:.0f}**
-            """)
-            
-            st.markdown("---")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("#### 📍 Configuración del Strike de Ajuste")
-                
-                # Inputs para strikes (usar valores del punto 6 si existen, sino usar los calculados)
-                default_atm = st.session_state.strike_atm_p6 if st.session_state.strike_atm_p6 else strike_adj_atm_rounded
-                default_up = st.session_state.strike_up_p6 if st.session_state.strike_up_p6 else strike_adj_up_rounded
-                default_down = st.session_state.strike_down_p6 if st.session_state.strike_down_p6 else strike_adj_down_rounded
-                
-                st.markdown("**Strikes de Referencia (Punto 6)**")
-                
-                strike_ref_atm = st.number_input(
-                    "Strike ATM de referencia",
-                    min_value=0.0,
-                    value=float(default_atm),
-                    step=5.0,
-                    key='strike_ref_atm_adj',
-                    help="Strike ATM usado en el punto 6 o precio actual"
-                )
-                
-                strike_ref_up = st.number_input(
-                    "Strike UP de referencia",
-                    min_value=0.0,
-                    value=float(default_up),
-                    step=5.0,
-                    key='strike_ref_up_adj',
-                    help="Strike UP usado en el punto 6"
-                )
-                
-                strike_ref_down = st.number_input(
-                    "Strike DOWN de referencia",
-                    min_value=0.0,
-                    value=float(default_down),
-                    step=5.0,
-                    key='strike_ref_down_adj',
-                    help="Strike DOWN usado en el punto 6"
-                )
-                
-                st.markdown("---")
-                
-                st.markdown("**Selecciona el Strike de Referencia para Comparar**")
-                strike_comparison_options = {
-                    f"ATM (${strike_ref_atm:.0f})": strike_ref_atm,
-                    f"UP (${strike_ref_up:.0f})": strike_ref_up,
-                    f"DOWN (${strike_ref_down:.0f})": strike_ref_down
-                }
-                
-                selected_strike_ref_label = st.selectbox(
-                    "Strike de referencia",
-                    list(strike_comparison_options.keys()),
-                    index=0,
-                    key='strike_ref_comparison_adj'
-                )
-                
-                strike_ref_selected = strike_comparison_options[selected_strike_ref_label]
-                
-                # Determinar tipo de opción basado en la comparación
-                if current_price_adj < strike_ref_selected:
-                    suggested_option_type = "PUT"
-                    suggested_strike_calc = current_price_adj - expected_move_1std_adj
-                    direction = "debajo"
-                else:
-                    suggested_option_type = "CALL"
-                    suggested_strike_calc = current_price_adj + expected_move_1std_adj
-                    direction = "arriba"
-                
-                suggested_strike_rounded = round(suggested_strike_calc / 5) * 5
-                
-                st.info(f"""
-                📊 **Análisis de Posición:**
-                - Precio Actual: **${current_price_adj:.2f}**
-                - Strike Referencia: **${strike_ref_selected:.0f}**
-                - Posición: Precio está **{direction}** del strike
-                - Tipo Sugerido: **{suggested_option_type}**
-                - Strike Sugerido: **${suggested_strike_calc:.2f}** → **${suggested_strike_rounded:.0f}**
-                """)
-                
-                st.markdown("---")
-                
-                st.markdown("**Strike Final del Ajuste**")
-                strike_adjustment = st.number_input(
-                    "Strike para el Calendar",
-                    min_value=0.0,
-                    value=float(suggested_strike_rounded),
-                    step=5.0,
-                    key='strike_adjustment',
-                    help="Strike final que se usará en el Calendar Spread"
-                )
-                
-                option_type_adjustment = st.selectbox(
-                    "Tipo de Opción",
-                    ["PUT", "CALL"],
-                    index=0 if suggested_option_type == "PUT" else 1,
-                    key='option_type_adjustment'
-                )
-            
-            with col2:
-                st.markdown("#### 📅 Fechas de Expiración")
-                
-                # Usar las mismas fechas del punto 6 si existen
-                default_front = st.session_state.dte_front_p6 if st.session_state.dte_front_p6 else expiration_date
-                default_back = st.session_state.dte_back_p6 if st.session_state.dte_back_p6 else (expiration_date + timedelta(days=7))
-                
-                dte_front_adj = st.date_input(
-                    "DTE FRONT (Venta) - Mismas del Punto 6",
-                    value=default_front,
-                    min_value=date.today() + timedelta(days=1),
-                    max_value=date.today() + timedelta(days=365),
-                    key='dte_front_adj',
-                    help="Fecha de expiración de la opción vendida"
-                )
-                
-                dte_back_adj = st.date_input(
-                    "DTE BACK (Compra) - Mismas del Punto 6",
-                    value=default_back,
-                    min_value=dte_front_adj + timedelta(days=1),
-                    max_value=date.today() + timedelta(days=365),
-                    key='dte_back_adj',
-                    help="Fecha de expiración de la opción comprada"
-                )
-                
-                days_diff_adj = (dte_back_adj - dte_front_adj).days
-                st.success(f"📅 Diferencia: **{days_diff_adj} días**")
-                
-                st.markdown("---")
-                
-                st.markdown("#### 🏷️ Configuración Adicional")
-                
-                basket_tag_adj = st.text_input(
-                    "Basket Tag para Ajuste",
-                    value="Adjustment1",
-                    key='basket_tag_adj',
-                    help="Etiqueta para identificar esta orden de ajuste"
-                )
-                
-                st.markdown("---")
-                
-                st.markdown("#### 📦 Cantidad de Contratos")
-                
-                quantity_adj = st.number_input(
-                    "Cantidad",
-                    min_value=1,
-                    value=1,
-                    step=1,
-                    key='quantity_adj',
-                    help="Número de contratos para el ajuste"
-                )
-            
-            st.markdown("---")
-            
-            if st.button("🎯 Generar CSV de Ajuste", type="primary", use_container_width=True):
-                
-                # Formatear fechas
-                front_date_adj_str = dte_front_adj.strftime("%Y%m%d")
-                back_date_adj_str = dte_back_adj.strftime("%Y%m%d")
-                
-                # Crear estructura de órdenes para el ajuste
-                orders_adj = []
-                
-                strike_int_adj = int(strike_adjustment)
-                right_letter_adj = "C" if option_type_adjustment == "CALL" else "P"
-                
-                # SELL en DTE FRONT
-                orders_adj.append({
-                    'Action': 'SELL',
-                    'Quantity': quantity_adj,
-                    'Symbol': selected_ticker,
-                    'SecType': 'OPT',
-                    'LastTradingDayOrContractMonth': front_date_adj_str,
-                    'Strike': strike_int_adj,
-                    'Right': right_letter_adj,
-                    'Exchange': 'SMART',
-                    'Currency': 'USD',
-                    'BasketTag': basket_tag_adj
-                })
-                
-                # BUY en DTE BACK
-                orders_adj.append({
-                    'Action': 'BUY',
-                    'Quantity': quantity_adj,
-                    'Symbol': selected_ticker,
-                    'SecType': 'OPT',
-                    'LastTradingDayOrContractMonth': back_date_adj_str,
-                    'Strike': strike_int_adj,
-                    'Right': right_letter_adj,
-                    'Exchange': 'SMART',
-                    'Currency': 'USD',
-                    'BasketTag': basket_tag_adj
-                })
-                
-                # Crear DataFrame
-                df_orders_adj = pd.DataFrame(orders_adj, columns=[
-                    'Action', 'Quantity', 'Symbol', 'SecType', 'LastTradingDayOrContractMonth', 
-                    'Strike', 'Right', 'Exchange', 'Currency', 'BasketTag'
-                ])
-                
-                st.success("✅ Orden de ajuste generada exitosamente!")
-                
-                st.markdown("### 📋 Vista Previa - Ajuste Calendar")
-                
-                st.dataframe(
-                    df_orders_adj,
-                    hide_index=True,
-                    use_container_width=True,
-                    column_config={
-                        'Action': st.column_config.TextColumn('Action', width="small"),
-                        'Quantity': st.column_config.NumberColumn('Quantity', format="%d", width="small"),
-                        'Symbol': st.column_config.TextColumn('Symbol', width="small"),
-                        'SecType': st.column_config.TextColumn('SecType', width="small"),
-                        'LastTradingDayOrContractMonth': st.column_config.TextColumn('LastTradingDayOrContractMonth', width="medium"),
-                        'Strike': st.column_config.NumberColumn('Strike', format="%d"),
-                        'Right': st.column_config.TextColumn('Right', width="small"),
-                        'Exchange': st.column_config.TextColumn('Exchange', width="small"),
-                        'Currency': st.column_config.TextColumn('Currency', width="small"),
-                        'BasketTag': st.column_config.TextColumn('BasketTag', width="medium")
-                    }
-                )
-                
-                st.markdown("---")
-                
-                # Generar CSV
-                csv_content_adj = generate_ibkr_basket_csv(df_orders_adj)
-                
-                # Nombre del archivo
-                filename_adj = f"IBKR_{selected_ticker}_ADJ_{date.today().strftime('%d_%m_%Y')}.csv"
-                
-                # Botón de descarga
-                col1, col2, col3 = st.columns([1, 2, 1])
-                with col2:
-                    st.download_button(
-                        label="📥 Descargar CSV de Ajuste",
-                        data=csv_content_adj,
-                        file_name=filename_adj,
-                        mime="text/csv",
-                        type="primary",
-                        use_container_width=True
-                    )
-                
-                st.markdown("---")
-                
-                # Resumen
-                st.markdown("### 📊 Resumen del Ajuste")
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.markdown("**📍 Configuración**")
-                    st.write(f"- Strike: ${strike_adjustment:.0f}")
-                    st.write(f"- Tipo: {option_type_adjustment}")
-                    st.write(f"- Cantidad: {quantity_adj}")
-                
-                with col2:
-                    st.markdown("**📅 Fechas**")
-                    st.write(f"- SELL: {dte_front_adj.strftime('%Y-%m-%d')}")
-                    st.write(f"- BUY: {dte_back_adj.strftime('%Y-%m-%d')}")
-                    st.write(f"- Spread: {days_diff_adj} días")
-                
-                with col3:
-                    st.markdown("**⚙️ Datos**")
-                    st.write(f"- Ticker: {selected_ticker}")
-                    st.write(f"- Basket: {basket_tag_adj}")
-                    st.write(f"- Órdenes: {len(df_orders_adj)}")
-
-# ==============================================================================
-# PUNTO DE ENTRADA PROTEGIDO
-# ==============================================================================
-
-if __name__ == "__main__":
-    
-    if check_password():
-        main_tp_calculos()
-    else:
-        st.title("🔒 Acceso Restringido")
-        st.info("Por favor, introduce tus credenciales en el menú lateral (sidebar) para acceder a TP Cálculos.")
-        
-        # ==============================================================================
         # SECCIÓN 2: RESULTADOS
         # ==============================================================================
         st.header("2. Resultados del Expected Move")
@@ -1128,7 +810,7 @@ if __name__ == "__main__":
                     'Quantity': quantity_input,
                     'Symbol': selected_ticker,
                     'SecType': 'OPT',
-                    'LastTradingDayOrContractMonth': front_date_str,
+                    'Expiry': front_date_str,
                     'Strike': strike_int,
                     'Right': right_letter,
                     'Exchange': 'SMART',
@@ -1142,7 +824,7 @@ if __name__ == "__main__":
                     'Quantity': quantity_input,
                     'Symbol': selected_ticker,
                     'SecType': 'OPT',
-                    'LastTradingDayOrContractMonth': back_date_str,
+                    'Expiry': back_date_str,
                     'Strike': strike_int,
                     'Right': right_letter,
                     'Exchange': 'SMART',
@@ -1152,7 +834,7 @@ if __name__ == "__main__":
             
             # Crear DataFrame con el orden de columnas específico de IBKR
             df_orders = pd.DataFrame(orders, columns=[
-                'Action', 'Quantity', 'Symbol', 'SecType', 'LastTradingDayOrContractMonth', 
+                'Action', 'Quantity', 'Symbol', 'SecType', 'Expiry', 
                 'Strike', 'Right', 'Exchange', 'Currency', 'BasketTag'
             ])
             
@@ -1170,7 +852,7 @@ if __name__ == "__main__":
                     'Quantity': st.column_config.NumberColumn('Quantity', format="%d", width="small"),
                     'Symbol': st.column_config.TextColumn('Symbol', width="small"),
                     'SecType': st.column_config.TextColumn('SecType', width="small"),
-                    'LastTradingDayOrContractMonth': st.column_config.TextColumn('LastTradingDayOrContractMonth', width="medium"),
+                    'Expiry': st.column_config.TextColumn('Expiry', width="medium"),
                     'Strike': st.column_config.NumberColumn('Strike', format="%d"),
                     'Right': st.column_config.TextColumn('Right', width="small"),
                     'Exchange': st.column_config.TextColumn('Exchange', width="small"),
@@ -1249,3 +931,321 @@ if __name__ == "__main__":
             """)
         
         st.markdown("---")
+        
+        # ==============================================================================
+        # SECCIÓN 7: AJUSTES
+        # ==============================================================================
+        st.header("7. Ajustes - Generador de Calendar Individual")
+        
+        st.markdown("""
+        Esta sección te permite generar un **Calendar Spread individual** basado en el precio actual del mercado 
+        y el Expected Move (1σ). Úsalo para ajustar tu posición o abrir nuevas posiciones.
+        """)
+        
+        # Calcular Expected Move de 1 desviación estándar
+        expected_move_1std_adj = details['straddle_price'] * 1.25
+        
+        # Obtener precio actual actualizado
+        current_price_adj = get_current_price(selected_ticker)
+        
+        if current_price_adj is None:
+            st.warning("⚠️ No se pudo obtener el precio actual para calcular el ajuste.")
+        else:
+            st.success(f"✅ Precio actual actualizado: **${current_price_adj:.2f}**")
+            
+            # Calcular strikes de ajuste (sin redondear aún)
+            strike_adj_up_calc = current_price_adj + expected_move_1std_adj
+            strike_adj_down_calc = current_price_adj - expected_move_1std_adj
+            strike_adj_atm_calc = current_price_adj
+            
+            # Redondear strikes
+            strike_adj_up_rounded = round(strike_adj_up_calc / 5) * 5
+            strike_adj_down_rounded = round(strike_adj_down_calc / 5) * 5
+            strike_adj_atm_rounded = round(strike_adj_atm_calc / 5) * 5
+            
+            st.info(f"""
+            💡 **Cálculos de Ajuste (1σ):**
+            - Precio Actual: **${current_price_adj:.2f}**
+            - Expected Move (1σ): **±${expected_move_1std_adj:.2f}**
+            - Strike UP Calculado: **${strike_adj_up_calc:.2f}** → Redondeado: **${strike_adj_up_rounded:.0f}**
+            - Strike ATM Calculado: **${strike_adj_atm_calc:.2f}** → Redondeado: **${strike_adj_atm_rounded:.0f}**
+            - Strike DOWN Calculado: **${strike_adj_down_calc:.2f}** → Redondeado: **${strike_adj_down_rounded:.0f}**
+            """)
+            
+            st.markdown("---")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("#### 📍 Configuración del Strike de Ajuste")
+                
+                # Inputs para strikes (usar valores del punto 6 si existen, sino usar los calculados)
+                default_atm = st.session_state.strike_atm_p6 if st.session_state.strike_atm_p6 else strike_adj_atm_rounded
+                default_up = st.session_state.strike_up_p6 if st.session_state.strike_up_p6 else strike_adj_up_rounded
+                default_down = st.session_state.strike_down_p6 if st.session_state.strike_down_p6 else strike_adj_down_rounded
+                
+                st.markdown("**Strikes de Referencia (Punto 6)**")
+                
+                strike_ref_atm = st.number_input(
+                    "Strike ATM de referencia",
+                    min_value=0.0,
+                    value=float(default_atm),
+                    step=5.0,
+                    key='strike_ref_atm_adj',
+                    help="Strike ATM usado en el punto 6 o precio actual"
+                )
+                
+                strike_ref_up = st.number_input(
+                    "Strike UP de referencia",
+                    min_value=0.0,
+                    value=float(default_up),
+                    step=5.0,
+                    key='strike_ref_up_adj',
+                    help="Strike UP usado en el punto 6"
+                )
+                
+                strike_ref_down = st.number_input(
+                    "Strike DOWN de referencia",
+                    min_value=0.0,
+                    value=float(default_down),
+                    step=5.0,
+                    key='strike_ref_down_adj',
+                    help="Strike DOWN usado en el punto 6"
+                )
+                
+                st.markdown("---")
+                
+                st.markdown("**Selecciona el Strike de Referencia para Comparar**")
+                strike_comparison_options = {
+                    f"ATM (${strike_ref_atm:.0f})": strike_ref_atm,
+                    f"UP (${strike_ref_up:.0f})": strike_ref_up,
+                    f"DOWN (${strike_ref_down:.0f})": strike_ref_down
+                }
+                
+                selected_strike_ref_label = st.selectbox(
+                    "Strike de referencia",
+                    list(strike_comparison_options.keys()),
+                    index=0,
+                    key='strike_ref_comparison_adj'
+                )
+                
+                strike_ref_selected = strike_comparison_options[selected_strike_ref_label]
+                
+                # Determinar tipo de opción basado en la comparación
+                if current_price_adj < strike_ref_selected:
+                    suggested_option_type = "PUT"
+                    suggested_strike_calc = current_price_adj - expected_move_1std_adj
+                    direction = "debajo"
+                else:
+                    suggested_option_type = "CALL"
+                    suggested_strike_calc = current_price_adj + expected_move_1std_adj
+                    direction = "arriba"
+                
+                suggested_strike_rounded = round(suggested_strike_calc / 5) * 5
+                
+                st.info(f"""
+                📊 **Análisis de Posición:**
+                - Precio Actual: **${current_price_adj:.2f}**
+                - Strike Referencia: **${strike_ref_selected:.0f}**
+                - Posición: Precio está **{direction}** del strike
+                - Tipo Sugerido: **{suggested_option_type}**
+                - Strike Sugerido: **${suggested_strike_calc:.2f}** → **${suggested_strike_rounded:.0f}**
+                """)
+                
+                st.markdown("---")
+                
+                st.markdown("**Strike Final del Ajuste**")
+                strike_adjustment = st.number_input(
+                    "Strike para el Calendar",
+                    min_value=0.0,
+                    value=float(suggested_strike_rounded),
+                    step=5.0,
+                    key='strike_adjustment',
+                    help="Strike final que se usará en el Calendar Spread"
+                )
+                
+                option_type_adjustment = st.selectbox(
+                    "Tipo de Opción",
+                    ["PUT", "CALL"],
+                    index=0 if suggested_option_type == "PUT" else 1,
+                    key='option_type_adjustment'
+                )
+            
+            with col2:
+                st.markdown("#### 📅 Fechas de Expiración")
+                
+                # Usar las mismas fechas del punto 6 si existen
+                default_front = st.session_state.dte_front_p6 if st.session_state.dte_front_p6 else expiration_date
+                default_back = st.session_state.dte_back_p6 if st.session_state.dte_back_p6 else (expiration_date + timedelta(days=7))
+                
+                dte_front_adj = st.date_input(
+                    "DTE FRONT (Venta) - Mismas del Punto 6",
+                    value=default_front,
+                    min_value=date.today() + timedelta(days=1),
+                    max_value=date.today() + timedelta(days=365),
+                    key='dte_front_adj',
+                    help="Fecha de expiración de la opción vendida"
+                )
+                
+                dte_back_adj = st.date_input(
+                    "DTE BACK (Compra) - Mismas del Punto 6",
+                    value=default_back,
+                    min_value=dte_front_adj + timedelta(days=1),
+                    max_value=date.today() + timedelta(days=365),
+                    key='dte_back_adj',
+                    help="Fecha de expiración de la opción comprada"
+                )
+                
+                days_diff_adj = (dte_back_adj - dte_front_adj).days
+                st.success(f"📅 Diferencia: **{days_diff_adj} días**")
+                
+                st.markdown("---")
+                
+                st.markdown("#### 🏷️ Configuración Adicional")
+                
+                basket_tag_adj = st.text_input(
+                    "Basket Tag para Ajuste",
+                    value="Adjustment1",
+                    key='basket_tag_adj',
+                    help="Etiqueta para identificar esta orden de ajuste"
+                )
+                
+                st.markdown("---")
+                
+                st.markdown("#### 📦 Cantidad de Contratos")
+                
+                quantity_adj = st.number_input(
+                    "Cantidad",
+                    min_value=1,
+                    value=1,
+                    step=1,
+                    key='quantity_adj',
+                    help="Número de contratos para el ajuste"
+                )
+            
+            st.markdown("---")
+            
+            if st.button("🎯 Generar CSV de Ajuste", type="primary", use_container_width=True):
+                
+                # Formatear fechas
+                front_date_adj_str = dte_front_adj.strftime("%Y%m%d")
+                back_date_adj_str = dte_back_adj.strftime("%Y%m%d")
+                
+                # Crear estructura de órdenes para el ajuste
+                orders_adj = []
+                
+                strike_int_adj = int(strike_adjustment)
+                right_letter_adj = "C" if option_type_adjustment == "CALL" else "P"
+                
+                # SELL en DTE FRONT
+                orders_adj.append({
+                    'Action': 'SELL',
+                    'Quantity': quantity_adj,
+                    'Symbol': selected_ticker,
+                    'SecType': 'OPT',
+                    'Expiry': front_date_adj_str,
+                    'Strike': strike_int_adj,
+                    'Right': right_letter_adj,
+                    'Exchange': 'SMART',
+                    'Currency': 'USD',
+                    'BasketTag': basket_tag_adj
+                })
+                
+                # BUY en DTE BACK
+                orders_adj.append({
+                    'Action': 'BUY',
+                    'Quantity': quantity_adj,
+                    'Symbol': selected_ticker,
+                    'SecType': 'OPT',
+                    'Expiry': back_date_adj_str,
+                    'Strike': strike_int_adj,
+                    'Right': right_letter_adj,
+                    'Exchange': 'SMART',
+                    'Currency': 'USD',
+                    'BasketTag': basket_tag_adj
+                })
+                
+                # Crear DataFrame
+                df_orders_adj = pd.DataFrame(orders_adj, columns=[
+                    'Action', 'Quantity', 'Symbol', 'SecType', 'Expiry', 
+                    'Strike', 'Right', 'Exchange', 'Currency', 'BasketTag'
+                ])
+                
+                st.success("✅ Orden de ajuste generada exitosamente!")
+                
+                st.markdown("### 📋 Vista Previa - Ajuste Calendar")
+                
+                st.dataframe(
+                    df_orders_adj,
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={
+                        'Action': st.column_config.TextColumn('Action', width="small"),
+                        'Quantity': st.column_config.NumberColumn('Quantity', format="%d", width="small"),
+                        'Symbol': st.column_config.TextColumn('Symbol', width="small"),
+                        'SecType': st.column_config.TextColumn('SecType', width="small"),
+                        'Expiry': st.column_config.TextColumn('Expiry', width="medium"),
+                        'Strike': st.column_config.NumberColumn('Strike', format="%d"),
+                        'Right': st.column_config.TextColumn('Right', width="small"),
+                        'Exchange': st.column_config.TextColumn('Exchange', width="small"),
+                        'Currency': st.column_config.TextColumn('Currency', width="small"),
+                        'BasketTag': st.column_config.TextColumn('BasketTag', width="medium")
+                    }
+                )
+                
+                st.markdown("---")
+                
+                # Generar CSV
+                csv_content_adj = generate_ibkr_basket_csv(df_orders_adj)
+                
+                # Nombre del archivo
+                filename_adj = f"IBKR_{selected_ticker}_ADJ_{date.today().strftime('%d_%m_%Y')}.csv"
+                
+                # Botón de descarga
+                col1, col2, col3 = st.columns([1, 2, 1])
+                with col2:
+                    st.download_button(
+                        label="📥 Descargar CSV de Ajuste",
+                        data=csv_content_adj,
+                        file_name=filename_adj,
+                        mime="text/csv",
+                        type="primary",
+                        use_container_width=True
+                    )
+                
+                st.markdown("---")
+                
+                # Resumen
+                st.markdown("### 📊 Resumen del Ajuste")
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.markdown("**📍 Configuración**")
+                    st.write(f"- Strike: ${strike_adjustment:.0f}")
+                    st.write(f"- Tipo: {option_type_adjustment}")
+                    st.write(f"- Cantidad: {quantity_adj}")
+                
+                with col2:
+                    st.markdown("**📅 Fechas**")
+                    st.write(f"- SELL: {dte_front_adj.strftime('%Y-%m-%d')}")
+                    st.write(f"- BUY: {dte_back_adj.strftime('%Y-%m-%d')}")
+                    st.write(f"- Spread: {days_diff_adj} días")
+                
+                with col3:
+                    st.markdown("**⚙️ Datos**")
+                    st.write(f"- Ticker: {selected_ticker}")
+                    st.write(f"- Basket: {basket_tag_adj}")
+                    st.write(f"- Órdenes: {len(df_orders_adj)}")
+
+# ==============================================================================
+# PUNTO DE ENTRADA PROTEGIDO
+# ==============================================================================
+
+if __name__ == "__main__":
+    
+    if check_password():
+        main_tp_calculos()
+    else:
+        st.title("🔒 Acceso Restringido")
+        st.info("Por favor, introduce tus credenciales en el menú lateral (sidebar) para acceder a TP Cálculos.")
