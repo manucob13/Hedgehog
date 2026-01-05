@@ -31,7 +31,6 @@ def calculate_sma(data, period):
 
 def calculate_bollinger_bands(df, period=20, std_dev=2.5):
     """Calcula Bollinger Bands y %B"""
-    # Asegurar que Close es una Serie, no DataFrame
     close = df['Close'].squeeze() if isinstance(df['Close'], pd.DataFrame) else df['Close']
     
     sma = calculate_sma(close, period)
@@ -40,15 +39,12 @@ def calculate_bollinger_bands(df, period=20, std_dev=2.5):
     upper_band = sma + (std_dev * std)
     lower_band = sma - (std_dev * std)
     
-    # %B: Posición relativa dentro de las bandas
     percent_b = (close - lower_band) / (upper_band - lower_band)
     
-    # Asegurar que todo son Series simples
     return sma.squeeze(), upper_band.squeeze(), lower_band.squeeze(), percent_b.squeeze()
 
 def calculate_zscore(df, period=20):
     """Calcula Z-Score: (Precio - Media) / Desviación Estándar"""
-    # Asegurar que Close es una Serie, no DataFrame
     close = df['Close'].squeeze() if isinstance(df['Close'], pd.DataFrame) else df['Close']
     
     sma = calculate_sma(close, period)
@@ -56,7 +52,6 @@ def calculate_zscore(df, period=20):
     
     zscore = (close - sma) / std
     
-    # Asegurar que retorna Serie simple
     return zscore.squeeze()
 
 def calculate_macd_v(df, fast_len=12, slow_len=26, signal_len=9, atr_len=26):
@@ -81,40 +76,32 @@ def calculate_macd_v(df, fast_len=12, slow_len=26, signal_len=9, atr_len=26):
 def safe_extract_value(series_or_df, index=-1):
     """
     Extrae un valor escalar de una Serie o DataFrame de pandas de forma segura.
-    Maneja múltiples formatos que yfinance puede devolver.
     """
     try:
-        # Si es None, devolver None
         if series_or_df is None:
             return None
         
-        # Si ya es un escalar numpy o python, devolverlo
         if np.isscalar(series_or_df):
             return float(series_or_df) if not pd.isna(series_or_df) else None
         
-        # Si es DataFrame, obtener la primera columna
         if isinstance(series_or_df, pd.DataFrame):
             if series_or_df.empty:
                 return None
-            # Aplanar si tiene múltiples niveles de columnas
             if isinstance(series_or_df.columns, pd.MultiIndex):
                 series_or_df = series_or_df.iloc[:, 0]
             else:
                 series_or_df = series_or_df.squeeze()
         
-        # Si es Series
         if isinstance(series_or_df, pd.Series):
             if len(series_or_df) == 0:
                 return None
             value = series_or_df.iloc[index]
         else:
-            # Último intento: convertir a numpy y extraer
             arr = np.asarray(series_or_df)
             if arr.size == 0:
                 return None
             value = arr.flat[index]
         
-        # Convertir a float
         if pd.isna(value):
             return None
         
@@ -129,7 +116,6 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
                    use_lock=True):
     """Analiza un ticker buscando sobreextensión estadística"""
     try:
-        # SINCRONIZAR descarga para evitar race conditions en yfinance (si use_lock=True)
         if use_lock:
             with _yfinance_lock:
                 data = yf.download(
@@ -158,27 +144,22 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
             if not data.empty:
                 data = data.copy(deep=True)
         
-        if data.empty:
-            return None
-            
-        if len(data) < 50:
+        if data.empty or len(data) < 50:
             return None
         
         # Limpiar columnas MultiIndex si existen
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
         
-        # Asegurar que tenemos las columnas necesarias
         required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
         if not all(col in data.columns for col in required_cols):
             return None
         
-        # Convertir todas las columnas a Series simples
         for col in required_cols:
             if isinstance(data[col], pd.DataFrame):
                 data[col] = data[col].squeeze()
         
-        # Obtener nombre de la compañía (también con lock)
+        # Obtener nombre de la compañía
         try:
             if use_lock:
                 with _yfinance_lock:
@@ -192,7 +173,7 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         except:
             company_name = ticker
         
-        # Calcular indicadores (trabajar sobre copias)
+        # Calcular indicadores
         df_copy = data.copy(deep=True)
         bb_sma, bb_upper, bb_lower, bb_percent = calculate_bollinger_bands(
             df_copy, period=bb_period, std_dev=2.5
@@ -200,11 +181,10 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         zscore = calculate_zscore(df_copy, period=zscore_period)
         macd_v, macd_v_signal = calculate_macd_v(df_copy)
         
-        # Verificar que tenemos datos válidos
         if zscore is None or len(zscore) == 0:
             return None
         
-        # Hacer copias independientes de las series antes de extraer valores
+        # Hacer copias independientes
         bb_sma = bb_sma.copy(deep=True) if bb_sma is not None else None
         bb_upper = bb_upper.copy(deep=True) if bb_upper is not None else None
         bb_lower = bb_lower.copy(deep=True) if bb_lower is not None else None
@@ -213,14 +193,13 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         macd_v = macd_v.copy(deep=True) if macd_v is not None else None
         macd_v_signal = macd_v_signal.copy(deep=True) if macd_v_signal is not None else None
         
-        # Extraer valores actuales usando la función segura
+        # Extraer valores actuales
         current_price = safe_extract_value(data['Close'])
         current_zscore = safe_extract_value(zscore)
         current_bb_percent = safe_extract_value(bb_percent)
         current_macdv = safe_extract_value(macd_v) or 0.0
         current_signal = safe_extract_value(macd_v_signal) or 0.0
         
-        # Validar que obtuvimos valores válidos
         if current_price is None or current_zscore is None or current_bb_percent is None:
             return None
         
@@ -254,15 +233,15 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         elif signal_type == 'SOBREVENTA' and current_macdv < -150:
             macdv_confirms = True
         
-        # Timestamp único para identificar este análisis específico
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         
+        # CORRECCIÓN CRÍTICA: Guardar TANTO los valores actuales COMO las series completas
         return {
             'Ticker': str(ticker),
             'Company': str(company_name),
             'Price': current_price,
-            'Z-Score': current_zscore,
-            'BB_%B': current_bb_percent,
+            'Z-Score': current_zscore,  # Valor actual (float)
+            'BB_%B': current_bb_percent,  # Valor actual (float)
             'MACD_V': current_macdv,
             'Signal': current_signal,
             'Type': str(signal_type),
@@ -273,13 +252,13 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
             'BB_SMA': bb_sma.copy(deep=True) if bb_sma is not None else None,
             'BB_Upper': bb_upper.copy(deep=True) if bb_upper is not None else None,
             'BB_Lower': bb_lower.copy(deep=True) if bb_lower is not None else None,
+            'BB_Percent_Series': bb_percent.copy(deep=True) if bb_percent is not None else None,  # SERIE COMPLETA
             'ZScore_Series': zscore.copy(deep=True) if zscore is not None else None,
             'MACD_V_Series': macd_v.copy(deep=True) if macd_v is not None else None,
             'Signal_Series': macd_v_signal.copy(deep=True) if macd_v_signal is not None else None,
             'ID': f"{ticker}_{timestamp}"
         }
     except Exception as e:
-        # Log error con más detalle
         print(f"Error analyzing {ticker}: {type(e).__name__}: {str(e)}")
         return None
 
@@ -357,17 +336,14 @@ def ensure_series(data_series):
     if data_series is None:
         return None
     
-    # Si es DataFrame, extraer primera columna
     if isinstance(data_series, pd.DataFrame):
         if data_series.empty:
             return None
         data_series = data_series.iloc[:, 0]
     
-    # Si es Series, asegurar que sea 1D
     if isinstance(data_series, pd.Series):
         return data_series.squeeze()
     
-    # Si es numpy array, convertir a Series
     if isinstance(data_series, np.ndarray):
         return pd.Series(data_series)
     
@@ -387,11 +363,9 @@ def plot_ticker_analysis(ticker_data):
         st.error(f"No hay datos disponibles para {ticker}")
         return None
     
-    # Limpiar MultiIndex si existe
     if isinstance(data.columns, pd.MultiIndex):
         data.columns = data.columns.get_level_values(0)
     
-    # Asegurar que todas las columnas sean Series 1D
     for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
         if col in data.columns:
             data[col] = ensure_series(data[col])
@@ -443,7 +417,6 @@ def plot_ticker_analysis(ticker_data):
     zscore = ensure_series(ticker_data.get('ZScore_Series'))
     
     if zscore is not None and len(zscore) > 0:
-        # Asegurar que el índice coincida con data.index
         if len(zscore) != len(data.index):
             zscore = zscore.iloc[:len(data.index)]
         
@@ -500,7 +473,6 @@ def plot_ticker_analysis(ticker_data):
     signal = ensure_series(ticker_data.get('Signal_Series'))
     
     if macd_v is not None and len(macd_v) > 0 and not macd_v.isna().all():
-        # Asegurar que el índice coincida con data.index
         if len(macd_v) != len(data.index):
             macd_v = macd_v.iloc[:len(data.index)]
         
@@ -523,7 +495,6 @@ def plot_ticker_analysis(ticker_data):
                         color=color, linewidth=width, alpha=0.95, zorder=5)
         
         if signal is not None and len(signal) > 0:
-            # Asegurar que el índice coincida
             if len(signal) != len(data.index):
                 signal = signal.iloc[:len(data.index)]
             ax3.plot(data.index, signal, color='#FFB86C', linewidth=1.5, 
@@ -550,14 +521,14 @@ def plot_ticker_analysis(ticker_data):
         spine.set_color('#2D3142')
         spine.set_linewidth(1.5)
     
-    # PANEL 4: BOLLINGER %B
+    # PANEL 4: BOLLINGER %B - CORRECCIÓN CRÍTICA
     ax4 = fig.add_subplot(gs[3], sharex=ax1)
     ax4.set_facecolor('#1A1D29')
     
-    bb_percent = ensure_series(ticker_data.get('BB_%B'))
+    # Usar 'BB_Percent_Series' en lugar de 'BB_%B'
+    bb_percent = ensure_series(ticker_data.get('BB_Percent_Series'))
     
     if bb_percent is not None and len(bb_percent) > 0:
-        # Asegurar que el índice coincida con data.index
         if len(bb_percent) != len(data.index):
             bb_percent = bb_percent.iloc[:len(data.index)]
         
@@ -586,6 +557,7 @@ def plot_ticker_analysis(ticker_data):
         ax4.fill_between(data.index, 1.0, 1.5, alpha=0.12, color='#FFB86C', zorder=0)
         ax4.fill_between(data.index, -0.5, 0.0, alpha=0.12, color='#4ECDC4', zorder=0)
         
+        # Usar el valor actual (float) para el texto
         current_bb = ticker_data.get('BB_%B', 0)
         bb_color = '#FF6B6B' if current_bb > 1.1 or current_bb < -0.1 else '#FFB86C' if current_bb > 1.0 else '#4ECDC4' if current_bb < 0 else '#95A5A6'
         ax4.text(0.02, 0.95, f'%B: {current_bb:.2f}', 
@@ -711,41 +683,6 @@ def main_app():
                         })
                     else:
                         st.warning(f"⚠️ {test_ticker} NO pasa los filtros")
-                        st.info("Probando con filtros más relajados...")
-                        
-                        try:
-                            data = yf.download(test_ticker, period=period, interval=interval, 
-                                             progress=False, auto_adjust=True, actions=False)
-                            if not data.empty and len(data) >= 50:
-                                # Limpiar MultiIndex si existe
-                                if isinstance(data.columns, pd.MultiIndex):
-                                    data.columns = data.columns.get_level_values(0)
-                                
-                                bb_sma, bb_upper, bb_lower, bb_percent = calculate_bollinger_bands(data, period=20, std_dev=2.5)
-                                zscore = calculate_zscore(data, period=20)
-                                macd_v, _ = calculate_macd_v(data)
-                                
-                                current_zscore = safe_extract_value(zscore)
-                                current_bb = safe_extract_value(bb_percent)
-                                current_macdv = safe_extract_value(macd_v) or 0.0
-                                
-                                if current_zscore is not None and current_bb is not None:
-                                    st.info(f"""
-                                    **Valores actuales:**
-                                    - Z-Score: {current_zscore:.2f} (necesita ≥{zscore_threshold} o ≤{-zscore_threshold})
-                                    - BB %B: {current_bb:.2f} (necesita >{bb_threshold_upper} o <{bb_threshold_lower})
-                                    - MACD-V: {current_macdv:.1f}
-                                    
-                                    **¿Por qué NO pasa?**
-                                    {'❌ Z-Score insuficiente' if abs(current_zscore) < zscore_threshold else '✅ Z-Score OK'}
-                                    {'❌ BB %B dentro de bandas' if bb_threshold_lower < current_bb < bb_threshold_upper else '✅ BB %B OK'}
-                                    """)
-                                else:
-                                    st.error("No se pudieron extraer los valores correctamente")
-                            else:
-                                st.error("No se pudieron descargar suficientes datos")
-                        except Exception as e:
-                            st.error(f"Error: {str(e)}")
         
         st.markdown("---")
         
@@ -788,85 +725,8 @@ def main_app():
         if results:
             st.session_state['scan_results'] = results
             st.success(f"✅ {len(results)} tickers detectados con sobreextensión estadística")
-            
-            if debug_mode:
-                with st.expander("🐛 Información de Debug"):
-                    st.write(f"**Total tickers analizados:** {len(tickers_list)}")
-                    st.write(f"**Tickers detectados:** {len(results)}")
-                    st.write(f"**Tasa de detección:** {len(results)/len(tickers_list)*100:.1f}%")
-                    
-                    ids = [r['ID'] for r in results]
-                    unique_ids = len(set(ids))
-                    st.write(f"**IDs únicos:** {unique_ids} de {len(ids)}")
-                    if unique_ids != len(ids):
-                        st.error("⚠️ ¡ADVERTENCIA! Hay IDs duplicados (problema de concurrencia)")
-                    else:
-                        st.success("✅ Todos los IDs son únicos")
-                    
-                    ticker_prices = {}
-                    for r in results:
-                        tick = r['Ticker']
-                        price = r['Price']
-                        if tick in ticker_prices:
-                            if ticker_prices[tick] == price:
-                                st.warning(f"⚠️ {tick} aparece con el mismo precio: ${price}")
-                        else:
-                            ticker_prices[tick] = price
-                    
-                    st.write("**Muestra de datos (primer resultado):**")
-                    if len(results) > 0:
-                        first = results[0]
-                        st.json({
-                            'ID': first['ID'],
-                            'Ticker': first['Ticker'],
-                            'Company': first.get('Company', 'N/A'),
-                            'Price': first['Price'],
-                            'Z-Score': first['Z-Score'],
-                            'BB_%B': first['BB_%B'],
-                            'MACD_V': first['MACD_V'],
-                            'Data_Shape': str(first['Data'].shape),
-                            'Date': str(first['Date'])
-                        })
         else:
             st.warning("⚠️ No se encontraron tickers con las condiciones especificadas")
-            
-            st.info(f"""
-            **💡 Sugerencias para encontrar más resultados:**
-            
-            1️⃣ **Relajar Z-Score:** Actual = {zscore_threshold}σ → Prueba con 2.0σ o 2.2σ
-            
-            2️⃣ **Relajar BB %B:** Actual = {bb_threshold:.2f} → Prueba con 0.05 o 0.0
-            
-            3️⃣ **Cambiar periodo:** Actual = {period} → Prueba con "3mo" o "1y"
-            
-            4️⃣ **Usar modo Debug:** Activa el checkbox "🐛 Modo Debug" para probar tickers individuales
-            
-            5️⃣ **Verificar datos:** Es posible que el mercado no tenga valores muy sobreextendidos en este momento
-            
-            📊 Recuerda: Los filtros detectan sobreextensión **estadísticamente significativa** (2.5σ = eventos raros)
-            """)
-            
-            if st.button("🔄 Intentar con filtros más relajados (Z-Score 2.0σ, BB 0.05)", type="secondary"):
-                st.info("Re-ejecutando con filtros más relajados...")
-                disable_lock_relaxed = st.session_state.get('disable_lock', False)
-                with st.spinner("Analizando..."):
-                    results_relaxed = scan_tickers(
-                        tickers_list, 
-                        max_workers=max_workers,
-                        use_lock=not disable_lock_relaxed,
-                        period=period,
-                        interval=interval,
-                        zscore_threshold=2.0,
-                        bb_threshold_upper=1.05,
-                        bb_threshold_lower=-0.05
-                    )
-                
-                if results_relaxed:
-                    st.session_state['scan_results'] = results_relaxed
-                    st.success(f"✅ {len(results_relaxed)} tickers encontrados con filtros relajados")
-                    st.rerun()
-                else:
-                    st.error("❌ Incluso con filtros relajados no se encontraron resultados")
     
     if 'scan_results' in st.session_state:
         results = st.session_state['scan_results']
@@ -887,13 +747,6 @@ def main_app():
         ])
         
         df_results = df_results.sort_values('Fuerza (σ)', ascending=False).reset_index(drop=True)
-        
-        if st.session_state.get('debug_mode', False):
-            duplicates = df_results[df_results.duplicated(subset=['Precio', 'Z-Score', 'BB %B'], keep=False)]
-            if len(duplicates) > 0:
-                st.warning(f"⚠️ Se detectaron {len(duplicates)} posibles duplicados en los datos")
-                with st.expander("Ver duplicados detectados"):
-                    st.dataframe(duplicates)
         
         st.markdown("---")
         st.markdown("### 📊 Resultados del Escaneo")
@@ -967,6 +820,8 @@ def main_app():
                             st.pyplot(fig)
                     except Exception as e:
                         st.error(f"Error al generar gráfico: {str(e)}")
+                        if st.session_state.get('debug_mode', False):
+                            st.exception(e)
         else:
             st.info("👆 Selecciona un ticker en la tabla para ver su gráfico detallado")
     
@@ -1002,4 +857,3 @@ if __name__ == "__main__":
                 Introduce tus credenciales en el menú lateral.
             </p>
         </div>
-        """, unsafe_allow_html=True)
