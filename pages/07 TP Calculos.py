@@ -852,7 +852,7 @@ def main_tp_calculos():
                     'Quantity': st.column_config.NumberColumn('Quantity', format="%d", width="small"),
                     'Symbol': st.column_config.TextColumn('Symbol', width="small"),
                     'SecType': st.column_config.TextColumn('SecType', width="small"),
-                    'LastTradingDayOrContractMonth': st.column_config.TextColumn('Expiry', width="medium"),
+                    'LastTradingDayOrContractMonth': st.column_config.TextColumn('LastTradingDayOrContractMonth', width="medium"),
                     'Strike': st.column_config.NumberColumn('Strike', format="%d"),
                     'Right': st.column_config.TextColumn('Right', width="small"),
                     'Exchange': st.column_config.TextColumn('Exchange', width="small"),
