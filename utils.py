@@ -343,3 +343,48 @@ def markov_calculation_k3(endog_final, exog_tvtp_final):
         'prob_media_serie': prob_media_serie,
         'UMBRAL_COMPRESION': UMBRAL_COMPRESION
     }
+
+
+@st.cache_data(ttl=3600)
+def fetch_data_with_ticker(ticker):
+    """
+    Descarga datos históricos para el ticker especificado junto con VIX.
+    
+    Args:
+        ticker: str - Ticker a descargar ('QQQ', 'SPX', 'SPY')
+    
+    Returns:
+        DataFrame con datos históricos del ticker y VIX
+    """
+    # Mapeo de tickers a símbolos de Yahoo Finance
+    ticker_map = {
+        'SPX': '^GSPC',
+        'SPY': 'SPY',
+        'QQQ': 'QQQ'
+    }
+    
+    # Obtener el símbolo correcto
+    yahoo_symbol = ticker_map.get(ticker, ticker)
+    
+    start = "2010-01-01"
+    end = datetime.now() + timedelta(days=1)
+    
+    # Descargar datos del ticker seleccionado
+    df_ticker = yf.download(yahoo_symbol, start=start, end=end, 
+                           auto_adjust=False, multi_level_index=False, progress=False)
+    
+    # Descargar VIX
+    vix = yf.download("^VIX", start=start, end=end, 
+                     auto_adjust=False, multi_level_index=False, progress=False)
+    
+    # Procesar índices
+    df_ticker.index = pd.to_datetime(df_ticker.index)
+    vix_series = vix['Close'].rename('VIX')
+    vix_series.index = pd.to_datetime(vix_series.index)
+    
+    # Merge
+    df_merged = df_ticker.merge(vix_series, how='left', left_index=True, right_index=True)
+    df_merged.dropna(subset=['VIX'], inplace=True)
+    
+    return df_merged
+
