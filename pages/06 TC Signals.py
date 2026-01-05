@@ -37,9 +37,7 @@ def get_default_config_df_triple_calendar(rv5d_ayer_val):
             f'7. RV_5d HOY vs. AYER ({rv5d_ayer_val:.4f})'
         ],
         'Operador': ['==', '>=', '>=', '>=', '>=', '<=', '<'],
-        # Umbrales - RV_5d cambiado a <=0.15
         'Umbral': ['ON', '0.9000', '0.7500', '0.1500', '0.9500', '0.1500', 'RV_AYER'], 
-        # Activación - NR/WR en OFF por defecto
         'Activa': [False, True, False, False, True, True, False], 
         'ID': ['r1_nr_wr', 'r2_k2_70', 'r3_k3_media_75', 'r4_k3_baja_15', 'r5_k3_consol_95', 'r6_rv5d_10', 'r7_rv5d_menor']
     }
@@ -48,7 +46,6 @@ def get_default_config_df_triple_calendar(rv5d_ayer_val):
 def reset_config_callback_triple(rv5d_ayer_val):
     """Callback para el botón de reset: Restaura la configuración específica de Triple Calendar."""
     st.session_state['config_df_triple'] = get_default_config_df_triple_calendar(rv5d_ayer_val)
-    # Eliminar el estado calculado del semáforo
     for key in ['df_semaforo_body_triple', 'df_semaforo_footer_triple', 'senal_color_triple']:
         if key in st.session_state:
             del st.session_state[key]
@@ -73,7 +70,6 @@ def calcular_y_mostrar_semaforo_triple(df_config, metricas_actuales, rv5d_ayer):
 
     df_config_calc['Umbral_Calc'] = df_config_calc['Umbral'].apply(safe_float_convert)
     
-    # Añadir la columna 'Valor Actual'
     df_config_calc['Valor Actual'] = df_config_calc['ID'].apply(lambda id: 
         (metricas_actuales[id] and '🟢 ACTIVA' or '⚪ INACTIVA') if id == 'r1_nr_wr' else 
         f"{metricas_actuales[id]:.4f}"
@@ -148,7 +144,6 @@ def calcular_y_mostrar_semaforo_triple(df_config, metricas_actuales, rv5d_ayer):
 
 def main_triple_calendar():
     
-    # --- TÍTULO PRINCIPAL ---
     st.markdown("<h1><span style='font-size: 1.5em;'>📅</span> Triple Calendar Strategy Analyzer</h1>", unsafe_allow_html=True)
     st.markdown("""
     Esta herramienta analiza las condiciones óptimas para estrategias Triple Calendar en diferentes activos,
@@ -164,7 +159,6 @@ def main_triple_calendar():
     col1, col2 = st.columns(2)
     
     with col1:
-        # Selector de Ticker
         ticker_options = ['QQQ', 'SPX', 'SPY']
         selected_ticker = st.selectbox(
             "Selecciona el Ticker",
@@ -175,7 +169,6 @@ def main_triple_calendar():
         st.info(f"📊 Ticker seleccionado: **{selected_ticker}**")
     
     with col2:
-        # Selector de Fecha de Hoy (para los datos)
         fecha_hoy = st.date_input(
             "Fecha de Análisis (Datos)",
             value=date.today(),
@@ -190,14 +183,12 @@ def main_triple_calendar():
     # BOTÓN PARA INICIAR EL ESTUDIO
     # ==============================================================================
     
-    # Crear una clave única para los datos basada en el ticker
     datos_key = f'datos_calculados_{selected_ticker}'
     
     col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1])
     
     with col_btn1:
         if st.button("🚀 Iniciar Estudio y Cálculos", key='iniciar_estudio_triple', type="primary", use_container_width=True):
-            # Marcar que se debe iniciar el estudio
             st.session_state['iniciar_calculo_triple'] = True
             st.session_state['ticker_actual_triple'] = selected_ticker
             st.rerun()
@@ -213,14 +204,12 @@ def main_triple_calendar():
     with col_btn3:
         if datos_key in st.session_state:
             if st.button("🗑️ Limpiar Estudio Actual", key='limpiar_estudio_triple', use_container_width=True):
-                # Eliminar el estudio actual
                 if datos_key in st.session_state:
                     del st.session_state[datos_key]
                 if 'iniciar_calculo_triple' in st.session_state:
                     del st.session_state['iniciar_calculo_triple']
                 if 'ticker_actual_triple' in st.session_state:
                     del st.session_state['ticker_actual_triple']
-                # Limpiar también el semáforo
                 for key in ['df_semaforo_body_triple', 'df_semaforo_footer_triple', 'senal_color_triple', 'config_df_triple']:
                     if key in st.session_state:
                         del st.session_state[key]
@@ -232,12 +221,10 @@ def main_triple_calendar():
     # VERIFICAR SI SE DEBE INICIAR EL CÁLCULO
     # ==============================================================================
     
-    # Verificar si se ha solicitado iniciar el cálculo
     if 'iniciar_calculo_triple' not in st.session_state or not st.session_state.get('iniciar_calculo_triple', False):
         st.info("👆 **Selecciona el ticker y la fecha, luego presiona '🚀 Iniciar Estudio y Cálculos' para comenzar el análisis.**")
         st.stop()
     
-    # Verificar si el ticker ha cambiado
     if st.session_state.get('ticker_actual_triple') != selected_ticker:
         st.warning(f"⚠️ Has cambiado el ticker. Presiona '🚀 Iniciar Estudio y Cálculos' nuevamente para calcular {selected_ticker}.")
         st.stop()
@@ -250,9 +237,8 @@ def main_triple_calendar():
     if datos_key not in st.session_state:
         
         with st.spinner(f"Descargando datos históricos de {selected_ticker} y calculando indicadores..."):
-            # NOTA: Aquí necesitarías modificar fetch_data para aceptar el ticker como parámetro
-            # df_raw = fetch_data(ticker=selected_ticker)
-            df_raw = fetch_data()  # Por ahora usar el original
+            # CORRECCIÓN CRÍTICA: Pasar el ticker a fetch_data
+            df_raw = fetch_data(ticker=selected_ticker)
             spx = calculate_indicators(df_raw)
             endog_final, exog_tvtp_final = preparar_datos_markov(spx)
 
@@ -279,7 +265,6 @@ def main_triple_calendar():
     else:
         st.info(f"ℹ️ Usando datos previamente calculados para {selected_ticker}")
     
-    # Recuperar datos
     datos = st.session_state[datos_key]
     df_raw = datos['df_raw']
     spx = datos['spx']
@@ -480,7 +465,6 @@ def main_triple_calendar():
     # ==============================================================================
     st.header("6. Gráficos de Análisis Técnico Combinados")
     
-    # --- CONTROLES DE FECHA PARA GRÁFICOS ---
     st.sidebar.header("⚙️ Configuración del Gráfico")
     fecha_final_grafico = spx.index[-1].date()
     st.sidebar.info(f"📅 Última fecha disponible: {fecha_final_grafico}")
@@ -494,16 +478,12 @@ def main_triple_calendar():
         key='fecha_inicio_grafico_triple'
     )
 
-    # --- FILTRAR DATOS POR RANGO DE FECHAS ---
     fecha_inicio_dt_grafico = pd.to_datetime(fecha_inicio_grafico)
     fecha_final_dt_grafico = pd.to_datetime(fecha_final_grafico)
 
     spx_filtered = spx[(spx.index >= fecha_inicio_dt_grafico) & (spx.index <= fecha_final_dt_grafico)].copy()
     spx_filtered = spx_filtered[spx_filtered.index.dayofweek < 5]
 
-    # --- PREPARACIÓN DE DATOS PARA GRÁFICO COMBINADO ---
-
-    # Etiquetado del eje X
     date_labels = [d.strftime('%b %d') if i % 5 == 0 else '' for i, d in enumerate(spx_filtered.index)]
     date_labels[0] = spx_filtered.index[0].strftime('%b %d')
     date_labels[-1] = spx_filtered.index[-1].strftime('%b %d')
@@ -524,10 +504,8 @@ def main_triple_calendar():
     UMBRAL_ALERTA = 0.50 
     UMBRAL_COMPRESION = results_k2['UMBRAL_COMPRESION']
 
-    # Formato de fecha para el hover (DÍA-MES-AÑO)
     fechas_formateadas = spx_filtered.index.strftime('%d-%m-%Y').tolist()
 
-    # --- CREAR SUBPLOTS (5 FILAS) ---
     fig_combined = make_subplots(
         rows=5, 
         cols=1, 
@@ -536,10 +514,7 @@ def main_triple_calendar():
         row_heights=[0.45, 0.13, 0.14, 0.14, 0.14],
     )
 
-    # ----------------------------------------------------
-    # 1. GRÁFICO DE VELAS JAPONESAS (Fila 1)
-    # ----------------------------------------------------
-
+    # 1. GRÁFICO DE VELAS JAPONESAS
     hover_text_candles = [
         f"<b>{fecha}</b><br>Open: {o:.2f}<br>High: {h:.2f}<br>Low: {l:.2f}<br>Close: {c:.2f}"
         for fecha, o, h, l, c in zip(
@@ -567,10 +542,7 @@ def main_triple_calendar():
     fig_combined.update_yaxes(title_text='Precio', row=1, col=1)
     fig_combined.update_xaxes(showticklabels=False, row=1, col=1)
 
-    # ----------------------------------------------------
-    # 2. GRÁFICO DE VOLATILIDAD REALIZADA (RV_5d) (Fila 2)
-    # ----------------------------------------------------
-
+    # 2. GRÁFICO DE VOLATILIDAD REALIZADA (RV_5d)
     for i in range(len(spx_filtered) - 1):
         color = '#00B06B' if is_up.iloc[i+1] else '#F13A50'
         
@@ -617,10 +589,7 @@ def main_triple_calendar():
     fig_combined.update_yaxes(title_text='RV (%)', row=2, col=1, tickformat=".2f")
     fig_combined.update_xaxes(showticklabels=False, row=2, col=1) 
 
-    # ----------------------------------------------------
-    # 3. GRÁFICO DE MARKOV K=2 (Fila 3)
-    # ----------------------------------------------------
-
+    # 3. GRÁFICO DE MARKOV K=2
     fig_combined.add_trace(go.Scatter(
         x=list(range(len(spx_filtered))),
         y=prob_baja_serie_k2,
@@ -683,10 +652,7 @@ def main_triple_calendar():
     fig_combined.update_yaxes(title_text='Prob. K=2', row=3, col=1, tickformat=".2f", range=[0, 1])
     fig_combined.update_xaxes(showticklabels=False, row=3, col=1) 
 
-    # ----------------------------------------------------
-    # 4. GRÁFICO DE MARKOV K=3 (Fila 4)
-    # ----------------------------------------------------
-
+    # 4. GRÁFICO DE MARKOV K=3
     fig_combined.add_trace(go.Scatter(
         x=list(range(len(spx_filtered))),
         y=prob_k3_consolidada_serie,
@@ -749,10 +715,7 @@ def main_triple_calendar():
     fig_combined.update_yaxes(title_text='Prob. K=3', row=4, col=1, tickformat=".2f", range=[0, 1])
     fig_combined.update_xaxes(showticklabels=False, row=4, col=1)
 
-    # ----------------------------------------------------
-    # 5. GRÁFICO DE SEÑAL NR/WR (Fila 5)
-    # ----------------------------------------------------
-
+    # 5. GRÁFICO DE SEÑAL NR/WR
     fig_combined.add_trace(go.Bar(
         x=list(range(len(spx_filtered))),
         y=nr_wr_filtered,
@@ -792,7 +755,7 @@ def main_triple_calendar():
 
     fig_combined.update_yaxes(title_text='NR/WR', row=5, col=1, range=[0, 1.05], tickvals=[0, 1], ticktext=['OFF', 'ON'])
 
-    # --- CONFIGURACIÓN FINAL DEL GRÁFICO COMBINADO ---
+    # CONFIGURACIÓN FINAL
     fig_combined.update_layout(
         template='plotly_dark',
         height=1100, 
@@ -816,10 +779,6 @@ def main_triple_calendar():
         )
     )
 
-    # ----------------------------------------------------------------------------------
-    # CONFIGURACIÓN DE SPIKE POR DEFECTO
-    # ----------------------------------------------------------------------------------
-
     for i in range(1, 6):
         fig_combined.update_xaxes(
             showspikes=True,
@@ -837,10 +796,6 @@ def main_triple_calendar():
             row=i, 
             col=1
         )
-
-    # ----------------------------------------------------------------------------------
-    # CONFIGURACIONES DE EJE X (Estética)
-    # ----------------------------------------------------------------------------------
 
     fig_combined.update_xaxes(
         tickmode='array',
@@ -864,7 +819,6 @@ def main_triple_calendar():
 
     st.plotly_chart(fig_combined, use_container_width=True)
 
-    # --- INFORMACIÓN ADICIONAL ---
     st.markdown("---")
     col1, col2, col3, col4, col5, col6 = st.columns(6) 
 
@@ -890,7 +844,6 @@ def main_triple_calendar():
 # ==============================================================================
 
 if __name__ == "__main__":
-    
     if check_password():
         main_triple_calendar()
     else:
