@@ -834,7 +834,7 @@ def main_tp_calculos():
             
             # Crear DataFrame con el orden de columnas específico de IBKR
             df_orders = pd.DataFrame(orders, columns=[
-                'Action', 'Quantity', 'Symbol', 'SecType', 'Expiry', 
+                'Action', 'Quantity', 'Symbol', 'SecType', 'LastTradingDayOrContractMonth', 
                 'Strike', 'Right', 'Exchange', 'Currency', 'BasketTag'
             ])
             
@@ -852,7 +852,7 @@ def main_tp_calculos():
                     'Quantity': st.column_config.NumberColumn('Quantity', format="%d", width="small"),
                     'Symbol': st.column_config.TextColumn('Symbol', width="small"),
                     'SecType': st.column_config.TextColumn('SecType', width="small"),
-                    'Expiry': st.column_config.TextColumn('Expiry', width="medium"),
+                    'LastTradingDayOrContractMonth': st.column_config.TextColumn('Expiry', width="medium"),
                     'Strike': st.column_config.NumberColumn('Strike', format="%d"),
                     'Right': st.column_config.TextColumn('Right', width="small"),
                     'Exchange': st.column_config.TextColumn('Exchange', width="small"),
@@ -1167,7 +1167,7 @@ def main_tp_calculos():
                 
                 # Crear DataFrame
                 df_orders_adj = pd.DataFrame(orders_adj, columns=[
-                    'Action', 'Quantity', 'Symbol', 'SecType', 'Expiry', 
+                    'Action', 'Quantity', 'Symbol', 'SecType', 'LastTradingDayOrContractMonth', 
                     'Strike', 'Right', 'Exchange', 'Currency', 'BasketTag'
                 ])
                 
@@ -1184,7 +1184,7 @@ def main_tp_calculos():
                         'Quantity': st.column_config.NumberColumn('Quantity', format="%d", width="small"),
                         'Symbol': st.column_config.TextColumn('Symbol', width="small"),
                         'SecType': st.column_config.TextColumn('SecType', width="small"),
-                        'Expiry': st.column_config.TextColumn('Expiry', width="medium"),
+                        'LastTradingDayOrContractMonth': st.column_config.TextColumn('Expiry', width="medium"),
                         'Strike': st.column_config.NumberColumn('Strike', format="%d"),
                         'Right': st.column_config.TextColumn('Right', width="small"),
                         'Exchange': st.column_config.TextColumn('Exchange', width="small"),
