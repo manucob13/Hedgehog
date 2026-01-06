@@ -11,8 +11,23 @@ scikit-learn
 lxml
 schwab-py
 tqdm
+datetime
 hmmlearn
-ib_insync
+bs4
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
