@@ -7,63 +7,44 @@ import time
 from datetime import datetime, timedelta
 from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
 from sklearn.preprocessing import StandardScaler
-from ib_insync import IB, Contract, Option, ComboLeg, Order, util
 from typing import Optional, Dict, Any
 
+# ❌ NO IMPORTAR ib_insync A NIVEL DE MÓDULO
+# from ib_insync import IB, Contract, Option, ComboLeg, Order, util
 
 warnings.filterwarnings('ignore')
 
 # ==============================================================================
-# FUNCIONES DE CARGA Y PREPARACIÓN (COMPARTIDAS)
+# FUNCIONES DE AUTENTICACIÓN Y CARGA DE DATOS (TU CÓDIGO EXISTENTE)
 # ==============================================================================
 
 def check_password():
-    """
-    Controla el acceso. Devuelve True si el usuario ingresa las credenciales correctas
-    y False en caso contrario. Usa un botón explícito para evitar errores de renderizado.
-    """
-    
-    # 1. Intenta obtener las credenciales de st.secrets
+    """Controla el acceso. Devuelve True si el usuario ingresa las credenciales correctas."""
     try:
         credentials = st.secrets["credentials"]
     except KeyError:
         st.error("Error: Las credenciales secretas no están configuradas.")
         return False
     
-    # 2. Control de Acceso (Si ya está correcto, devuelve True inmediatamente)
     if st.session_state.get("password_correct", False):
         return True
 
-    # --- Mostrar Formulario de Login ---
     with st.sidebar:
         st.header("🔑 Iniciar Sesión")
-        
-        # Usamos st.empty() para controlar dónde aparecerá el error
         error_placeholder = st.empty() 
-
-        # Campos de entrada con keys simples
         username = st.text_input("Usuario", key="login_username_input")
         password = st.text_input("Contraseña", type="password", key="login_password_input")
         
-        # Botón para activar la verificación
         if st.button("Login"):
-            # 3. Verificación al hacer clic en el botón
             if username == credentials["username"] and password == credentials["password"]:
                 st.session_state["password_correct"] = True
-                
-                # Opcional: Limpiamos los campos para seguridad
-                # Nota: Las keys de los inputs deben coincidir: "login_username_input" y "login_password_input"
                 del st.session_state["login_username_input"]
                 del st.session_state["login_password_input"]
-                
-                # CORRECCIÓN DE ERROR: Usamos st.rerun()
                 st.rerun() 
             else:
                 st.session_state["password_correct"] = False
-                # Mostramos el error solo después del intento fallido
                 error_placeholder.error("😕 Usuario o Contraseña incorrecta")
         
-    # 4. Si el login no es correcto o no se ha intentado, el acceso es False
     return False
 
 
@@ -85,16 +66,15 @@ def fetch_data():
     
     return df_merged
 
+
 @st.cache_data(ttl=3600)
 def calculate_indicators(df_raw: pd.DataFrame):
     """Calcula todos los indicadores técnicos necesarios."""
     spx = df_raw.copy()
 
-    # 1. Volatilidad Realizada (RV_5d)
     spx['log_ret'] = np.log(spx['Close'] / spx['Close'].shift(1))
     spx['RV_5d'] = spx['log_ret'].rolling(window=5).std() * np.sqrt(252)
 
-    # 2. Average True Range (ATR_14)
     spx['tr1'] = spx['High'] - spx['Low']
     spx['tr2'] = (spx['High'] - spx['Close'].shift(1)).abs()
     spx['tr3'] = (spx['Low'] - spx['Close'].shift(1)).abs()
@@ -102,13 +82,11 @@ def calculate_indicators(df_raw: pd.DataFrame):
     spx['ATR_14'] = spx['true_range'].rolling(window=14).mean()
     spx.drop(columns=['tr1', 'tr2', 'tr3', 'true_range'], inplace=True)
 
-    # 3. Narrow Range (NR14)
     window = 14
     spx['nr14_threshold'] = spx['High'].rolling(window=window).max() - spx['Low'].rolling(window=window).min()
     spx['NR14'] = (spx['High'] - spx['Low'] < spx['nr14_threshold']).astype(int)
     spx.drop(columns=['nr14_threshold'], inplace=True)
     
-    # 4. Ratio de volatilidad en el VIX
     spx['VIX_pct_change'] = spx['VIX'].pct_change()
     
     return spx.dropna()
@@ -122,7 +100,6 @@ def preparar_datos_markov(spx: pd.DataFrame):
     data_markov = spx.copy()
     endog = data_markov[endog_variable].dropna()
     
-    # Estandarizar exógenas
     exog_tvtp_original = data_markov[variables_tvtp].copy()
     scaler_tvtp = StandardScaler()
     exog_tvtp_scaled_data = scaler_tvtp.fit_transform(exog_tvtp_original.dropna())
@@ -133,7 +110,6 @@ def preparar_datos_markov(spx: pd.DataFrame):
         columns=variables_tvtp
     )
 
-    # Alinear y eliminar NaNs finales
     data_final = pd.concat([endog, exog_tvtp_scaled], axis=1).dropna()
     endog_final = data_final[endog_variable]
     exog_tvtp_final = data_final[variables_tvtp]
@@ -269,8 +245,6 @@ def markov_calculation_k2(endog_final, exog_tvtp_final):
     ultima_probabilidad = probabilidades_filtradas.iloc[-1]
     
     prob_baja = ultima_probabilidad.get(regimen_baja_vol_index, 0)
-    
-    # Para gráficos, devolvemos también la serie completa
     prob_baja_serie = probabilidades_filtradas[regimen_baja_vol_index].rename('Prob_Baja_K2')
     
     return {
@@ -332,7 +306,6 @@ def markov_calculation_k3(endog_final, exog_tvtp_final):
     prob_baja = ultima_probabilidad.get(indices_regimen['Baja'], 0)
     prob_media = ultima_probabilidad.get(indices_regimen['Media'], 0)
     
-    # Para gráficos, devolvemos también las series completas
     prob_baja_serie = probabilidades_filtradas[indices_regimen['Baja']].rename('Prob_Baja_K3')
     prob_media_serie = probabilidades_filtradas[indices_regimen['Media']].rename('Prob_Media_K3')
     
@@ -351,47 +324,36 @@ def markov_calculation_k3(endog_final, exog_tvtp_final):
 
 @st.cache_data(ttl=3600)
 def fetch_data_with_ticker(ticker):
-    """
-    Descarga datos históricos para el ticker especificado junto con VIX.
-    
-    Args:
-        ticker: str - Ticker a descargar ('QQQ', 'SPX', 'SPY')
-    
-    Returns:
-        DataFrame con datos históricos del ticker y VIX
-    """
-    # Mapeo de tickers a símbolos de Yahoo Finance
+    """Descarga datos históricos para el ticker especificado junto con VIX."""
     ticker_map = {
         'SPX': '^GSPC',
         'SPY': 'SPY',
         'QQQ': 'QQQ'
     }
     
-    # Obtener el símbolo correcto
     yahoo_symbol = ticker_map.get(ticker, ticker)
     
     start = "2010-01-01"
     end = datetime.now() + timedelta(days=1)
     
-    # Descargar datos del ticker seleccionado
     df_ticker = yf.download(yahoo_symbol, start=start, end=end, 
                            auto_adjust=False, multi_level_index=False, progress=False)
-    
-    # Descargar VIX
     vix = yf.download("^VIX", start=start, end=end, 
                      auto_adjust=False, multi_level_index=False, progress=False)
     
-    # Procesar índices
     df_ticker.index = pd.to_datetime(df_ticker.index)
     vix_series = vix['Close'].rename('VIX')
     vix_series.index = pd.to_datetime(vix_series.index)
     
-    # Merge
     df_merged = df_ticker.merge(vix_series, how='left', left_index=True, right_index=True)
     df_merged.dropna(subset=['VIX'], inplace=True)
     
     return df_merged
 
+
+# ==============================================================================
+# FUNCIÓN PARA ENVIAR ÓRDENES A IBKR (CON IMPORT LOCAL)
+# ==============================================================================
 
 def send_strategy_order_ibkr(
     df_strategy: pd.DataFrame,
@@ -407,37 +369,21 @@ def send_strategy_order_ibkr(
     """
     Envía una orden de estrategia multi-leg a IBKR TWS/Gateway.
     
-    Parameters:
-    -----------
-    df_strategy : pd.DataFrame
-        DataFrame con columnas: Action, Quantity, Symbol, SecType, Expiry, Strike, Right, Exchange, Currency
-        Cada fila representa una pierna de la estrategia
-    limit_price : float
-        Precio límite de la orden (para toda la estrategia)
-    host : str, default '127.0.0.1'
-        Host de IBKR TWS/Gateway
-    port : int, default 5000
-        Puerto de conexión (5000 para papel, 7497 para live)
-    client_id : int, default 1
-        Client ID único para la conexión
-    quantity : int, default 1
-        Cantidad de contratos (multiplicador para toda la estrategia)
-    tif : str, default 'DAY'
-        Time in Force: 'DAY', 'GTC', 'IOC', etc.
-    action : str, default 'BUY'
-        Acción principal de la estrategia: 'BUY' o 'SELL'
-    timeout : int, default 10
-        Tiempo máximo de espera para operaciones (segundos)
-    
-    Returns:
-    --------
-    Dict con:
-        - 'success': bool - Si la operación fue exitosa
-        - 'message': str - Mensaje descriptivo del resultado
-        - 'trade': Trade object o None - Objeto trade de ib_insync
-        - 'order_id': int o None - ID de la orden
-        - 'contracts': list - Lista de contratos calificados
+    ⚠️ IMPORTANTE: Esta función importa ib_insync localmente para evitar
+    problemas con event loops en Streamlit Cloud.
     """
+    
+    # ✅ IMPORT LOCAL - Solo cuando se ejecuta la función
+    try:
+        from ib_insync import IB, Contract, Option, ComboLeg, Order, util
+    except ImportError as e:
+        return {
+            'success': False,
+            'message': f'Error importando ib_insync: {str(e)}',
+            'trade': None,
+            'order_id': None,
+            'contracts': []
+        }
     
     ib = None
     result = {
@@ -639,8 +585,3 @@ def send_strategy_order_ibkr(
         print(f"{'='*60}\n")
     
     return result
-
-
-
-
-
