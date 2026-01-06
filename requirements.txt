@@ -13,7 +13,10 @@ schwab-py
 tqdm
 datetime
 hmmlearn
-bs4
+ib_insync
+typing 
+
+
 
 
 
