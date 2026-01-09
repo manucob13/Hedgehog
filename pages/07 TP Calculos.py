@@ -153,20 +153,6 @@ def get_historical_prices(ticker, days=7):
         st.error(f"Error obteniendo datos históricos: {e}")
         return None
 
-def generate_ibkr_basket_csv(orders_df):
-    """Convierte el DataFrame de órdenes a formato CSV de IBKR Basket."""
-    # Crear un buffer de string para el CSV
-    output = io.StringIO()
-    
-    # Escribir el CSV sin índice
-    orders_df.to_csv(output, index=False)
-    
-    # Obtener el contenido del CSV
-    csv_content = output.getvalue()
-    output.close()
-    
-    return csv_content
-
 # ==============================================================================
 # FUNCIÓN PRINCIPAL - TP CÁLCULOS
 # ==============================================================================
@@ -613,13 +599,13 @@ def main_tp_calculos():
             st.session_state.dte_back_p6 = None
         
         # ==============================================================================
-        # SECCIÓN 6: GENERADOR DE ESTRUCTURA TRIPLE CALENDAR
+        # SECCIÓN 6: GENERADOR DE ESTRUCTURA TRIPLE CALENDAR - ENVÍO A IBKR
         # ==============================================================================
-        st.header("6. Generador de Estructura - Triple Calendar")
+        st.header("6. Generador de Estructura - Triple Calendar (Envío a IBKR)")
         
         st.markdown("""
-        Configura los strikes y fechas de expiración para generar un archivo CSV en formato **IBKR Basket** 
-        que podrás descargar y ejecutar manualmente en tu broker.
+        Configura los strikes y fechas de expiración para generar una orden **Triple Calendar** 
+        que se enviará directamente a **Interactive Brokers** a través de TWS/Gateway.
         """)
         
         # Calcular Expected Move de 1 desviación estándar (ORIGINAL, sin redondear)
@@ -741,31 +727,72 @@ def main_tp_calculos():
             
             st.markdown("---")
             
-            st.markdown("#### 🏷️ Configuración Adicional")
-            
-            basket_tag = st.text_input(
-                "Basket Tag",
-                value="TripleCal1",
-                key='basket_tag_tc',
-                help="Etiqueta para identificar el grupo de órdenes"
-            )
-            
-            st.markdown("---")
-            
-            st.markdown("#### 📦 Cantidad de Contratos")
+            st.markdown("#### 💰 Configuración de Orden")
             
             quantity_input = st.number_input(
-                "Cantidad por orden",
+                "Cantidad de Contratos",
                 min_value=1,
                 value=1,
                 step=1,
                 key='quantity_tc',
-                help="Número de contratos por cada orden"
+                help="Número de contratos por cada pierna del calendario"
+            )
+            
+            limit_price_input = st.number_input(
+                "Precio Límite (Total)",
+                min_value=0.0,
+                value=0.0,
+                step=0.05,
+                format="%.2f",
+                key='limit_price_tc',
+                help="Precio límite total para la estrategia (crédito o débito)"
+            )
+            
+            st.info(f"""
+            💡 **Configuración de Precio:**
+            - Precio Límite: **${limit_price_input:.2f}**
+            - Por contrato: **${limit_price_input / quantity_input if quantity_input > 0 else 0:.2f}**
+            """)
+            
+            st.markdown("---")
+            
+            st.markdown("#### 🔌 Configuración IBKR")
+            
+            ibkr_host = st.text_input(
+                "Host IBKR",
+                value="127.0.0.1",
+                key='ibkr_host_tc',
+                help="Dirección IP de TWS/Gateway"
+            )
+            
+            ibkr_port = st.number_input(
+                "Puerto IBKR",
+                min_value=1,
+                max_value=65535,
+                value=7497,
+                step=1,
+                key='ibkr_port_tc',
+                help="Puerto de TWS (7497) o Gateway (4001)"
+            )
+            
+            ibkr_client_id = st.number_input(
+                "Client ID",
+                min_value=1,
+                value=1,
+                step=1,
+                key='ibkr_client_id_tc',
+                help="ID único del cliente para la conexión"
             )
         
         st.markdown("---")
         
-        if st.button("🎯 Generar CSV para IBKR", type="primary", use_container_width=True):
+        # Inicializar session_state para la orden generada
+        if 'df_strategy_tc' not in st.session_state:
+            st.session_state.df_strategy_tc = None
+        if 'order_preview_tc' not in st.session_state:
+            st.session_state.order_preview_tc = False
+        
+        if st.button("🔍 Generar Vista Previa de Orden", type="primary", use_container_width=True):
             
             # Guardar strikes y DTEs en session_state para el punto 7
             st.session_state.strike_atm_p6 = strike_atm_input
@@ -774,11 +801,11 @@ def main_tp_calculos():
             st.session_state.dte_front_p6 = dte_front_input
             st.session_state.dte_back_p6 = dte_back_input
             
-            # Formatear fechas para el símbolo (YYYYMMDD)
-            front_date_str = dte_front_input.strftime("%Y%m%d")
-            back_date_str = dte_back_input.strftime("%Y%m%d")
+            # Formatear fechas (YYYY-MM-DD)
+            front_date_str = dte_front_input.strftime("%Y-%m-%d")
+            back_date_str = dte_back_input.strftime("%Y-%m-%d")
             
-            # Crear la estructura de órdenes en formato IBKR Basket
+            # Crear la estructura de órdenes en formato DataFrame
             orders = []
             
             # Configuración de strikes y tipos
@@ -815,7 +842,7 @@ def main_tp_calculos():
                     'Right': right_letter,
                     'Exchange': 'SMART',
                     'Currency': 'USD',
-                    'BasketTag': basket_tag
+                    'Label': f'{config["label"]} Front'
                 })
                 
                 # BUY en DTE BACK
@@ -829,22 +856,29 @@ def main_tp_calculos():
                     'Right': right_letter,
                     'Exchange': 'SMART',
                     'Currency': 'USD',
-                    'BasketTag': basket_tag
+                    'Label': f'{config["label"]} Back'
                 })
             
-            # Crear DataFrame con el orden de columnas específico de IBKR
-            df_orders = pd.DataFrame(orders, columns=[
-                'Action', 'Quantity', 'Symbol', 'SecType', 'Expiry', 
-                'Strike', 'Right', 'Exchange', 'Currency', 'BasketTag'
-            ])
+            # Crear DataFrame
+            df_strategy = pd.DataFrame(orders)
             
-            st.success("✅ Estructura de órdenes generada exitosamente!")
+            # Guardar en session_state
+            st.session_state.df_strategy_tc = df_strategy
+            st.session_state.order_preview_tc = True
             
-            st.markdown("### 📋 Vista Previa - IBKR Basket Orders")
+            st.success("✅ Vista previa de orden generada exitosamente!")
+        
+        # Mostrar vista previa si está disponible
+        if st.session_state.order_preview_tc and st.session_state.df_strategy_tc is not None:
             
-            # Mostrar la tabla con formato
+            df_strategy = st.session_state.df_strategy_tc
+            
+            st.markdown("---")
+            st.markdown("### 📋 Vista Previa - Orden Triple Calendar")
+            
+            # Mostrar la tabla con formato mejorado
             st.dataframe(
-                df_orders,
+                df_strategy,
                 hide_index=True,
                 use_container_width=True,
                 column_config={
@@ -857,36 +891,33 @@ def main_tp_calculos():
                     'Right': st.column_config.TextColumn('Right', width="small"),
                     'Exchange': st.column_config.TextColumn('Exchange', width="small"),
                     'Currency': st.column_config.TextColumn('Currency', width="small"),
-                    'BasketTag': st.column_config.TextColumn('BasketTag', width="medium")
+                    'Label': st.column_config.TextColumn('Descripción', width="medium")
                 }
             )
             
             st.markdown("---")
             
-            # Generar el CSV
-            csv_content = generate_ibkr_basket_csv(df_orders)
+            # Resumen de la orden
+            st.markdown("### 📊 Resumen de la Orden")
             
-            # Nombre del archivo
-            filename = f"IBKR_{selected_ticker}_TP_{date.today().strftime('%d_%m_%Y')}.csv"
+            col1, col2, col3, col4 = st.columns(4)
             
-            # Botón de descarga
-            col1, col2, col3 = st.columns([1, 2, 1])
+            with col1:
+                st.metric("Total Piernas", len(df_strategy))
+            
             with col2:
-                st.download_button(
-                    label="📥 Descargar CSV para IBKR",
-                    data=csv_content,
-                    file_name=filename,
-                    mime="text/csv",
-                    type="primary",
-                    use_container_width=True
-                )
+                st.metric("Cantidad por Pierna", quantity_input)
+            
+            with col3:
+                st.metric("Precio Límite", f"${limit_price_input:.2f}")
+            
+            with col4:
+                st.metric("Spread (días)", days_diff)
             
             st.markdown("---")
             
-            # Resumen de la estructura
-            st.markdown("### 📊 Resumen de la Estructura")
-            
-            col1, col2, col3 = st.columns(3)
+            # Detalles de configuración
+            col1, col2 = st.columns(2)
             
             with col1:
                 st.markdown("**📍 Strikes Configurados**")
@@ -895,39 +926,115 @@ def main_tp_calculos():
                 st.write(f"- UP: ${strike_up_input:.0f} ({option_type_up})")
             
             with col2:
-                st.markdown("**📊 Total de Órdenes**")
-                st.metric("Órdenes Totales", len(df_orders))
-                st.write(f"- SELL (Front {dte_front_input.strftime('%Y-%m-%d')}): 3")
-                st.write(f"- BUY (Back {dte_back_input.strftime('%Y-%m-%d')}): 3")
-            
-            with col3:
-                st.markdown("**⚙️ Configuración**")
-                st.write(f"- Ticker: {selected_ticker}")
-                st.write(f"- Cantidad: {quantity_input} contratos")
-                st.write(f"- Spread: {days_diff} días")
-                st.write(f"- Basket: {basket_tag}")
+                st.markdown("**📅 Fechas de Expiración**")
+                st.write(f"- FRONT (SELL): {dte_front_input.strftime('%Y-%m-%d')}")
+                st.write(f"- BACK (BUY): {dte_back_input.strftime('%Y-%m-%d')}")
+                st.write(f"- Diferencia: {days_diff} días")
             
             st.markdown("---")
             
-            # Instrucciones de uso
-            st.markdown("### 📝 Instrucciones para importar en IBKR")
+            # Información de conexión IBKR
+            st.markdown("**🔌 Configuración de Conexión IBKR**")
+            st.write(f"- Host: {ibkr_host}")
+            st.write(f"- Puerto: {ibkr_port}")
+            st.write(f"- Client ID: {ibkr_client_id}")
+            
+            st.markdown("---")
+            
+            # Botón para enviar a IBKR
+            st.warning("""
+            ⚠️ **IMPORTANTE:** 
+            - Asegúrate de que TWS/Gateway esté ejecutándose
+            - Verifica que el puerto y la configuración sean correctos
+            - La orden se enviará como LIMIT al precio especificado
+            - Revisa todos los detalles antes de confirmar
+            """)
+            
+            if st.button("🚀 ENVIAR ORDEN A IBKR", type="primary", use_container_width=True):
+                
+                # Importar la función de envío
+                try:
+                    from utils_ibkr import send_strategy_order_ibkr
+                except ImportError:
+                    st.error("❌ Error: No se pudo importar la función send_strategy_order_ibkr desde utils_ibkr.py")
+                    st.stop()
+                
+                # Validar precio límite
+                if limit_price_input <= 0:
+                    st.error("❌ Error: El precio límite debe ser mayor a 0")
+                    st.stop()
+                
+                with st.spinner("📡 Enviando orden a IBKR..."):
+                    
+                    # Llamar a la función de envío
+                    result = send_strategy_order_ibkr(
+                        df_strategy=df_strategy,
+                        limit_price=limit_price_input,
+                        host=ibkr_host,
+                        port=int(ibkr_port),
+                        client_id=int(ibkr_client_id),
+                        quantity=quantity_input,
+                        tif='DAY',
+                        action='BUY',  # Para calendars generalmente es BUY (débito)
+                        timeout=10
+                    )
+                
+                # Mostrar resultado
+                if result['success']:
+                    st.success(f"✅ {result['message']}")
+                    
+                    if result['order_id']:
+                        st.info(f"📋 **Order ID:** {result['order_id']}")
+                    
+                    if result['trade']:
+                        st.markdown("**📊 Detalles de la Orden:**")
+                        st.json({
+                            'order_id': result['order_id'],
+                            'status': result['trade'].orderStatus.status if hasattr(result['trade'], 'orderStatus') else 'N/A'
+                        })
+                    
+                    # Mostrar contratos calificados
+                    if result['contracts']:
+                        st.markdown("**✅ Contratos Calificados:**")
+                        for i, contract in enumerate(result['contracts'], 1):
+                            st.write(f"{i}. {contract.symbol} {contract.lastTradeDateOrContractMonth} "
+                                   f"{contract.strike} {contract.right} [conId: {contract.conId}]")
+                
+                else:
+                    st.error(f"❌ Error al enviar la orden: {result['message']}")
+                    
+                    if result.get('contracts'):
+                        st.warning("⚠️ Algunos contratos fueron calificados pero la orden falló:")
+                        for contract in result['contracts']:
+                            st.write(f"- {contract.symbol} {contract.lastTradeDateOrContractMonth} "
+                                   f"{contract.strike} {contract.right}")
+            
+            st.markdown("---")
+            
+            # Información adicional
+            st.markdown("### 📝 Notas Importantes")
             
             st.info("""
-            **Pasos para importar el archivo CSV en Interactive Brokers:**
+            **Sobre la Orden:**
             
-            1. Descarga el archivo CSV usando el botón de arriba
-            2. En TWS (Trader Workstation), ve a **Trading Tools → Basket Trader**
-            3. Click en **Import Basket**
-            4. Selecciona el archivo CSV descargado
-            5. Revisa las órdenes importadas
-            6. Ajusta los precios límite según el mercado actual
-            7. Transmite las órdenes cuando estés listo
+            1. **Tipo de Orden:** LIMIT
+            2. **Acción:** BUY (estrategia de débito típica para calendars)
+            3. **TIF:** DAY (válida solo para el día actual)
+            4. **Exchange:** SMART (enrutamiento inteligente de IBKR)
             
-            ⚠️ **Importante:** 
-            - Este archivo solo contiene la estructura de las órdenes
-            - Deberás ingresar los precios manualmente en IBKR
-            - Verifica todos los detalles antes de transmitir
-            - Asegúrate de tener suficiente margen disponible
+            **Verificaciones Post-Envío:**
+            
+            - Revisa el Order ID proporcionado
+            - Confirma el estado en TWS/Gateway
+            - Verifica que todas las piernas se hayan ejecutado
+            - Monitorea el precio de mercado vs. tu precio límite
+            
+            **En caso de error:**
+            
+            - Verifica que TWS/Gateway esté ejecutándose
+            - Confirma los permisos de trading en tu cuenta
+            - Revisa el log de conexión en la consola de Python
+            - Asegúrate de tener margen suficiente
             """)
         
         st.markdown("---")
@@ -1101,35 +1208,76 @@ def main_tp_calculos():
                 
                 st.markdown("---")
                 
-                st.markdown("#### 🏷️ Configuración Adicional")
-                
-                basket_tag_adj = st.text_input(
-                    "Basket Tag para Ajuste",
-                    value="Adjustment1",
-                    key='basket_tag_adj',
-                    help="Etiqueta para identificar esta orden de ajuste"
-                )
-                
-                st.markdown("---")
-                
-                st.markdown("#### 📦 Cantidad de Contratos")
+                st.markdown("#### 💰 Configuración de Orden")
                 
                 quantity_adj = st.number_input(
-                    "Cantidad",
+                    "Cantidad de Contratos",
                     min_value=1,
                     value=1,
                     step=1,
                     key='quantity_adj',
                     help="Número de contratos para el ajuste"
                 )
+                
+                limit_price_adj = st.number_input(
+                    "Precio Límite (Total)",
+                    min_value=0.0,
+                    value=0.0,
+                    step=0.05,
+                    format="%.2f",
+                    key='limit_price_adj',
+                    help="Precio límite total para la estrategia de ajuste"
+                )
+                
+                st.info(f"""
+                💡 **Configuración de Precio:**
+                - Precio Límite: **${limit_price_adj:.2f}**
+                - Por contrato: **${limit_price_adj / quantity_adj if quantity_adj > 0 else 0:.2f}**
+                """)
+                
+                st.markdown("---")
+                
+                st.markdown("#### 🔌 Configuración IBKR")
+                
+                ibkr_host_adj = st.text_input(
+                    "Host IBKR",
+                    value="127.0.0.1",
+                    key='ibkr_host_adj',
+                    help="Dirección IP de TWS/Gateway"
+                )
+                
+                ibkr_port_adj = st.number_input(
+                    "Puerto IBKR",
+                    min_value=1,
+                    max_value=65535,
+                    value=7497,
+                    step=1,
+                    key='ibkr_port_adj',
+                    help="Puerto de TWS (7497) o Gateway (4001)"
+                )
+                
+                ibkr_client_id_adj = st.number_input(
+                    "Client ID",
+                    min_value=1,
+                    value=1,
+                    step=1,
+                    key='ibkr_client_id_adj',
+                    help="ID único del cliente para la conexión"
+                )
             
             st.markdown("---")
             
-            if st.button("🎯 Generar CSV de Ajuste", type="primary", use_container_width=True):
+            # Inicializar session_state para la orden de ajuste
+            if 'df_strategy_adj' not in st.session_state:
+                st.session_state.df_strategy_adj = None
+            if 'order_preview_adj' not in st.session_state:
+                st.session_state.order_preview_adj = False
+            
+            if st.button("🔍 Generar Vista Previa de Ajuste", type="primary", use_container_width=True):
                 
                 # Formatear fechas
-                front_date_adj_str = dte_front_adj.strftime("%Y%m%d")
-                back_date_adj_str = dte_back_adj.strftime("%Y%m%d")
+                front_date_adj_str = dte_front_adj.strftime("%Y-%m-%d")
+                back_date_adj_str = dte_back_adj.strftime("%Y-%m-%d")
                 
                 # Crear estructura de órdenes para el ajuste
                 orders_adj = []
@@ -1148,7 +1296,7 @@ def main_tp_calculos():
                     'Right': right_letter_adj,
                     'Exchange': 'SMART',
                     'Currency': 'USD',
-                    'BasketTag': basket_tag_adj
+                    'Label': 'Adjustment Front'
                 })
                 
                 # BUY en DTE BACK
@@ -1162,21 +1310,28 @@ def main_tp_calculos():
                     'Right': right_letter_adj,
                     'Exchange': 'SMART',
                     'Currency': 'USD',
-                    'BasketTag': basket_tag_adj
+                    'Label': 'Adjustment Back'
                 })
                 
                 # Crear DataFrame
-                df_orders_adj = pd.DataFrame(orders_adj, columns=[
-                    'Action', 'Quantity', 'Symbol', 'SecType', 'Expiry', 
-                    'Strike', 'Right', 'Exchange', 'Currency', 'BasketTag'
-                ])
+                df_strategy_adj = pd.DataFrame(orders_adj)
                 
-                st.success("✅ Orden de ajuste generada exitosamente!")
+                # Guardar en session_state
+                st.session_state.df_strategy_adj = df_strategy_adj
+                st.session_state.order_preview_adj = True
                 
+                st.success("✅ Vista previa de ajuste generada exitosamente!")
+            
+            # Mostrar vista previa de ajuste si está disponible
+            if st.session_state.order_preview_adj and st.session_state.df_strategy_adj is not None:
+                
+                df_strategy_adj = st.session_state.df_strategy_adj
+                
+                st.markdown("---")
                 st.markdown("### 📋 Vista Previa - Ajuste Calendar")
                 
                 st.dataframe(
-                    df_orders_adj,
+                    df_strategy_adj,
                     hide_index=True,
                     use_container_width=True,
                     column_config={
@@ -1189,29 +1344,9 @@ def main_tp_calculos():
                         'Right': st.column_config.TextColumn('Right', width="small"),
                         'Exchange': st.column_config.TextColumn('Exchange', width="small"),
                         'Currency': st.column_config.TextColumn('Currency', width="small"),
-                        'BasketTag': st.column_config.TextColumn('BasketTag', width="medium")
+                        'Label': st.column_config.TextColumn('Descripción', width="medium")
                     }
                 )
-                
-                st.markdown("---")
-                
-                # Generar CSV
-                csv_content_adj = generate_ibkr_basket_csv(df_orders_adj)
-                
-                # Nombre del archivo
-                filename_adj = f"IBKR_{selected_ticker}_ADJ_{date.today().strftime('%d_%m_%Y')}.csv"
-                
-                # Botón de descarga
-                col1, col2, col3 = st.columns([1, 2, 1])
-                with col2:
-                    st.download_button(
-                        label="📥 Descargar CSV de Ajuste",
-                        data=csv_content_adj,
-                        file_name=filename_adj,
-                        mime="text/csv",
-                        type="primary",
-                        use_container_width=True
-                    )
                 
                 st.markdown("---")
                 
@@ -1235,8 +1370,114 @@ def main_tp_calculos():
                 with col3:
                     st.markdown("**⚙️ Datos**")
                     st.write(f"- Ticker: {selected_ticker}")
-                    st.write(f"- Basket: {basket_tag_adj}")
-                    st.write(f"- Órdenes: {len(df_orders_adj)}")
+                    st.write(f"- Precio Límite: ${limit_price_adj:.2f}")
+                    st.write(f"- Órdenes: {len(df_strategy_adj)}")
+                
+                st.markdown("---")
+                
+                # Información de conexión IBKR
+                st.markdown("**🔌 Configuración de Conexión IBKR**")
+                st.write(f"- Host: {ibkr_host_adj}")
+                st.write(f"- Puerto: {ibkr_port_adj}")
+                st.write(f"- Client ID: {ibkr_client_id_adj}")
+                
+                st.markdown("---")
+                
+                # Botón para enviar ajuste a IBKR
+                st.warning("""
+                ⚠️ **IMPORTANTE:** 
+                - Asegúrate de que TWS/Gateway esté ejecutándose
+                - Verifica que el puerto y la configuración sean correctos
+                - La orden se enviará como LIMIT al precio especificado
+                - Este ajuste modificará tu posición existente
+                """)
+                
+                if st.button("🚀 ENVIAR AJUSTE A IBKR", type="primary", use_container_width=True):
+                    
+                    # Importar la función de envío
+                    try:
+                        from utils_ibkr import send_strategy_order_ibkr
+                    except ImportError:
+                        st.error("❌ Error: No se pudo importar la función send_strategy_order_ibkr desde utils_ibkr.py")
+                        st.stop()
+                    
+                    # Validar precio límite
+                    if limit_price_adj <= 0:
+                        st.error("❌ Error: El precio límite debe ser mayor a 0")
+                        st.stop()
+                    
+                    with st.spinner("📡 Enviando ajuste a IBKR..."):
+                        
+                        # Llamar a la función de envío
+                        result = send_strategy_order_ibkr(
+                            df_strategy=df_strategy_adj,
+                            limit_price=limit_price_adj,
+                            host=ibkr_host_adj,
+                            port=int(ibkr_port_adj),
+                            client_id=int(ibkr_client_id_adj),
+                            quantity=quantity_adj,
+                            tif='DAY',
+                            action='BUY',
+                            timeout=10
+                        )
+                    
+                    # Mostrar resultado
+                    if result['success']:
+                        st.success(f"✅ {result['message']}")
+                        
+                        if result['order_id']:
+                            st.info(f"📋 **Order ID:** {result['order_id']}")
+                        
+                        if result['trade']:
+                            st.markdown("**📊 Detalles de la Orden:**")
+                            st.json({
+                                'order_id': result['order_id'],
+                                'status': result['trade'].orderStatus.status if hasattr(result['trade'], 'orderStatus') else 'N/A'
+                            })
+                        
+                        # Mostrar contratos calificados
+                        if result['contracts']:
+                            st.markdown("**✅ Contratos Calificados:**")
+                            for i, contract in enumerate(result['contracts'], 1):
+                                st.write(f"{i}. {contract.symbol} {contract.lastTradeDateOrContractMonth} "
+                                       f"{contract.strike} {contract.right} [conId: {contract.conId}]")
+                    
+                    else:
+                        st.error(f"❌ Error al enviar el ajuste: {result['message']}")
+                        
+                        if result.get('contracts'):
+                            st.warning("⚠️ Algunos contratos fueron calificados pero la orden falló:")
+                            for contract in result['contracts']:
+                                st.write(f"- {contract.symbol} {contract.lastTradeDateOrContractMonth} "
+                                       f"{contract.strike} {contract.right}")
+                
+                st.markdown("---")
+                
+                # Información adicional para ajustes
+                st.markdown("### 📝 Notas sobre Ajustes")
+                
+                st.info("""
+                **Sobre el Ajuste:**
+                
+                1. **Propósito:** Añadir un calendar spread individual para ajustar tu posición
+                2. **Tipo de Orden:** LIMIT
+                3. **Acción:** BUY (estrategia de débito)
+                4. **TIF:** DAY (válida solo para el día actual)
+                
+                **Cuándo Ajustar:**
+                
+                - El precio se ha movido significativamente desde la apertura
+                - Necesitas rebalancear tu delta
+                - Quieres añadir exposición en un nuevo strike
+                - El mercado ha superado uno de tus strikes originales
+                
+                **Verificaciones Post-Ajuste:**
+                
+                - Confirma que el ajuste se haya ejecutado correctamente
+                - Revisa tu posición total en TWS
+                - Calcula tu nuevo delta y exposición total
+                - Ajusta tu plan de gestión según la nueva posición
+                """)
 
 # ==============================================================================
 # PUNTO DE ENTRADA PROTEGIDO
