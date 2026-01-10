@@ -2,6 +2,10 @@
 # FUNCIONES IBKR
 # ==============================================================================
 
+import pandas as pd
+from typing import Dict, Any
+
+
 def send_strategy_order_ibkr(
     df_strategy: pd.DataFrame,
     limit_price: float,
