@@ -1,10 +1,35 @@
 # ==============================================================================
-# FUNCIONES IBKR
+# IMPORTS NECESARIOS
 # ==============================================================================
-
 import pandas as pd
 from typing import Dict, Any
+import asyncio
+import sys
 
+# ==============================================================================
+# CONFIGURACIÓN DE EVENT LOOP PARA STREAMLIT CLOUD
+# ==============================================================================
+def setup_event_loop():
+    """
+    Configura el event loop de asyncio para que funcione en Streamlit Cloud.
+    Necesario para ib_insync.
+    """
+    try:
+        # Intentar obtener el event loop actual
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("Event loop is closed")
+    except RuntimeError:
+        # Si no hay event loop o está cerrado, crear uno nuevo
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop
+
+# ==============================================================================
+# FUNCIONES IBKR
+# ==============================================================================
 
 def send_strategy_order_ibkr(
     df_strategy: pd.DataFrame,
@@ -23,6 +48,9 @@ def send_strategy_order_ibkr(
     ⚠️ IMPORTANTE: Esta función importa ib_insync localmente para evitar
     problemas con event loops en Streamlit Cloud.
     """
+    
+    # ✅ CONFIGURAR EVENT LOOP ANTES DE IMPORTAR ib_insync
+    setup_event_loop()
     
     # ✅ IMPORT LOCAL - Solo cuando se ejecuta la función
     try:
