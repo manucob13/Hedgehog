@@ -5,7 +5,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from utils import check_password
+from utils.utils import check_password
 
 st.set_page_config(page_title="Gráficos - HEDGEHOG", layout="wide")
 
