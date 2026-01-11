@@ -4,7 +4,7 @@ import requests
 from bs4 import BeautifulSoup
 import plotly.graph_objects as go
 from datetime import datetime
-from utils import check_password
+from utils.utils import check_password
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="VIX Term Structure", layout="wide")
