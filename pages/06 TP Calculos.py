@@ -3,8 +3,8 @@ import pandas as pd
 import numpy as np
 from datetime import date, timedelta, datetime
 import plotly.graph_objects as go
-from utils import check_password
-from utils_cboe import get_option_chain_cboe
+from utils.utils import check_password
+from utils.utils_cboe import get_option_chain_cboe
 import io
 
 # --- CONFIGURACIÓN DE PÁGINA ---
@@ -818,7 +818,7 @@ def main_tp_calculos():
             
             if st.button("🚀 ENVIAR ORDEN A IBKR", type="primary", use_container_width=True):
                 try:
-                    from utils_ibkr import send_strategy_order_ibkr
+                    from utils.utils_ibkr import send_strategy_order_ibkr
                 except ImportError:
                     st.error("❌ Error: No se pudo importar send_strategy_order_ibkr")
                     st.stop()
@@ -1020,7 +1020,7 @@ def main_tp_calculos():
                 
                 if st.button("🚀 ENVIAR AJUSTE A IBKR", type="primary", use_container_width=True):
                     try:
-                        from utils_ibkr import send_strategy_order_ibkr
+                        from utils.utils_ibkr import send_strategy_order_ibkr
                     except ImportError:
                         st.error("❌ Error: No se pudo importar send_strategy_order_ibkr")
                         st.stop()
