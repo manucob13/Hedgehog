@@ -2,7 +2,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta
-from utils import (
+from utils.utils import (
     fetch_data, 
     calculate_indicators, 
     preparar_datos_markov,
