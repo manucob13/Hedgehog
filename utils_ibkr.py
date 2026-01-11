@@ -3,6 +3,29 @@
 # ==============================================================================
 import pandas as pd
 from typing import Dict, Any
+import asyncio
+import sys
+
+# ==============================================================================
+# CONFIGURACIÓN DE EVENT LOOP PARA STREAMLIT CLOUD
+# ==============================================================================
+def setup_event_loop():
+    """
+    Configura el event loop de asyncio para que funcione en Streamlit Cloud.
+    Necesario para ib_insync.
+    """
+    try:
+        # Intentar obtener el event loop actual
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("Event loop is closed")
+    except RuntimeError:
+        # Si no hay event loop o está cerrado, crear uno nuevo
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop
 
 # ==============================================================================
 # FUNCIONES IBKR
@@ -22,28 +45,20 @@ def send_strategy_order_ibkr(
     """
     Envía una orden de estrategia multi-leg a IBKR TWS/Gateway.
     
-    Args:
-        df_strategy: DataFrame con las piernas de la estrategia
-        limit_price: Precio límite de la orden
-        host: IP del servidor TWS/Gateway (default: '127.0.0.1')
-        port: Puerto de conexión (default: 5000)
-        client_id: ID único del cliente (default: 1)
-        quantity: Cantidad de contratos por pierna (default: 1)
-        tif: Time In Force - 'DAY', 'GTC', etc. (default: 'DAY')
-        action: 'BUY' o 'SELL' (default: 'BUY')
-        timeout: Timeout de conexión en segundos (default: 10)
-    
-    Returns:
-        Dict con: success, message, trade, order_id, contracts
+    ⚠️ IMPORTANTE: Esta función importa ib_insync localmente para evitar
+    problemas con event loops en Streamlit Cloud.
     """
+    
+    # ✅ CONFIGURAR EVENT LOOP ANTES DE IMPORTAR ib_insync
+    setup_event_loop()
     
     # ✅ IMPORT LOCAL - Solo cuando se ejecuta la función
     try:
-        from ib_insync import IB, Contract, Option, ComboLeg, Order
+        from ib_insync import IB, Contract, Option, ComboLeg, Order, util
     except ImportError as e:
         return {
             'success': False,
-            'message': f'Error importando ib_insync: {str(e)}. Instala con: pip install ib_insync',
+            'message': f'Error importando ib_insync: {str(e)}',
             'trade': None,
             'order_id': None,
             'contracts': []
@@ -59,9 +74,7 @@ def send_strategy_order_ibkr(
     }
     
     try:
-        # ================================================================
-        # VALIDACIÓN DEL DATAFRAME
-        # ================================================================
+        # Validación del DataFrame
         required_columns = ['Action', 'Quantity', 'Symbol', 'SecType', 'Expiry', 
                           'Strike', 'Right', 'Exchange', 'Currency']
         missing_cols = [col for col in required_columns if col not in df_strategy.columns]
@@ -84,12 +97,11 @@ def send_strategy_order_ibkr(
         print(f"📦 Cantidad: {quantity}")
         print(f"🎯 Acción: {action}")
         
-        # ================================================================
-        # CONEXIÓN A IBKR
-        # ================================================================
+        # Conexión a IBKR
         print(f"\n🔌 Conectando a IBKR TWS...")
         print(f"   Host: {host}:{port} | Client ID: {client_id}")
         
+        util.startLoop()
         ib = IB()
         ib.connect(host, port, clientId=client_id, timeout=timeout)
         
@@ -98,12 +110,9 @@ def send_strategy_order_ibkr(
             print(f"❌ ERROR: {result['message']}")
             return result
         
-        print(f"✅ Conexión establecida")
-        print(f"   Cuenta(s): {ib.managedAccounts()}")
+        print(f"✅ Conexión establecida: {ib}")
         
-        # ================================================================
-        # CREAR CONTRATOS DE OPCIONES
-        # ================================================================
+        # Crear y calificar contratos
         print(f"\n📝 Creando contratos de opciones...")
         contracts = []
         
@@ -113,7 +122,6 @@ def send_strategy_order_ibkr(
                     print(f"⚠️  Fila {idx}: SecType '{row['SecType']}' no es OPT, omitiendo...")
                     continue
                 
-                # Formatear fecha: YYYY-MM-DD -> YYYYMMDD
                 expiry = str(row['Expiry']).replace('-', '')
                 
                 contract = Option(
@@ -131,43 +139,27 @@ def send_strategy_order_ibkr(
             except Exception as e:
                 result['message'] = f"Error creando contrato en fila {idx}: {str(e)}"
                 print(f"❌ {result['message']}")
-                if ib and ib.isConnected():
-                    ib.disconnect()
                 return result
         
         if not contracts:
             result['message'] = "No se crearon contratos válidos"
             print(f"❌ ERROR: {result['message']}")
-            if ib and ib.isConnected():
-                ib.disconnect()
             return result
         
-        # ================================================================
-        # CALIFICAR CONTRATOS CON IBKR
-        # ================================================================
         print(f"\n🔍 Calificando {len(contracts)} contratos con IBKR...")
         qualified_contracts = ib.qualifyContracts(*contracts)
         
         if len(qualified_contracts) != len(contracts):
             result['message'] = f"Solo se calificaron {len(qualified_contracts)}/{len(contracts)} contratos"
             print(f"⚠️  ADVERTENCIA: {result['message']}")
-            
-            if len(qualified_contracts) == 0:
-                print(f"❌ ERROR: Ningún contrato fue calificado por IBKR")
-                if ib and ib.isConnected():
-                    ib.disconnect()
-                return result
         
         result['contracts'] = qualified_contracts
         
-        print(f"\n✅ Contratos calificados exitosamente:")
-        for i, c in enumerate(qualified_contracts, 1):
-            print(f"   {i}. {c.symbol} {c.lastTradeDateOrContractMonth} "
-                  f"{c.strike} {c.right} [conId: {c.conId}]")
+        print(f"\n✅ Contratos calificados:")
+        for c in qualified_contracts:
+            print(f"   • {c.symbol} {c.lastTradeDateOrContractMonth} {c.strike} {c.right} [conId: {c.conId}]")
         
-        # ================================================================
-        # CONSTRUIR COMBO BAG (MULTI-LEG)
-        # ================================================================
+        # Construir combo BAG
         print(f"\n🎒 Construyendo combo BAG...")
         
         base_symbol = qualified_contracts[0].symbol
@@ -180,7 +172,6 @@ def send_strategy_order_ibkr(
         combo.comboLegs = []
         
         for idx, row in df_strategy.iterrows():
-            # Buscar el contrato calificado correspondiente
             matching_contract = None
             expiry = str(row['Expiry']).replace('-', '')
             
@@ -195,8 +186,6 @@ def send_strategy_order_ibkr(
             if not matching_contract:
                 result['message'] = f"No se encontró contrato calificado para fila {idx}"
                 print(f"❌ ERROR: {result['message']}")
-                if ib and ib.isConnected():
-                    ib.disconnect()
                 return result
             
             leg_action = str(row['Action']).upper()
@@ -210,15 +199,11 @@ def send_strategy_order_ibkr(
             )
             combo.comboLegs.append(combo_leg)
             
-            print(f"   ✓ {leg_action} {leg_quantity}x "
-                  f"{matching_contract.symbol} {matching_contract.strike} "
-                  f"{matching_contract.right} [conId={matching_contract.conId}]")
+            print(f"   ✓ {leg_action} {leg_quantity}x conId={matching_contract.conId}")
         
-        print(f"\n✅ Combo BAG creado con {len(combo.comboLegs)} piernas")
+        print(f"\n✅ Combo creado con {len(combo.comboLegs)} piernas")
         
-        # ================================================================
-        # CREAR Y ENVIAR ORDEN
-        # ================================================================
+        # Crear y enviar orden
         print(f"\n📤 Preparando orden LIMIT...")
         
         order = Order(
@@ -243,10 +228,10 @@ def send_strategy_order_ibkr(
         print(f"🚀 Enviando orden a IBKR...")
         trade = ib.placeOrder(combo, order)
         
-        # Esperar para que la orden se procese
         ib.sleep(2)
+        ib.reqOpenOrders()
+        ib.sleep(1)
         
-        # Verificar el estado de la orden
         if trade and trade.order:
             result['success'] = True
             result['trade'] = trade
@@ -255,11 +240,7 @@ def send_strategy_order_ibkr(
             
             print(f"\n✅ ¡ORDEN ENVIADA EXITOSAMENTE!")
             print(f"   Order ID: {trade.order.orderId}")
-            
-            if hasattr(trade, 'orderStatus') and trade.orderStatus:
-                print(f"   Estado: {trade.orderStatus.status}")
-            else:
-                print(f"   Estado: Pendiente de confirmación")
+            print(f"   Estado: {trade.orderStatus.status}")
             
         else:
             result['message'] = "Orden enviada pero no se pudo verificar el estado"
@@ -269,14 +250,10 @@ def send_strategy_order_ibkr(
         result['success'] = False
         result['message'] = f"Error durante la ejecución: {str(e)}"
         print(f"\n❌ ERROR CRÍTICO: {result['message']}")
-        
-        # Mostrar traceback completo para debugging
         import traceback
-        print("\n📋 TRACEBACK COMPLETO:")
         print(traceback.format_exc())
         
     finally:
-        # Siempre desconectar al finalizar
         if ib and ib.isConnected():
             print(f"\n🔌 Cerrando conexión con IBKR...")
             ib.disconnect()
@@ -287,170 +264,3 @@ def send_strategy_order_ibkr(
         print(f"{'='*60}\n")
     
     return result
-
-
-# ==============================================================================
-# FUNCIÓN DE PRUEBA DE CONEXIÓN
-# ==============================================================================
-
-def test_ibkr_connection(
-    host: str = '127.0.0.1',
-    port: int = 5000,
-    client_id: int = 999
-) -> Dict[str, Any]:
-    """
-    Prueba la conexión con IBKR TWS/Gateway.
-    
-    Args:
-        host: IP del servidor (default: '127.0.0.1')
-        port: Puerto de conexión (default: 5000)
-        client_id: ID único del cliente (default: 999)
-    
-    Returns:
-        Dict con: success, message, accounts
-    """
-    try:
-        from ib_insync import IB
-    except ImportError as e:
-        return {
-            'success': False,
-            'message': f'Error importando ib_insync: {str(e)}',
-            'accounts': []
-        }
-    
-    result = {
-        'success': False,
-        'message': '',
-        'accounts': []
-    }
-    
-    ib = None
-    
-    try:
-        print(f"\n{'='*60}")
-        print(f"🧪 PRUEBA DE CONEXIÓN IBKR")
-        print(f"{'='*60}")
-        print(f"🔌 Intentando conectar a {host}:{port} (Client ID: {client_id})...")
-        
-        ib = IB()
-        ib.connect(host, port, clientId=client_id, timeout=10)
-        
-        if ib.isConnected():
-            accounts = ib.managedAccounts()
-            result['success'] = True
-            result['message'] = f"Conexión exitosa a {host}:{port}"
-            result['accounts'] = accounts
-            
-            print(f"✅ ¡CONEXIÓN EXITOSA!")
-            print(f"   Host: {host}:{port}")
-            print(f"   Client ID: {client_id}")
-            print(f"   Cuentas: {accounts}")
-            
-        else:
-            result['message'] = "No se pudo establecer conexión"
-            print(f"❌ {result['message']}")
-        
-    except Exception as e:
-        result['message'] = f"Error de conexión: {str(e)}"
-        print(f"❌ ERROR: {result['message']}")
-        
-        import traceback
-        print("\n📋 TRACEBACK:")
-        print(traceback.format_exc())
-        
-    finally:
-        if ib and ib.isConnected():
-            ib.disconnect()
-            print(f"\n🔌 Conexión cerrada")
-        
-        print(f"\n{'='*60}")
-        print(f"🏁 PRUEBA FINALIZADA")
-        print(f"{'='*60}\n")
-    
-    return result
-
-
-# ==============================================================================
-# EJEMPLO DE USO
-# ==============================================================================
-
-if __name__ == "__main__":
-    
-    print("="*60)
-    print("EJEMPLO DE USO - send_strategy_order_ibkr")
-    print("="*60)
-    
-    # 1. Primero, probar la conexión
-    print("\n1️⃣ Probando conexión...")
-    connection_result = test_ibkr_connection(
-        host='127.0.0.1',
-        port=5000,
-        client_id=999
-    )
-    
-    if not connection_result['success']:
-        print("\n❌ No se pudo conectar a IBKR. Verifica:")
-        print("   - TWS/Gateway está ejecutándose")
-        print("   - El puerto es correcto (5000 en tu caso)")
-        print("   - La API está habilitada en TWS")
-        print("   - No hay otra conexión con el mismo Client ID")
-        exit(1)
-    
-    print("\n✅ Conexión exitosa! Procediendo con ejemplo de orden...")
-    
-    # 2. Crear un DataFrame de ejemplo - Triple Calendar
-    df_example = pd.DataFrame([
-        # DOWN Leg
-        {'Action': 'SELL', 'Quantity': 1, 'Symbol': 'QQQ', 'SecType': 'OPT', 
-         'Expiry': '2025-01-24', 'Strike': 500, 'Right': 'P', 
-         'Exchange': 'SMART', 'Currency': 'USD'},
-        {'Action': 'BUY', 'Quantity': 1, 'Symbol': 'QQQ', 'SecType': 'OPT', 
-         'Expiry': '2025-01-31', 'Strike': 500, 'Right': 'P', 
-         'Exchange': 'SMART', 'Currency': 'USD'},
-        
-        # ATM Leg
-        {'Action': 'SELL', 'Quantity': 1, 'Symbol': 'QQQ', 'SecType': 'OPT', 
-         'Expiry': '2025-01-24', 'Strike': 510, 'Right': 'P', 
-         'Exchange': 'SMART', 'Currency': 'USD'},
-        {'Action': 'BUY', 'Quantity': 1, 'Symbol': 'QQQ', 'SecType': 'OPT', 
-         'Expiry': '2025-01-31', 'Strike': 510, 'Right': 'P', 
-         'Exchange': 'SMART', 'Currency': 'USD'},
-        
-        # UP Leg
-        {'Action': 'SELL', 'Quantity': 1, 'Symbol': 'QQQ', 'SecType': 'OPT', 
-         'Expiry': '2025-01-24', 'Strike': 520, 'Right': 'C', 
-         'Exchange': 'SMART', 'Currency': 'USD'},
-        {'Action': 'BUY', 'Quantity': 1, 'Symbol': 'QQQ', 'SecType': 'OPT', 
-         'Expiry': '2025-01-31', 'Strike': 520, 'Right': 'C', 
-         'Exchange': 'SMART', 'Currency': 'USD'},
-    ])
-    
-    print("\n2️⃣ DataFrame de estrategia:")
-    print(df_example.to_string(index=False))
-    
-    # 3. Enviar la orden (DESCOMENTA PARA ENVIAR ORDEN REAL)
-    """
-    print("\n3️⃣ Enviando orden a IBKR...")
-    
-    result = send_strategy_order_ibkr(
-        df_strategy=df_example,
-        limit_price=0.50,  # Precio límite de la estrategia
-        host='127.0.0.1',
-        port=5000,
-        client_id=1,
-        quantity=1,
-        tif='DAY',
-        action='BUY',
-        timeout=10
-    )
-    
-    if result['success']:
-        print(f"\n🎉 ¡ÉXITO! Orden enviada")
-        print(f"   Order ID: {result['order_id']}")
-        print(f"   Contratos calificados: {len(result['contracts'])}")
-    else:
-        print(f"\n❌ Error: {result['message']}")
-    """
-    
-    print("\n⚠️  Para enviar una orden real, descomenta el bloque de código anterior")
-    print("="*60)
