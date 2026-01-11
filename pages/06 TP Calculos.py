@@ -955,7 +955,7 @@ def main_tp_calculos():
                 st.markdown("#### 💰 Configuración de Orden")
                 
                 quantity_adj = st.number_input("Cantidad de Contratos", min_value=1, value=1, step=1, key='quantity_adj')
-                limit_price_adj = st.number_input("Precio Límite", min_value=0.0, value=0.0, step=0.05, format="%.2f", key='limit_price_adj')
+                limit_price_adj = st.number_input("Precio Límite", min_value=0.0, value=1.0, step=0.05, format="%.2f", key='limit_price_adj')
                 
                 st.info(f"💡 Por contrato: **${limit_price_adj / quantity_adj if quantity_adj > 0 else 0:.2f}**")
                 
