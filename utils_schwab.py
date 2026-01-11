@@ -87,10 +87,9 @@ def setup_token_from_secrets(token_path="schwab_token.json"):
 
 
 def connect_to_schwab(api_key=None, app_secret=None, redirect_uri=None, token_path="schwab_token.json"):
-def connect_to_schwab(api_key=None, app_secret=None, redirect_uri=None, token_path="schwab_token.json"):
     """
-    Conecta con Schwab usando el token existente.
-    Si no existe el token, permite subirlo mediante file_uploader.
+    Conecta con Schwab usando el token.
+    Primero intenta recrear el token desde secrets si no existe localmente.
     Si no se proporcionan credenciales, las obtiene automáticamente de st.secrets.
     
     Args:
@@ -110,22 +109,37 @@ def connect_to_schwab(api_key=None, app_secret=None, redirect_uri=None, token_pa
         if api_key is None or app_secret is None or redirect_uri is None:
             return None
     
-    # Si no existe el token, permitir subirlo
-    if not os.path.exists(token_path):
-        st.warning("⚠️ No se encontró schwab_token.json")
-        st.info("👇 **Sube el archivo de token que generaste localmente**")
+    # Intentar crear el token desde secrets si no existe
+    if not setup_token_from_secrets(token_path):
+        st.error("❌ No se pudo configurar el token de Schwab")
+        return None
+
+    try:
+        client = easy_client(
+            api_key=api_key,
+            app_secret=app_secret,
+            callback_url=redirect_uri,
+            token_path=token_path
+        )
+
+        # Verificar token con una llamada de prueba
+        test_response = client.get_quote("AAPL")
+        if hasattr(test_response, "status_code") and test_response.status_code != 200:
+            raise Exception(f"Respuesta inesperada: {test_response.status_code}")
+
+        return client
+
+    except Exception as e:
+        st.error(f"❌ Error al inicializar Schwab Client: {e}")
+        st.warning("⚠️ Si el error persiste, verifica que el token en secrets sea válido y esté actualizado.")
         
-        with st.expander("ℹ️ ¿Cómo generar el token?", expanded=False):
-            st.markdown("""
-            **Ejecuta este script en tu PC local:**
-            
-            ```python
-            from schwab import auth
-            
-            client = auth.client_from_manual_flow(
-                api_key="TU_API_KEY",
-                app_secret="TU_SECRET",
-                callback_url="https://127.0.0.1",
+        # Opción para regenerar el token
+        if st.button("🔄 Regenerar token desde secrets"):
+            if os.path.exists(token_path):
+                os.remove(token_path)
+            st.rerun()
+        
+        return None
 
 
 def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
