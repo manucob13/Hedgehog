@@ -7,7 +7,7 @@ from datetime import datetime
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
-from utils import check_password
+from utils.utils import check_password
 
 warnings.filterwarnings('ignore')
 
