@@ -5,7 +5,7 @@ import numpy as np
 from datetime import date, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from utils import (
+from utils.utils import (
     fetch_data, 
     fetch_data_with_ticker,
     calculate_indicators, 
