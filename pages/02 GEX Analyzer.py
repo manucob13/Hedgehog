@@ -17,7 +17,7 @@ import requests
 from plotly.subplots import make_subplots
 from scipy import interpolate
 # Importación para autenticación
-from utils import check_password
+from utils.utils import check_password
 
 warnings.filterwarnings('ignore')
 
