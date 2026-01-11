@@ -741,7 +741,7 @@ def main_tp_calculos():
             limit_price_input = st.number_input(
                 "Precio Límite (Total)",
                 min_value=0.0,
-                value=0.0,
+                value=1.0,
                 step=0.05,
                 format="%.2f",
                 key='limit_price_tc',
@@ -769,7 +769,7 @@ def main_tp_calculos():
                 "Puerto IBKR",
                 min_value=1,
                 max_value=65535,
-                value=7497,
+                value=5000,
                 step=1,
                 key='ibkr_port_tc',
                 help="Puerto de TWS (7497) o Gateway (4001)"
