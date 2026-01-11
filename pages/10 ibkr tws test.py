@@ -1,5 +1,7 @@
 # test_ibkr.py
 import streamlit as st
+import asyncio
+import sys
 
 st.set_page_config(page_title="Test IBKR", page_icon="🔌")
 
@@ -16,6 +18,17 @@ with col2:
 if st.button("🧪 Probar Conexión", type="primary"):
     
     try:
+        # Configurar event loop ANTES de importar ib_insync
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                raise RuntimeError("Event loop is closed")
+        except RuntimeError:
+            if sys.platform == 'win32':
+                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
         from ib_insync import IB
         
         with st.spinner("Conectando..."):
@@ -25,6 +38,7 @@ if st.button("🧪 Probar Conexión", type="primary"):
             if ib.isConnected():
                 cuentas = ib.managedAccounts()
                 st.success(f"✅ CONECTADO!")
+                st.write(f"**Puerto:** {port}")
                 st.write(f"**Cuentas:** {cuentas}")
                 ib.disconnect()
             else:
