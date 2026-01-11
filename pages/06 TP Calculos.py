@@ -963,7 +963,7 @@ def main_tp_calculos():
                 st.markdown("#### 📌 Configuración IBKR")
                 
                 ibkr_host_adj = st.text_input("Host", value="127.0.0.1", key='ibkr_host_adj')
-                ibkr_port_adj = st.number_input("Puerto", min_value=1, max_value=65535, value=7497, step=1, key='ibkr_port_adj')
+                ibkr_port_adj = st.number_input("Puerto", min_value=1, max_value=65535, value=5000, step=1, key='ibkr_port_adj')
                 ibkr_client_id_adj = st.number_input("Client ID", min_value=1, value=1, step=1, key='ibkr_client_id_adj')
             
             st.markdown("---")
