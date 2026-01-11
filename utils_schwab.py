@@ -5,6 +5,7 @@ Este módulo contiene funciones para conectar con Schwab y obtener datos de opci
 
 import streamlit as st
 import os
+import json
 from schwab.auth import easy_client
 
 
@@ -25,11 +26,71 @@ def get_schwab_credentials():
         return None, None, None
 
 
+def setup_token_from_secrets(token_path="schwab_token.json"):
+    """
+    Crea schwab_token.json desde st.secrets si no existe localmente.
+    Esto permite trabajar en Streamlit Cloud sin subir el archivo a GitHub.
+    
+    Args:
+        token_path (str): Ruta donde crear el archivo token
+    
+    Returns:
+        bool: True si el token se creó/existe correctamente, False en caso contrario
+    """
+    # Si el archivo ya existe, no hacer nada
+    if os.path.exists(token_path):
+        return True
+    
+    try:
+        # Obtener datos del token desde secrets
+        token_data = {
+            "creation_timestamp": st.secrets["schwab"]["token"]["creation_timestamp"],
+            "token": {
+                "expires_in": st.secrets["schwab"]["token"]["expires_in"],
+                "token_type": st.secrets["schwab"]["token"]["token_type"],
+                "scope": st.secrets["schwab"]["token"]["scope"],
+                "refresh_token": st.secrets["schwab"]["token"]["refresh_token"],
+                "access_token": st.secrets["schwab"]["token"]["access_token"],
+                "id_token": st.secrets["schwab"]["token"]["id_token"],
+                "expires_at": st.secrets["schwab"]["token"]["expires_at"]
+            }
+        }
+        
+        # Crear el archivo JSON
+        with open(token_path, "w") as f:
+            json.dump(token_data, f, indent=2)
+        
+        st.success(f"✅ Token recreado desde secrets en: {token_path}")
+        return True
+        
+    except KeyError as e:
+        st.error(f"❌ Falta configurar el token en secrets: {e}")
+        st.info("""
+        **Añade esto a tus Secrets en Streamlit Cloud:**
+        
+        ```toml
+        [schwab.token]
+        creation_timestamp = ...
+        expires_in = ...
+        token_type = "Bearer"
+        scope = "api"
+        refresh_token = "..."
+        access_token = "..."
+        id_token = "..."
+        expires_at = ...
+        ```
+        """)
+        return False
+    except Exception as e:
+        st.error(f"❌ Error al crear token desde secrets: {e}")
+        return False
+
+
 def connect_to_schwab(api_key=None, app_secret=None, redirect_uri=None, token_path="schwab_token.json"):
 def connect_to_schwab(api_key=None, app_secret=None, redirect_uri=None, token_path="schwab_token.json"):
     """
     Conecta con Schwab usando el token existente.
-    No abre flujo OAuth ni usa puerto; solo valida token.json.
+    Si no existe el token, permite subirlo mediante file_uploader.
     Si no se proporcionan credenciales, las obtiene automáticamente de st.secrets.
     
     Args:
@@ -49,29 +110,22 @@ def connect_to_schwab(api_key=None, app_secret=None, redirect_uri=None, token_pa
         if api_key is None or app_secret is None or redirect_uri is None:
             return None
     
+    # Si no existe el token, permitir subirlo
     if not os.path.exists(token_path):
-        st.error(f"❌ No se encontró '{token_path}'. Genera el token desde tu notebook local antes de usar esta función.")
-        return None
-
-    try:
-        client = easy_client(
-            api_key=api_key,
-            app_secret=app_secret,
-            callback_url=redirect_uri,
-            token_path=token_path
-        )
-
-        # Verificar token con una llamada de prueba
-        test_response = client.get_quote("AAPL")
-        if hasattr(test_response, "status_code") and test_response.status_code != 200:
-            raise Exception(f"Respuesta inesperada: {test_response.status_code}")
-
-        return client
-
-    except Exception as e:
-        st.error(f"❌ Error al inicializar Schwab Client: {e}")
-        st.warning(f"⚠️ Si el error persiste, elimina el archivo '{token_path}' y vuelve a generarlo desde tu entorno local.")
-        return None
+        st.warning("⚠️ No se encontró schwab_token.json")
+        st.info("👇 **Sube el archivo de token que generaste localmente**")
+        
+        with st.expander("ℹ️ ¿Cómo generar el token?", expanded=False):
+            st.markdown("""
+            **Ejecuta este script en tu PC local:**
+            
+            ```python
+            from schwab import auth
+            
+            client = auth.client_from_manual_flow(
+                api_key="TU_API_KEY",
+                app_secret="TU_SECRET",
+                callback_url="https://127.0.0.1",
 
 
 def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
