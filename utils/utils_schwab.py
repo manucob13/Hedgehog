@@ -172,3 +172,67 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
         
     except Exception:
         return None, None, None
+
+
+
+def get_current_price_schwab(client, ticker):
+    """
+    Obtiene el precio actual del ticker desde Schwab.
+    
+    Args:
+        client: Cliente de Schwab autenticado
+        ticker (str): Símbolo del ticker (ej: 'AAPL', 'SPY', 'QQQ')
+    
+    Returns:
+        float: Precio actual del ticker, None si hay error
+    """
+    try:
+        if client is None:
+            return None
+        
+        # Obtener quote desde Schwab
+        response = client.get_quote(ticker)
+        
+        if response.status_code != 200:
+            return None
+        
+        quote_data = response.json()
+        
+        # La estructura de respuesta de Schwab es un diccionario con el ticker como clave
+        # Ejemplo: {'AAPL': {'quote': {...}}}
+        if ticker in quote_data:
+            ticker_data = quote_data[ticker]
+            
+            # Intentar obtener diferentes campos de precio en orden de prioridad
+            # 1. lastPrice - precio de la última transacción
+            # 2. mark - precio mark (mid entre bid/ask)
+            # 3. closePrice - precio de cierre
+            
+            if 'quote' in ticker_data:
+                quote = ticker_data['quote']
+                
+                # Prioridad 1: Last Price
+                if 'lastPrice' in quote and quote['lastPrice'] is not None:
+                    return float(quote['lastPrice'])
+                
+                # Prioridad 2: Mark Price
+                if 'mark' in quote and quote['mark'] is not None:
+                    return float(quote['mark'])
+                
+                # Prioridad 3: Close Price
+                if 'closePrice' in quote and quote['closePrice'] is not None:
+                    return float(quote['closePrice'])
+                
+                # Prioridad 4: Calcular desde bid/ask
+                if 'bidPrice' in quote and 'askPrice' in quote:
+                    bid = quote.get('bidPrice')
+                    ask = quote.get('askPrice')
+                    if bid is not None and ask is not None and bid > 0 and ask > 0:
+                        return float((bid + ask) / 2)
+        
+        return None
+        
+    except Exception as e:
+        # En producción podrías usar logging en lugar de print
+        print(f"Error obteniendo precio actual de Schwab: {e}")
+        return None
