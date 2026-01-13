@@ -240,53 +240,52 @@ def get_current_price_schwab(client, ticker):
 
 def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
     """
-    Obtiene el strike ATM (at-the-money) más cercano al precio actual
-    basándose en los strikes disponibles en la cadena de opciones de Schwab.
+    Obtiene el strike ATM (at-the-money) más cercano al precio actual.
     """
     try:
-        # 1. Preparar el símbolo (Schwab usa prefijo $ para índices)
+        from datetime import datetime, date
+
+        # 1. Ajustar el símbolo para SPX
         symbol = '$SPX' if ticker == 'SPX' else ticker
         
-        # 2. Convertir fecha a string formato YYYY-MM-DD
-        if not isinstance(expiration_date, str):
-            exp_date_str = expiration_date.strftime("%Y-%m-%d")
+        # 2. CORRECCIÓN: Asegurar que expiration_date sea un objeto date
+        # Si es un string, lo convertimos. Si ya es date/datetime, nos aseguramos que sea date.
+        if isinstance(expiration_date, str):
+            # Intentar parsear el string (asumiendo formato YYYY-MM-DD)
+            target_date = datetime.strptime(expiration_date, "%Y-%m-%d").date()
+        elif isinstance(expiration_date, datetime):
+            target_date = expiration_date.date()
         else:
-            exp_date_str = expiration_date
+            target_date = expiration_date # Ya es un objeto date
 
-        # 3. CORRECCIÓN: Usar get_option_chain (método correcto de schwab-py)
-        # Usamos los parámetros correctos para filtrar por fecha
+        # 3. Llamada a la API usando el objeto date (target_date)
         response = client.get_option_chain(
             symbol,
-            from_date=exp_date_str,
-            to_date=exp_date_str
+            from_date=target_date,  # Ahora es tipo datetime.date
+            to_date=target_date     # Ahora es tipo datetime.date
         )
         
         if response.status_code != 200:
             return None
         
         data = response.json()
-        
-        # 4. Extraer todos los strikes disponibles
         available_strikes = set()
         
-        # Revisamos tanto calls como puts para asegurar que capturamos todos los strikes
+        # 4. Extraer strikes (usamos el string para comparar en el diccionario)
+        exp_date_str = target_date.strftime("%Y-%m-%d")
+        
         for map_type in ['callExpDateMap', 'putExpDateMap']:
             exp_map = data.get(map_type, {})
             for date_key, strikes_dict in exp_map.items():
-                # Verificamos que la fecha coincida con la solicitada
                 if date_key.startswith(exp_date_str):
                     for strike_key in strikes_dict.keys():
-                        try:
-                            available_strikes.add(float(strike_key))
-                        except ValueError:
-                            continue
+                        available_strikes.add(float(strike_key))
         
         if not available_strikes:
             return None
         
-        # 5. Encontrar el strike más cercano al precio actual
+        # 5. Encontrar el strike más cercano
         atm_strike = min(available_strikes, key=lambda x: abs(x - current_price))
-        
         return atm_strike
         
     except Exception as e:
