@@ -236,3 +236,74 @@ def get_current_price_schwab(client, ticker):
         # En producción podrías usar logging en lugar de print
         print(f"Error obteniendo precio actual de Schwab: {e}")
         return None
+
+
+def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
+    """
+    Obtiene el strike ATM (at-the-money) más cercano al precio actual
+    basándose en los strikes disponibles en la cadena de opciones de Schwab.
+    
+    Args:
+        client: Cliente de Schwab autenticado
+        ticker: Símbolo del ticker (ej: 'QQQ', 'SPX')
+        current_price: Precio actual del subyacente
+        expiration_date: Fecha de expiración (date object)
+    
+    Returns:
+        float: Strike ATM más cercano al precio actual, o None si hay error
+    """
+    try:
+        from datetime import datetime
+        
+        # Convertir date a datetime si es necesario
+        if isinstance(expiration_date, str):
+            exp_date_str = expiration_date
+        else:
+            exp_date_str = expiration_date.strftime("%Y-%m-%d")
+        
+        # Obtener la cadena de opciones completa
+        # Ajustar el símbolo para SPX
+        symbol = '$SPX' if ticker == 'SPX' else ticker
+        
+        # Obtener cadena de opciones
+        response = client.option_chains(
+            symbol,
+            contract_type='ALL',
+            from_date=exp_date_str,
+            to_date=exp_date_str
+        )
+        
+        if not response or 'callExpDateMap' not in response.json():
+            return None
+        
+        data = response.json()
+        
+        # Extraer todos los strikes disponibles
+        available_strikes = set()
+        
+        # De los calls
+        if 'callExpDateMap' in data:
+            for exp_date, strikes_dict in data['callExpDateMap'].items():
+                for strike_key in strikes_dict.keys():
+                    strike = float(strike_key)
+                    available_strikes.add(strike)
+        
+        # De los puts
+        if 'putExpDateMap' in data:
+            for exp_date, strikes_dict in data['putExpDateMap'].items():
+                for strike_key in strikes_dict.keys():
+                    strike = float(strike_key)
+                    available_strikes.add(strike)
+        
+        if not available_strikes:
+            return None
+        
+        # Encontrar el strike más cercano al precio actual
+        available_strikes = sorted(list(available_strikes))
+        atm_strike = min(available_strikes, key=lambda x: abs(x - current_price))
+        
+        return atm_strike
+        
+    except Exception as e:
+        print(f"Error obteniendo strike ATM de Schwab: {e}")
+        return None
