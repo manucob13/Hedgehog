@@ -238,7 +238,7 @@ def main_tp_calculos():
     initialize_session_state()
     
     # --- TÍTULO PRINCIPAL ---
-    st.markdown("<h1><span style='font-size: 1.5em;'>🎯</span> TP Cálculos - Expected Move</h1>", unsafe_allow_html=True)
+    st.markdown("<h1><span style='font-size: 1.5em;'>🎯</span> TC Cálculos - Expected Move</h1>", unsafe_allow_html=True)
     st.markdown("""
     Esta herramienta calcula el **Expected Move** (movimiento esperado) de un activo basándose 
     en los precios de las opciones (straddle ATM) para una fecha de expiración específica.
