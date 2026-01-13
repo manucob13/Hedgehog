@@ -5,11 +5,11 @@ from datetime import date, timedelta, datetime
 import plotly.graph_objects as go
 from utils.utils import check_password
 from utils.utils_cboe import get_option_chain_cboe
-from utils.utils_schwab import connect_to_schwab, get_current_price_schwab, obtener_datos_opcion
+from utils.utils_schwab import connect_to_schwab, get_current_price_schwab, obtener_datos_opcion, get_atm_strike_schwab
 import io
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="TP Cálculos - Expected Move", layout="wide")
+st.set_page_config(page_title="TC Cálculos - Expected Move", layout="wide")
 
 # ==============================================================================
 # FUNCIONES AUXILIARES
@@ -88,9 +88,11 @@ def calculate_expected_move_schwab(client, ticker, expiration_date, current_pric
         if client is None:
             return None, None, "Cliente de Schwab no disponible"
         
-        # Encontrar el strike ATM más cercano al precio actual
-        # Redondear al múltiplo de 5 más cercano
-        atm_strike = round(current_price / 5) * 5
+        # Obtener el strike ATM real de la cadena de opciones
+        atm_strike = get_atm_strike_schwab(client, ticker, current_price, expiration_date)
+        
+        if atm_strike is None:
+            return None, None, "No se pudo obtener el strike ATM de Schwab"
         
         # Obtener datos del CALL ATM
         call_mid, call_delta, call_theta = obtener_datos_opcion(
@@ -133,20 +135,28 @@ def calculate_expected_move_schwab(client, ticker, expiration_date, current_pric
 
 
 @st.cache_data(ttl=300)
-def get_historical_prices(ticker, days=7):
-    """Obtiene precios históricos del ticker."""
+def get_historical_prices_yf(ticker, days=7):
+    """Obtiene precios históricos del ticker usando Yahoo Finance."""
     try:
         import yfinance as yf
         
+        # Ajustar símbolo para Yahoo Finance
         yf_ticker = '^SPX' if ticker == 'SPX' else ticker
         
         stock = yf.Ticker(yf_ticker)
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
+        
+        # Obtener datos históricos
         df = stock.history(start=start_date, end=end_date)
+        
+        if df.empty:
+            return None
+        
         return df
+        
     except Exception as e:
-        st.error(f"Error obteniendo datos históricos: {e}")
+        st.error(f"Error obteniendo datos históricos de Yahoo Finance: {e}")
         return None
 
 
@@ -592,11 +602,12 @@ def main_tp_calculos():
         st.markdown("---")
         
         # ==============================================================================
-        # SECCIÓN 4: GRÁFICO - VELAS JAPONESAS
+        # SECCIÓN 4: GRÁFICO - VELAS JAPONESAS (YAHOO FINANCE)
         # ==============================================================================
         st.header("4. Visualización del Expected Move")
         
-        df_hist = get_historical_prices(selected_ticker, days=7)
+        # Usar Yahoo Finance directamente
+        df_hist = get_historical_prices_yf(selected_ticker, days=7)
         
         if df_hist is not None and not df_hist.empty:
             
@@ -683,8 +694,10 @@ def main_tp_calculos():
             
             st.plotly_chart(fig, use_container_width=True)
             
+            st.info("📊 **Datos históricos obtenidos de Yahoo Finance**")
+            
         else:
-            st.warning("⚠️ No se pudieron obtener datos históricos para el gráfico.")
+            st.warning("⚠️ No se pudieron obtener datos históricos de Yahoo Finance para el gráfico.")
         
         st.markdown("---")
         
@@ -751,7 +764,7 @@ def main_tp_calculos():
         ### 📚 Fuentes de Datos
         - **Precios de Opciones:** CBOE (Chicago Board Options Exchange) y Schwab
         - **Precios del Activo:** Schwab
-        - **Datos Históricos:** Yahoo Finance (solo para gráficos)
+        - **Datos Históricos:** Yahoo Finance
         
         ### 🧮 Fórmula del Expected Move
         ```
@@ -765,7 +778,7 @@ def main_tp_calculos():
         
         ### 💡 Diferencias entre Fuentes
         - **CBOE:** Proporciona Bid, Ask, Mid y Last Price con mayor granularidad
-        - **Schwab:** Proporciona Mid Price y Greeks (Delta, Theta) en tiempo real
+        - **Schwab:** Proporciona Mid Price y Greeks (Delta, Theta) en tiempo real, strike ATM basado en cadena real
         
         ### 📊 Niveles de Confianza
         - **1σ** ≈ 68% de probabilidad (rango más conservador)
