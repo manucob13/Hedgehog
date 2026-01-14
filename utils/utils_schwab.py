@@ -330,18 +330,14 @@ def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
         expiration_date: Fecha de expiración (str, datetime, o date)
     
     Returns:
-        tuple: (atm_strike, fecha_encontrada) o (None, None) si hay error
+        float: Strike ATM más cercano, None si hay error
     """
     try:
         symbol = normalize_ticker(ticker)
         target_date = normalize_date(expiration_date)
         
-        print(f"\n{'='*60}")
-        print(f"🔍 GET_ATM_STRIKE_SCHWAB")
-        print(f"Symbol: {symbol}")
-        print(f"Target date: {target_date}")
-        print(f"Current price: {current_price}")
-        print(f"{'='*60}\n")
+        print(f"🔍 Buscando strike ATM para {symbol} en {target_date}")
+        print(f"   Precio actual: {current_price}")
         
         # Llamar sin filtro de fecha primero para obtener toda la cadena
         response = client.get_option_chain(symbol)
@@ -349,129 +345,45 @@ def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
         if response.status_code != 200:
             print(f"❌ Error en get_option_chain: Status code {response.status_code}")
             print(f"Response: {response.text[:500]}")
-            return None, None
+            return None
         
         data = response.json()
-        
-        print(f"📊 Claves principales en respuesta: {list(data.keys())}")
-        
-        # Verificar si hay datos
-        call_map = data.get('callExpDateMap', {})
-        put_map = data.get('putExpDateMap', {})
-        
-        print(f"📊 callExpDateMap tiene {len(call_map)} fechas")
-        print(f"📊 putExpDateMap tiene {len(put_map)} fechas")
-        
-        if not call_map and not put_map:
-            print(f"❌ No hay datos de opciones en la respuesta para {symbol}")
-            return None, None
-        
-        # Recopilar todas las fechas disponibles
-        all_dates = set()
-        all_dates.update(call_map.keys())
-        all_dates.update(put_map.keys())
-        
-        if not all_dates:
-            print(f"❌ No hay fechas de expiración disponibles")
-            return None, None
-        
-        all_dates_list = sorted(list(all_dates))
-        print(f"\n📅 Primeras 10 fechas disponibles:")
-        for i, d in enumerate(all_dates_list[:10], 1):
-            print(f"   {i}. {d}")
+        available_strikes = set()
         
         exp_date_str = target_date.strftime("%Y-%m-%d")
-        print(f"\n🔍 Buscando fecha: {exp_date_str}")
         
-        # Buscar coincidencia exacta primero
-        fecha_encontrada = None
-        for date_key in all_dates_list:
-            if date_key.startswith(exp_date_str):
-                fecha_encontrada = date_key
-                print(f"   ✅ Fecha exacta encontrada: {fecha_encontrada}")
-                break
-        
-        # Si no hay coincidencia exacta, buscar la más cercana
-        if not fecha_encontrada:
-            print(f"   ⚠️ No hay coincidencia exacta con {exp_date_str}")
-            print(f"   🔍 Buscando fecha más cercana...")
-            
-            # Convertir fechas a objetos date para comparar
-            date_objects = {}
-            for date_key in all_dates_list:
-                try:
-                    # Extraer solo la parte de fecha (YYYY-MM-DD)
-                    date_part = date_key.split(':')[0]
-                    date_obj = datetime.strptime(date_part, "%Y-%m-%d").date()
-                    date_objects[date_key] = date_obj
-                except Exception as e:
-                    print(f"   ⚠️ Error parseando fecha {date_key}: {e}")
-                    continue
-            
-            if not date_objects:
-                print(f"❌ No se pudieron parsear las fechas disponibles")
-                return None, None
-            
-            # Encontrar la fecha más cercana a la target_date
-            closest_key = min(date_objects.keys(), key=lambda k: abs((date_objects[k] - target_date).days))
-            fecha_encontrada = closest_key
-            fecha_obj = date_objects[closest_key]
-            dias_diff = (fecha_obj - target_date).days
-            
-            print(f"   ✅ Fecha más cercana: {fecha_encontrada}")
-            print(f"   📊 Diferencia: {dias_diff} días")
-        
-        # Ahora buscar strikes para esta fecha
-        print(f"\n🔍 Buscando strikes para fecha: {fecha_encontrada}")
-        
-        available_strikes = set()
+        print(f"   Buscando fecha: {exp_date_str}")
         
         for map_type in ['callExpDateMap', 'putExpDateMap']:
             exp_map = data.get(map_type, {})
             
-            if fecha_encontrada in exp_map:
-                strikes_dict = exp_map[fecha_encontrada]
-                print(f"   📊 {map_type} tiene {len(strikes_dict)} strikes")
+            if not exp_map:
+                print(f"   ⚠️ No hay datos en {map_type}")
+                continue
                 
-                # Mostrar algunos strikes de ejemplo
-                example_keys = list(strikes_dict.keys())[:5]
-                print(f"   📊 Ejemplo de keys: {example_keys}")
-                
-                for strike_key in strikes_dict.keys():
-                    try:
-                        strike_float = float(strike_key)
-                        available_strikes.add(strike_float)
-                    except ValueError as e:
-                        print(f"   ⚠️ Strike no numérico: {strike_key}")
-                        continue
-            else:
-                print(f"   ⚠️ {map_type} no contiene la fecha {fecha_encontrada}")
+            print(f"   Fechas disponibles en {map_type}: {list(exp_map.keys())[:5]}...")
+            
+            for date_key, strikes_dict in exp_map.items():
+                if date_key.startswith(exp_date_str):
+                    print(f"   ✅ Fecha coincidente encontrada: {date_key}")
+                    for strike_key in strikes_dict.keys():
+                        available_strikes.add(float(strike_key))
         
         if not available_strikes:
-            print(f"❌ No se encontraron strikes válidos para la fecha {fecha_encontrada}")
-            return None, None
+            print(f"❌ No se encontraron strikes para la fecha {exp_date_str}")
+            print(f"   Verifica que la fecha de expiración sea válida para {symbol}")
+            return None
         
         available_strikes_list = sorted(list(available_strikes))
-        print(f"\n📊 Total strikes encontrados: {len(available_strikes_list)}")
-        print(f"📊 Primeros 10 strikes: {available_strikes_list[:10]}")
-        print(f"📊 Últimos 10 strikes: {available_strikes_list[-10:]}")
-        print(f"📊 Precio actual: {current_price}")
+        print(f"   Strikes disponibles: {available_strikes_list[:10]}... (total: {len(available_strikes_list)})")
         
         atm_strike = min(available_strikes, key=lambda x: abs(x - current_price))
-        print(f"\n✅ Strike ATM seleccionado: {atm_strike}")
-        print(f"   Diferencia con precio actual: {abs(atm_strike - current_price):.2f}")
+        print(f"✅ Strike ATM encontrado: {atm_strike} (más cercano a {current_price})")
         
-        # Extraer solo la parte de fecha de fecha_encontrada
-        fecha_date_str = fecha_encontrada.split(':')[0]
-        
-        print(f"\n{'='*60}")
-        print(f"RESULTADO: Strike={atm_strike}, Fecha={fecha_date_str}")
-        print(f"{'='*60}\n")
-        
-        return atm_strike, fecha_date_str
+        return atm_strike
         
     except Exception as e:
         print(f"❌ Error en get_atm_strike_schwab: {e}")
         import traceback
         traceback.print_exc()
-        return None, None
+        return None
