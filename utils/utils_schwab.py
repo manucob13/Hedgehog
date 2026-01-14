@@ -6,7 +6,39 @@ Este módulo contiene funciones para conectar con Schwab y obtener datos de opci
 import streamlit as st
 import os
 import json
+from datetime import datetime, date
 from schwab.auth import easy_client
+
+
+def normalize_ticker(ticker):
+    """
+    Convierte tickers especiales al formato de Schwab.
+    
+    Args:
+        ticker (str): Símbolo del ticker
+    
+    Returns:
+        str: Ticker normalizado para Schwab API
+    """
+    return '$SPX' if ticker == 'SPX' else ticker
+
+
+def normalize_date(date_input):
+    """
+    Convierte diferentes formatos de fecha a datetime.date.
+    
+    Args:
+        date_input: Puede ser str, datetime, o date
+    
+    Returns:
+        date: Objeto datetime.date
+    """
+    if isinstance(date_input, str):
+        return datetime.strptime(date_input, "%Y-%m-%d").date()
+    elif isinstance(date_input, datetime):
+        return date_input.date()
+    else:
+        return date_input
 
 
 def get_schwab_credentials():
@@ -36,12 +68,10 @@ def setup_token_from_secrets(token_path="schwab_token.json"):
     Returns:
         bool: True si el token se creó/existe correctamente, False en caso contrario
     """
-    # Si el archivo ya existe, no hacer nada
     if os.path.exists(token_path):
         return True
     
     try:
-        # Obtener datos del token desde secrets
         token_data = {
             "creation_timestamp": st.secrets["schwab"]["token"]["creation_timestamp"],
             "token": {
@@ -55,7 +85,6 @@ def setup_token_from_secrets(token_path="schwab_token.json"):
             }
         }
         
-        # Crear el archivo JSON
         with open(token_path, "w") as f:
             json.dump(token_data, f, indent=2)
         
@@ -79,13 +108,11 @@ def connect_to_schwab(token_path="schwab_token.json"):
     Returns:
         schwab.client.Client: Cliente de Schwab si la conexión es exitosa, None en caso contrario
     """
-    # Obtener credenciales de secrets
     api_key, app_secret, redirect_uri = get_schwab_credentials()
     
     if api_key is None or app_secret is None or redirect_uri is None:
         return None
     
-    # Crear token desde secrets si no existe
     if not setup_token_from_secrets(token_path):
         st.error("❌ No se pudo configurar el token de Schwab")
         return None
@@ -97,12 +124,6 @@ def connect_to_schwab(token_path="schwab_token.json"):
             callback_url=redirect_uri,
             token_path=token_path
         )
-
-        # Verificar token con una llamada de prueba
-        test_response = client.get_quote("AAPL")
-        if hasattr(test_response, "status_code") and test_response.status_code != 200:
-            raise Exception(f"Respuesta inesperada: {test_response.status_code}")
-
         return client
 
     except Exception as e:
@@ -113,14 +134,24 @@ def connect_to_schwab(token_path="schwab_token.json"):
 def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
     """
     Obtiene precio (mid), delta y theta de una opción desde Schwab.
-    Versión mejorada con manejo robusto de strikes.
+    Versión mejorada con manejo robusto de strikes y fechas.
+    
+    Args:
+        client: Cliente autenticado de Schwab
+        ticker (str): Símbolo del ticker
+        strike (float): Precio strike deseado
+        tipo (str): 'CALL' o 'PUT'
+        fecha_salida: Fecha de expiración (str, datetime, o date)
+    
+    Returns:
+        tuple: (mid_price, delta, theta) o (None, None, None) si hay error
     """
     try:
         if client is None:
             return None, None, None
         
-        # ✅ CORRECCIÓN: Ajustar símbolo para SPX
-        symbol = '$SPX' if ticker == 'SPX' else ticker
+        symbol = normalize_ticker(ticker)
+        fecha_normalizada = normalize_date(fecha_salida)
         
         response = client.get_option_chain(symbol)
         if response.status_code != 200:
@@ -130,7 +161,7 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
         opciones = response.json()
         option_map = opciones.get('callExpDateMap' if tipo == 'CALL' else 'putExpDateMap', {})
         
-        fecha_str = fecha_salida.strftime('%Y-%m-%d')
+        fecha_str = fecha_normalizada.strftime('%Y-%m-%d')
         fecha_key_match = None
         
         for key in option_map.keys():
@@ -149,7 +180,6 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
             print(f"❌ Sin strikes disponibles para {tipo}")
             return None, None, None
         
-        # Encontrar el strike más cercano (mejor que coincidencia exacta)
         closest_strike = min(available_strikes, key=lambda x: abs(x - float(strike)))
         strike_str = str(closest_strike)
         
@@ -199,7 +229,6 @@ def get_current_price_schwab(client, ticker):
         if client is None:
             return None
         
-        # Obtener quote desde Schwab
         response = client.get_quote(ticker)
         
         if response.status_code != 200:
@@ -207,32 +236,21 @@ def get_current_price_schwab(client, ticker):
         
         quote_data = response.json()
         
-        # La estructura de respuesta de Schwab es un diccionario con el ticker como clave
-        # Ejemplo: {'AAPL': {'quote': {...}}}
         if ticker in quote_data:
             ticker_data = quote_data[ticker]
-            
-            # Intentar obtener diferentes campos de precio en orden de prioridad
-            # 1. lastPrice - precio de la última transacción
-            # 2. mark - precio mark (mid entre bid/ask)
-            # 3. closePrice - precio de cierre
             
             if 'quote' in ticker_data:
                 quote = ticker_data['quote']
                 
-                # Prioridad 1: Last Price
                 if 'lastPrice' in quote and quote['lastPrice'] is not None:
                     return float(quote['lastPrice'])
                 
-                # Prioridad 2: Mark Price
                 if 'mark' in quote and quote['mark'] is not None:
                     return float(quote['mark'])
                 
-                # Prioridad 3: Close Price
                 if 'closePrice' in quote and quote['closePrice'] is not None:
                     return float(quote['closePrice'])
                 
-                # Prioridad 4: Calcular desde bid/ask
                 if 'bidPrice' in quote and 'askPrice' in quote:
                     bid = quote.get('bidPrice')
                     ask = quote.get('askPrice')
@@ -242,7 +260,6 @@ def get_current_price_schwab(client, ticker):
         return None
         
     except Exception as e:
-        # En producción podrías usar logging en lugar de print
         print(f"Error obteniendo precio actual de Schwab: {e}")
         return None
 
@@ -250,28 +267,24 @@ def get_current_price_schwab(client, ticker):
 def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
     """
     Obtiene el strike ATM (at-the-money) más cercano al precio actual.
+    
+    Args:
+        client: Cliente autenticado de Schwab
+        ticker (str): Símbolo del ticker
+        current_price (float): Precio actual del subyacente
+        expiration_date: Fecha de expiración (str, datetime, o date)
+    
+    Returns:
+        float: Strike ATM más cercano, None si hay error
     """
     try:
-        from datetime import datetime, date
-
-        # 1. Ajustar el símbolo para SPX
-        symbol = '$SPX' if ticker == 'SPX' else ticker
+        symbol = normalize_ticker(ticker)
+        target_date = normalize_date(expiration_date)
         
-        # 2. CORRECCIÓN: Asegurar que expiration_date sea un objeto date
-        # Si es un string, lo convertimos. Si ya es date/datetime, nos aseguramos que sea date.
-        if isinstance(expiration_date, str):
-            # Intentar parsear el string (asumiendo formato YYYY-MM-DD)
-            target_date = datetime.strptime(expiration_date, "%Y-%m-%d").date()
-        elif isinstance(expiration_date, datetime):
-            target_date = expiration_date.date()
-        else:
-            target_date = expiration_date # Ya es un objeto date
-
-        # 3. Llamada a la API usando el objeto date (target_date)
         response = client.get_option_chain(
             symbol,
-            from_date=target_date,  # Ahora es tipo datetime.date
-            to_date=target_date     # Ahora es tipo datetime.date
+            from_date=target_date,
+            to_date=target_date
         )
         
         if response.status_code != 200:
@@ -280,7 +293,6 @@ def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
         data = response.json()
         available_strikes = set()
         
-        # 4. Extraer strikes (usamos el string para comparar en el diccionario)
         exp_date_str = target_date.strftime("%Y-%m-%d")
         
         for map_type in ['callExpDateMap', 'putExpDateMap']:
@@ -293,7 +305,6 @@ def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
         if not available_strikes:
             return None
         
-        # 5. Encontrar el strike más cercano
         atm_strike = min(available_strikes, key=lambda x: abs(x - current_price))
         return atm_strike
         
