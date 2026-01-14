@@ -113,16 +113,7 @@ def connect_to_schwab(token_path="schwab_token.json"):
 def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
     """
     Obtiene precio (mid), delta y theta de una opción desde Schwab.
-    
-    Args:
-        client: Cliente de Schwab autenticado
-        ticker (str): Símbolo del ticker (ej: 'AAPL', 'SPY')
-        strike (float): Precio de ejercicio
-        tipo (str): 'CALL' o 'PUT'
-        fecha_salida (date): Fecha de expiración
-    
-    Returns:
-        tuple: (mid_price, delta, theta)
+    Versión mejorada con manejo robusto de strikes.
     """
     try:
         if client is None:
@@ -133,46 +124,48 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
             return None, None, None
         
         opciones = response.json()
+        option_map = opciones.get('callExpDateMap' if tipo == 'CALL' else 'putExpDateMap', {})
         
-        # Seleccionar el mapa correcto según el tipo
-        if tipo == 'CALL':
-            option_map = opciones.get('callExpDateMap', {})
-        else:
-            option_map = opciones.get('putExpDateMap', {})
-        
-        # Buscar fecha
         fecha_str = fecha_salida.strftime('%Y-%m-%d')
         fecha_key_match = None
+        
         for key in option_map.keys():
             if key.startswith(fecha_str):
                 fecha_key_match = key
                 break
         
-        if fecha_key_match:
-            strikes = option_map[fecha_key_match]
-            strike_str = str(float(strike))
-            
-            if strike_str in strikes:
-                contrato = strikes[strike_str][0]
-                
-                bid = contrato.get('bid', 0)
-                ask = contrato.get('ask', 0)
-                delta = contrato.get('delta', None)
-                theta = contrato.get('theta', None)
-                
-                # Calcular precio medio
-                if bid > 0 and ask > 0:
-                    mid_price = (bid + ask) / 2
-                else:
-                    mid_price = None
-                
-                return mid_price, delta, theta
+        if not fecha_key_match:
+            return None, None, None
         
-        return None, None, None
+        strikes = option_map[fecha_key_match]
+        available_strikes = [float(k) for k in strikes.keys()]
         
-    except Exception:
+        if not available_strikes:
+            return None, None, None
+        
+        # Encontrar el strike más cercano (mejor que coincidencia exacta)
+        closest_strike = min(available_strikes, key=lambda x: abs(x - float(strike)))
+        strike_str = str(closest_strike)
+        
+        if strike_str not in strikes:
+            return None, None, None
+        
+        contrato = strikes[strike_str][0]
+        bid = contrato.get('bid', 0)
+        ask = contrato.get('ask', 0)
+        
+        if bid <= 0 or ask <= 0:
+            return None, None, None
+        
+        mid_price = (bid + ask) / 2
+        delta = contrato.get('delta', None)
+        theta = contrato.get('theta', None)
+        
+        return mid_price, delta, theta
+        
+    except Exception as e:
+        print(f"Error en obtener_datos_opcion: {e}")
         return None, None, None
-
 
 
 def get_current_price_schwab(client, ticker):
