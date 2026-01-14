@@ -4,7 +4,6 @@ import numpy as np
 from datetime import date, timedelta, datetime
 import plotly.graph_objects as go
 from utils.utils import check_password
-from utils.utils_cboe import get_option_chain_cboe
 from utils.utils_schwab import connect_to_schwab, get_current_price_schwab, obtener_datos_opcion, get_atm_strike_schwab
 import io
 
@@ -14,73 +13,6 @@ st.set_page_config(page_title="TC Cálculos - Expected Move", layout="wide")
 # ==============================================================================
 # FUNCIONES AUXILIARES
 # ==============================================================================
-
-def calculate_expected_move_cboe(df_options, expiration_date, current_price, std_multiplier=1.0):
-    """Calcula el Expected Move basado en el straddle ATM usando datos de CBOE."""
-    try:
-        # Filtrar por fecha de expiración
-        df_exp = df_options[df_options['expiry'] == expiration_date].copy()
-        
-        if df_exp.empty:
-            return None, None, "No hay datos para esa fecha de expiración"
-        
-        # Encontrar el strike más cercano al precio actual (ATM)
-        df_exp['distance'] = abs(df_exp['strike'] - current_price)
-        atm_strike = df_exp.loc[df_exp['distance'].idxmin(), 'strike']
-        
-        # Obtener el Call y Put ATM
-        call_atm = df_exp[(df_exp['strike'] == atm_strike) & (df_exp['opt_type'] == 'C')]
-        put_atm = df_exp[(df_exp['strike'] == atm_strike) & (df_exp['opt_type'] == 'P')]
-        
-        if call_atm.empty or put_atm.empty:
-            return None, None, "No se encontraron opciones ATM"
-        
-        # Obtener precios
-        call_bid = call_atm['bid'].iloc[0]
-        call_ask = call_atm['ask'].iloc[0]
-        call_mid = (call_bid + call_ask) / 2
-        call_last = call_atm['last_trade_price'].iloc[0]
-        
-        put_bid = put_atm['bid'].iloc[0]
-        put_ask = put_atm['ask'].iloc[0]
-        put_mid = (put_bid + put_ask) / 2
-        put_last = put_atm['last_trade_price'].iloc[0]
-        
-        # Prioridad: MID > BID > LAST
-        if call_bid > 0 and call_ask > 0 and put_bid > 0 and put_ask > 0:
-            straddle_price = call_mid + put_mid
-            price_type = "Mid Price"
-        elif call_bid > 0 and put_bid > 0:
-            straddle_price = call_bid + put_bid
-            price_type = "Bid Price"
-        else:
-            straddle_price = call_last + put_last
-            price_type = "Last Price"
-        
-        # Expected Move = Straddle Price * 1.25 * std_multiplier
-        expected_move = straddle_price * 1.25 * std_multiplier
-        
-        # Crear diccionario con detalles
-        details = {
-            'atm_strike': atm_strike,
-            'call_bid': call_bid,
-            'call_ask': call_ask,
-            'call_mid': call_mid,
-            'call_last': call_last,
-            'put_bid': put_bid,
-            'put_ask': put_ask,
-            'put_mid': put_mid,
-            'put_last': put_last,
-            'straddle_price': straddle_price,
-            'price_type': price_type,
-            'std_multiplier': std_multiplier
-        }
-        
-        return expected_move, details, None
-        
-    except Exception as e:
-        return None, None, f"Error calculando Expected Move: {e}"
-
 
 def calculate_expected_move_schwab(client, ticker, expiration_date, current_price, std_multiplier=1.0):
     """Calcula el Expected Move basado en el straddle ATM usando datos de Schwab."""
@@ -179,10 +111,7 @@ def initialize_session_state():
         'order_preview_tc': False,
         'df_strategy_adj': None,
         'order_preview_adj': False,
-        'schwab_client': None,
-        'cboe_data': None,
-        'schwab_data': None,
-        'selected_data_source': 'CBOE'
+        'schwab_client': None
     }
     
     for var, default_value in state_vars.items():
@@ -318,31 +247,10 @@ def main_tp_calculos():
                 st.error("❌ No se pudo obtener el precio actual desde Schwab.")
                 st.stop()
             
-            st.success(f"✅ Precio actual de {selected_ticker} (Schwab): **${current_price:.2f}**")
-            
-            # Obtener cadena de opciones desde CBOE
-            df_options = get_option_chain_cboe(selected_ticker)
-            
-            if df_options is None or df_options.empty:
-                st.error("❌ No se pudieron obtener los datos de opciones desde CBOE.")
-                st.stop()
-            
-            # Calcular Expected Move con CBOE
-            expected_move_cboe, details_cboe, error_cboe = calculate_expected_move_cboe(
-                df_options, 
-                expiration_date, 
-                current_price,
-                std_multiplier
-            )
-            
-            if error_cboe:
-                st.warning(f"⚠️ CBOE: {error_cboe}")
-                details_cboe = None
-            else:
-                st.success(f"✅ Expected Move (CBOE) calculado: **${expected_move_cboe:.2f}**")
+            st.success(f"✅ Precio actual de {selected_ticker}: **${current_price:.2f}**")
             
             # Calcular Expected Move con Schwab
-            expected_move_schwab, details_schwab, error_schwab = calculate_expected_move_schwab(
+            expected_move, details, error = calculate_expected_move_schwab(
                 schwab_client,
                 selected_ticker,
                 expiration_date,
@@ -350,157 +258,40 @@ def main_tp_calculos():
                 std_multiplier
             )
             
-            if error_schwab:
-                st.warning(f"⚠️ Schwab: {error_schwab}")
-                details_schwab = None
-            else:
-                st.success(f"✅ Expected Move (Schwab) calculado: **${expected_move_schwab:.2f}**")
+            if error:
+                st.error(f"❌ Error: {error}")
+                st.stop()
             
-            # Guardar ambos cálculos en session_state
-            st.session_state.cboe_data = {
-                'expected_move': expected_move_cboe,
-                'details': details_cboe,
-                'error': error_cboe
-            }
+            st.success(f"✅ Expected Move calculado: **${expected_move:.2f}**")
             
-            st.session_state.schwab_data = {
-                'expected_move': expected_move_schwab,
-                'details': details_schwab,
-                'error': error_schwab
-            }
-            
+            # Guardar en session_state
             st.session_state.current_price = current_price
+            st.session_state.expected_move = expected_move
+            st.session_state.details = details
             st.session_state.selected_ticker = selected_ticker
             st.session_state.expiration_date = expiration_date
             st.session_state.std_multiplier = std_multiplier
             st.session_state.calculation_done = True
     
     # ==============================================================================
-    # MOSTRAR COMPARACIÓN Y SELECTOR
+    # MOSTRAR RESULTADOS
     # ==============================================================================
     
     if st.session_state.calculation_done:
         
         current_price = st.session_state.current_price
+        expected_move = st.session_state.expected_move
+        details = st.session_state.details
         selected_ticker = st.session_state.selected_ticker
         expiration_date = st.session_state.expiration_date
         std_multiplier = st.session_state.std_multiplier
         
-        cboe_data = st.session_state.cboe_data
-        schwab_data = st.session_state.schwab_data
-        
-        st.markdown("---")
-        st.header("2. Comparación de Fuentes de Datos")
-        
-        # Crear tabla comparativa
-        comparison_rows = []
-        
-        # Precio Actual
-        comparison_rows.append({
-            'Métrica': 'Precio Actual',
-            'CBOE': f"${current_price:.2f}",
-            'Schwab': f"${current_price:.2f}"
-        })
-        
-        # Strike ATM
-        if cboe_data['details'] and schwab_data['details']:
-            comparison_rows.append({
-                'Métrica': 'Strike ATM',
-                'CBOE': f"${cboe_data['details']['atm_strike']:.2f}",
-                'Schwab': f"${schwab_data['details']['atm_strike']:.2f}"
-            })
-        
-        # Call Mid
-        if cboe_data['details'] and schwab_data['details']:
-            comparison_rows.append({
-                'Métrica': 'Call Mid',
-                'CBOE': f"${cboe_data['details']['call_mid']:.2f}",
-                'Schwab': f"${schwab_data['details']['call_mid']:.2f}"
-            })
-        
-        # Put Mid
-        if cboe_data['details'] and schwab_data['details']:
-            comparison_rows.append({
-                'Métrica': 'Put Mid',
-                'CBOE': f"${cboe_data['details']['put_mid']:.2f}",
-                'Schwab': f"${schwab_data['details']['put_mid']:.2f}"
-            })
-        
-        # Straddle Price
-        if cboe_data['details'] and schwab_data['details']:
-            comparison_rows.append({
-                'Métrica': 'Straddle Price',
-                'CBOE': f"${cboe_data['details']['straddle_price']:.2f}",
-                'Schwab': f"${schwab_data['details']['straddle_price']:.2f}"
-            })
-        
-        # Expected Move
-        if cboe_data['expected_move'] and schwab_data['expected_move']:
-            comparison_rows.append({
-                'Métrica': f'Expected Move ({std_multiplier}σ)',
-                'CBOE': f"${cboe_data['expected_move']:.2f}",
-                'Schwab': f"${schwab_data['expected_move']:.2f}"
-            })
-        
-        # Tipo de Precio
-        if cboe_data['details'] and schwab_data['details']:
-            comparison_rows.append({
-                'Métrica': 'Tipo de Precio',
-                'CBOE': cboe_data['details']['price_type'],
-                'Schwab': schwab_data['details']['price_type']
-            })
-        
-        df_comparison = pd.DataFrame(comparison_rows)
-        
-        st.markdown("### 📊 Tabla Comparativa")
-        st.dataframe(df_comparison, hide_index=True, use_container_width=True)
-        
-        st.markdown("---")
-        
-        # Selector de fuente de datos
-        st.markdown("### 🎛️ Selecciona la Fuente de Datos")
-        
-        col1, col2, col3 = st.columns([1, 1, 1])
-        
-        with col1:
-            if st.button("📊 Usar CBOE", use_container_width=True, type="primary" if st.session_state.selected_data_source == 'CBOE' else "secondary"):
-                st.session_state.selected_data_source = 'CBOE'
-                st.rerun()
-        
-        with col2:
-            if st.button("💼 Usar Schwab", use_container_width=True, type="primary" if st.session_state.selected_data_source == 'Schwab' else "secondary"):
-                st.session_state.selected_data_source = 'Schwab'
-                st.rerun()
-        
-        with col3:
-            st.info(f"**Fuente Activa:** {st.session_state.selected_data_source}")
-        
-        # Seleccionar datos según la fuente elegida
-        if st.session_state.selected_data_source == 'CBOE':
-            if cboe_data['details'] is None:
-                st.error("❌ No hay datos válidos de CBOE disponibles")
-                st.stop()
-            expected_move = cboe_data['expected_move']
-            details = cboe_data['details']
-        else:
-            if schwab_data['details'] is None:
-                st.error("❌ No hay datos válidos de Schwab disponibles")
-                st.stop()
-            expected_move = schwab_data['expected_move']
-            details = schwab_data['details']
-        
-        # Guardar en session_state
-        st.session_state.expected_move = expected_move
-        st.session_state.details = details
-        
         st.markdown("---")
         
         # ==============================================================================
-        # SECCIÓN 3: RESULTADOS
+        # SECCIÓN 2: RESULTADOS
         # ==============================================================================
-        st.header("3. Resultados del Expected Move")
-        
-        st.info(f"📌 **Mostrando resultados de:** {st.session_state.selected_data_source}")
+        st.header("2. Resultados del Expected Move")
         
         upper_range = current_price + expected_move
         lower_range = current_price - expected_move
@@ -527,15 +318,9 @@ def main_tp_calculos():
                 'Strike': f"${details['atm_strike']:.2f}",
                 'Mid': f"${details['call_mid']:.2f}"
             }
-            # Agregar datos adicionales si están disponibles (CBOE)
-            if 'call_bid' in details:
-                call_details['Bid'] = f"${details['call_bid']:.2f}"
-                call_details['Ask'] = f"${details['call_ask']:.2f}"
-                call_details['Last'] = f"${details['call_last']:.2f}"
-            # Agregar greeks si están disponibles (Schwab)
-            if 'call_delta' in details and details['call_delta'] is not None:
+            if details['call_delta'] is not None:
                 call_details['Delta'] = f"{details['call_delta']:.4f}"
-            if 'call_theta' in details and details['call_theta'] is not None:
+            if details['call_theta'] is not None:
                 call_details['Theta'] = f"{details['call_theta']:.4f}"
             
             df_call = pd.DataFrame(list(call_details.items()), columns=['Métrica', 'Valor'])
@@ -547,15 +332,9 @@ def main_tp_calculos():
                 'Strike': f"${details['atm_strike']:.2f}",
                 'Mid': f"${details['put_mid']:.2f}"
             }
-            # Agregar datos adicionales si están disponibles (CBOE)
-            if 'put_bid' in details:
-                put_details['Bid'] = f"${details['put_bid']:.2f}"
-                put_details['Ask'] = f"${details['put_ask']:.2f}"
-                put_details['Last'] = f"${details['put_last']:.2f}"
-            # Agregar greeks si están disponibles (Schwab)
-            if 'put_delta' in details and details['put_delta'] is not None:
+            if details['put_delta'] is not None:
                 put_details['Delta'] = f"{details['put_delta']:.4f}"
-            if 'put_theta' in details and details['put_theta'] is not None:
+            if details['put_theta'] is not None:
                 put_details['Theta'] = f"{details['put_theta']:.4f}"
             
             df_put = pd.DataFrame(list(put_details.items()), columns=['Métrica', 'Valor'])
@@ -571,7 +350,6 @@ def main_tp_calculos():
         
         summary_data = {
             'Métrica': [
-                'Fuente de Datos',
                 'Precio Actual',
                 'Strike ATM',
                 f'Straddle Price ({details["price_type"]})',
@@ -583,7 +361,6 @@ def main_tp_calculos():
                 'Fecha de Expiración'
             ],
             'Valor': [
-                st.session_state.selected_data_source,
                 f"${current_price:.2f}",
                 f"${details['atm_strike']:.2f}",
                 f"${details['straddle_price']:.2f}",
@@ -602,109 +379,114 @@ def main_tp_calculos():
         st.markdown("---")
         
         # ==============================================================================
-        # SECCIÓN 4: GRÁFICO - VELAS JAPONESAS (YAHOO FINANCE)
+        # SECCIÓN 3: GRÁFICO - VELAS JAPONESAS (YAHOO FINANCE)
         # ==============================================================================
-        st.header("4. Visualización del Expected Move")
+        st.header("3. Visualización del Expected Move")
         
-        # Usar Yahoo Finance directamente
-        df_hist = get_historical_prices_yf(selected_ticker, days=7)
+        try:
+            # Obtener datos históricos de Yahoo Finance
+            df_hist = get_historical_prices_yf(selected_ticker, days=7)
+            
+            if df_hist is not None and not df_hist.empty:
+                
+                fig = go.Figure()
+                
+                # Convertir el índice a timezone-naive
+                df_hist_plot = df_hist.copy()
+                if df_hist_plot.index.tz is not None:
+                    df_hist_plot.index = df_hist_plot.index.tz_localize(None)
+                
+                # Gráfico de velas japonesas
+                fig.add_trace(go.Candlestick(
+                    x=df_hist_plot.index,
+                    open=df_hist_plot['Open'],
+                    high=df_hist_plot['High'],
+                    low=df_hist_plot['Low'],
+                    close=df_hist_plot['Close'],
+                    name=selected_ticker,
+                    increasing_line_color='#00B06B',
+                    decreasing_line_color='#FF4444'
+                ))
+                
+                exp_datetime = datetime.combine(expiration_date, datetime.min.time())
+                
+                # Líneas horizontales
+                fig.add_hline(
+                    y=upper_range,
+                    line_dash="dot",
+                    line_color="steelblue",
+                    annotation_text=f"${upper_range:.2f} (+{std_multiplier}σ)",
+                    annotation_position="right"
+                )
+                
+                fig.add_hline(
+                    y=lower_range,
+                    line_dash="dot",
+                    line_color="steelblue",
+                    annotation_text=f"${lower_range:.2f} (-{std_multiplier}σ)",
+                    annotation_position="right"
+                )
+                
+                fig.add_hline(
+                    y=current_price,
+                    line_dash="dash",
+                    line_color="yellow",
+                    annotation_text=f"Precio Actual: ${current_price:.2f}",
+                    annotation_position="left"
+                )
+                
+                # Línea vertical - Fecha de Expiración
+                fig.add_shape(
+                    type="line",
+                    x0=exp_datetime,
+                    x1=exp_datetime,
+                    y0=0,
+                    y1=1,
+                    yref="paper",
+                    line=dict(color="red", width=2, dash="dot")
+                )
+                
+                fig.add_annotation(
+                    x=exp_datetime,
+                    y=1.02,
+                    yref="paper",
+                    text=f"Expiración: {expiration_date.strftime('%Y-%m-%d')}",
+                    showarrow=False,
+                    font=dict(color="red", size=12),
+                    bgcolor="rgba(0,0,0,0.5)"
+                )
+                
+                end_datetime = exp_datetime + timedelta(days=3)
+                
+                fig.update_layout(
+                    title=f"Expected Move - {selected_ticker} ({std_multiplier}σ)",
+                    xaxis_title="Fecha",
+                    yaxis_title="Precio",
+                    template="plotly_dark",
+                    height=500,
+                    hovermode='x unified',
+                    showlegend=True,
+                    xaxis=dict(range=[df_hist_plot.index[0], end_datetime]),
+                    xaxis_rangeslider_visible=False
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                st.info("📊 **Datos históricos obtenidos de Yahoo Finance**")
+                
+            else:
+                st.warning("⚠️ No se pudieron obtener datos históricos de Yahoo Finance para el gráfico.")
         
-        if df_hist is not None and not df_hist.empty:
-            
-            fig = go.Figure()
-            
-            # Convertir el índice a timezone-naive
-            df_hist_plot = df_hist.copy()
-            if df_hist_plot.index.tz is not None:
-                df_hist_plot.index = df_hist_plot.index.tz_localize(None)
-            
-            # Gráfico de velas japonesas
-            fig.add_trace(go.Candlestick(
-                x=df_hist_plot.index,
-                open=df_hist_plot['Open'],
-                high=df_hist_plot['High'],
-                low=df_hist_plot['Low'],
-                close=df_hist_plot['Close'],
-                name=selected_ticker,
-                increasing_line_color='#00B06B',
-                decreasing_line_color='#FF4444'
-            ))
-            
-            exp_datetime = datetime.combine(expiration_date, datetime.min.time())
-            
-            # Líneas horizontales
-            fig.add_hline(
-                y=upper_range,
-                line_dash="dot",
-                line_color="steelblue",
-                annotation_text=f"${upper_range:.2f} (+{std_multiplier}σ)",
-                annotation_position="right"
-            )
-            
-            fig.add_hline(
-                y=lower_range,
-                line_dash="dot",
-                line_color="steelblue",
-                annotation_text=f"${lower_range:.2f} (-{std_multiplier}σ)",
-                annotation_position="right"
-            )
-            
-            fig.add_hline(
-                y=current_price,
-                line_dash="dash",
-                line_color="yellow",
-                annotation_text=f"Precio Actual: ${current_price:.2f}",
-                annotation_position="left"
-            )
-            
-            # Línea vertical - Fecha de Expiración
-            fig.add_shape(
-                type="line",
-                x0=exp_datetime,
-                x1=exp_datetime,
-                y0=0,
-                y1=1,
-                yref="paper",
-                line=dict(color="red", width=2, dash="dot")
-            )
-            
-            fig.add_annotation(
-                x=exp_datetime,
-                y=1.02,
-                yref="paper",
-                text=f"Expiración: {expiration_date.strftime('%Y-%m-%d')}",
-                showarrow=False,
-                font=dict(color="red", size=12),
-                bgcolor="rgba(0,0,0,0.5)"
-            )
-            
-            end_datetime = exp_datetime + timedelta(days=3)
-            
-            fig.update_layout(
-                title=f"Expected Move - {selected_ticker} ({std_multiplier}σ) - Fuente: {st.session_state.selected_data_source}",
-                xaxis_title="Fecha",
-                yaxis_title="Precio",
-                template="plotly_dark",
-                height=500,
-                hovermode='x unified',
-                showlegend=True,
-                xaxis=dict(range=[df_hist_plot.index[0], end_datetime]),
-                xaxis_rangeslider_visible=False
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-            
-            st.info("📊 **Datos históricos obtenidos de Yahoo Finance**")
-            
-        else:
-            st.warning("⚠️ No se pudieron obtener datos históricos de Yahoo Finance para el gráfico.")
+        except Exception as e:
+            st.error(f"Error obteniendo datos históricos de Yahoo Finance: {e}")
+            st.warning("⚠️ No se pudieron obtener datos históricos para el gráfico.")
         
         st.markdown("---")
         
         # ==============================================================================
-        # SECCIÓN 5: COMPARACIÓN DE DESVIACIONES ESTÁNDAR
+        # SECCIÓN 4: COMPARACIÓN DE DESVIACIONES ESTÁNDAR
         # ==============================================================================
-        st.header("5. Comparación de Desviaciones Estándar")
+        st.header("4. Comparación de Desviaciones Estándar")
         
         comparison_data = []
         for std_label, std_val in std_options.items():
@@ -731,9 +513,9 @@ def main_tp_calculos():
         st.markdown("---")
         
         # ==============================================================================
-        # SECCIÓN 6: INFORMACIÓN ADICIONAL
+        # SECCIÓN 5: INFORMACIÓN ADICIONAL
         # ==============================================================================
-        st.header("6. Información Adicional")
+        st.header("5. Información Adicional")
         
         prob_text = {1.0: "68%", 1.5: "87%", 2.0: "95%"}.get(std_multiplier, "N/A")
         
@@ -749,7 +531,6 @@ def main_tp_calculos():
         - Con **{std_multiplier}σ**, aproximadamente el **{prob_text}** de las veces, el precio debería 
           permanecer dentro de este rango.
         
-        - **Fuente de Datos:** {st.session_state.selected_data_source}
         - **Ticker:** {selected_ticker}
         - **Precio Actual:** ${current_price:.2f}
         - **Straddle Price:** ${details['straddle_price']:.2f}
@@ -762,8 +543,8 @@ def main_tp_calculos():
         
         st.markdown("""
         ### 📚 Fuentes de Datos
-        - **Precios de Opciones:** CBOE (Chicago Board Options Exchange) y Schwab
-        - **Precios del Activo:** Schwab
+        - **Precios de Opciones:** Schwab API
+        - **Precios del Activo:** Schwab API
         - **Datos Históricos:** Yahoo Finance
         
         ### 🧮 Fórmula del Expected Move
@@ -776,10 +557,6 @@ def main_tp_calculos():
         - **1.25** = Factor de ajuste para 1 desviación estándar completa
         - **σ** = Multiplicador de desviaciones estándar (1.0, 1.5, o 2.0)
         
-        ### 💡 Diferencias entre Fuentes
-        - **CBOE:** Proporciona Bid, Ask, Mid y Last Price con mayor granularidad
-        - **Schwab:** Proporciona Mid Price y Greeks (Delta, Theta) en tiempo real, strike ATM basado en cadena real
-        
         ### 📊 Niveles de Confianza
         - **1σ** ≈ 68% de probabilidad (rango más conservador)
         - **1.5σ** ≈ 87% de probabilidad (rango intermedio)
@@ -789,9 +566,9 @@ def main_tp_calculos():
         st.markdown("---")
         
         # ==============================================================================
-        # SECCIÓN 7: GENERADOR DE ESTRUCTURA TRIPLE CALENDAR - ENVÍO A IBKR
+        # SECCIÓN 6: GENERADOR DE ESTRUCTURA TRIPLE CALENDAR - ENVÍO A IBKR
         # ==============================================================================
-        st.header("7. Generador de Estructura - Triple Calendar (Envío a IBKR)")
+        st.header("6. Generador de Estructura - Triple Calendar (Envío a IBKR)")
         
         st.markdown("""
         Configura los strikes y fechas de expiración para generar una orden **Triple Calendar** 
@@ -814,13 +591,13 @@ def main_tp_calculos():
             st.markdown("#### 🎯 Configuración de Strikes")
             
             st.info(f"""
-            💡 **Rangos de Referencia (1σ) - Fuente: {st.session_state.selected_data_source}:**
+            💡 **Rangos de Referencia (1σ):**
             - Precio Actual: **${current_price:.2f}**
             - Expected Move: **±${expected_move_1std:.2f}**
             - Rango Superior: **${upper_range_1std:.2f}**
             - Rango Inferior: **${lower_range_1std:.2f}**
-            - Strike UP Sugerido (redondeado): **${strike_up_default:.0f}**
-            - Strike DOWN Sugerido (redondeado): **${strike_down_default:.0f}**
+            - Strike UP Sugerido: **${strike_up_default:.0f}**
+            - Strike DOWN Sugerido: **${strike_down_default:.0f}**
             """)
             
             st.markdown("---")
@@ -950,7 +727,7 @@ def main_tp_calculos():
         
         if st.button("📝 Generar Vista Previa de Orden", type="primary", use_container_width=True):
             
-            # Guardar strikes y DTEs en session_state para el punto 8
+            # Guardar strikes y DTEs en session_state para el punto 7
             st.session_state.strike_atm_p6 = strike_atm_input
             st.session_state.strike_up_p6 = strike_up_input
             st.session_state.strike_down_p6 = strike_down_input
@@ -1062,9 +839,9 @@ def main_tp_calculos():
         st.markdown("---")
         
         # ==============================================================================
-        # SECCIÓN 8: AJUSTES
+        # SECCIÓN 7: AJUSTES
         # ==============================================================================
-        st.header("8. Ajustes - Generador de Calendar Individual")
+        st.header("7. Ajustes - Generador de Calendar Individual")
         
         st.markdown("Esta sección te permite generar un **Calendar Spread individual** basado en el precio actual del mercado y el Expected Move (1σ).")
         
@@ -1092,7 +869,7 @@ def main_tp_calculos():
         strike_adj_atm_rounded = round(strike_adj_atm_calc / 5) * 5
         
         st.info(f"""
-        💡 **Cálculos de Ajuste (1σ) - Fuente: {st.session_state.selected_data_source}:**
+        💡 **Cálculos de Ajuste (1σ):**
         - Precio Actual: **${current_price_adj:.2f}**
         - Expected Move: **±${expected_move_1std_adj:.2f}**
         - Strike UP: **${strike_adj_up_calc:.2f}** → **${strike_adj_up_rounded:.0f}**
@@ -1111,7 +888,7 @@ def main_tp_calculos():
             default_up = st.session_state.strike_up_p6 if st.session_state.strike_up_p6 else strike_adj_up_rounded
             default_down = st.session_state.strike_down_p6 if st.session_state.strike_down_p6 else strike_adj_down_rounded
             
-            st.markdown("**Strikes de Referencia (Punto 7)**")
+            st.markdown("**Strikes de Referencia (Punto 6)**")
             
             strike_ref_atm = st.number_input("Strike ATM ref", min_value=0.0, value=float(default_atm), step=5.0, key='strike_ref_atm_adj')
             strike_ref_up = st.number_input("Strike UP ref", min_value=0.0, value=float(default_up), step=5.0, key='strike_ref_up_adj')
