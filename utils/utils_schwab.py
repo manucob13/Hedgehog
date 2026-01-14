@@ -220,7 +220,7 @@ def get_current_price_schwab(client, ticker):
     
     Args:
         client: Cliente de Schwab autenticado
-        ticker (str): Símbolo del ticker (ej: 'AAPL', 'SPY', 'QQQ')
+        ticker (str): Símbolo del ticker (ej: 'AAPL', 'SPY', 'QQQ', 'SPX')
     
     Returns:
         float: Precio actual del ticker, None si hay error
@@ -229,15 +229,20 @@ def get_current_price_schwab(client, ticker):
         if client is None:
             return None
         
-        response = client.get_quote(ticker)
+        # Normalizar el ticker (SPX -> $SPX)
+        symbol = normalize_ticker(ticker)
+        
+        response = client.get_quote(symbol)
         
         if response.status_code != 200:
+            print(f"Error en get_quote: Status code {response.status_code}")
             return None
         
         quote_data = response.json()
         
-        if ticker in quote_data:
-            ticker_data = quote_data[ticker]
+        # Buscar con el símbolo normalizado
+        if symbol in quote_data:
+            ticker_data = quote_data[symbol]
             
             if 'quote' in ticker_data:
                 quote = ticker_data['quote']
@@ -257,10 +262,13 @@ def get_current_price_schwab(client, ticker):
                     if bid is not None and ask is not None and bid > 0 and ask > 0:
                         return float((bid + ask) / 2)
         
+        print(f"No se encontró precio para {symbol} en la respuesta")
         return None
         
     except Exception as e:
         print(f"Error obteniendo precio actual de Schwab: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
@@ -288,6 +296,7 @@ def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
         )
         
         if response.status_code != 200:
+            print(f"Error en get_option_chain: Status code {response.status_code}")
             return None
         
         data = response.json()
@@ -303,11 +312,15 @@ def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
                         available_strikes.add(float(strike_key))
         
         if not available_strikes:
+            print(f"No se encontraron strikes para la fecha {exp_date_str}")
             return None
         
         atm_strike = min(available_strikes, key=lambda x: abs(x - current_price))
+        print(f"✅ Strike ATM encontrado: {atm_strike} (más cercano a {current_price})")
         return atm_strike
         
     except Exception as e:
         st.error(f"Error detallado en Schwab ATM: {e}")
+        import traceback
+        traceback.print_exc()
         return None
