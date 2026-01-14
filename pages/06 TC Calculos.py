@@ -67,8 +67,8 @@ def calculate_expected_move_schwab(client, ticker, expiration_date, current_pric
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def get_historical_prices_yf(ticker, days=7):
-    """Obtiene precios históricos del ticker usando Yahoo Finance con reintentos."""
+def get_historical_prices_yf(ticker, days=3):
+    """Obtiene precios históricos del ticker usando Yahoo Finance (solo últimos 3 días)."""
     import time
     
     try:
@@ -77,55 +77,116 @@ def get_historical_prices_yf(ticker, days=7):
         # Ajustar símbolo para Yahoo Finance
         yf_ticker = '^SPX' if ticker == 'SPX' else ticker
         
-        # Reintentar hasta 3 veces con delays incrementales
-        max_retries = 3
+        # Solo 1 reintento para no saturar
+        max_retries = 2
         for attempt in range(max_retries):
             try:
                 stock = yf.Ticker(yf_ticker)
                 end_date = datetime.now()
                 start_date = end_date - timedelta(days=days)
                 
-                # Obtener datos históricos con configuración para evitar rate limiting
+                # Obtener datos históricos con configuración mínima
                 df = stock.history(
                     start=start_date, 
                     end=end_date,
-                    actions=False,
-                    auto_adjust=True,
-                    back_adjust=False,
-                    repair=False,
-                    keepna=False,
-                    proxy=None,
-                    timeout=10
+                    interval='1d',
+                    actions=False
                 )
                 
                 if not df.empty:
                     return df
                 
-                # Si está vacío, esperar y reintentar
+                # Si está vacío, esperar y reintentar solo una vez
                 if attempt < max_retries - 1:
-                    time.sleep(2 * (attempt + 1))
+                    time.sleep(3)
                     
             except Exception as e:
-                error_msg = str(e).lower()
-                
-                # Si es rate limiting, esperar más tiempo
-                if 'rate limit' in error_msg or 'too many requests' in error_msg:
-                    if attempt < max_retries - 1:
-                        wait_time = 5 * (attempt + 1)
-                        time.sleep(wait_time)
-                    else:
-                        return None
+                if attempt < max_retries - 1:
+                    time.sleep(3)
                 else:
-                    # Otro tipo de error, reintentar con delay corto
-                    if attempt < max_retries - 1:
-                        time.sleep(1)
-                    else:
-                        return None
+                    return None
         
         return None
         
     except Exception as e:
         return None
+
+
+def create_simple_chart_from_current_price(current_price, upper_range, lower_range, 
+                                           expiration_date, std_multiplier, selected_ticker):
+    """Crea un gráfico simple usando solo el precio actual cuando Yahoo Finance falla."""
+    
+    fig = go.Figure()
+    
+    # Crear puntos para simular una línea horizontal del precio actual
+    today = datetime.now()
+    exp_datetime = datetime.combine(expiration_date, datetime.min.time())
+    
+    # Generar fechas desde hoy hasta expiración
+    num_days = max(3, (expiration_date - date.today()).days + 1)
+    dates = [today + timedelta(days=i) for i in range(num_days)]
+    prices = [current_price] * num_days
+    
+    # Línea del precio actual
+    fig.add_trace(go.Scatter(
+        x=dates,
+        y=prices,
+        mode='lines',
+        name='Precio Actual',
+        line=dict(color='yellow', width=3, dash='dash')
+    ))
+    
+    # Líneas horizontales para los rangos
+    fig.add_hline(
+        y=upper_range,
+        line_dash="dot",
+        line_color="steelblue",
+        annotation_text=f"${upper_range:.2f} (+{std_multiplier}σ)",
+        annotation_position="right"
+    )
+    
+    fig.add_hline(
+        y=lower_range,
+        line_dash="dot",
+        line_color="steelblue",
+        annotation_text=f"${lower_range:.2f} (-{std_multiplier}σ)",
+        annotation_position="right"
+    )
+    
+    # Línea vertical - Fecha de Expiración
+    fig.add_shape(
+        type="line",
+        x0=exp_datetime,
+        x1=exp_datetime,
+        y0=0,
+        y1=1,
+        yref="paper",
+        line=dict(color="red", width=2, dash="dot")
+    )
+    
+    fig.add_annotation(
+        x=exp_datetime,
+        y=1.02,
+        yref="paper",
+        text=f"Expiración: {expiration_date.strftime('%Y-%m-%d')}",
+        showarrow=False,
+        font=dict(color="red", size=12),
+        bgcolor="rgba(0,0,0,0.5)"
+    )
+    
+    # Configuración del layout
+    fig.update_layout(
+        title=f"Expected Move - {selected_ticker} ({std_multiplier}σ) - Vista Simplificada",
+        xaxis_title="Fecha",
+        yaxis_title="Precio",
+        template="plotly_dark",
+        height=500,
+        hovermode='x unified',
+        showlegend=True,
+        yaxis=dict(range=[lower_range * 0.95, upper_range * 1.05])
+    )
+    
+    return fig
 
 
 def initialize_session_state():
@@ -415,13 +476,13 @@ def main_tp_calculos():
         st.markdown("---")
         
         # ==============================================================================
-        # SECCIÓN 3: GRÁFICO - VELAS JAPONESAS (YAHOO FINANCE)
+        # SECCIÓN 3: GRÁFICO - VELAS JAPONESAS
         # ==============================================================================
         st.header("3. Visualización del Expected Move")
         
-        # Obtener datos históricos de Yahoo Finance con indicador de carga
-        with st.spinner("📊 Obteniendo datos históricos de Yahoo Finance..."):
-            df_hist = get_historical_prices_yf(selected_ticker, days=7)
+        # Intentar obtener datos históricos de Yahoo Finance
+        with st.spinner("📊 Obteniendo datos históricos (últimos 3 días)..."):
+            df_hist = get_historical_prices_yf(selected_ticker, days=3)
         
         if df_hist is not None and not df_hist.empty:
             
@@ -509,36 +570,31 @@ def main_tp_calculos():
                 
                 st.plotly_chart(fig, use_container_width=True)
                 
-                st.success("📊 **Datos históricos obtenidos de Yahoo Finance**")
+                st.success("📊 **Datos históricos de Yahoo Finance (últimos 3 días)**")
                 
             except Exception as e:
-                st.error(f"Error al crear el gráfico: {e}")
-                st.warning("⚠️ Hubo un problema al crear la visualización.")
+                st.warning(f"⚠️ Error al crear el gráfico con velas: {e}")
+                
+                # Fallback a gráfico simple
+                fig_simple = create_simple_chart_from_current_price(
+                    current_price, upper_range, lower_range, 
+                    expiration_date, std_multiplier, selected_ticker
+                )
+                st.plotly_chart(fig_simple, use_container_width=True)
+                st.info("📊 **Mostrando vista simplificada basada en precio actual**")
         
         else:
-            st.warning("""
-            ⚠️ **No se pudieron obtener datos históricos de Yahoo Finance**
+            # Si Yahoo Finance falla, usar gráfico simple con el precio actual
+            st.info("💡 No se pudieron obtener datos históricos. Mostrando vista simplificada.")
             
-            Posibles causas:
-            - Rate limiting de Yahoo Finance (demasiadas solicitudes)
-            - Problemas de conectividad
-            - El ticker no está disponible en Yahoo Finance
+            fig_simple = create_simple_chart_from_current_price(
+                current_price, upper_range, lower_range, 
+                expiration_date, std_multiplier, selected_ticker
+            )
             
-            💡 **Sugerencia:** Espera unos minutos y vuelve a intentar el cálculo.
-            """)
+            st.plotly_chart(fig_simple, use_container_width=True)
             
-            # Mostrar tabla simple con los rangos calculados como alternativa
-            st.markdown("### 📊 Rangos del Expected Move (Vista Alternativa)")
-            
-            ranges_data = {
-                'Nivel': ['Rango Superior', 'Precio Actual', 'Rango Inferior'],
-                'Precio': [f"${upper_range:.2f}", f"${current_price:.2f}", f"${lower_range:.2f}"],
-                'Diferencia': [f"+${expected_move:.2f}", "—", f"-${expected_move:.2f}"],
-                'Porcentaje': [f"+{move_pct:.2f}%", "0%", f"-{move_pct:.2f}%"]
-            }
-            
-            df_ranges = pd.DataFrame(ranges_data)
-            st.dataframe(df_ranges, hide_index=True, use_container_width=True)
+            st.success("📊 **Vista simplificada basada en el precio actual de Schwab**")
         
         st.markdown("---")
         
