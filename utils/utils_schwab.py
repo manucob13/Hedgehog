@@ -187,8 +187,20 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
         
         print(f"✅ Fecha encontrada: {fecha_key_match}")
         
-        strikes = option_map[fecha_key_match]
-        available_strikes = [float(k) for k in strikes.keys()]
+        strikes_dict = option_map[fecha_key_match]
+        
+        # Obtener todos los strikes disponibles como floats
+        available_strikes = []
+        strike_key_map = {}  # Mapeo de strike float a su key original
+        
+        for strike_key in strikes_dict.keys():
+            try:
+                strike_float = float(strike_key)
+                available_strikes.append(strike_float)
+                strike_key_map[strike_float] = strike_key
+            except ValueError:
+                print(f"⚠️ Strike no numérico ignorado: {strike_key}")
+                continue
         
         if not available_strikes:
             print(f"❌ Sin strikes disponibles para {tipo}")
@@ -196,39 +208,49 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
         
         print(f"Strikes disponibles: {sorted(available_strikes)[:10]}... (total: {len(available_strikes)})")
         
-        closest_strike = min(available_strikes, key=lambda x: abs(x - float(strike)))
-        strike_str = str(closest_strike)
+        # Encontrar el strike más cercano
+        closest_strike_float = min(available_strikes, key=lambda x: abs(x - float(strike)))
         
-        print(f"🔍 {tipo}: Buscando {strike} → Encontrado {strike_str}")
+        # Obtener la key original del strike más cercano
+        strike_key_to_use = strike_key_map[closest_strike_float]
         
-        if strike_str not in strikes:
-            print(f"❌ Strike {strike_str} no encontrado en diccionario")
+        print(f"🔍 {tipo}: Buscando {strike} → Encontrado {closest_strike_float} (key: '{strike_key_to_use}')")
+        
+        if strike_key_to_use not in strikes_dict:
+            print(f"❌ Strike key '{strike_key_to_use}' no encontrado en diccionario")
+            print(f"Keys disponibles: {list(strikes_dict.keys())[:10]}")
             return None, None, None
         
-        contrato = strikes[strike_str][0]
+        contratos_list = strikes_dict[strike_key_to_use]
+        
+        if not contratos_list or len(contratos_list) == 0:
+            print(f"❌ Lista de contratos vacía para strike {strike_key_to_use}")
+            return None, None, None
+        
+        contrato = contratos_list[0]
+        
         bid = contrato.get('bid', 0)
         ask = contrato.get('ask', 0)
+        mark = contrato.get('mark', 0)
         
-        print(f"   Bid: {bid}, Ask: {ask}")
+        print(f"   Bid: {bid}, Ask: {ask}, Mark: {mark}")
         
-        # Para índices como SPX, a veces el bid/ask puede ser 0 pero hay mark price
-        if bid <= 0 or ask <= 0:
-            # Intentar obtener mark price si está disponible
-            mark = contrato.get('mark', 0)
-            if mark > 0:
-                print(f"   ⚠️ Bid/Ask inválidos, usando Mark: {mark}")
-                mid_price = mark
-            else:
-                print(f"❌ Bid/Ask y Mark inválidos")
-                print(f"Contrato completo: {contrato}")
-                return None, None, None
-        else:
+        # Para índices como SPX, priorizar mark si bid/ask no están disponibles
+        if bid > 0 and ask > 0:
             mid_price = (bid + ask) / 2
+            print(f"   ✅ Usando Mid (Bid+Ask)/2: {mid_price}")
+        elif mark > 0:
+            mid_price = mark
+            print(f"   ⚠️ Bid/Ask inválidos, usando Mark: {mid_price}")
+        else:
+            print(f"❌ Bid/Ask y Mark inválidos o cero")
+            print(f"Contrato: {contrato}")
+            return None, None, None
         
         delta = contrato.get('delta', None)
         theta = contrato.get('theta', None)
         
-        print(f"   ✅ Mid: {mid_price}, Delta: {delta}, Theta: {theta}")
+        print(f"   ✅ Precio final: {mid_price}, Delta: {delta}, Theta: {theta}")
         
         return mid_price, delta, theta
         
@@ -314,14 +336,15 @@ def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
         symbol = normalize_ticker(ticker)
         target_date = normalize_date(expiration_date)
         
-        response = client.get_option_chain(
-            symbol,
-            from_date=target_date,
-            to_date=target_date
-        )
+        print(f"🔍 Buscando strike ATM para {symbol} en {target_date}")
+        print(f"   Precio actual: {current_price}")
+        
+        # Llamar sin filtro de fecha primero para obtener toda la cadena
+        response = client.get_option_chain(symbol)
         
         if response.status_code != 200:
-            print(f"Error en get_option_chain: Status code {response.status_code}")
+            print(f"❌ Error en get_option_chain: Status code {response.status_code}")
+            print(f"Response: {response.text[:500]}")
             return None
         
         data = response.json()
@@ -329,23 +352,38 @@ def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
         
         exp_date_str = target_date.strftime("%Y-%m-%d")
         
+        print(f"   Buscando fecha: {exp_date_str}")
+        
         for map_type in ['callExpDateMap', 'putExpDateMap']:
             exp_map = data.get(map_type, {})
+            
+            if not exp_map:
+                print(f"   ⚠️ No hay datos en {map_type}")
+                continue
+                
+            print(f"   Fechas disponibles en {map_type}: {list(exp_map.keys())[:5]}...")
+            
             for date_key, strikes_dict in exp_map.items():
                 if date_key.startswith(exp_date_str):
+                    print(f"   ✅ Fecha coincidente encontrada: {date_key}")
                     for strike_key in strikes_dict.keys():
                         available_strikes.add(float(strike_key))
         
         if not available_strikes:
-            print(f"No se encontraron strikes para la fecha {exp_date_str}")
+            print(f"❌ No se encontraron strikes para la fecha {exp_date_str}")
+            print(f"   Verifica que la fecha de expiración sea válida para {symbol}")
             return None
+        
+        available_strikes_list = sorted(list(available_strikes))
+        print(f"   Strikes disponibles: {available_strikes_list[:10]}... (total: {len(available_strikes_list)})")
         
         atm_strike = min(available_strikes, key=lambda x: abs(x - current_price))
         print(f"✅ Strike ATM encontrado: {atm_strike} (más cercano a {current_price})")
+        
         return atm_strike
         
     except Exception as e:
-        st.error(f"Error detallado en Schwab ATM: {e}")
+        print(f"❌ Error en get_atm_strike_schwab: {e}")
         import traceback
         traceback.print_exc()
         return None
