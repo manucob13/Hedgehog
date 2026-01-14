@@ -20,24 +20,46 @@ def calculate_expected_move_schwab(client, ticker, expiration_date, current_pric
         if client is None:
             return None, None, "Cliente de Schwab no disponible"
         
+        print(f"\n{'='*60}")
+        print(f"CALCULANDO EXPECTED MOVE")
+        print(f"Ticker: {ticker}")
+        print(f"Fecha expiración: {expiration_date}")
+        print(f"Precio actual: {current_price}")
+        print(f"Multiplicador: {std_multiplier}σ")
+        print(f"{'='*60}\n")
+        
         # Obtener el strike ATM real de la cadena de opciones
         atm_strike = get_atm_strike_schwab(client, ticker, current_price, expiration_date)
         
         if atm_strike is None:
-            return None, None, "No se pudo obtener el strike ATM de Schwab"
+            error_msg = f"No se pudo obtener el strike ATM para {ticker} en fecha {expiration_date}"
+            print(f"❌ {error_msg}")
+            return None, None, error_msg
+        
+        print(f"\n📌 Strike ATM seleccionado: {atm_strike}")
+        print(f"Obteniendo datos del CALL ATM...")
         
         # Obtener datos del CALL ATM
         call_mid, call_delta, call_theta = obtener_datos_opcion(
             client, ticker, atm_strike, 'CALL', expiration_date
         )
         
+        if call_mid is None:
+            error_msg = f"No se encontraron datos del CALL ATM (strike {atm_strike})"
+            print(f"❌ {error_msg}")
+            return None, None, error_msg
+        
+        print(f"\n📌 Obteniendo datos del PUT ATM...")
+        
         # Obtener datos del PUT ATM
         put_mid, put_delta, put_theta = obtener_datos_opcion(
             client, ticker, atm_strike, 'PUT', expiration_date
         )
         
-        if call_mid is None or put_mid is None:
-            return None, None, "No se encontraron datos de opciones en Schwab"
+        if put_mid is None:
+            error_msg = f"No se encontraron datos del PUT ATM (strike {atm_strike})"
+            print(f"❌ {error_msg}")
+            return None, None, error_msg
         
         # Calcular straddle price
         straddle_price = call_mid + put_mid
@@ -45,6 +67,12 @@ def calculate_expected_move_schwab(client, ticker, expiration_date, current_pric
         
         # Expected Move = Straddle Price * 1.25 * std_multiplier
         expected_move = straddle_price * 1.25 * std_multiplier
+        
+        print(f"\n{'='*60}")
+        print(f"RESULTADO EXPECTED MOVE")
+        print(f"Straddle Price: ${straddle_price:.2f}")
+        print(f"Expected Move ({std_multiplier}σ): ${expected_move:.2f}")
+        print(f"{'='*60}\n")
         
         # Crear diccionario con detalles
         details = {
@@ -63,7 +91,11 @@ def calculate_expected_move_schwab(client, ticker, expiration_date, current_pric
         return expected_move, details, None
         
     except Exception as e:
-        return None, None, f"Error calculando Expected Move con Schwab: {e}"
+        error_msg = f"Error calculando Expected Move con Schwab: {e}"
+        print(f"❌ {error_msg}")
+        import traceback
+        traceback.print_exc()
+        return None, None, error_msg
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -341,7 +373,8 @@ def main_tp_calculos():
             current_price = get_current_price_schwab(schwab_client, selected_ticker)
             
             if current_price is None:
-                st.error("❌ No se pudo obtener el precio actual desde Schwab.")
+                st.error(f"❌ No se pudo obtener el precio actual de {selected_ticker} desde Schwab.")
+                st.info("💡 Intenta con otro ticker o verifica la conexión con Schwab.")
                 st.stop()
             
             st.success(f"✅ Precio actual de {selected_ticker}: **${current_price:.2f}**")
