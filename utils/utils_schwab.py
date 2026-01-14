@@ -119,8 +119,12 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
         if client is None:
             return None, None, None
         
-        response = client.get_option_chain(ticker)
+        # ✅ CORRECCIÓN: Ajustar símbolo para SPX
+        symbol = '$SPX' if ticker == 'SPX' else ticker
+        
+        response = client.get_option_chain(symbol)
         if response.status_code != 200:
+            print(f"❌ Status code para {symbol}: {response.status_code}")
             return None, None, None
         
         opciones = response.json()
@@ -135,36 +139,48 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
                 break
         
         if not fecha_key_match:
+            print(f"❌ No hay fecha que coincida con {fecha_str}")
             return None, None, None
         
         strikes = option_map[fecha_key_match]
         available_strikes = [float(k) for k in strikes.keys()]
         
         if not available_strikes:
+            print(f"❌ Sin strikes disponibles para {tipo}")
             return None, None, None
         
         # Encontrar el strike más cercano (mejor que coincidencia exacta)
         closest_strike = min(available_strikes, key=lambda x: abs(x - float(strike)))
         strike_str = str(closest_strike)
         
+        print(f"🔍 {tipo}: Buscando {strike} → Encontrado {strike_str}")
+        
         if strike_str not in strikes:
+            print(f"❌ Strike {strike_str} no encontrado en diccionario")
             return None, None, None
         
         contrato = strikes[strike_str][0]
         bid = contrato.get('bid', 0)
         ask = contrato.get('ask', 0)
         
+        print(f"   Bid: {bid}, Ask: {ask}")
+        
         if bid <= 0 or ask <= 0:
+            print(f"❌ Bid/Ask inválidos")
             return None, None, None
         
         mid_price = (bid + ask) / 2
         delta = contrato.get('delta', None)
         theta = contrato.get('theta', None)
         
+        print(f"   ✅ Mid: {mid_price}, Delta: {delta}, Theta: {theta}")
+        
         return mid_price, delta, theta
         
     except Exception as e:
-        print(f"Error en obtener_datos_opcion: {e}")
+        print(f"❌ Error en obtener_datos_opcion ({tipo}): {e}")
+        import traceback
+        traceback.print_exc()
         return None, None, None
 
 
