@@ -66,29 +66,65 @@ def calculate_expected_move_schwab(client, ticker, expiration_date, current_pric
         return None, None, f"Error calculando Expected Move con Schwab: {e}"
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=600, show_spinner=False)
 def get_historical_prices_yf(ticker, days=7):
-    """Obtiene precios históricos del ticker usando Yahoo Finance."""
+    """Obtiene precios históricos del ticker usando Yahoo Finance con reintentos."""
+    import time
+    
     try:
         import yfinance as yf
         
         # Ajustar símbolo para Yahoo Finance
         yf_ticker = '^SPX' if ticker == 'SPX' else ticker
         
-        stock = yf.Ticker(yf_ticker)
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=days)
+        # Reintentar hasta 3 veces con delays incrementales
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                stock = yf.Ticker(yf_ticker)
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=days)
+                
+                # Obtener datos históricos con configuración para evitar rate limiting
+                df = stock.history(
+                    start=start_date, 
+                    end=end_date,
+                    actions=False,
+                    auto_adjust=True,
+                    back_adjust=False,
+                    repair=False,
+                    keepna=False,
+                    proxy=None,
+                    timeout=10
+                )
+                
+                if not df.empty:
+                    return df
+                
+                # Si está vacío, esperar y reintentar
+                if attempt < max_retries - 1:
+                    time.sleep(2 * (attempt + 1))
+                    
+            except Exception as e:
+                error_msg = str(e).lower()
+                
+                # Si es rate limiting, esperar más tiempo
+                if 'rate limit' in error_msg or 'too many requests' in error_msg:
+                    if attempt < max_retries - 1:
+                        wait_time = 5 * (attempt + 1)
+                        time.sleep(wait_time)
+                    else:
+                        return None
+                else:
+                    # Otro tipo de error, reintentar con delay corto
+                    if attempt < max_retries - 1:
+                        time.sleep(1)
+                    else:
+                        return None
         
-        # Obtener datos históricos
-        df = stock.history(start=start_date, end=end_date)
-        
-        if df.empty:
-            return None
-        
-        return df
+        return None
         
     except Exception as e:
-        st.error(f"Error obteniendo datos históricos de Yahoo Finance: {e}")
         return None
 
 
@@ -383,12 +419,13 @@ def main_tp_calculos():
         # ==============================================================================
         st.header("3. Visualización del Expected Move")
         
-        try:
-            # Obtener datos históricos de Yahoo Finance
+        # Obtener datos históricos de Yahoo Finance con indicador de carga
+        with st.spinner("📊 Obteniendo datos históricos de Yahoo Finance..."):
             df_hist = get_historical_prices_yf(selected_ticker, days=7)
+        
+        if df_hist is not None and not df_hist.empty:
             
-            if df_hist is not None and not df_hist.empty:
-                
+            try:
                 fig = go.Figure()
                 
                 # Convertir el índice a timezone-naive
@@ -472,14 +509,36 @@ def main_tp_calculos():
                 
                 st.plotly_chart(fig, use_container_width=True)
                 
-                st.info("📊 **Datos históricos obtenidos de Yahoo Finance**")
+                st.success("📊 **Datos históricos obtenidos de Yahoo Finance**")
                 
-            else:
-                st.warning("⚠️ No se pudieron obtener datos históricos de Yahoo Finance para el gráfico.")
+            except Exception as e:
+                st.error(f"Error al crear el gráfico: {e}")
+                st.warning("⚠️ Hubo un problema al crear la visualización.")
         
-        except Exception as e:
-            st.error(f"Error obteniendo datos históricos de Yahoo Finance: {e}")
-            st.warning("⚠️ No se pudieron obtener datos históricos para el gráfico.")
+        else:
+            st.warning("""
+            ⚠️ **No se pudieron obtener datos históricos de Yahoo Finance**
+            
+            Posibles causas:
+            - Rate limiting de Yahoo Finance (demasiadas solicitudes)
+            - Problemas de conectividad
+            - El ticker no está disponible en Yahoo Finance
+            
+            💡 **Sugerencia:** Espera unos minutos y vuelve a intentar el cálculo.
+            """)
+            
+            # Mostrar tabla simple con los rangos calculados como alternativa
+            st.markdown("### 📊 Rangos del Expected Move (Vista Alternativa)")
+            
+            ranges_data = {
+                'Nivel': ['Rango Superior', 'Precio Actual', 'Rango Inferior'],
+                'Precio': [f"${upper_range:.2f}", f"${current_price:.2f}", f"${lower_range:.2f}"],
+                'Diferencia': [f"+${expected_move:.2f}", "—", f"-${expected_move:.2f}"],
+                'Porcentaje': [f"+{move_pct:.2f}%", "0%", f"-{move_pct:.2f}%"]
+            }
+            
+            df_ranges = pd.DataFrame(ranges_data)
+            st.dataframe(df_ranges, hide_index=True, use_container_width=True)
         
         st.markdown("---")
         
