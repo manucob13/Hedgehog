@@ -1049,11 +1049,37 @@ def main_tp_calculos():
         with col2:
             st.markdown("#### 📅 Fechas de Expiración")
             
-            default_front = st.session_state.dte_front_p6 if st.session_state.dte_front_p6 else expiration_date
-            default_back = st.session_state.dte_back_p6 if st.session_state.dte_back_p6 else (expiration_date + timedelta(days=7))
+            # Valores por defecto seguros para las fechas
+            if st.session_state.dte_front_p6 and isinstance(st.session_state.dte_front_p6, date):
+                default_front = st.session_state.dte_front_p6
+            else:
+                default_front = expiration_date
             
-            dte_front_adj = st.date_input("DTE FRONT (Venta)", value=default_front, min_value=date.today() + timedelta(days=1), key='dte_front_adj')
-            dte_back_adj = st.date_input("DTE BACK (Compra)", value=default_back, min_value=dte_front_adj + timedelta(days=1), key='dte_back_adj')
+            if st.session_state.dte_back_p6 and isinstance(st.session_state.dte_back_p6, date):
+                default_back = st.session_state.dte_back_p6
+            else:
+                default_back = default_front + timedelta(days=7)
+            
+            dte_front_adj = st.date_input(
+                "DTE FRONT (Venta)", 
+                value=default_front, 
+                min_value=date.today() + timedelta(days=1),
+                max_value=date.today() + timedelta(days=365),
+                key='dte_front_adj'
+            )
+            
+            # Asegurar que default_back sea siempre mayor que dte_front_adj
+            min_back_date = dte_front_adj + timedelta(days=1)
+            if default_back <= dte_front_adj:
+                default_back = min_back_date
+            
+            dte_back_adj = st.date_input(
+                "DTE BACK (Compra)", 
+                value=default_back, 
+                min_value=min_back_date,
+                max_value=date.today() + timedelta(days=365),
+                key='dte_back_adj'
+            )
             
             days_diff_adj = (dte_back_adj - dte_front_adj).days
             st.success(f"📅 Diferencia: **{days_diff_adj} días**")
