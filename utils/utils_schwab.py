@@ -148,21 +148,33 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
     """
     try:
         if client is None:
+            print("❌ Cliente es None")
             return None, None, None
         
         symbol = normalize_ticker(ticker)
         fecha_normalizada = normalize_date(fecha_salida)
         
+        print(f"📞 Consultando opciones para {symbol} ({tipo}) - Fecha: {fecha_normalizada}")
+        
         response = client.get_option_chain(symbol)
         if response.status_code != 200:
             print(f"❌ Status code para {symbol}: {response.status_code}")
+            print(f"Response: {response.text[:500]}")
             return None, None, None
         
         opciones = response.json()
         option_map = opciones.get('callExpDateMap' if tipo == 'CALL' else 'putExpDateMap', {})
         
+        if not option_map:
+            print(f"❌ No hay {tipo} en la respuesta")
+            print(f"Claves disponibles: {list(opciones.keys())}")
+            return None, None, None
+        
         fecha_str = fecha_normalizada.strftime('%Y-%m-%d')
         fecha_key_match = None
+        
+        print(f"🔍 Buscando fecha {fecha_str}")
+        print(f"Fechas disponibles: {list(option_map.keys())[:5]}...")
         
         for key in option_map.keys():
             if key.startswith(fecha_str):
@@ -173,12 +185,16 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
             print(f"❌ No hay fecha que coincida con {fecha_str}")
             return None, None, None
         
+        print(f"✅ Fecha encontrada: {fecha_key_match}")
+        
         strikes = option_map[fecha_key_match]
         available_strikes = [float(k) for k in strikes.keys()]
         
         if not available_strikes:
             print(f"❌ Sin strikes disponibles para {tipo}")
             return None, None, None
+        
+        print(f"Strikes disponibles: {sorted(available_strikes)[:10]}... (total: {len(available_strikes)})")
         
         closest_strike = min(available_strikes, key=lambda x: abs(x - float(strike)))
         strike_str = str(closest_strike)
@@ -195,11 +211,20 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
         
         print(f"   Bid: {bid}, Ask: {ask}")
         
+        # Para índices como SPX, a veces el bid/ask puede ser 0 pero hay mark price
         if bid <= 0 or ask <= 0:
-            print(f"❌ Bid/Ask inválidos")
-            return None, None, None
+            # Intentar obtener mark price si está disponible
+            mark = contrato.get('mark', 0)
+            if mark > 0:
+                print(f"   ⚠️ Bid/Ask inválidos, usando Mark: {mark}")
+                mid_price = mark
+            else:
+                print(f"❌ Bid/Ask y Mark inválidos")
+                print(f"Contrato completo: {contrato}")
+                return None, None, None
+        else:
+            mid_price = (bid + ask) / 2
         
-        mid_price = (bid + ask) / 2
         delta = contrato.get('delta', None)
         theta = contrato.get('theta', None)
         
