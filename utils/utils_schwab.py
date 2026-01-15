@@ -6,7 +6,7 @@ Este módulo contiene funciones para conectar con Schwab y obtener datos de opci
 import streamlit as st
 import os
 import json
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from schwab.auth import easy_client
 
 
@@ -135,7 +135,6 @@ def connect_to_schwab(token_path="schwab_token.json"):
 def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
     """
     Obtiene precio (mid), delta y theta de una opción desde Schwab.
-    Versión mejorada con logs en Streamlit.
     
     Args:
         client: Cliente autenticado de Schwab
@@ -149,102 +148,47 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
     """
     try:
         if client is None:
-            st.error("❌ Cliente es None")
             return None, None, None
         
         symbol = normalize_ticker(ticker)
         fecha_normalizada = normalize_date(fecha_salida)
         
-        logs = []
-        logs.append(f"\n📞 OBTENER DATOS OPCIÓN - {tipo}")
-        logs.append(f"   Symbol: {symbol}")
-        logs.append(f"   Strike: {strike}")
-        logs.append(f"   Fecha: {fecha_normalizada}")
-        
         # Filtrar por rango de fechas para evitar overflow en SPX
-        from datetime import timedelta
-        from_date = fecha_normalizada - timedelta(days=5)  # date object, no string
-        to_date = fecha_normalizada + timedelta(days=35)   # date object, no string
-        
-        logs.append(f"   Filtro fechas: {from_date} a {to_date}")
+        from_date = fecha_normalizada - timedelta(days=5)
+        to_date = fecha_normalizada + timedelta(days=35)
         
         response = client.get_option_chain(
             symbol,
             from_date=from_date,
             to_date=to_date
         )
+        
         if response.status_code != 200:
-            logs.append(f"❌ Status code para {symbol}: {response.status_code}")
-            logs.append(f"Response: {response.text[:500]}")
-            st.error("\n".join(logs))
             return None, None, None
         
         opciones = response.json()
         option_map = opciones.get('callExpDateMap' if tipo == 'CALL' else 'putExpDateMap', {})
         
         if not option_map:
-            logs.append(f"❌ No hay {tipo} en la respuesta")
-            logs.append(f"Claves disponibles: {list(opciones.keys())}")
-            st.error("\n".join(logs))
             return None, None, None
         
+        # Buscar la fecha en el formato de Schwab (YYYY-MM-DD:XX)
         fecha_str = fecha_normalizada.strftime('%Y-%m-%d')
         fecha_key_match = None
         
-        logs.append(f"🔍 Buscando fecha {fecha_str}")
-        
-        # Obtener todas las fechas disponibles
-        available_dates = list(option_map.keys())
-        logs.append(f"Fechas disponibles ({len(available_dates)} total):")
-        logs.append(f"   Primeras 5: {available_dates[:5]}")
-        logs.append(f"   Últimas 5: {available_dates[-5:]}")
-        
-        # Buscar coincidencia - más flexible para diferentes formatos
-        for key in available_dates:
-            # Intentar match exacto primero
+        for key in option_map.keys():
             if key.startswith(fecha_str):
                 fecha_key_match = key
-                logs.append(f"✅ MATCH EXACTO encontrado: {fecha_key_match}")
                 break
         
-        # Si no hay match exacto, buscar la fecha más cercana
         if not fecha_key_match:
-            logs.append(f"⚠️ No hay match exacto para {fecha_str}")
-            logs.append(f"   Buscando fecha más cercana...")
-            
-            # Extraer solo las fechas (formato YYYY-MM-DD) de las keys
-            fecha_to_key = {}
-            for key in available_dates:
-                try:
-                    # Extraer la parte de fecha (antes de cualquier ':' o espacio)
-                    date_part = key.split(':')[0].split(' ')[0]
-                    fecha_to_key[date_part] = key
-                except:
-                    continue
-            
-            # Ver si la fecha existe con diferente sufijo
-            if fecha_str in fecha_to_key:
-                fecha_key_match = fecha_to_key[fecha_str]
-                logs.append(f"✅ Fecha encontrada con formato alternativo: {fecha_key_match}")
-            else:
-                logs.append(f"❌ No hay fecha que coincida con {fecha_str}")
-                logs.append(f"Fechas únicas disponibles:")
-                for date_part in sorted(list(fecha_to_key.keys())[:20]):
-                    logs.append(f"   - {date_part}")
-                st.error("\n".join(logs))
-                return None, None, None
-        
-        if not fecha_key_match:
-            st.error("\n".join(logs))
             return None, None, None
-        
-        logs.append(f"✅ Fecha encontrada: {fecha_key_match}")
         
         strikes_dict = option_map[fecha_key_match]
         
-        # Obtener todos los strikes disponibles como floats
+        # Obtener todos los strikes disponibles
         available_strikes = []
-        strike_key_map = {}  # Mapeo de strike float a su key original
+        strike_key_map = {}
         
         for strike_key in strikes_dict.keys():
             try:
@@ -252,35 +196,21 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
                 available_strikes.append(strike_float)
                 strike_key_map[strike_float] = strike_key
             except ValueError:
-                logs.append(f"⚠️ Strike no numérico ignorado: {strike_key}")
                 continue
         
         if not available_strikes:
-            logs.append(f"❌ Sin strikes disponibles para {tipo}")
-            st.error("\n".join(logs))
             return None, None, None
-        
-        logs.append(f"Strikes disponibles: {sorted(available_strikes)[:10]}... (total: {len(available_strikes)})")
         
         # Encontrar el strike más cercano
         closest_strike_float = min(available_strikes, key=lambda x: abs(x - float(strike)))
-        
-        # Obtener la key original del strike más cercano
         strike_key_to_use = strike_key_map[closest_strike_float]
         
-        logs.append(f"🔍 {tipo}: Buscando {strike} → Encontrado {closest_strike_float} (key: '{strike_key_to_use}')")
-        
         if strike_key_to_use not in strikes_dict:
-            logs.append(f"❌ Strike key '{strike_key_to_use}' no encontrado en diccionario")
-            logs.append(f"Keys disponibles: {list(strikes_dict.keys())[:10]}")
-            st.error("\n".join(logs))
             return None, None, None
         
         contratos_list = strikes_dict[strike_key_to_use]
         
         if not contratos_list or len(contratos_list) == 0:
-            logs.append(f"❌ Lista de contratos vacía para strike {strike_key_to_use}")
-            st.error("\n".join(logs))
             return None, None, None
         
         contrato = contratos_list[0]
@@ -289,35 +219,20 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
         ask = contrato.get('ask', 0)
         mark = contrato.get('mark', 0)
         
-        logs.append(f"   Bid: {bid}, Ask: {ask}, Mark: {mark}")
-        
         # Para índices como SPX, priorizar mark si bid/ask no están disponibles
         if bid > 0 and ask > 0:
             mid_price = (bid + ask) / 2
-            logs.append(f"   ✅ Usando Mid (Bid+Ask)/2: {mid_price}")
         elif mark > 0:
             mid_price = mark
-            logs.append(f"   ⚠️ Bid/Ask inválidos, usando Mark: {mid_price}")
         else:
-            logs.append(f"❌ Bid/Ask y Mark inválidos o cero")
-            logs.append(f"Contrato completo: {json.dumps(contrato, indent=2)[:500]}")
-            st.error("\n".join(logs))
             return None, None, None
         
         delta = contrato.get('delta', None)
         theta = contrato.get('theta', None)
         
-        logs.append(f"   ✅ Precio final: {mid_price}, Delta: {delta}, Theta: {theta}")
-        
-        st.info("\n".join(logs))
-        
         return mid_price, delta, theta
         
     except Exception as e:
-        error_msg = f"❌ Error en obtener_datos_opcion ({tipo}): {e}"
-        st.error(error_msg)
-        import traceback
-        st.code(traceback.format_exc())
         return None, None, None
 
 
@@ -334,137 +249,47 @@ def get_current_price_schwab(client, ticker):
     """
     try:
         if client is None:
-            print("❌ Cliente es None en get_current_price_schwab")
             return None
         
-        # Normalizar el ticker (SPX -> $SPX)
         symbol = normalize_ticker(ticker)
-        
-        print(f"🔍 Obteniendo precio actual de: {ticker} → {symbol}")
-        
         response = client.get_quote(symbol)
         
         if response.status_code != 200:
-            print(f"❌ Error en get_quote: Status code {response.status_code}")
-            print(f"Response: {response.text[:500]}")
             return None
         
         quote_data = response.json()
         
-        # Buscar con el símbolo normalizado
         if symbol in quote_data:
             ticker_data = quote_data[symbol]
             
             if 'quote' in ticker_data:
                 quote = ticker_data['quote']
                 
+                # Prioridad: lastPrice -> mark -> closePrice -> mid(bid,ask)
                 if 'lastPrice' in quote and quote['lastPrice'] is not None:
-                    price = float(quote['lastPrice'])
-                    print(f"✅ Precio obtenido (lastPrice): {price}")
-                    return price
+                    return float(quote['lastPrice'])
                 
                 if 'mark' in quote and quote['mark'] is not None:
-                    price = float(quote['mark'])
-                    print(f"✅ Precio obtenido (mark): {price}")
-                    return price
+                    return float(quote['mark'])
                 
                 if 'closePrice' in quote and quote['closePrice'] is not None:
-                    price = float(quote['closePrice'])
-                    print(f"✅ Precio obtenido (closePrice): {price}")
-                    return price
+                    return float(quote['closePrice'])
                 
                 if 'bidPrice' in quote and 'askPrice' in quote:
                     bid = quote.get('bidPrice')
                     ask = quote.get('askPrice')
                     if bid is not None and ask is not None and bid > 0 and ask > 0:
-                        price = float((bid + ask) / 2)
-                        print(f"✅ Precio obtenido (mid bid/ask): {price}")
-                        return price
+                        return float((bid + ask) / 2)
         
-        print(f"❌ No se encontró precio para {symbol} en la respuesta")
         return None
         
     except Exception as e:
-        print(f"❌ Error obteniendo precio actual de Schwab: {e}")
-        import traceback
-        traceback.print_exc()
         return None
-
-
-def diagnose_option_chain(client, ticker, target_date=None):
-    """
-    Función de diagnóstico para ver qué fechas están disponibles.
-    MUESTRA LOS LOGS EN STREAMLIT.
-    """
-    try:
-        symbol = normalize_ticker(ticker)
-        
-        # Crear contenedor para logs
-        logs = []
-        logs.append(f"\n{'🔬'*30}")
-        logs.append(f"DIAGNÓSTICO DE CADENA DE OPCIONES")
-        logs.append(f"Ticker: {ticker} → {symbol}")
-        logs.append(f"{'🔬'*30}\n")
-        
-        # Para SPX, usar filtros para evitar "Body buffer overflow"
-        from_date = None
-        to_date = None
-        
-        if target_date:
-            # Buscar opciones en un rango de ±30 días
-            from datetime import timedelta
-            target_dt = normalize_date(target_date)
-            from_date = target_dt - timedelta(days=5)  # date object, no string
-            to_date = target_dt + timedelta(days=35)    # date object, no string
-            logs.append(f"   Filtrando: {from_date} a {to_date}\n")
-        
-        response = client.get_option_chain(
-            symbol,
-            from_date=from_date,
-            to_date=to_date
-        )
-        
-        if response.status_code != 200:
-            logs.append(f"❌ API Error: {response.status_code}")
-            st.error("\n".join(logs))
-            return logs
-        
-        data = response.json()
-        
-        logs.append(f"📊 Estructura de respuesta:")
-        logs.append(f"   Keys: {list(data.keys())}\n")
-        
-        for map_type in ['callExpDateMap', 'putExpDateMap']:
-            exp_map = data.get(map_type, {})
-            if exp_map:
-                dates = sorted(list(exp_map.keys()))
-                logs.append(f"\n{map_type}:")
-                logs.append(f"   Total fechas: {len(dates)}")
-                logs.append(f"   Primera fecha: {dates[0] if dates else 'N/A'}")
-                logs.append(f"   Última fecha: {dates[-1] if dates else 'N/A'}")
-                logs.append(f"\n   Primeras 20 fechas:")
-                for i, date_key in enumerate(dates[:20], 1):
-                    logs.append(f"      {i:2d}. {date_key}")
-        
-        logs.append(f"\n{'🔬'*30}\n")
-        
-        # Mostrar en Streamlit
-        st.code("\n".join(logs))
-        
-        return logs
-        
-    except Exception as e:
-        error_msg = f"❌ Error en diagnóstico: {e}"
-        st.error(error_msg)
-        import traceback
-        st.code(traceback.format_exc())
-        return [error_msg]
 
 
 def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
     """
     Obtiene el strike ATM (at-the-money) más cercano al precio actual.
-    VERSIÓN MEJORADA con logs en Streamlit.
     
     Args:
         client: Cliente autenticado de Schwab
@@ -479,33 +304,9 @@ def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
         symbol = normalize_ticker(ticker)
         target_date = normalize_date(expiration_date)
         
-        logs = []
-        logs.append(f"\n{'='*60}")
-        logs.append(f"GET ATM STRIKE - INICIO")
-        logs.append(f"Ticker original: {ticker}")
-        logs.append(f"Symbol normalizado: {symbol}")
-        logs.append(f"Fecha objetivo: {target_date}")
-        logs.append(f"Precio actual: {current_price}")
-        logs.append(f"{'='*60}\n")
-        
-        st.info("🔍 **LOGS DE DEBUG - GET ATM STRIKE**")
-        
-        # NUEVO: Ejecutar diagnóstico primero
-        logs.append("⚙️ Ejecutando diagnóstico de cadena de opciones...")
-        st.code("\n".join(logs))
-        
-        diagnostic_logs = diagnose_option_chain(client, ticker, target_date)
-        
-        # Llamar con el símbolo normalizado Y FILTROS DE FECHA
-        logs.append(f"📡 Llamando a get_option_chain({symbol}) con filtros...")
-        
-        # Filtrar por rango de fechas para evitar overflow
-        from datetime import timedelta
-        from_date = target_date - timedelta(days=5)  # date object, no string
-        to_date = target_date + timedelta(days=35)   # date object, no string
-        
-        logs.append(f"   Filtro de fechas: {from_date} a {to_date}")
-        st.code("\n".join(logs))
+        # Filtrar por rango de fechas para evitar overflow en SPX
+        from_date = target_date - timedelta(days=5)
+        to_date = target_date + timedelta(days=35)
         
         response = client.get_option_chain(
             symbol,
@@ -514,104 +315,34 @@ def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
         )
         
         if response.status_code != 200:
-            logs.append(f"❌ Error en get_option_chain: Status code {response.status_code}")
-            logs.append(f"Response text: {response.text[:1000]}")
-            st.error("\n".join(logs))
             return None
         
-        logs.append(f"✅ Respuesta recibida de Schwab API")
-        
         data = response.json()
-        
-        # Verificar qué keys están disponibles en la respuesta
-        logs.append(f"\n📋 Keys principales en respuesta: {list(data.keys())}")
-        
         available_strikes = set()
         exp_date_str = target_date.strftime("%Y-%m-%d")
-        
-        logs.append(f"\n🔍 Buscando strikes para fecha: {exp_date_str}")
-        
-        fechas_encontradas = []
         
         for map_type in ['callExpDateMap', 'putExpDateMap']:
             exp_map = data.get(map_type, {})
             
             if not exp_map:
-                logs.append(f"⚠️ {map_type} está vacío o no existe")
                 continue
             
-            logs.append(f"\n📊 Procesando {map_type}")
-            logs.append(f"   Total fechas disponibles: {len(exp_map)}")
-            
-            # Mostrar las primeras 10 fechas para debugging
-            all_dates = list(exp_map.keys())
-            logs.append(f"   Primeras 10 fechas: {all_dates[:10]}")
-            
-            fecha_match_found = False
-            
             for date_key, strikes_dict in exp_map.items():
-                # Buscar coincidencia exacta o parcial
                 if date_key.startswith(exp_date_str):
-                    logs.append(f"   ✅ MATCH encontrado: {date_key}")
-                    fechas_encontradas.append(date_key)
-                    fecha_match_found = True
-                    
-                    # Extraer strikes
                     for strike_key in strikes_dict.keys():
                         try:
                             strike_float = float(strike_key)
                             available_strikes.add(strike_float)
                         except ValueError:
-                            logs.append(f"      ⚠️ Strike no numérico: {strike_key}")
                             continue
-            
-            if not fecha_match_found:
-                logs.append(f"   ❌ No se encontró match para {exp_date_str} en {map_type}")
         
         if not available_strikes:
-            logs.append(f"\n❌ ERROR: No se encontraron strikes para la fecha {exp_date_str}")
-            logs.append(f"\nFechas que sí están disponibles (primeras 20):")
-            
-            all_available_dates = set()
-            for map_type in ['callExpDateMap', 'putExpDateMap']:
-                exp_map = data.get(map_type, {})
-                all_available_dates.update(list(exp_map.keys())[:20])
-            
-            for fecha in sorted(list(all_available_dates))[:20]:
-                logs.append(f"   - {fecha}")
-            
-            logs.append(f"\n💡 Sugerencia: Usa una de estas fechas disponibles")
-            st.error("\n".join(logs))
             return None
-        
-        available_strikes_list = sorted(list(available_strikes))
-        
-        logs.append(f"\n✅ Strikes encontrados: {len(available_strikes_list)}")
-        logs.append(f"   Rango: {min(available_strikes_list):.2f} - {max(available_strikes_list):.2f}")
-        logs.append(f"   Primeros 10: {available_strikes_list[:10]}")
-        logs.append(f"   Últimos 10: {available_strikes_list[-10:]}")
         
         # Encontrar el strike más cercano al precio actual
         atm_strike = min(available_strikes, key=lambda x: abs(x - current_price))
         
-        diferencia = abs(atm_strike - current_price)
-        diferencia_pct = (diferencia / current_price) * 100
-        
-        logs.append(f"\n{'='*60}")
-        logs.append(f"RESULTADO ATM STRIKE")
-        logs.append(f"Strike ATM seleccionado: {atm_strike}")
-        logs.append(f"Precio actual: {current_price}")
-        logs.append(f"Diferencia: ${diferencia:.2f} ({diferencia_pct:.3f}%)")
-        logs.append(f"Fechas procesadas: {fechas_encontradas}")
-        logs.append(f"{'='*60}\n")
-        
-        st.success("\n".join(logs))
-        
         return atm_strike
         
     except Exception as e:
-        error_msg = f"\n❌ EXCEPCIÓN en get_atm_strike_schwab: {e}"
-        st.error(error_msg)
-        import traceback
-        st.code(traceback.format_exc())
         return None
