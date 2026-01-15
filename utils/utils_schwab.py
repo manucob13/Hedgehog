@@ -42,6 +42,29 @@ def normalize_date(date_input):
         return date_input
 
 
+def get_date_range_for_ticker(ticker, target_date):
+    """
+    Determina el rango de fechas óptimo según el ticker.
+    
+    Args:
+        ticker (str): Símbolo del ticker
+        target_date (date): Fecha objetivo
+    
+    Returns:
+        tuple: (from_date, to_date)
+    """
+    if ticker in ['$SPX', 'SPX']:
+        # SPX tiene muchas expiraciones, usar rango amplio
+        from_date = target_date - timedelta(days=5)
+        to_date = target_date + timedelta(days=35)
+    else:
+        # QQQ y otros tickers usan rango más corto
+        from_date = target_date - timedelta(days=2)
+        to_date = target_date + timedelta(days=2)
+    
+    return from_date, to_date
+
+
 def get_schwab_credentials():
     """
     Obtiene las credenciales de Schwab desde st.secrets.
@@ -153,9 +176,8 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
         symbol = normalize_ticker(ticker)
         fecha_normalizada = normalize_date(fecha_salida)
         
-        # Filtrar por rango de fechas para evitar overflow en SPX
-        from_date = fecha_normalizada - timedelta(days=5)
-        to_date = fecha_normalizada + timedelta(days=35)
+        # Usar el mismo sistema de rango de fechas
+        from_date, to_date = get_date_range_for_ticker(symbol, fecha_normalizada)
         
         response = client.get_option_chain(
             symbol,
@@ -304,10 +326,8 @@ def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
         symbol = normalize_ticker(ticker)
         target_date = normalize_date(expiration_date)
         
-        # Filtrar por rango de fechas más estricto para evitar overflow
-        # Usar un rango más corto para QQQ y otros tickers
-        from_date = target_date - timedelta(days=2)
-        to_date = target_date + timedelta(days=2)
+        # Determinar rango de fechas según el ticker
+        from_date, to_date = get_date_range_for_ticker(symbol, target_date)
         
         print(f"\n{'='*60}")
         print(f"GET ATM STRIKE - {symbol}")
