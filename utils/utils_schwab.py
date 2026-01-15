@@ -163,8 +163,8 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
         
         # Filtrar por rango de fechas para evitar overflow en SPX
         from datetime import timedelta
-        from_date = (fecha_normalizada - timedelta(days=5)).strftime('%Y-%m-%d')
-        to_date = (fecha_normalizada + timedelta(days=35)).strftime('%Y-%m-%d')
+        from_date = fecha_normalizada - timedelta(days=5)  # date object, no string
+        to_date = fecha_normalizada + timedelta(days=35)   # date object, no string
         
         logs.append(f"   Filtro fechas: {from_date} a {to_date}")
         
@@ -414,8 +414,8 @@ def diagnose_option_chain(client, ticker, target_date=None):
             # Buscar opciones en un rango de ±30 días
             from datetime import timedelta
             target_dt = normalize_date(target_date)
-            from_date = (target_dt - timedelta(days=5)).strftime('%Y-%m-%d')
-            to_date = (target_dt + timedelta(days=35)).strftime('%Y-%m-%d')
+            from_date = target_dt - timedelta(days=5)  # date object, no string
+            to_date = target_dt + timedelta(days=35)    # date object, no string
             logs.append(f"   Filtrando: {from_date} a {to_date}\n")
         
         response = client.get_option_chain(
@@ -501,8 +501,8 @@ def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
         
         # Filtrar por rango de fechas para evitar overflow
         from datetime import timedelta
-        from_date = (target_date - timedelta(days=5)).strftime('%Y-%m-%d')
-        to_date = (target_date + timedelta(days=35)).strftime('%Y-%m-%d')
+        from_date = target_date - timedelta(days=5)  # date object, no string
+        to_date = target_date + timedelta(days=35)   # date object, no string
         
         logs.append(f"   Filtro de fechas: {from_date} a {to_date}")
         st.code("\n".join(logs))
