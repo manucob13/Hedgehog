@@ -20,7 +20,7 @@ def normalize_ticker(ticker):
     Returns:
         str: Ticker normalizado para Schwab API
     """
-    return '$SPX' if ticker == 'SPX' else ticker
+    return '$SPX' if ticker.upper() == 'SPX' else ticker.upper()
 
 
 def normalize_date(date_input):
@@ -183,6 +183,7 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
         
         if not fecha_key_match:
             print(f"❌ No hay fecha que coincida con {fecha_str}")
+            print(f"Todas las fechas disponibles: {list(option_map.keys())}")
             return None, None, None
         
         print(f"✅ Fecha encontrada: {fecha_key_match}")
@@ -191,7 +192,7 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
         
         # Obtener todos los strikes disponibles como floats
         available_strikes = []
-        strike_key_map = {}  # Mapeo de strike float a su key original
+        strike_key_map = {}
         
         for strike_key in strikes_dict.keys():
             try:
@@ -210,8 +211,6 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
         
         # Encontrar el strike más cercano
         closest_strike_float = min(available_strikes, key=lambda x: abs(x - float(strike)))
-        
-        # Obtener la key original del strike más cercano
         strike_key_to_use = strike_key_map[closest_strike_float]
         
         print(f"🔍 {tipo}: Buscando {strike} → Encontrado {closest_strike_float} (key: '{strike_key_to_use}')")
@@ -244,7 +243,7 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
             print(f"   ⚠️ Bid/Ask inválidos, usando Mark: {mid_price}")
         else:
             print(f"❌ Bid/Ask y Mark inválidos o cero")
-            print(f"Contrato: {contrato}")
+            print(f"Contrato completo: {json.dumps(contrato, indent=2)}")
             return None, None, None
         
         delta = contrato.get('delta', None)
@@ -274,18 +273,24 @@ def get_current_price_schwab(client, ticker):
     """
     try:
         if client is None:
+            print("❌ Cliente es None en get_current_price_schwab")
             return None
         
         # Normalizar el ticker (SPX -> $SPX)
         symbol = normalize_ticker(ticker)
         
+        print(f"🔍 Obteniendo precio actual de: {symbol}")
+        
         response = client.get_quote(symbol)
         
         if response.status_code != 200:
-            print(f"Error en get_quote: Status code {response.status_code}")
+            print(f"❌ Error en get_quote: Status code {response.status_code}")
+            print(f"Response: {response.text[:500]}")
             return None
         
         quote_data = response.json()
+        
+        print(f"📊 Keys en respuesta: {list(quote_data.keys())}")
         
         # Buscar con el símbolo normalizado
         if symbol in quote_data:
@@ -294,26 +299,38 @@ def get_current_price_schwab(client, ticker):
             if 'quote' in ticker_data:
                 quote = ticker_data['quote']
                 
+                # Prioridad: lastPrice -> mark -> closePrice -> mid(bid,ask)
                 if 'lastPrice' in quote and quote['lastPrice'] is not None:
-                    return float(quote['lastPrice'])
+                    price = float(quote['lastPrice'])
+                    print(f"✅ Precio obtenido (lastPrice): {price}")
+                    return price
                 
                 if 'mark' in quote and quote['mark'] is not None:
-                    return float(quote['mark'])
+                    price = float(quote['mark'])
+                    print(f"✅ Precio obtenido (mark): {price}")
+                    return price
                 
                 if 'closePrice' in quote and quote['closePrice'] is not None:
-                    return float(quote['closePrice'])
+                    price = float(quote['closePrice'])
+                    print(f"✅ Precio obtenido (closePrice): {price}")
+                    return price
                 
                 if 'bidPrice' in quote and 'askPrice' in quote:
                     bid = quote.get('bidPrice')
                     ask = quote.get('askPrice')
                     if bid is not None and ask is not None and bid > 0 and ask > 0:
-                        return float((bid + ask) / 2)
+                        price = float((bid + ask) / 2)
+                        print(f"✅ Precio obtenido (mid bid/ask): {price}")
+                        return price
+                
+                print(f"⚠️ Quote disponible pero sin precio válido: {quote}")
         
-        print(f"No se encontró precio para {symbol} en la respuesta")
+        print(f"❌ No se encontró precio para {symbol} en la respuesta")
+        print(f"Respuesta completa: {json.dumps(quote_data, indent=2)[:1000]}")
         return None
         
     except Exception as e:
-        print(f"Error obteniendo precio actual de Schwab: {e}")
+        print(f"❌ Error obteniendo precio actual de Schwab: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -322,6 +339,7 @@ def get_current_price_schwab(client, ticker):
 def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
     """
     Obtiene el strike ATM (at-the-money) más cercano al precio actual.
+    VERSIÓN CORREGIDA: normaliza el ticker correctamente.
     
     Args:
         client: Cliente autenticado de Schwab
@@ -333,13 +351,14 @@ def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
         float: Strike ATM más cercano, None si hay error
     """
     try:
+        # ✅ FIX: Normalizar el ticker ANTES de usarlo
         symbol = normalize_ticker(ticker)
         target_date = normalize_date(expiration_date)
         
-        print(f"🔍 Buscando strike ATM para {symbol} en {target_date}")
+        print(f"🔍 Buscando strike ATM para {ticker} → {symbol} en {target_date}")
         print(f"   Precio actual: {current_price}")
         
-        # Llamar sin filtro de fecha primero para obtener toda la cadena
+        # Llamar con el símbolo normalizado
         response = client.get_option_chain(symbol)
         
         if response.status_code != 200:
@@ -363,15 +382,34 @@ def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
                 
             print(f"   Fechas disponibles en {map_type}: {list(exp_map.keys())[:5]}...")
             
+            fecha_encontrada = False
             for date_key, strikes_dict in exp_map.items():
                 if date_key.startswith(exp_date_str):
                     print(f"   ✅ Fecha coincidente encontrada: {date_key}")
+                    fecha_encontrada = True
                     for strike_key in strikes_dict.keys():
-                        available_strikes.add(float(strike_key))
+                        try:
+                            available_strikes.add(float(strike_key))
+                        except ValueError:
+                            continue
+            
+            if not fecha_encontrada:
+                print(f"   ⚠️ No se encontró la fecha {exp_date_str} en {map_type}")
+                print(f"   Todas las fechas: {list(exp_map.keys())[:10]}")
         
         if not available_strikes:
             print(f"❌ No se encontraron strikes para la fecha {exp_date_str}")
             print(f"   Verifica que la fecha de expiración sea válida para {symbol}")
+            
+            # Mostrar las primeras 5 fechas disponibles para debugging
+            all_dates = set()
+            for map_type in ['callExpDateMap', 'putExpDateMap']:
+                exp_map = data.get(map_type, {})
+                all_dates.update(list(exp_map.keys())[:5])
+            
+            if all_dates:
+                print(f"   Fechas de ejemplo disponibles: {sorted(list(all_dates))[:5]}")
+            
             return None
         
         available_strikes_list = sorted(list(available_strikes))
