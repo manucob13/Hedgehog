@@ -161,7 +161,18 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
         logs.append(f"   Strike: {strike}")
         logs.append(f"   Fecha: {fecha_normalizada}")
         
-        response = client.get_option_chain(symbol)
+        # Filtrar por rango de fechas para evitar overflow en SPX
+        from datetime import timedelta
+        from_date = (fecha_normalizada - timedelta(days=5)).strftime('%Y-%m-%d')
+        to_date = (fecha_normalizada + timedelta(days=35)).strftime('%Y-%m-%d')
+        
+        logs.append(f"   Filtro fechas: {from_date} a {to_date}")
+        
+        response = client.get_option_chain(
+            symbol,
+            from_date=from_date,
+            to_date=to_date
+        )
         if response.status_code != 200:
             logs.append(f"❌ Status code para {symbol}: {response.status_code}")
             logs.append(f"Response: {response.text[:500]}")
@@ -380,7 +391,7 @@ def get_current_price_schwab(client, ticker):
         return None
 
 
-def diagnose_option_chain(client, ticker):
+def diagnose_option_chain(client, ticker, target_date=None):
     """
     Función de diagnóstico para ver qué fechas están disponibles.
     MUESTRA LOS LOGS EN STREAMLIT.
@@ -395,7 +406,23 @@ def diagnose_option_chain(client, ticker):
         logs.append(f"Ticker: {ticker} → {symbol}")
         logs.append(f"{'🔬'*30}\n")
         
-        response = client.get_option_chain(symbol)
+        # Para SPX, usar filtros para evitar "Body buffer overflow"
+        from_date = None
+        to_date = None
+        
+        if target_date:
+            # Buscar opciones en un rango de ±30 días
+            from datetime import timedelta
+            target_dt = normalize_date(target_date)
+            from_date = (target_dt - timedelta(days=5)).strftime('%Y-%m-%d')
+            to_date = (target_dt + timedelta(days=35)).strftime('%Y-%m-%d')
+            logs.append(f"   Filtrando: {from_date} a {to_date}\n")
+        
+        response = client.get_option_chain(
+            symbol,
+            from_date=from_date,
+            to_date=to_date
+        )
         
         if response.status_code != 200:
             logs.append(f"❌ API Error: {response.status_code}")
@@ -467,11 +494,24 @@ def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
         logs.append("⚙️ Ejecutando diagnóstico de cadena de opciones...")
         st.code("\n".join(logs))
         
-        diagnostic_logs = diagnose_option_chain(client, ticker)
+        diagnostic_logs = diagnose_option_chain(client, ticker, target_date)
         
-        # Llamar con el símbolo normalizado
-        logs.append(f"📡 Llamando a get_option_chain({symbol})...")
-        response = client.get_option_chain(symbol)
+        # Llamar con el símbolo normalizado Y FILTROS DE FECHA
+        logs.append(f"📡 Llamando a get_option_chain({symbol}) con filtros...")
+        
+        # Filtrar por rango de fechas para evitar overflow
+        from datetime import timedelta
+        from_date = (target_date - timedelta(days=5)).strftime('%Y-%m-%d')
+        to_date = (target_date + timedelta(days=35)).strftime('%Y-%m-%d')
+        
+        logs.append(f"   Filtro de fechas: {from_date} a {to_date}")
+        st.code("\n".join(logs))
+        
+        response = client.get_option_chain(
+            symbol,
+            from_date=from_date,
+            to_date=to_date
+        )
         
         if response.status_code != 200:
             logs.append(f"❌ Error en get_option_chain: Status code {response.status_code}")
