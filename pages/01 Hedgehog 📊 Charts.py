@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from utils.utils import check_password
 
-st.set_page_config(page_title="Gráficos - HEDGEHOG", layout="wide")
+st.set_page_config(page_title="TE Calculos", layout="wide")
 
 
 # ==============================================================================
