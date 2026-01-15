@@ -374,135 +374,44 @@ def diagnose_option_chain(client, ticker):
         import traceback
         traceback.print_exc()
 
-
 def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
-    """
-    Obtiene el strike ATM (at-the-money) más cercano al precio actual.
-    VERSIÓN MEJORADA con mejor debugging y manejo de fechas.
-    
-    Args:
-        client: Cliente autenticado de Schwab
-        ticker (str): Símbolo del ticker
-        current_price (float): Precio actual del subyacente
-        expiration_date: Fecha de expiración (str, datetime, o date)
-    
-    Returns:
-        float: Strike ATM más cercano, None si hay error
-    """
     try:
         symbol = normalize_ticker(ticker)
         target_date = normalize_date(expiration_date)
-        
-        print(f"\n{'='*60}")
-        print(f"GET ATM STRIKE - INICIO")
-        print(f"Ticker original: {ticker}")
-        print(f"Symbol normalizado: {symbol}")
-        print(f"Fecha objetivo: {target_date}")
-        print(f"Precio actual: {current_price}")
-        print(f"{'='*60}\n")
-        
-        # NUEVO: Ejecutar diagnóstico primero
-        print("⚙️ Ejecutando diagnóstico de cadena de opciones...")
-        diagnose_option_chain(client, ticker)
-        
-        # Llamar con el símbolo normalizado
-        print(f"📡 Llamando a get_option_chain({symbol})...")
-        response = client.get_option_chain(symbol)
-        
-        if response.status_code != 200:
-            print(f"❌ Error en get_option_chain: Status code {response.status_code}")
-            print(f"Response text: {response.text[:1000]}")
-            return None
-        
-        print(f"✅ Respuesta recibida de Schwab API")
-        
-        data = response.json()
-        
-        # Verificar qué keys están disponibles en la respuesta
-        print(f"\n📋 Keys principales en respuesta: {list(data.keys())}")
-        
-        available_strikes = set()
         exp_date_str = target_date.strftime("%Y-%m-%d")
         
-        print(f"\n🔍 Buscando strikes para fecha: {exp_date_str}")
+        # OPTIMIZACIÓN: Añadimos parámetros para que SPX no sature la conexión
+        # 'strike_count' limita los resultados cerca del precio actual
+        response = client.get_option_chain(
+            symbol, 
+            strike_count=20, 
+            from_date=target_date, 
+            to_date=target_date
+        )
         
-        fechas_encontradas = []
-        
-        for map_type in ['callExpDateMap', 'putExpDateMap']:
-            exp_map = data.get(map_type, {})
-            
-            if not exp_map:
-                print(f"⚠️ {map_type} está vacío o no existe")
-                continue
-            
-            print(f"\n📊 Procesando {map_type}")
-            print(f"   Total fechas disponibles: {len(exp_map)}")
-            
-            # Mostrar las primeras 10 fechas para debugging
-            all_dates = list(exp_map.keys())
-            print(f"   Primeras 10 fechas: {all_dates[:10]}")
-            
-            fecha_match_found = False
-            
-            for date_key, strikes_dict in exp_map.items():
-                # Buscar coincidencia exacta o parcial
-                if date_key.startswith(exp_date_str):
-                    print(f"   ✅ MATCH encontrado: {date_key}")
-                    fechas_encontradas.append(date_key)
-                    fecha_match_found = True
-                    
-                    # Extraer strikes
-                    for strike_key in strikes_dict.keys():
-                        try:
-                            strike_float = float(strike_key)
-                            available_strikes.add(strike_float)
-                        except ValueError:
-                            print(f"      ⚠️ Strike no numérico: {strike_key}")
-                            continue
-            
-            if not fecha_match_found:
-                print(f"   ❌ No se encontró match para {exp_date_str} en {map_type}")
-        
-        if not available_strikes:
-            print(f"\n❌ ERROR: No se encontraron strikes para la fecha {exp_date_str}")
-            print(f"\nFechas que sí están disponibles (primeras 20):")
-            
-            all_available_dates = set()
-            for map_type in ['callExpDateMap', 'putExpDateMap']:
-                exp_map = data.get(map_type, {})
-                all_available_dates.update(list(exp_map.keys())[:20])
-            
-            for fecha in sorted(list(all_available_dates))[:20]:
-                print(f"   - {fecha}")
-            
-            print(f"\n💡 Sugerencia: Usa una de estas fechas disponibles")
+        if response.status_code != 200:
             return None
         
-        available_strikes_list = sorted(list(available_strikes))
+        data = response.json()
+        available_strikes = set()
         
-        print(f"\n✅ Strikes encontrados: {len(available_strikes_list)}")
-        print(f"   Rango: {min(available_strikes_list):.2f} - {max(available_strikes_list):.2f}")
-        print(f"   Primeros 10: {available_strikes_list[:10]}")
-        print(f"   Últimos 10: {available_strikes_list[-10:]}")
+        # El SPX a veces devuelve los mapas vacíos si la fecha no es EXACTA
+        # Schwab usa el formato "YYYY-MM-DD:Días"
+        for map_type in ['callExpDateMap', 'putExpDateMap']:
+            exp_map = data.get(map_type, {})
+            for date_key, strikes_dict in exp_map.items():
+                if date_key.startswith(exp_date_str):
+                    for strike_key in strikes_dict.keys():
+                        available_strikes.add(float(strike_key))
         
-        # Encontrar el strike más cercano al precio actual
-        atm_strike = min(available_strikes, key=lambda x: abs(x - current_price))
-        
-        diferencia = abs(atm_strike - current_price)
-        diferencia_pct = (diferencia / current_price) * 100
-        
-        print(f"\n{'='*60}")
-        print(f"RESULTADO ATM STRIKE")
-        print(f"Strike ATM seleccionado: {atm_strike}")
-        print(f"Precio actual: {current_price}")
-        print(f"Diferencia: ${diferencia:.2f} ({diferencia_pct:.3f}%)")
-        print(f"Fechas procesadas: {fechas_encontradas}")
-        print(f"{'='*60}\n")
-        
-        return atm_strike
-        
+        if not available_strikes:
+            # Si no encuentra nada, imprimimos qué fechas SÍ hay para debug
+            print(f"Fechas disponibles en API: {list(data.get('callExpDateMap', {}).keys())}")
+            return None
+            
+        return min(available_strikes, key=lambda x: abs(x - current_price))
+
     except Exception as e:
-        print(f"\n❌ EXCEPCIÓN en get_atm_strike_schwab: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"Error: {e}")
         return None
+
