@@ -91,11 +91,12 @@ def get_date_range_for_ticker(ticker, target_date):
     normalized = normalize_ticker(ticker)
     
     if normalized == '$SPX':
-        # SPX tiene muchas expiraciones, usar rango amplio
-        from_date = target_date - timedelta(days=5)
-        to_date = target_date + timedelta(days=35)
+        # SPX: usar rango MUY corto para evitar error 502 "Body buffer overflow"
+        # SPX tiene muchos strikes (cada 5 puntos) y muchas expiraciones
+        from_date = target_date - timedelta(days=1)
+        to_date = target_date + timedelta(days=1)
     else:
-        # QQQ y otros tickers usan rango más corto
+        # QQQ y otros tickers usan rango corto
         from_date = target_date - timedelta(days=2)
         to_date = target_date + timedelta(days=2)
     
