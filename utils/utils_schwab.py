@@ -47,13 +47,16 @@ def get_date_range_for_ticker(ticker, target_date):
     Determina el rango de fechas óptimo según el ticker.
     
     Args:
-        ticker (str): Símbolo del ticker
+        ticker (str): Símbolo del ticker (puede ser normalizado o no)
         target_date (date): Fecha objetivo
     
     Returns:
         tuple: (from_date, to_date)
     """
-    if ticker in ['$SPX', 'SPX']:
+    # Normalizar el ticker para la comparación
+    normalized = normalize_ticker(ticker)
+    
+    if normalized == '$SPX':
         # SPX tiene muchas expiraciones, usar rango amplio
         from_date = target_date - timedelta(days=5)
         to_date = target_date + timedelta(days=35)
@@ -176,7 +179,7 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
         symbol = normalize_ticker(ticker)
         fecha_normalizada = normalize_date(fecha_salida)
         
-        # Usar el mismo sistema de rango de fechas
+        # Usar el sistema de rango de fechas dinámico
         from_date, to_date = get_date_range_for_ticker(symbol, fecha_normalizada)
         
         response = client.get_option_chain(
@@ -326,7 +329,7 @@ def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
         symbol = normalize_ticker(ticker)
         target_date = normalize_date(expiration_date)
         
-        # Determinar rango de fechas según el ticker
+        # Usar el sistema de rango de fechas dinámico
         from_date, to_date = get_date_range_for_ticker(symbol, target_date)
         
         print(f"\n{'='*60}")
