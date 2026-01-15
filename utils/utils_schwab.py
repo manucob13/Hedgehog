@@ -20,7 +20,8 @@ def normalize_ticker(ticker):
     Returns:
         str: Ticker normalizado para Schwab API
     """
-    return '$SPX' if ticker.upper() == 'SPX' else ticker.upper()
+    ticker_upper = ticker.upper().strip()
+    return '$SPX' if ticker_upper == 'SPX' else ticker_upper
 
 
 def normalize_date(date_input):
@@ -183,7 +184,7 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
         
         if not fecha_key_match:
             print(f"❌ No hay fecha que coincida con {fecha_str}")
-            print(f"Todas las fechas disponibles: {list(option_map.keys())}")
+            print(f"Todas las fechas disponibles: {list(option_map.keys())[:10]}")
             return None, None, None
         
         print(f"✅ Fecha encontrada: {fecha_key_match}")
@@ -192,7 +193,7 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
         
         # Obtener todos los strikes disponibles como floats
         available_strikes = []
-        strike_key_map = {}
+        strike_key_map = {}  # Mapeo de strike float a su key original
         
         for strike_key in strikes_dict.keys():
             try:
@@ -211,6 +212,8 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
         
         # Encontrar el strike más cercano
         closest_strike_float = min(available_strikes, key=lambda x: abs(x - float(strike)))
+        
+        # Obtener la key original del strike más cercano
         strike_key_to_use = strike_key_map[closest_strike_float]
         
         print(f"🔍 {tipo}: Buscando {strike} → Encontrado {closest_strike_float} (key: '{strike_key_to_use}')")
@@ -243,7 +246,7 @@ def obtener_datos_opcion(client, ticker, strike, tipo, fecha_salida):
             print(f"   ⚠️ Bid/Ask inválidos, usando Mark: {mid_price}")
         else:
             print(f"❌ Bid/Ask y Mark inválidos o cero")
-            print(f"Contrato completo: {json.dumps(contrato, indent=2)}")
+            print(f"Contrato completo: {json.dumps(contrato, indent=2)[:500]}")
             return None, None, None
         
         delta = contrato.get('delta', None)
@@ -279,7 +282,7 @@ def get_current_price_schwab(client, ticker):
         # Normalizar el ticker (SPX -> $SPX)
         symbol = normalize_ticker(ticker)
         
-        print(f"🔍 Obteniendo precio actual de: {symbol}")
+        print(f"🔍 Obteniendo precio actual de: {ticker} → {symbol}")
         
         response = client.get_quote(symbol)
         
@@ -290,8 +293,6 @@ def get_current_price_schwab(client, ticker):
         
         quote_data = response.json()
         
-        print(f"📊 Keys en respuesta: {list(quote_data.keys())}")
-        
         # Buscar con el símbolo normalizado
         if symbol in quote_data:
             ticker_data = quote_data[symbol]
@@ -299,7 +300,6 @@ def get_current_price_schwab(client, ticker):
             if 'quote' in ticker_data:
                 quote = ticker_data['quote']
                 
-                # Prioridad: lastPrice -> mark -> closePrice -> mid(bid,ask)
                 if 'lastPrice' in quote and quote['lastPrice'] is not None:
                     price = float(quote['lastPrice'])
                     print(f"✅ Precio obtenido (lastPrice): {price}")
@@ -322,11 +322,8 @@ def get_current_price_schwab(client, ticker):
                         price = float((bid + ask) / 2)
                         print(f"✅ Precio obtenido (mid bid/ask): {price}")
                         return price
-                
-                print(f"⚠️ Quote disponible pero sin precio válido: {quote}")
         
         print(f"❌ No se encontró precio para {symbol} en la respuesta")
-        print(f"Respuesta completa: {json.dumps(quote_data, indent=2)[:1000]}")
         return None
         
     except Exception as e:
@@ -339,7 +336,7 @@ def get_current_price_schwab(client, ticker):
 def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
     """
     Obtiene el strike ATM (at-the-money) más cercano al precio actual.
-    VERSIÓN CORREGIDA: normaliza el ticker correctamente.
+    VERSIÓN MEJORADA con mejor debugging y manejo de fechas.
     
     Args:
         client: Cliente autenticado de Schwab
@@ -351,77 +348,115 @@ def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
         float: Strike ATM más cercano, None si hay error
     """
     try:
-        # ✅ FIX: Normalizar el ticker ANTES de usarlo
         symbol = normalize_ticker(ticker)
         target_date = normalize_date(expiration_date)
         
-        print(f"🔍 Buscando strike ATM para {ticker} → {symbol} en {target_date}")
-        print(f"   Precio actual: {current_price}")
+        print(f"\n{'='*60}")
+        print(f"GET ATM STRIKE - INICIO")
+        print(f"Ticker original: {ticker}")
+        print(f"Symbol normalizado: {symbol}")
+        print(f"Fecha objetivo: {target_date}")
+        print(f"Precio actual: {current_price}")
+        print(f"{'='*60}\n")
         
         # Llamar con el símbolo normalizado
+        print(f"📡 Llamando a get_option_chain({symbol})...")
         response = client.get_option_chain(symbol)
         
         if response.status_code != 200:
             print(f"❌ Error en get_option_chain: Status code {response.status_code}")
-            print(f"Response: {response.text[:500]}")
+            print(f"Response text: {response.text[:1000]}")
             return None
         
-        data = response.json()
-        available_strikes = set()
+        print(f"✅ Respuesta recibida de Schwab API")
         
+        data = response.json()
+        
+        # Verificar qué keys están disponibles en la respuesta
+        print(f"\n📋 Keys principales en respuesta: {list(data.keys())}")
+        
+        available_strikes = set()
         exp_date_str = target_date.strftime("%Y-%m-%d")
         
-        print(f"   Buscando fecha: {exp_date_str}")
+        print(f"\n🔍 Buscando strikes para fecha: {exp_date_str}")
+        
+        fechas_encontradas = []
         
         for map_type in ['callExpDateMap', 'putExpDateMap']:
             exp_map = data.get(map_type, {})
             
             if not exp_map:
-                print(f"   ⚠️ No hay datos en {map_type}")
+                print(f"⚠️ {map_type} está vacío o no existe")
                 continue
-                
-            print(f"   Fechas disponibles en {map_type}: {list(exp_map.keys())[:5]}...")
             
-            fecha_encontrada = False
+            print(f"\n📊 Procesando {map_type}")
+            print(f"   Total fechas disponibles: {len(exp_map)}")
+            
+            # Mostrar las primeras 10 fechas para debugging
+            all_dates = list(exp_map.keys())
+            print(f"   Primeras 10 fechas: {all_dates[:10]}")
+            
+            fecha_match_found = False
+            
             for date_key, strikes_dict in exp_map.items():
+                # Buscar coincidencia exacta o parcial
                 if date_key.startswith(exp_date_str):
-                    print(f"   ✅ Fecha coincidente encontrada: {date_key}")
-                    fecha_encontrada = True
+                    print(f"   ✅ MATCH encontrado: {date_key}")
+                    fechas_encontradas.append(date_key)
+                    fecha_match_found = True
+                    
+                    # Extraer strikes
                     for strike_key in strikes_dict.keys():
                         try:
-                            available_strikes.add(float(strike_key))
+                            strike_float = float(strike_key)
+                            available_strikes.add(strike_float)
                         except ValueError:
+                            print(f"      ⚠️ Strike no numérico: {strike_key}")
                             continue
             
-            if not fecha_encontrada:
-                print(f"   ⚠️ No se encontró la fecha {exp_date_str} en {map_type}")
-                print(f"   Todas las fechas: {list(exp_map.keys())[:10]}")
+            if not fecha_match_found:
+                print(f"   ❌ No se encontró match para {exp_date_str} en {map_type}")
         
         if not available_strikes:
-            print(f"❌ No se encontraron strikes para la fecha {exp_date_str}")
-            print(f"   Verifica que la fecha de expiración sea válida para {symbol}")
+            print(f"\n❌ ERROR: No se encontraron strikes para la fecha {exp_date_str}")
+            print(f"\nFechas que sí están disponibles (primeras 20):")
             
-            # Mostrar las primeras 5 fechas disponibles para debugging
-            all_dates = set()
+            all_available_dates = set()
             for map_type in ['callExpDateMap', 'putExpDateMap']:
                 exp_map = data.get(map_type, {})
-                all_dates.update(list(exp_map.keys())[:5])
+                all_available_dates.update(list(exp_map.keys())[:20])
             
-            if all_dates:
-                print(f"   Fechas de ejemplo disponibles: {sorted(list(all_dates))[:5]}")
+            for fecha in sorted(list(all_available_dates))[:20]:
+                print(f"   - {fecha}")
             
+            print(f"\n💡 Sugerencia: Usa una de estas fechas disponibles")
             return None
         
         available_strikes_list = sorted(list(available_strikes))
-        print(f"   Strikes disponibles: {available_strikes_list[:10]}... (total: {len(available_strikes_list)})")
         
+        print(f"\n✅ Strikes encontrados: {len(available_strikes_list)}")
+        print(f"   Rango: {min(available_strikes_list):.2f} - {max(available_strikes_list):.2f}")
+        print(f"   Primeros 10: {available_strikes_list[:10]}")
+        print(f"   Últimos 10: {available_strikes_list[-10:]}")
+        
+        # Encontrar el strike más cercano al precio actual
         atm_strike = min(available_strikes, key=lambda x: abs(x - current_price))
-        print(f"✅ Strike ATM encontrado: {atm_strike} (más cercano a {current_price})")
+        
+        diferencia = abs(atm_strike - current_price)
+        diferencia_pct = (diferencia / current_price) * 100
+        
+        print(f"\n{'='*60}")
+        print(f"RESULTADO ATM STRIKE")
+        print(f"Strike ATM seleccionado: {atm_strike}")
+        print(f"Precio actual: {current_price}")
+        print(f"Diferencia: ${diferencia:.2f} ({diferencia_pct:.3f}%)")
+        print(f"Fechas procesadas: {fechas_encontradas}")
+        print(f"{'='*60}\n")
         
         return atm_strike
         
     except Exception as e:
-        print(f"❌ Error en get_atm_strike_schwab: {e}")
+        print(f"\n❌ EXCEPCIÓN en get_atm_strike_schwab: {e}")
         import traceback
         traceback.print_exc()
         return None
