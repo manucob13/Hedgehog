@@ -333,6 +333,48 @@ def get_current_price_schwab(client, ticker):
         return None
 
 
+def diagnose_option_chain(client, ticker):
+    """
+    Función de diagnóstico para ver qué fechas están disponibles.
+    """
+    try:
+        symbol = normalize_ticker(ticker)
+        print(f"\n{'🔬'*30}")
+        print(f"DIAGNÓSTICO DE CADENA DE OPCIONES")
+        print(f"Ticker: {ticker} → {symbol}")
+        print(f"{'🔬'*30}\n")
+        
+        response = client.get_option_chain(symbol)
+        
+        if response.status_code != 200:
+            print(f"❌ API Error: {response.status_code}")
+            return
+        
+        data = response.json()
+        
+        print(f"📊 Estructura de respuesta:")
+        print(f"   Keys: {list(data.keys())}\n")
+        
+        for map_type in ['callExpDateMap', 'putExpDateMap']:
+            exp_map = data.get(map_type, {})
+            if exp_map:
+                dates = sorted(list(exp_map.keys()))
+                print(f"\n{map_type}:")
+                print(f"   Total fechas: {len(dates)}")
+                print(f"   Primera fecha: {dates[0] if dates else 'N/A'}")
+                print(f"   Última fecha: {dates[-1] if dates else 'N/A'}")
+                print(f"\n   Primeras 20 fechas:")
+                for i, date_key in enumerate(dates[:20], 1):
+                    print(f"      {i:2d}. {date_key}")
+        
+        print(f"\n{'🔬'*30}\n")
+        
+    except Exception as e:
+        print(f"❌ Error en diagnóstico: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
     """
     Obtiene el strike ATM (at-the-money) más cercano al precio actual.
@@ -358,6 +400,10 @@ def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
         print(f"Fecha objetivo: {target_date}")
         print(f"Precio actual: {current_price}")
         print(f"{'='*60}\n")
+        
+        # NUEVO: Ejecutar diagnóstico primero
+        print("⚙️ Ejecutando diagnóstico de cadena de opciones...")
+        diagnose_option_chain(client, ticker)
         
         # Llamar con el símbolo normalizado
         print(f"📡 Llamando a get_option_chain({symbol})...")
