@@ -10,8 +10,8 @@ warnings.filterwarnings('ignore')
 
 # Configuración de página
 st.set_page_config(
-    page_title="TrendTrend Analyzer",
-    page_icon="📉",
+    page_title="ATR Trend Analyzer + Projection",
+    page_icon="📊",
     layout="wide"
 )
 
@@ -155,7 +155,7 @@ def project_trend(x, trend, periods_ahead=4, lookback_points=10, poly_degree=2):
     return x_future, y_future, confidence
 
 def project_atr_bands(trend_projection, atr_current, atr_multiplier=1.5):
-    """Proyecta las bandas hacia el futuro"""
+    """Proyecta las bandas ATR hacia el futuro"""
     upper_projection = trend_projection + (atr_current * atr_multiplier)
     lower_projection = trend_projection - (atr_current * atr_multiplier)
     return upper_projection, lower_projection
@@ -344,7 +344,7 @@ def plot_atr_analysis_with_projection(results, projection_df, metrics, ticker):
     ax1.fill_between(range(len(results)), results['Lower_Risk'], results['Upper_Risk'],
                      color='#FFB86C', alpha=0.08, label='Zona Histórica (ATR)', zorder=1)
     
-    # Zona proyectada - SIN GAP
+    # Zona proyectada ATR - SIN GAP
     proj_x_start = len(results) - 1
     proj_x = np.arange(proj_x_start, proj_x_start + len(projection_df))
     
@@ -444,7 +444,7 @@ def plot_atr_analysis_with_projection(results, projection_df, metrics, ticker):
     
     ax1.text(0.5, 1.10, f'{ticker}', transform=ax1.transAxes, 
              fontsize=28, fontweight='bold', ha='center', color='#FFFFFF')
-    ax1.text(0.5, 1.05, 'Trend Analysis + Projection (Mejorado)', transform=ax1.transAxes, 
+    ax1.text(0.5, 1.05, 'ATR Trend Analysis + Projection (Mejorado)', transform=ax1.transAxes, 
              fontsize=13, style='italic', ha='center', color='#8E93A1')
     
     ax1.set_ylabel('Precio ($)', fontsize=14, fontweight='bold', color='#FFFFFF')
@@ -538,4 +538,383 @@ def plot_atr_analysis_with_projection(results, projection_df, metrics, ticker):
         mask = results['State'] == state_map[regime_name]
         if mask.sum() > 0:
             color = colors_map[state_map[regime_name]]
-            regime_num = regime_order.index
+            regime_num = regime_order.index(regime_name)
+            ax4.scatter(results[mask].index, [regime_num] * mask.sum(), 
+                       c=color, alpha=0.95, s=110, edgecolors='white', 
+                       linewidth=1.8, zorder=4)
+    
+    ax4.set_ylabel('Estado', fontsize=12, fontweight='bold', color='#FFFFFF')
+    ax4.set_yticks(range(4))
+    ax4.set_yticklabels(regime_order, fontsize=11, fontweight='bold', color='#E0E0E0')
+    ax4.set_xlabel('Periodo', fontsize=12, fontweight='bold', color='#FFFFFF')
+    ax4.grid(True, alpha=0.08, linestyle='-', linewidth=1, color='#FFFFFF', axis='x')
+    ax4.tick_params(labelsize=9, colors='#B0B0B0')
+    for spine in ax4.spines.values():
+        spine.set_color('#2D3142')
+        spine.set_linewidth(2)
+    
+    plt.tight_layout()
+    return fig
+
+# ============= INTERFAZ STREAMLIT =============
+def main_app():
+    """Aplicación principal"""
+    st.markdown("""
+    <style>
+    .main { background-color: #0E1117; }
+    .stMetric { 
+        background: linear-gradient(135deg, #1A1D29 0%, #2D3142 100%);
+        padding: 20px;
+        border-radius: 12px;
+        border: 2px solid #4ECDC4;
+        box-shadow: 0 4px 15px rgba(78, 205, 196, 0.2);
+    }
+    .stMetric label { 
+        color: #00D9FF !important; 
+        font-weight: 700 !important; 
+        font-size: 14px !important; 
+    }
+    .stMetric [data-testid="stMetricValue"] { 
+        color: #FFFFFF !important; 
+        font-size: 24px !important; 
+        font-weight: 800 !important; 
+    }
+    .stMetric [data-testid="stMetricDelta"] {
+        color: #4ECDC4 !important;
+        font-size: 16px !important;
+        font-weight: 600 !important;
+    }
+    .projection-box {
+        background: linear-gradient(135deg, #FF6B6B 0%, #FFB86C 100%);
+        padding: 20px;
+        border-radius: 12px;
+        border: 3px solid #FFD700;
+        box-shadow: 0 4px 20px rgba(255, 215, 0, 0.4);
+        color: white;
+        text-align: center;
+    }
+    .stButton>button {
+        background: linear-gradient(135deg, #4ECDC4 0%, #00D9FF 100%);
+        color: white;
+        font-weight: 700;
+        border: none;
+        padding: 12px 24px;
+        border-radius: 10px;
+        box-shadow: 0 4px 15px rgba(78, 205, 196, 0.4);
+        transition: all 0.3s ease;
+    }
+    .stButton>button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(78, 205, 196, 0.6);
+    }
+    h1, h2, h3 { color: #FFFFFF !important; font-weight: 800 !important; }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    st.title("📊 ATR Trend Analyzer Pro + Proyección (Mejorado)")
+    st.markdown("✨ **Mejoras**: Estados BAJISTA visibles + Proyección sin gap")
+    st.markdown("---")
+    
+    with st.sidebar:
+        st.markdown("""
+        <div style='text-align: center; padding: 20px; 
+                    background: linear-gradient(135deg, #4ECDC4 0%, #00D9FF 100%); 
+                    border-radius: 15px; margin-bottom: 20px;'>
+            <h2 style='color: white; margin: 0;'>⚙️ Configuración</h2>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        ticker = st.text_input("Ticker Symbol", value="AAPL", 
+                              help="Símbolo del activo").upper()
+        
+        st.markdown("---")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            period = st.selectbox("Periodo", 
+                                 ["1y", "2y", "5y", "10y"],
+                                 index=1)
+        with col2:
+            interval = st.selectbox("Intervalo",
+                                   ["1d", "1wk", "1mo"],
+                                   index=1)
+        
+        st.markdown("---")
+        
+        st.subheader("Parámetros ATR")
+        atr_period = st.slider("Periodo ATR", 7, 28, 14, 1)
+        atr_multiplier = st.slider("Multiplicador ATR", 0.5, 3.0, 1.5, 0.1)
+        
+        st.markdown("---")
+        
+        st.subheader("🔮 Proyección")
+        projection_periods = st.slider("Períodos a Proyectar", 1, 12, 4, 1)
+        projection_lookback = st.slider("Puntos de Inercia", 5, 20, 10, 1)
+        projection_degree = st.selectbox("Tipo",
+                                        options=[1, 2, 3],
+                                        format_func=lambda x: {1: "Lineal", 2: "Cuadrática", 3: "Cúbica"}[x],
+                                        index=1)
+        
+        st.markdown("---")
+        
+        st.subheader("Algoritmos")
+        use_adaptive = st.checkbox("Bandwidth Adaptativo", value=True)
+        use_dynamic = st.checkbox("Umbral Dinámico", value=True)
+        
+        st.markdown("---")
+        
+        analyze_btn = st.button("🚀 ANALIZAR + PROYECTAR", type="primary", 
+                               use_container_width=True)
+        
+        st.markdown("---")
+        
+        with st.expander("ℹ️ Metodología"):
+            st.markdown("""
+            **Estados (MEJORADO):**
+            - 🟢 ALCISTA: Pendiente >umbral
+            - 🔴 BAJISTA: Pendiente <-umbral
+            - ⚫ LATERAL: Sin dirección
+            - 🟠 RIESGO: Precio fuera ATR
+            
+            **Mejoras v2:**
+            - Umbral más sensible (25th percentile)
+            - Mejor detección de bajistas
+            - Proyección sin gap visual
+            - Filtrado de estados mejorado
+            """)
+    
+    if analyze_btn:
+        with st.spinner(f"Analizando {ticker}..."):
+            result = download_and_process_data(
+                ticker, period, interval,
+                atr_period, atr_multiplier,
+                use_adaptive, use_dynamic,
+                projection_periods, projection_lookback,
+                projection_degree
+            )
+            
+            if result[1]:
+                st.error(f"❌ {result[1]}")
+                return
+            
+            results, projection_df, metrics = result[0]
+            
+            if results is None:
+                st.error("❌ No se pudieron obtener datos")
+                return
+            
+            st.session_state['results'] = results
+            st.session_state['projection_df'] = projection_df
+            st.session_state['metrics'] = metrics
+            st.session_state['ticker'] = ticker
+            st.success(f"✅ {len(results)} periodos + {len(projection_df)} proyectados")
+    
+    if 'results' in st.session_state:
+        results = st.session_state['results']
+        projection_df = st.session_state['projection_df']
+        metrics = st.session_state['metrics']
+        ticker = st.session_state['ticker']
+        
+        st.markdown("---")
+        st.markdown("### 📈 Estado Actual")
+        
+        current = results.iloc[-1]
+        prev = results.iloc[-2] if len(results) > 1 else current
+        
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        with col1:
+            state_emoji = {'ALCISTA': '🟢', 'BAJISTA': '🔴', 
+                          'LATERAL': '⚫', 'RIESGO': '🟠'}
+            st.metric("ESTADO", 
+                     f"{state_emoji[current['State_Name']]} {current['State_Name']}")
+        
+        with col2:
+            price_change = ((current['Close'] - prev['Close']) / prev['Close'] * 100)
+            st.metric("PRECIO", f"${current['Close']:.2f}", 
+                     f"{price_change:+.2f}%")
+        
+        with col3:
+            st.metric("ATR", f"${current['ATR']:.2f}")
+        
+        with col4:
+            trend_pos = ((current['Close'] - current['Lower_Risk']) / 
+                        (current['Upper_Risk'] - current['Lower_Risk']) * 100)
+            st.metric("Pos. ATR", f"{trend_pos:.0f}%")
+        
+        with col5:
+            distance = ((current['Close'] - current['Trend']) / current['Trend'] * 100)
+            st.metric("Vs Tend.", f"{distance:+.2f}%")
+        
+        st.markdown("---")
+        st.markdown("### 🔮 Proyección")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            proj_target = projection_df['Trend_Projection'].iloc[-1]
+            st.markdown(f"""
+            <div class='projection-box'>
+                <div style='font-size: 14px; font-weight: bold; color: #FFD700;'>
+                    TARGET
+                </div>
+                <div style='font-size: 28px; font-weight: bold; margin-top: 10px;'>
+                    ${proj_target:.2f}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            proj_change = metrics['projection_change_pct']
+            color = '#4ECDC4' if proj_change > 0 else '#FF6B6B'
+            arrow = '↗' if proj_change > 0 else '↘'
+            st.markdown(f"""
+            <div class='projection-box'>
+                <div style='font-size: 14px; font-weight: bold; color: #FFD700;'>
+                    CAMBIO
+                </div>
+                <div style='font-size: 28px; font-weight: bold; margin-top: 10px; color: {color};'>
+                    {arrow} {proj_change:+.1f}%
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col3:
+            conf = metrics['projection_confidence']
+            conf_color = '#4ECDC4' if conf > 0.7 else '#FFB86C' if conf > 0.4 else '#FF6B6B'
+            conf_label = 'Alta' if conf > 0.7 else 'Media' if conf > 0.4 else 'Baja'
+            st.markdown(f"""
+            <div class='projection-box'>
+                <div style='font-size: 14px; font-weight: bold; color: #FFD700;'>
+                    CONFIANZA
+                </div>
+                <div style='font-size: 28px; font-weight: bold; margin-top: 10px; color: {conf_color};'>
+                    {conf*100:.0f}%
+                </div>
+                <div style='font-size: 14px; margin-top: 5px;'>
+                    {conf_label}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col4:
+            date_target = projection_df['Date'].iloc[-1].strftime('%Y-%m-%d')
+            st.markdown(f"""
+            <div class='projection-box'>
+                <div style='font-size: 14px; font-weight: bold; color: #FFD700;'>
+                    FECHA
+                </div>
+                <div style='font-size: 20px; font-weight: bold; margin-top: 10px;'>
+                    {date_target}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown("---")
+        st.markdown("### 📊 Análisis Completo")
+        
+        fig = plot_atr_analysis_with_projection(results, projection_df, metrics, ticker)
+        st.pyplot(fig)
+        
+        st.markdown("---")
+        st.markdown("### 📉 Estadísticas")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("**Distribución Estados:**")
+            state_counts = results['State_Name'].value_counts()
+            for state in ['ALCISTA', 'BAJISTA', 'LATERAL', 'RIESGO']:
+                count = state_counts.get(state, 0)
+                pct = (count / len(results) * 100) if len(results) > 0 else 0
+                emoji = {'ALCISTA': '🟢', 'BAJISTA': '🔴', 'LATERAL': '⚫', 'RIESGO': '🟠'}
+                st.write(f"{emoji[state]} {state}: {count} ({pct:.1f}%)")
+        
+        with col2:
+            st.markdown("**Precio:**")
+            st.write(f"- Máximo: ${results['Close'].max():.2f}")
+            st.write(f"- Mínimo: ${results['Close'].min():.2f}")
+            st.write(f"- Promedio: ${results['Close'].mean():.2f}")
+            st.write(f"- Volatilidad: {results['Close'].std():.2f}")
+        
+        with col3:
+            st.markdown("**ATR:**")
+            st.write(f"- Promedio: ${results['ATR'].mean():.2f}")
+            st.write(f"- Máximo: ${results['ATR'].max():.2f}")
+            st.write(f"- Actual: ${current['ATR']:.2f}")
+        
+        st.markdown("---")
+        st.markdown("### 🤖 Interpretación")
+        
+        interpretation = f"""
+        **Análisis de {ticker}:**
+        
+        - **Estado Actual**: {current['State_Name']}
+        - **Precio**: ${current['Close']:.2f} ({distance:+.1f}% vs tendencia)
+        - **Proyección**: ${proj_target:.2f} ({proj_change:+.1f}%)
+        - **Confianza**: {conf_label} ({conf*100:.0f}%)
+        - **MACD-V**: {current['MACD_V']:.1f}
+        """
+        
+        if proj_change > 5:
+            interpretation += "\n- ⚠️ Proyección alcista significativa (>5%)"
+        elif proj_change < -5:
+            interpretation += "\n- ⚠️ Proyección bajista significativa (<-5%)"
+        
+        if conf < 0.5:
+            interpretation += "\n- ⚠️ Baja confianza, mercado volátil"
+        
+        if current['State_Name'] == 'RIESGO':
+            interpretation += "\n- 🚨 Precio sobreextendido, posible reversión"
+        
+        st.info(interpretation)
+        
+        st.markdown("---")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            csv_hist = results.to_csv(index=False)
+            st.download_button(
+                "📥 Datos Históricos (CSV)",
+                data=csv_hist,
+                file_name=f"atr_hist_{ticker}_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        with col2:
+            csv_proj = projection_df.to_csv(index=False)
+            st.download_button(
+                "🔮 Proyección (CSV)",
+                data=csv_proj,
+                file_name=f"atr_proj_{ticker}_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+    
+    else:
+        st.markdown("""
+        <div style='text-align: center; padding: 60px 20px;
+                    background: linear-gradient(135deg, #1A1D29 0%, #2D3142 100%);
+                    border-radius: 20px; border: 3px solid #4ECDC4;
+                    box-shadow: 0 8px 30px rgba(78, 205, 196, 0.3);
+                    margin-top: 40px;'>
+            <h2 style='color: #4ECDC4; margin: 0;'>
+                👋 ATR Trend Analyzer Pro + Proyección
+            </h2>
+            <p style='color: #B0B0B0; font-size: 18px; margin: 20px 0;'>
+                Versión Mejorada v2.0
+            </p>
+            <p style='color: #8E93A1; font-size: 14px;'>
+                ✨ Estados BAJISTA visibles<br>
+                ✨ Proyección sin gap<br>
+                ✨ Detección mejorada
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+if __name__ == "__main__":
+    if check_password():
+        main_app()
+    else:
+        st.stop()
