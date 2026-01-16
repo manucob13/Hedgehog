@@ -9,7 +9,7 @@ from utils.utils import check_password
 from utils.utils_schwab import connect_to_schwab, get_current_price_schwab, get_atm_strike_schwab
 import io
 
-st.set_page_config(page_title="TE Calculos", layout="wide")
+st.set_page_config(page_title="🦔 TE Calculos", layout="wide")
 
 
 # ==============================================================================
