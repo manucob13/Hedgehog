@@ -154,7 +154,7 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
 def main_comparison():
     
     # --- TÍTULO PRINCIPAL CON ICONO Y TAMAÑO MODIFICADO (Erizo) ---
-    st.markdown("<h1><span style='font-size: 1.5em;'>🦔</span> 1. HEDGEHOG v 1.1 Modelos de Volatilidad - Markov-Switching K=2-3 - NR/WR</h1>", unsafe_allow_html=True)
+    st.markdown("<h1><span style='font-size: 1.5em;'>🦔</span> HEDGEHOG v 1.1 Modelos de Volatilidad - Markov-Switching K=2-3 - NR/WR</h1>", unsafe_allow_html=True)
     st.markdown("""
     Esta herramienta ejecuta y compara dos modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
     del S&P 500 y añade la señal de compresión **NR/WR (Narrow Range after Wide Range)** como indicador auxiliar.
@@ -167,8 +167,8 @@ def main_comparison():
     if st.button("🔄 Forzar Actualización (Limpiar Caché de Datos)"):
         st.cache_data.clear()
         for key in list(st.session_state.keys()):
-            # Excluir las variables de entrada del punto 5 y la configuración
-            if key not in ('config_df', 'dte_front_days', 'dte_back_days', 'password_correct'): 
+            # Excluir las variables de entrada y la configuración
+            if key not in ('config_df', 'password_correct'): 
                 del st.session_state[key]
         st.rerun()
     
@@ -270,7 +270,7 @@ def main_comparison():
     # --------------------------------------------------------------------------
     
     # ----------------------------------------------------------------------
-    # 4 LÓGICA HEDGEHOG Y SEMÁFORO GLOBAL 🚥 (UNIFICADO)
+    # 1.4 LÓGICA HEDGEHOG Y SEMÁFORO GLOBAL 🚥 (UNIFICADO)
     # ----------------------------------------------------------------------
     st.header("1.4 Lógica HEDGEHOG y Semáforo Global 🚥")
 
@@ -329,9 +329,13 @@ def main_comparison():
     
     st.session_state['config_df'] = edited_df 
     
+    # --- 4. CÁLCULO AUTOMÁTICO INICIAL DEL SEMÁFORO ---
+    # Si no existe el semáforo calculado, lo calculamos automáticamente
+    if 'df_semaforo_body' not in st.session_state:
+        calcular_y_mostrar_semaforo(st.session_state['config_df'], metricas_actuales, rv5d_ayer)
     
     # --------------------------------------------------------------------------
-    # --- C. BOTÓN DE CÁLCULO Y TABLA CONSOLIDADA ---
+    # --- 5. BOTÓN DE RECÁLCULO Y TABLA CONSOLIDADA ---
     # --------------------------------------------------------------------------
     
     st.markdown("---")
@@ -342,111 +346,53 @@ def main_comparison():
     
     st.markdown("### Tabla Consolidada de Lógica y Resultado 🚦")
     
-    # Mostrar la tabla consolidada solo si ya se ha calculado
-    if 'df_semaforo_body' in st.session_state:
-        df_body = st.session_state['df_semaforo_body']
-        df_footer = st.session_state['df_semaforo_footer']
-        senal_color = st.session_state['senal_color']
+    # Mostrar la tabla consolidada (ahora siempre estará disponible)
+    df_body = st.session_state['df_semaforo_body']
+    df_footer = st.session_state['df_semaforo_footer']
+    senal_color = st.session_state['senal_color']
+    
+    # 1. Función para dar formato de color del Cuerpo (Body)
+    def color_cumple_body(row):
+        styles = pd.Series('', index=row.index)
         
-        # 1. Función para dar formato de color del Cuerpo (Body)
-        def color_cumple_body(row):
-            styles = pd.Series('', index=row.index)
-            
-            # Aplica color si la regla fue calculada (SÍ o NO)
-            if row['Cumple'] == 'SÍ':
-                styles['Cumple'] = 'background-color: #008000; color: white'
-            elif row['Cumple'] == 'NO':
-                styles['Cumple'] = 'background-color: #8B0000; color: white'
-            
-            return styles
-
-        # 2. Estilizar y MOSTRAR el Cuerpo de la tabla
-        styled_df_body = df_body.style.apply(color_cumple_body, axis=1)
-
-        styled_df_body = styled_df_body.set_properties(**{'text-align': 'center'}, 
-                                     subset=['Operador', 'Umbral', 'Valor Actual', 'Cumple'])
+        # Aplica color si la regla fue calculada (SÍ o NO)
+        if row['Cumple'] == 'SÍ':
+            styles['Cumple'] = 'background-color: #008000; color: white'
+        elif row['Cumple'] == 'NO':
+            styles['Cumple'] = 'background-color: #8B0000; color: white'
         
-        st.dataframe(
-            styled_df_body,
-            hide_index=True,
-            use_container_width=True,
-            column_order=('Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'), 
-            column_config={'ID': st.column_config.Column(disabled=True, width="tiny")} 
-        )
+        return styles
 
-        # 3. AÑADIR ESPACIO Y MOSTRAR EL PIE (FOOTER) como barra de color SIN ENCABEZADOS
-        st.markdown("<br>", unsafe_allow_html=True) 
+    # 2. Estilizar y MOSTRAR el Cuerpo de la tabla
+    styled_df_body = df_body.style.apply(color_cumple_body, axis=1)
 
-        footer_text = df_footer.iloc[0]['Regla'] # "🚥 SEMÁFORO GLOBAL HEDGEHOG 🚥"
-        
-        # Usamos markdown para crear una barra de color sólida y limpia
-        st.markdown(
-            f"<div style='text-align: center; font-size: 1.2em; padding: 10px; border-radius: 5px; {senal_color}'>"
-            f"**{footer_text}**" 
-            f"</div>",
-            unsafe_allow_html=True
-        )
+    styled_df_body = styled_df_body.set_properties(**{'text-align': 'center'}, 
+                                 subset=['Operador', 'Umbral', 'Valor Actual', 'Cumple'])
+    
+    st.dataframe(
+        styled_df_body,
+        hide_index=True,
+        use_container_width=True,
+        column_order=('Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'), 
+        column_config={'ID': st.column_config.Column(disabled=True, width="tiny")} 
+    )
 
-    else:
-        st.info("Presione '🚀 Recalcular Semáforo Consolidado' para ver la lógica aplicada.")
+    # 3. AÑADIR ESPACIO Y MOSTRAR EL PIE (FOOTER) como barra de color SIN ENCABEZADOS
+    st.markdown("<br>", unsafe_allow_html=True) 
+
+    footer_text = df_footer.iloc[0]['Regla'] # "🚥 SEMÁFORO GLOBAL HEDGEHOG 🚥"
+    
+    # Usamos markdown para crear una barra de color sólida y limpia
+    st.markdown(
+        f"<div style='text-align: center; font-size: 1.2em; padding: 10px; border-radius: 5px; {senal_color}'>"
+        f"**{footer_text}**" 
+        f"</div>",
+        unsafe_allow_html=True
+    )
 
     st.markdown("---")
     # ----------------------------------------------------------------------
 
-    # ----------------------------------------------------------------------
-    # 5. DTEs
-    # ----------------------------------------------------------------------
-    st.header("1.5 DTEs (Days To Expiration)")
-    
-    # Inicializar valores de entrada en session_state con 7 y 14 por defecto
-    if 'dte_front_days' not in st.session_state:
-        st.session_state['dte_front_days'] = 7
-    if 'dte_back_days' not in st.session_state:
-        st.session_state['dte_back_days'] = 14 # Por defecto 14 días
-    
-    # Asegurar que los number_input reflejen los defaults correctos
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        dte_front_days = st.number_input(
-            "DTE Front (días)", 
-            min_value=1, 
-            max_value=365, 
-            value=st.session_state['dte_front_days'], 
-            key='dte_front_input'
-        )
-        st.session_state['dte_front_days'] = dte_front_days
-
-    with col2:
-        dte_back_days = st.number_input(
-            "DTE Back (días)", 
-            min_value=1, 
-            max_value=365, 
-            value=st.session_state['dte_back_days'], 
-            key='dte_back_input'
-        )
-        st.session_state['dte_back_days'] = dte_back_days
-        
-    # Cálculo de fechas
-    today = date.today()
-    dte_front_date = today + timedelta(days=dte_front_days)
-    dte_back_date = today + timedelta(days=dte_back_days)
-
-    # Creación de la tabla
-    dte_data = {
-        'Métrica': ['Fecha de Hoy', 'DTE FRONT', 'DTE BACK'],
-        'Valor': [
-            today.strftime('%Y-%m-%d'), 
-            dte_front_date.strftime('%Y-%m-%d'), 
-            dte_back_date.strftime('%Y-%m-%d')
-        ]
-    }
-    
-    df_dte = pd.DataFrame(dte_data)
-    
-    st.markdown("---")
-    st.dataframe(df_dte, hide_index=True, use_container_width=True)
-    st.markdown("---")
     
 # ==============================================================================
 # PUNTO DE ENTRADA PROTEGIDO
