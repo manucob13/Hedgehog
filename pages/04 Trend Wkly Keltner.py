@@ -10,8 +10,8 @@ warnings.filterwarnings('ignore')
 
 # Configuración de página
 st.set_page_config(
-    page_title="ATR Trend Analyzer + Projection",
-    page_icon="📊",
+    page_title="TrendTrend Analyzer",
+    page_icon="📉",
     layout="wide"
 )
 
@@ -155,7 +155,7 @@ def project_trend(x, trend, periods_ahead=4, lookback_points=10, poly_degree=2):
     return x_future, y_future, confidence
 
 def project_atr_bands(trend_projection, atr_current, atr_multiplier=1.5):
-    """Proyecta las bandas ATR hacia el futuro"""
+    """Proyecta las bandas hacia el futuro"""
     upper_projection = trend_projection + (atr_current * atr_multiplier)
     lower_projection = trend_projection - (atr_current * atr_multiplier)
     return upper_projection, lower_projection
@@ -172,8 +172,8 @@ def classify_trend_state(prices, trend, atr, atr_multiplier=1.5,
     else:
         trend_recalc = trend
     
-    upper_risk = trend_recalc + (atr * atr_multiplier)
-    lower_risk = trend_recalc - (atr * atr_multiplier)
+    upper_risk = trend_recalc + (* atr_multiplier)
+    lower_risk = trend_recalc - (* atr_multiplier)
     
     slopes = np.diff(trend_recalc, prepend=trend_recalc[0])
     
@@ -251,7 +251,7 @@ def download_and_process_data(ticker, period="2y", interval="1wk",
         x = np.arange(len(prices))
         
         trend = nadaraya_watson_kernel(x, prices, bandwidth=8)
-        atr = calculate_atr_improved(data, period=atr_period)
+        = calculate_atr_improved(data, period=atr_period)
         
         macd_v, macd_v_signal = calculate_macd_v(data, fast_len=12, slow_len=26, 
                                                   signal_len=9, atr_len=26)
@@ -344,7 +344,7 @@ def plot_atr_analysis_with_projection(results, projection_df, metrics, ticker):
     ax1.fill_between(range(len(results)), results['Lower_Risk'], results['Upper_Risk'],
                      color='#FFB86C', alpha=0.08, label='Zona Histórica (ATR)', zorder=1)
     
-    # Zona proyectada ATR - SIN GAP
+    # Zona proyectada - SIN GAP
     proj_x_start = len(results) - 1
     proj_x = np.arange(proj_x_start, proj_x_start + len(projection_df))
     
@@ -444,7 +444,7 @@ def plot_atr_analysis_with_projection(results, projection_df, metrics, ticker):
     
     ax1.text(0.5, 1.10, f'{ticker}', transform=ax1.transAxes, 
              fontsize=28, fontweight='bold', ha='center', color='#FFFFFF')
-    ax1.text(0.5, 1.05, 'ATR Trend Analysis + Projection (Mejorado)', transform=ax1.transAxes, 
+    ax1.text(0.5, 1.05, 'Trend Analysis + Projection (Mejorado)', transform=ax1.transAxes, 
              fontsize=13, style='italic', ha='center', color='#8E93A1')
     
     ax1.set_ylabel('Precio ($)', fontsize=14, fontweight='bold', color='#FFFFFF')
@@ -458,7 +458,7 @@ def plot_atr_analysis_with_projection(results, projection_df, metrics, ticker):
         spine.set_color('#2D3142')
         spine.set_linewidth(2)
     
-    # ============= SUBPLOT 2: ATR =============
+    # ============= SUBPLOT 2: =============
     ax2 = fig.add_subplot(gs[1], sharex=ax1)
     ax2.set_facecolor('#1A1D29')
     
@@ -611,7 +611,7 @@ def main_app():
     </style>
     """, unsafe_allow_html=True)
     
-    st.title("📊 ATR Trend Analyzer Pro + Proyección (Mejorado)")
+    st.title("📉 ATR Trend Analyzer Pro + Proyección (Mejorado)")
     st.markdown("✨ **Mejoras**: Estados BAJISTA visibles + Proyección sin gap")
     st.markdown("---")
     
