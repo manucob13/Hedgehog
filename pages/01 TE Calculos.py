@@ -87,8 +87,8 @@ if check_password():
     
     initialize_session_state_te()
     
-    st.title("📊 TE Cálculos - Calendar ATM SPX")
-    
+    st.title("🦔 TE Calculos - Calendar ATM ")
+  
     # ==============================================================================
     # SECCIÓN 1: GRÁFICOS (Código original)
     # ==============================================================================
