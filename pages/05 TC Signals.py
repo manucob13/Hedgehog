@@ -18,7 +18,7 @@ from utils.utils import (
 )
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="🦉 Triple Calendar Signals ", layout="wide")
+st.set_page_config(page_title="🦉 TC Signals ", layout="wide")
 
 # ==============================================================================
 # CONFIGURACIÓN Y VALORES POR DEFECTO PARA TRIPLE CALENDAR
@@ -145,7 +145,7 @@ def calcular_y_mostrar_semaforo_triple(df_config, metricas_actuales, rv5d_ayer):
 
 def main_triple_calendar():
     
-    st.markdown("<h1><span style='font-size: 1.5em;'>📅</span> Triple Calendar Strategy Analyzer</h1>", unsafe_allow_html=True)
+    st.markdown("<h1><span style='font-size: 1.5em;'>🦉</span> Triple Calendar Signals </h1>", unsafe_allow_html=True)
     st.markdown("""
     Esta herramienta analiza las condiciones óptimas para estrategias Triple Calendar en diferentes activos,
     utilizando modelos de Markov-Switching y señales de compresión de volatilidad.
