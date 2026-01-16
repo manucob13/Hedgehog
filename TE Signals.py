@@ -154,7 +154,7 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
 def main_comparison():
     
     # --- TÍTULO PRINCIPAL CON ICONO Y TAMAÑO MODIFICADO (Erizo) ---
-    st.markdown("<h1><span style='font-size: 1.5em;'>🦔</span> HEDGEHOG v 1.1 Modelos de Volatilidad - Markov-Switching K=2-3 - NR/WR</h1>", unsafe_allow_html=True)
+    st.markdown("<h1><span style='font-size: 1.5em;'>🦔</span> Time Edge Signals v 1.1 Modelos de Volatilidad - Markov-Switching K=2-3 - NR/WR</h1>", unsafe_allow_html=True)
     st.markdown("""
     Esta herramienta ejecuta y compara dos modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
     del S&P 500 y añade la señal de compresión **NR/WR (Narrow Range after Wide Range)** como indicador auxiliar.
