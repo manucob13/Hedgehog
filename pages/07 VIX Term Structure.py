@@ -7,7 +7,13 @@ from datetime import datetime
 from utils.utils import check_password
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="VIX Term Structure", layout="wide")
+
+# Configuración de página
+st.set_page_config(
+    page_title="VIX Term Structure",
+    page_icon="🐣",
+    layout="wide"
+)
 
 # CSS personalizado para mejorar la presentación
 st.markdown("""
@@ -191,7 +197,7 @@ def main_vix_structure():
     col_title, col_refresh = st.columns([6, 1])
     
     with col_title:
-        st.markdown('<h1 class="vix-title">VIX Futures Term Structure</h1>', unsafe_allow_html=True)
+        st.markdown('<h1 class="vix-title"> 🐣 VIX Futures Term Structure</h1>', unsafe_allow_html=True)
         st.markdown('<p class="vix-subtitle">Source: CBOE Delayed Quotes · vixcentral.com</p>', unsafe_allow_html=True)
     
     with col_refresh:
