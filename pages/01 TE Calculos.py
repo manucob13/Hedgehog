@@ -87,7 +87,10 @@ if check_password():
     
     initialize_session_state_te()
     
-    st.title("🦔 TE Calculos - Calendar ATM ")
+    st.markdown(
+    "<h1><span style='font-size: 1.5em;'>🦔</span> TE Calculos - Calendar ATM</h1>", 
+    unsafe_allow_html=True
+    )
   
     # ==============================================================================
     # SECCIÓN 1: GRÁFICOS (Código original)
