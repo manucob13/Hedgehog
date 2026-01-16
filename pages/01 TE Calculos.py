@@ -322,11 +322,11 @@ if check_password():
     # SECCIÓN 2: GENERADOR DE ESTRUCTURA - CALENDAR ATM SPX
     # ==============================================================================
     
-    st.header("2. Generador de Estructura - Calendar ATM (SPX)")
+    st.header("2. Generador de Estructura - Calendar SPX")
     
     st.markdown("""
-    Configura el **Calendar Spread** para SPX. El sistema obtendrá automáticamente el precio actual 
-    y el strike ATM desde Schwab, pero podrás modificar todos los parámetros antes de enviar la orden.
+    Configura el **Calendar Spread** para SPX con control total sobre cada pata de la estrategia.
+    El sistema obtendrá automáticamente el precio actual y el strike ATM desde Schwab como sugerencia.
     """)
     
     # Ticker fijo SPX
@@ -356,13 +356,15 @@ if check_password():
     # Mostrar precio actual
     if st.session_state.current_price_te:
         st.success(f"✅ Precio actual de {ticker_spx}: **${st.session_state.current_price_te:.2f}**")
+        if st.session_state.strike_atm_te:
+            st.info(f"💡 Strike ATM Sugerido: **${st.session_state.strike_atm_te:.0f}**")
     
     # Calcular fechas por defecto (viernes en 2 y 3 semanas)
     today = date.today()
-    default_front_friday = get_next_friday(today, weeks_ahead=2)  # Viernes en 2 semanas
-    default_back_friday = get_next_friday(today, weeks_ahead=3)   # Viernes en 3 semanas
+    default_front_friday = get_next_friday(today, weeks_ahead=2)
+    default_back_friday = get_next_friday(today, weeks_ahead=3)
     
-    # Calcular strike ATM sugerido
+    # Calcular strike sugerido
     if st.session_state.strike_atm_te:
         default_strike = st.session_state.strike_atm_te
     elif st.session_state.current_price_te:
@@ -370,80 +372,17 @@ if check_password():
     else:
         default_strike = 5900.0
     
-    col1, col2 = st.columns(2)
+    st.markdown("---")
     
-    with col1:
-        st.markdown("#### 🎯 Configuración de Strike")
-        
-        if st.session_state.current_price_te and st.session_state.strike_atm_te:
-            st.info(f"""
-            💡 **Información de Mercado:**
-            - Precio Actual: **${st.session_state.current_price_te:.2f}**
-            - Strike ATM Sugerido: **${st.session_state.strike_atm_te:.0f}**
-            """)
-        
-        strike_calendar = st.number_input(
-            "Strike del Calendar Spread",
-            min_value=0.0,
-            value=float(default_strike),
-            step=5.0,
-            key='strike_calendar',
-            help="Strike para ambas patas del calendar (modifiable)"
-        )
-        
-        option_type_calendar = st.selectbox(
-            "Tipo de Opción",
-            ["PUT", "CALL"],
-            index=0,
-            key='option_type_calendar',
-            help="Tipo de opción para el calendar spread"
-        )
-        
-        # Análisis del strike seleccionado
-        if st.session_state.current_price_te:
-            diff_from_current = strike_calendar - st.session_state.current_price_te
-            diff_pct = (diff_from_current / st.session_state.current_price_te) * 100
-            
-            if option_type_calendar == "PUT":
-                if diff_from_current > 0:
-                    status = "ITM (In the Money)"
-                    color = "🔴"
-                elif diff_from_current < -10:
-                    status = "OTM (Out of the Money)"
-                    color = "🟢"
-                else:
-                    status = "ATM (At the Money)"
-                    color = "🟡"
-            else:  # CALL
-                if diff_from_current < 0:
-                    status = "ITM (In the Money)"
-                    color = "🔴"
-                elif diff_from_current > 10:
-                    status = "OTM (Out of the Money)"
-                    color = "🟢"
-                else:
-                    status = "ATM (At the Money)"
-                    color = "🟡"
-            
-            st.markdown(f"""
-            **📊 Análisis del Strike:**
-            - Strike: **${strike_calendar:.0f}**
-            - Diferencia: **{diff_from_current:+.2f}** ({diff_pct:+.2f}%)
-            - Estado: {color} **{status}**
-            """)
-        
+    # Configuración de las dos patas del Calendar
+    col_front, col_back = st.columns(2)
+    
+    with col_front:
+        st.markdown("### 📅 DTE FRONT (Primera Pata)")
         st.markdown("---")
         
-        st.markdown("#### 📅 Fechas de Expiración")
-        
-        st.info(f"""
-        💡 **Fechas Sugeridas:**
-        - DTE FRONT: **{default_front_friday.strftime('%Y-%m-%d')}** (Viernes en 2 semanas)
-        - DTE BACK: **{default_back_friday.strftime('%Y-%m-%d')}** (Viernes en 3 semanas)
-        """)
-        
         dte_front_calendar = st.date_input(
-            "DTE FRONT (Venta) - Debe ser Viernes",
+            "Fecha de Expiración FRONT",
             value=default_front_friday,
             min_value=date.today() + timedelta(days=1),
             max_value=date.today() + timedelta(days=365),
@@ -452,15 +391,76 @@ if check_password():
         
         # Validar que sea viernes
         if dte_front_calendar.weekday() != 4:
-            st.warning("⚠️ La fecha FRONT debe ser un viernes. Ajustando automáticamente...")
+            st.warning("⚠️ Ajustando a viernes...")
             days_to_friday = (4 - dte_front_calendar.weekday()) % 7
             if days_to_friday == 0:
                 days_to_friday = 7
             dte_front_calendar = dte_front_calendar + timedelta(days=days_to_friday)
-            st.info(f"✅ Fecha ajustada a: {dte_front_calendar.strftime('%Y-%m-%d')}")
+            st.info(f"✅ Ajustado a: {dte_front_calendar.strftime('%Y-%m-%d')}")
+        
+        st.markdown("#### 🎯 Configuración FRONT")
+        
+        strike_front = st.number_input(
+            "Strike FRONT",
+            min_value=0.0,
+            value=float(default_strike),
+            step=5.0,
+            key='strike_front',
+            help="Strike para la pata FRONT"
+        )
+        
+        option_type_front = st.selectbox(
+            "Tipo de Opción FRONT",
+            ["PUT", "CALL"],
+            index=0,
+            key='option_type_front'
+        )
+        
+        action_front = st.selectbox(
+            "Acción FRONT",
+            ["SELL", "BUY"],
+            index=0,
+            key='action_front'
+        )
+        
+        # Análisis FRONT
+        if st.session_state.current_price_te:
+            diff_front = strike_front - st.session_state.current_price_te
+            diff_pct_front = (diff_front / st.session_state.current_price_te) * 100
+            
+            if option_type_front == "PUT":
+                if diff_front > 0:
+                    status_front = "ITM"
+                    color_front = "🔴"
+                elif diff_front < -10:
+                    status_front = "OTM"
+                    color_front = "🟢"
+                else:
+                    status_front = "ATM"
+                    color_front = "🟡"
+            else:
+                if diff_front < 0:
+                    status_front = "ITM"
+                    color_front = "🔴"
+                elif diff_front > 10:
+                    status_front = "OTM"
+                    color_front = "🟢"
+                else:
+                    status_front = "ATM"
+                    color_front = "🟡"
+            
+            st.markdown(f"""
+            **📊 Análisis:**
+            - Diferencia: **{diff_front:+.2f}** ({diff_pct_front:+.2f}%)
+            - Estado: {color_front} **{status_front}**
+            """)
+    
+    with col_back:
+        st.markdown("### 📅 DTE BACK (Segunda Pata)")
+        st.markdown("---")
         
         dte_back_calendar = st.date_input(
-            "DTE BACK (Compra) - Debe ser Viernes",
+            "Fecha de Expiración BACK",
             value=default_back_friday,
             min_value=dte_front_calendar + timedelta(days=1),
             max_value=date.today() + timedelta(days=365),
@@ -469,17 +469,79 @@ if check_password():
         
         # Validar que sea viernes
         if dte_back_calendar.weekday() != 4:
-            st.warning("⚠️ La fecha BACK debe ser un viernes. Ajustando automáticamente...")
+            st.warning("⚠️ Ajustando a viernes...")
             days_to_friday = (4 - dte_back_calendar.weekday()) % 7
             if days_to_friday == 0:
                 days_to_friday = 7
             dte_back_calendar = dte_back_calendar + timedelta(days=days_to_friday)
-            st.info(f"✅ Fecha ajustada a: {dte_back_calendar.strftime('%Y-%m-%d')}")
+            st.info(f"✅ Ajustado a: {dte_back_calendar.strftime('%Y-%m-%d')}")
         
-        days_diff_calendar = (dte_back_calendar - dte_front_calendar).days
-        st.success(f"📅 Diferencia: **{days_diff_calendar} días**")
+        st.markdown("#### 🎯 Configuración BACK")
+        
+        strike_back = st.number_input(
+            "Strike BACK",
+            min_value=0.0,
+            value=float(default_strike),
+            step=5.0,
+            key='strike_back',
+            help="Strike para la pata BACK"
+        )
+        
+        option_type_back = st.selectbox(
+            "Tipo de Opción BACK",
+            ["PUT", "CALL"],
+            index=0,
+            key='option_type_back'
+        )
+        
+        action_back = st.selectbox(
+            "Acción BACK",
+            ["BUY", "SELL"],
+            index=0,
+            key='action_back'
+        )
+        
+        # Análisis BACK
+        if st.session_state.current_price_te:
+            diff_back = strike_back - st.session_state.current_price_te
+            diff_pct_back = (diff_back / st.session_state.current_price_te) * 100
+            
+            if option_type_back == "PUT":
+                if diff_back > 0:
+                    status_back = "ITM"
+                    color_back = "🔴"
+                elif diff_back < -10:
+                    status_back = "OTM"
+                    color_back = "🟢"
+                else:
+                    status_back = "ATM"
+                    color_back = "🟡"
+            else:
+                if diff_back < 0:
+                    status_back = "ITM"
+                    color_back = "🔴"
+                elif diff_back > 10:
+                    status_back = "OTM"
+                    color_back = "🟢"
+                else:
+                    status_back = "ATM"
+                    color_back = "🟡"
+            
+            st.markdown(f"""
+            **📊 Análisis:**
+            - Diferencia: **{diff_back:+.2f}** ({diff_pct_back:+.2f}%)
+            - Estado: {color_back} **{status_back}**
+            """)
     
-    with col2:
+    days_diff_calendar = (dte_back_calendar - dte_front_calendar).days
+    st.success(f"📅 Diferencia entre expiraciones: **{days_diff_calendar} días**")
+    
+    st.markdown("---")
+    
+    # Configuración general
+    col1, col2 = st.columns(2)
+    
+    with col1:
         st.markdown("#### 💰 Configuración de Orden")
         
         quantity_calendar = st.number_input(
@@ -488,7 +550,7 @@ if check_password():
             value=1,
             step=1,
             key='quantity_calendar',
-            help="Número de contratos para el calendar spread"
+            help="Número de contratos para cada pata"
         )
         
         limit_price_calendar = st.number_input(
@@ -502,12 +564,12 @@ if check_password():
         )
         
         st.info(f"""
-        💡 **Configuración de Precio:**
-        - Precio Límite: **${limit_price_calendar:.2f}**
+        💡 **Configuración:**
+        - Precio Límite Total: **${limit_price_calendar:.2f}**
         - Por contrato: **${limit_price_calendar / quantity_calendar if quantity_calendar > 0 else 0:.2f}**
         """)
-        
-        st.markdown("---")
+    
+    with col2:
         st.markdown("#### 📌 Configuración IBKR")
         
         ibkr_host_calendar = st.text_input("Host IBKR", value="127.0.0.1", key='ibkr_host_calendar')
@@ -525,20 +587,38 @@ if check_password():
         st.session_state.dte_front_te = dte_front_calendar
         st.session_state.dte_back_te = dte_back_calendar
         
-        # Crear la orden con el strike y tipo modificados
-        df_calendar = create_calendar_order(
-            strike_calendar,
-            dte_front_calendar.strftime("%Y-%m-%d"),
-            dte_back_calendar.strftime("%Y-%m-%d"),
-            quantity_calendar,
-            ticker_spx
-        )
+        # Crear las órdenes manualmente con la configuración personalizada
+        orders = []
         
-        # Modificar el tipo de opción si es CALL
-        if option_type_calendar == "CALL":
-            df_calendar['Right'] = 'C'
-            df_calendar.loc[df_calendar['Action'] == 'SELL', 'Label'] = 'CALL Front (SELL)'
-            df_calendar.loc[df_calendar['Action'] == 'BUY', 'Label'] = 'CALL Back (BUY)'
+        # Pata FRONT
+        orders.append({
+            'Action': action_front,
+            'Quantity': quantity_calendar,
+            'Symbol': ticker_spx,
+            'SecType': 'OPT',
+            'Expiry': dte_front_calendar.strftime("%Y-%m-%d"),
+            'Strike': int(strike_front),
+            'Right': 'P' if option_type_front == "PUT" else 'C',
+            'Exchange': 'SMART',
+            'Currency': 'USD',
+            'Label': f'{option_type_front} Front ({action_front})'
+        })
+        
+        # Pata BACK
+        orders.append({
+            'Action': action_back,
+            'Quantity': quantity_calendar,
+            'Symbol': ticker_spx,
+            'SecType': 'OPT',
+            'Expiry': dte_back_calendar.strftime("%Y-%m-%d"),
+            'Strike': int(strike_back),
+            'Right': 'P' if option_type_back == "PUT" else 'C',
+            'Exchange': 'SMART',
+            'Currency': 'USD',
+            'Label': f'{option_type_back} Back ({action_back})'
+        })
+        
+        df_calendar = pd.DataFrame(orders)
         
         st.session_state.df_calendar_atm = df_calendar
         st.session_state.order_preview_calendar = True
@@ -572,17 +652,18 @@ if check_password():
         
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown("**📅 Fechas de Expiración**")
-            st.write(f"- FRONT (SELL {option_type_calendar}): {dte_front_calendar.strftime('%Y-%m-%d')} ({dte_front_calendar.strftime('%A')})")
-            st.write(f"- BACK (BUY {option_type_calendar}): {dte_back_calendar.strftime('%Y-%m-%d')} ({dte_back_calendar.strftime('%A')})")
-            st.write(f"- Diferencia: {days_diff_calendar} días")
+            st.markdown("**🎯 Configuración de las Patas**")
+            st.write(f"- FRONT: {action_front} {option_type_front} @ ${strike_front:.0f}")
+            st.write(f"  Expiración: {dte_front_calendar.strftime('%Y-%m-%d')} ({dte_front_calendar.strftime('%A')})")
+            st.write(f"- BACK: {action_back} {option_type_back} @ ${strike_back:.0f}")
+            st.write(f"  Expiración: {dte_back_calendar.strftime('%Y-%m-%d')} ({dte_back_calendar.strftime('%A')})")
         
         with col2:
             st.markdown("**💰 Configuración**")
-            st.write(f"- Strike: ${strike_calendar:.0f}")
             st.write(f"- Precio Límite: ${limit_price_calendar:.2f}")
+            st.write(f"- Contratos: {quantity_calendar}")
             st.write(f"- Total Piernas: {len(df_calendar)}")
-            st.write(f"- Tipo: Calendar Spread ({option_type_calendar})")
+            st.write(f"- Spread: {days_diff_calendar} días")
         
         st.markdown("---")
         st.markdown("**📌 Configuración de Conexión IBKR**")
@@ -636,7 +717,7 @@ if check_password():
     
     st.markdown("""
     Esta sección te permite generar un **Calendar Spread individual** adicional para ajustar tu posición.
-    Vende un PUT en DTE FRONT y compra un PUT en DTE BACK con strikes personalizables.
+    Configura cada pata de forma independiente con control total sobre strikes, tipos y acciones.
     """)
     
     # Actualizar precio actual si hay conexión
@@ -650,73 +731,39 @@ if check_password():
     
     if current_price_adj > 0:
         st.success(f"✅ Precio actual de {ticker_spx}: **${current_price_adj:.2f}**")
+        if st.session_state.strike_atm_te:
+            st.info(f"💡 Strike ATM de Referencia: **${st.session_state.strike_atm_te:.0f}**")
     else:
         st.warning("⚠️ Conecta con Schwab en la Sección 2 primero para obtener el precio actual")
     
-    col1, col2 = st.columns(2)
+    # Calcular valores por defecto
+    if st.session_state.strike_atm_te:
+        default_strike_adj = st.session_state.strike_atm_te
+    else:
+        default_strike_adj = round(current_price_adj / 5) * 5 if current_price_adj > 0 else 5900
     
-    with col1:
-        st.markdown("#### 🎯 Configuración de Strike de Ajuste")
-        
-        # Mostrar strike ATM de referencia si existe
-        if st.session_state.strike_atm_te:
-            st.info(f"""
-            💡 **Strike ATM de Referencia (Sección 2):**
-            - Strike ATM: **${st.session_state.strike_atm_te:.0f}**
-            - Precio Actual: **${current_price_adj:.2f}**
-            """)
-            default_strike_adj = st.session_state.strike_atm_te
-        else:
-            default_strike_adj = round(current_price_adj / 5) * 5 if current_price_adj > 0 else 5900
-        
-        strike_adjustment = st.number_input(
-            "Strike para el Calendar de Ajuste",
-            min_value=0.0,
-            value=float(default_strike_adj),
-            step=5.0,
-            key='strike_adjustment_spx',
-            help="Strike para el PUT en ambas patas del calendar"
-        )
-        
+    # Fechas por defecto
+    if st.session_state.dte_front_te and isinstance(st.session_state.dte_front_te, date):
+        default_front_adj = st.session_state.dte_front_te
+    else:
+        default_front_adj = get_next_friday(today, weeks_ahead=2)
+    
+    if st.session_state.dte_back_te and isinstance(st.session_state.dte_back_te, date):
+        default_back_adj = st.session_state.dte_back_te
+    else:
+        default_back_adj = get_next_friday(today, weeks_ahead=3)
+    
+    st.markdown("---")
+    
+    # Configuración de las dos patas del Calendar de Ajuste
+    col_front_adj, col_back_adj = st.columns(2)
+    
+    with col_front_adj:
+        st.markdown("### 📅 DTE FRONT (Primera Pata)")
         st.markdown("---")
-        st.markdown("**📊 Análisis del Strike Seleccionado**")
-        
-        if current_price_adj > 0:
-            diff_from_current = strike_adjustment - current_price_adj
-            diff_pct = (diff_from_current / current_price_adj) * 100
-            
-            if diff_from_current > 0:
-                position_text = f"arriba del precio actual (+${abs(diff_from_current):.2f}, +{abs(diff_pct):.2f}%)"
-                recommendation = "OTM (Out of the Money)"
-            elif diff_from_current < 0:
-                position_text = f"debajo del precio actual (-${abs(diff_from_current):.2f}, -{abs(diff_pct):.2f}%)"
-                recommendation = "ITM (In the Money)"
-            else:
-                position_text = "en el precio actual (ATM)"
-                recommendation = "ATM (At the Money)"
-            
-            st.info(f"""
-            - Strike: **${strike_adjustment:.0f}**
-            - Posición: **{position_text}**
-            - Estado: **{recommendation}**
-            """)
-    
-    with col2:
-        st.markdown("#### 📅 Fechas de Expiración del Ajuste")
-        
-        # Valores por defecto desde la sección 2 si existen
-        if st.session_state.dte_front_te and isinstance(st.session_state.dte_front_te, date):
-            default_front_adj = st.session_state.dte_front_te
-        else:
-            default_front_adj = get_next_friday(today, weeks_ahead=2)
-        
-        if st.session_state.dte_back_te and isinstance(st.session_state.dte_back_te, date):
-            default_back_adj = st.session_state.dte_back_te
-        else:
-            default_back_adj = get_next_friday(today, weeks_ahead=3)
         
         dte_front_adj = st.date_input(
-            "DTE FRONT (Venta) - Debe ser Viernes",
+            "Fecha de Expiración FRONT",
             value=default_front_adj,
             min_value=date.today() + timedelta(days=1),
             max_value=date.today() + timedelta(days=365),
@@ -725,19 +772,80 @@ if check_password():
         
         # Validar que sea viernes
         if dte_front_adj.weekday() != 4:
-            st.warning("⚠️ La fecha FRONT debe ser un viernes. Ajustando automáticamente...")
+            st.warning("⚠️ Ajustando a viernes...")
             days_to_friday = (4 - dte_front_adj.weekday()) % 7
             if days_to_friday == 0:
                 days_to_friday = 7
             dte_front_adj = dte_front_adj + timedelta(days=days_to_friday)
-            st.info(f"✅ Fecha ajustada a: {dte_front_adj.strftime('%Y-%m-%d')}")
+            st.info(f"✅ Ajustado a: {dte_front_adj.strftime('%Y-%m-%d')}")
+        
+        st.markdown("#### 🎯 Configuración FRONT")
+        
+        strike_front_adj = st.number_input(
+            "Strike FRONT",
+            min_value=0.0,
+            value=float(default_strike_adj),
+            step=5.0,
+            key='strike_front_adj',
+            help="Strike para la pata FRONT del ajuste"
+        )
+        
+        option_type_front_adj = st.selectbox(
+            "Tipo de Opción FRONT",
+            ["PUT", "CALL"],
+            index=0,
+            key='option_type_front_adj'
+        )
+        
+        action_front_adj = st.selectbox(
+            "Acción FRONT",
+            ["SELL", "BUY"],
+            index=0,
+            key='action_front_adj'
+        )
+        
+        # Análisis FRONT
+        if current_price_adj > 0:
+            diff_front_adj = strike_front_adj - current_price_adj
+            diff_pct_front_adj = (diff_front_adj / current_price_adj) * 100
+            
+            if option_type_front_adj == "PUT":
+                if diff_front_adj > 0:
+                    status_front_adj = "ITM"
+                    color_front_adj = "🔴"
+                elif diff_front_adj < -10:
+                    status_front_adj = "OTM"
+                    color_front_adj = "🟢"
+                else:
+                    status_front_adj = "ATM"
+                    color_front_adj = "🟡"
+            else:
+                if diff_front_adj < 0:
+                    status_front_adj = "ITM"
+                    color_front_adj = "🔴"
+                elif diff_front_adj > 10:
+                    status_front_adj = "OTM"
+                    color_front_adj = "🟢"
+                else:
+                    status_front_adj = "ATM"
+                    color_front_adj = "🟡"
+            
+            st.markdown(f"""
+            **📊 Análisis:**
+            - Diferencia: **{diff_front_adj:+.2f}** ({diff_pct_front_adj:+.2f}%)
+            - Estado: {color_front_adj} **{status_front_adj}**
+            """)
+    
+    with col_back_adj:
+        st.markdown("### 📅 DTE BACK (Segunda Pata)")
+        st.markdown("---")
         
         min_back_date_adj = dte_front_adj + timedelta(days=1)
         if default_back_adj <= dte_front_adj:
             default_back_adj = get_next_friday(dte_front_adj, weeks_ahead=1)
         
         dte_back_adj = st.date_input(
-            "DTE BACK (Compra) - Debe ser Viernes",
+            "Fecha de Expiración BACK",
             value=default_back_adj,
             min_value=min_back_date_adj,
             max_value=date.today() + timedelta(days=365),
@@ -746,47 +854,151 @@ if check_password():
         
         # Validar que sea viernes
         if dte_back_adj.weekday() != 4:
-            st.warning("⚠️ La fecha BACK debe ser un viernes. Ajustando automáticamente...")
+            st.warning("⚠️ Ajustando a viernes...")
             days_to_friday = (4 - dte_back_adj.weekday()) % 7
             if days_to_friday == 0:
                 days_to_friday = 7
             dte_back_adj = dte_back_adj + timedelta(days=days_to_friday)
-            st.info(f"✅ Fecha ajustada a: {dte_back_adj.strftime('%Y-%m-%d')}")
+            st.info(f"✅ Ajustado a: {dte_back_adj.strftime('%Y-%m-%d')}")
         
-        days_diff_adj = (dte_back_adj - dte_front_adj).days
-        st.success(f"📅 Diferencia: **{days_diff_adj} días**")
+        st.markdown("#### 🎯 Configuración BACK")
         
-        st.markdown("---")
+        strike_back_adj = st.number_input(
+            "Strike BACK",
+            min_value=0.0,
+            value=float(default_strike_adj),
+            step=5.0,
+            key='strike_back_adj',
+            help="Strike para la pata BACK del ajuste"
+        )
+        
+        option_type_back_adj = st.selectbox(
+            "Tipo de Opción BACK",
+            ["PUT", "CALL"],
+            index=0,
+            key='option_type_back_adj'
+        )
+        
+        action_back_adj = st.selectbox(
+            "Acción BACK",
+            ["BUY", "SELL"],
+            index=0,
+            key='action_back_adj'
+        )
+        
+        # Análisis BACK
+        if current_price_adj > 0:
+            diff_back_adj = strike_back_adj - current_price_adj
+            diff_pct_back_adj = (diff_back_adj / current_price_adj) * 100
+            
+            if option_type_back_adj == "PUT":
+                if diff_back_adj > 0:
+                    status_back_adj = "ITM"
+                    color_back_adj = "🔴"
+                elif diff_back_adj < -10:
+                    status_back_adj = "OTM"
+                    color_back_adj = "🟢"
+                else:
+                    status_back_adj = "ATM"
+                    color_back_adj = "🟡"
+            else:
+                if diff_back_adj < 0:
+                    status_back_adj = "ITM"
+                    color_back_adj = "🔴"
+                elif diff_back_adj > 10:
+                    status_back_adj = "OTM"
+                    color_back_adj = "🟢"
+                else:
+                    status_back_adj = "ATM"
+                    color_back_adj = "🟡"
+            
+            st.markdown(f"""
+            **📊 Análisis:**
+            - Diferencia: **{diff_back_adj:+.2f}** ({diff_pct_back_adj:+.2f}%)
+            - Estado: {color_back_adj} **{status_back_adj}**
+            """)
+    
+    days_diff_adj = (dte_back_adj - dte_front_adj).days
+    st.success(f"📅 Diferencia entre expiraciones: **{days_diff_adj} días**")
+    
+    st.markdown("---")
+    
+    # Configuración general de ajuste
+    col1, col2 = st.columns(2)
+    
+    with col1:
         st.markdown("#### 💰 Configuración de Orden de Ajuste")
         
-        quantity_adj = st.number_input("Cantidad de Contratos", min_value=1, value=1, 
-            step=1, key='quantity_adj_spx')
-        limit_price_adj = st.number_input("Precio Límite", min_value=0.0, value=1.0, 
-            step=0.05, format="%.2f", key='limit_price_adj_spx')
+        quantity_adj = st.number_input(
+            "Cantidad de Contratos",
+            min_value=1,
+            value=1,
+            step=1,
+            key='quantity_adj_spx',
+            help="Número de contratos para cada pata del ajuste"
+        )
         
-        st.info(f"💡 Por contrato: **${limit_price_adj / quantity_adj if quantity_adj > 0 else 0:.2f}**")
+        limit_price_adj = st.number_input(
+            "Precio Límite (Total)",
+            min_value=0.0,
+            value=1.0,
+            step=0.05,
+            format="%.2f",
+            key='limit_price_adj_spx',
+            help="Precio límite total para el ajuste"
+        )
         
-        st.markdown("---")
+        st.info(f"""
+        💡 **Configuración:**
+        - Precio Límite Total: **${limit_price_adj:.2f}**
+        - Por contrato: **${limit_price_adj / quantity_adj if quantity_adj > 0 else 0:.2f}**
+        """)
+    
+    with col2:
         st.markdown("#### 📌 Configuración IBKR")
         
         ibkr_host_adj = st.text_input("Host", value="127.0.0.1", key='ibkr_host_adj_spx')
-        ibkr_port_adj = st.number_input("Puerto", min_value=1, max_value=65535, 
+        ibkr_port_adj = st.number_input("Puerto", min_value=1, max_value=65535,
             value=5000, step=1, key='ibkr_port_adj_spx')
-        ibkr_client_id_adj = st.number_input("Client ID", min_value=1, value=1, 
+        ibkr_client_id_adj = st.number_input("Client ID", min_value=1, value=1,
             step=1, key='ibkr_client_id_adj_spx')
     
     st.markdown("---")
     
     if st.button("📝 Generar Vista Previa de Ajuste", type="primary", use_container_width=True):
         
-        # Crear la orden de ajuste
-        df_adjustment = create_calendar_order(
-            strike_adjustment,
-            dte_front_adj.strftime("%Y-%m-%d"),
-            dte_back_adj.strftime("%Y-%m-%d"),
-            quantity_adj,
-            ticker_spx
-        )
+        # Crear las órdenes manualmente con la configuración personalizada
+        orders_adj = []
+        
+        # Pata FRONT
+        orders_adj.append({
+            'Action': action_front_adj,
+            'Quantity': quantity_adj,
+            'Symbol': ticker_spx,
+            'SecType': 'OPT',
+            'Expiry': dte_front_adj.strftime("%Y-%m-%d"),
+            'Strike': int(strike_front_adj),
+            'Right': 'P' if option_type_front_adj == "PUT" else 'C',
+            'Exchange': 'SMART',
+            'Currency': 'USD',
+            'Label': f'{option_type_front_adj} Front ({action_front_adj})'
+        })
+        
+        # Pata BACK
+        orders_adj.append({
+            'Action': action_back_adj,
+            'Quantity': quantity_adj,
+            'Symbol': ticker_spx,
+            'SecType': 'OPT',
+            'Expiry': dte_back_adj.strftime("%Y-%m-%d"),
+            'Strike': int(strike_back_adj),
+            'Right': 'P' if option_type_back_adj == "PUT" else 'C',
+            'Exchange': 'SMART',
+            'Currency': 'USD',
+            'Label': f'{option_type_back_adj} Back ({action_back_adj})'
+        })
+        
+        df_adjustment = pd.DataFrame(orders_adj)
         
         st.session_state.df_adjustment = df_adjustment
         st.session_state.order_preview_adjustment = True
@@ -808,14 +1020,16 @@ if check_password():
         col1, col2, col3 = st.columns(3)
         with col1:
             st.markdown("**🎯 Configuración**")
-            st.write(f"Strike: ${strike_adjustment:.0f}")
-            st.write(f"Tipo: PUT Calendar")
+            st.write(f"FRONT: {action_front_adj} {option_type_front_adj} @ ${strike_front_adj:.0f}")
+            st.write(f"BACK: {action_back_adj} {option_type_back_adj} @ ${strike_back_adj:.0f}")
             st.write(f"Cantidad: {quantity_adj}")
         
         with col2:
             st.markdown("**📅 Fechas**")
-            st.write(f"SELL: {dte_front_adj.strftime('%Y-%m-%d')} ({dte_front_adj.strftime('%A')})")
-            st.write(f"BUY: {dte_back_adj.strftime('%Y-%m-%d')} ({dte_back_adj.strftime('%A')})")
+            st.write(f"FRONT: {dte_front_adj.strftime('%Y-%m-%d')}")
+            st.write(f"       ({dte_front_adj.strftime('%A')})")
+            st.write(f"BACK: {dte_back_adj.strftime('%Y-%m-%d')}")
+            st.write(f"      ({dte_back_adj.strftime('%A')})")
             st.write(f"Spread: {days_diff_adj} días")
         
         with col3:
