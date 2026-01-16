@@ -734,34 +734,6 @@ def market_regime_page():
         
         st.markdown("---")
         
-        # Botones de descarga
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            export_cols = ['Close', 'Regime_Weekly', 'Choppiness', 'MACD_V', 'MACD_V_Signal', 
-                          'Donchian_Upper', 'Donchian_Middle', 'Donchian_Lower', 
-                          'SMA_20', 'SMA_50']
-            csv_data = df_weekly[export_cols].to_csv()
-            st.download_button(
-                "📥 Descargar Datos Completos (CSV)",
-                data=csv_data,
-                file_name=f"regime_weekly_{ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-        
-        with col2:
-            csv_recent = df_weekly_recent[export_cols].to_csv()
-            st.download_button(
-                "📥 Descargar Período Visible (CSV)",
-                data=csv_recent,
-                file_name=f"regime_weekly_{ticker}_recent_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-        
-        st.markdown("---")
-        
         # Metodología al final de la página
         st.markdown("""
         <div style='background: linear-gradient(135deg, #1A1D29 0%, #2D3142 100%); 
