@@ -611,7 +611,7 @@ def main_app():
     </style>
     """, unsafe_allow_html=True)
     
-    st.title("📊 ATR Trend Analyzer Pro + Proyección (Mejorado)")
+    st.title("📈 ATR Trend Analyzer Pro + Proyección (Mejorado)")
     st.markdown("✨ **Mejoras**: Estados BAJISTA visibles + Proyección sin gap")
     st.markdown("---")
     
