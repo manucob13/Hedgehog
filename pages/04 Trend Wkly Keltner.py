@@ -10,8 +10,8 @@ warnings.filterwarnings('ignore')
 
 # Configuración de página
 st.set_page_config(
-    page_title="ATR Trend Analyzer + Projection",
-    page_icon="📊",
+    page_title="Trend Analyzer",
+    page_icon="📈",
     layout="wide"
 )
 
