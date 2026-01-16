@@ -10,7 +10,7 @@ from utils.utils import check_password
 
 warnings.filterwarnings('ignore')
 
-st.set_page_config(page_title="Market Regime Analyzer", layout="wide")
+st.set_page_config(page_title="📈 Trend Analyzer", layout="wide")
 
 # Colores para regímenes semanales (con dos tipos de riesgo)
 REGIME_COLORS_WEEKLY = {
@@ -469,7 +469,7 @@ def market_regime_page():
     </style>
     """, unsafe_allow_html=True)
     
-    st.title("📊 Market Regime Analyzer - Dual Risk Detection")
+    st.title("📈 Trend Analyzer - Dual Risk Detection")
     st.markdown("---")
     
     with st.sidebar:
