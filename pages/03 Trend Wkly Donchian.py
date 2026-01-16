@@ -477,15 +477,11 @@ def market_regime_page():
     st.title("📈 Trend Analyzer - Dual Risk Detection")
     st.markdown("---")
     
-    with st.sidebar:
-        st.markdown("""
-        <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #4ECDC4 0%, #00D9FF 100%); 
-                    border-radius: 15px; margin-bottom: 20px;'>
-            <h2 style='color: white; margin: 0;'>⚙️ Settings</h2>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        ticker = st.text_input("Ticker Symbol", value="AAPL", help="Ingresa el símbolo del ticker").upper()
+    # Configuración en la página principal
+    col_config1, col_config2, col_config3 = st.columns([2, 2, 2])
+    
+    with col_config1:
+        ticker = st.text_input("🎯 Ticker Symbol", value="AAPL", help="Ingresa el símbolo del ticker").upper()
         
         # Validación del ticker
         if ticker:
@@ -493,38 +489,8 @@ def market_regime_page():
                 st.warning("⚠️ El ticker parece demasiado largo")
             elif not ticker.replace('.', '').replace('-', '').isalnum():
                 st.warning("⚠️ El ticker contiene caracteres inválidos")
-        
-        # Sugerencias de tickers populares
-        st.markdown("**Tickers populares:**")
-        col_t1, col_t2, col_t3 = st.columns(3)
-        with col_t1:
-            if st.button("📱 AAPL", key="aapl", use_container_width=True):
-                st.session_state['ticker_input'] = "AAPL"
-                st.rerun()
-            if st.button("🚗 TSLA", key="tsla", use_container_width=True):
-                st.session_state['ticker_input'] = "TSLA"
-                st.rerun()
-        with col_t2:
-            if st.button("💻 MSFT", key="msft", use_container_width=True):
-                st.session_state['ticker_input'] = "MSFT"
-                st.rerun()
-            if st.button("📊 SPY", key="spy", use_container_width=True):
-                st.session_state['ticker_input'] = "SPY"
-                st.rerun()
-        with col_t3:
-            if st.button("🔍 GOOGL", key="googl", use_container_width=True):
-                st.session_state['ticker_input'] = "GOOGL"
-                st.rerun()
-            if st.button("💰 QQQ", key="qqq", use_container_width=True):
-                st.session_state['ticker_input'] = "QQQ"
-                st.rerun()
-        
-        # Actualizar ticker si se seleccionó uno
-        if 'ticker_input' in st.session_state:
-            ticker = st.session_state['ticker_input']
-        
-        st.markdown("---")
-        
+    
+    with col_config2:
         lookback_months = st.slider(
             "📅 Meses a Visualizar", 
             min_value=1, 
@@ -534,76 +500,16 @@ def market_regime_page():
             help="Selecciona cuántos meses de datos históricos visualizar"
         )
         lookback_weeks = int(lookback_months * 4.33)
-        
-        st.markdown("---")
-        
+    
+    with col_config3:
         start_date = st.date_input("📆 Fecha Inicio de Datos", value=datetime(2018, 1, 1))
-        
-        st.markdown("---")
-        
+    
+    st.markdown("---")
+    
+    # Botón de análisis centrado
+    col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
+    with col_btn2:
         analizar_btn = st.button("🚀 ANALIZAR MERCADO", type="primary", use_container_width=True)
-        
-        st.markdown("---")
-        
-        st.markdown("""
-        <div style='background: linear-gradient(135deg, #1A1D29 0%, #2D3142 100%); 
-                    padding: 15px; border-radius: 12px; border: 2px solid #BD93F9;'>
-            <h3 style='color: #BD93F9; margin-top: 0;'>📖 Metodología</h3>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        st.markdown("""
-        ### 🔍 ANÁLISIS SEMANAL
-        
-        **Sistema de Doble Riesgo:**
-        
-        🔴 **RIESGO DONCHIAN**
-        - Precio > Canal Superior
-        - Precio < Canal Inferior
-        - *Breakout extremo del rango*
-        
-        🟠 **RIESGO MACD-V**
-        - MACD-V > 150 o < -150
-        - *Momentum sobreextendido*
-        
-        ---
-        
-        **Otros Regímenes:**
-        
-        🟢 **ALCISTA**
-        - MACD-V > 50
-        - Precio ≥ Donchian Middle
-        
-        🔴 **BAJISTA**
-        - MACD-V < -50
-        - Precio ≤ Donchian Middle
-        
-        🟡 **RANGO**
-        - Choppiness > 61.8
-        - -50 < MACD-V < 50
-        
-        ---
-        
-        **Indicadores:**
-        - **MACD-V**: Momentum normalizado
-        - **Choppiness**: 61.8/38.2 thresholds
-        - **Donchian**: Canal 20 períodos
-        - **SMAs**: 20 y 50 períodos
-        """)
-        
-        st.markdown("---")
-        
-        st.markdown("""
-        <div style='text-align: center; padding: 10px; background: #1A1D29; 
-                    border-radius: 10px; border: 1px solid #FF6B6B;'>
-            <p style='color: #FF6B6B; font-size: 11px; margin: 0; font-weight: bold;'>
-                ⚠️ RIESGO DONCHIAN = Precio fuera del canal
-            </p>
-            <p style='color: #FF9F40; font-size: 11px; margin: 5px 0 0 0; font-weight: bold;'>
-                ⚠️ RIESGO MACD-V = Momentum extremo
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
     
     if analizar_btn:
         with st.spinner(f"⏳ Descargando datos para {ticker}..."):
@@ -932,6 +838,86 @@ def market_regime_page():
                 mime="text/csv",
                 use_container_width=True
             )
+        
+        st.markdown("---")
+        
+        # Metodología al final de la página
+        st.markdown("""
+        <div style='background: linear-gradient(135deg, #1A1D29 0%, #2D3142 100%); 
+                    padding: 25px; border-radius: 15px; border: 2px solid #BD93F9; margin-top: 30px;'>
+            <h3 style='color: #BD93F9; margin-top: 0; text-align: center;'>📖 Metodología del Análisis</h3>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        col_met1, col_met2 = st.columns(2)
+        
+        with col_met1:
+            st.markdown("""
+            ### 🔍 Sistema de Doble Riesgo
+            
+            **🔴 RIESGO DONCHIAN**
+            - Precio > Canal Superior
+            - Precio < Canal Inferior
+            - *Breakout extremo del rango*
+            
+            **🟠 RIESGO MACD-V**
+            - MACD-V > 150 o < -150
+            - *Momentum sobreextendido*
+            
+            ---
+            
+            ### 📊 Otros Regímenes
+            
+            **🟢 ALCISTA**
+            - MACD-V > 50
+            - Precio ≥ Donchian Middle
+            
+            **🔴 BAJISTA**
+            - MACD-V < -50
+            - Precio ≤ Donchian Middle
+            
+            **🟡 RANGO**
+            - Choppiness > 61.8
+            - -50 < MACD-V < 50
+            """)
+        
+        with col_met2:
+            st.markdown("""
+            ### 🔧 Indicadores Técnicos
+            
+            **MACD-V (Momentum Normalizado)**
+            - Fast EMA: 12 períodos
+            - Slow EMA: 26 períodos
+            - Normalizado por ATR (26)
+            - Signal: EMA 9 del MACD-V
+            
+            **Choppiness Index**
+            - Período: 14
+            - Threshold Choppy: > 61.8
+            - Threshold Trending: < 38.2
+            
+            **Canal Donchian**
+            - Período: 20
+            - Upper: Máximo de 20 períodos
+            - Lower: Mínimo de 20 períodos
+            - Middle: Promedio Upper/Lower
+            
+            **Medias Móviles**
+            - SMA 20: Media corto plazo
+            - SMA 50: Media medio plazo
+            """)
+        
+        st.markdown("""
+        <div style='text-align: center; padding: 15px; background: #1A1D29; 
+                    border-radius: 10px; border: 1px solid #FF6B6B; margin-top: 20px;'>
+            <p style='color: #FF6B6B; font-size: 12px; margin: 0; font-weight: bold;'>
+                ⚠️ RIESGO DONCHIAN = Precio fuera del canal Donchian (breakout/breakdown extremo)
+            </p>
+            <p style='color: #FF9F40; font-size: 12px; margin: 5px 0 0 0; font-weight: bold;'>
+                ⚠️ RIESGO MACD-V = Momentum extremo (sobreextensión alcista o bajista)
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
     
     else:
         st.markdown("""
@@ -943,7 +929,7 @@ def market_regime_page():
                 👋 Bienvenido al Market Regime Analyzer
             </h2>
             <p style='color: #B0B0B0; font-size: 18px; margin: 20px 0;'>
-                Configura los parámetros en el panel lateral y presiona 
+                Configura los parámetros arriba y presiona 
                 <strong style='color: #00D9FF;'>🚀 ANALIZAR MERCADO</strong> 
                 para comenzar el análisis técnico semanal avanzado.
             </p>
