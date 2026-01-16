@@ -197,7 +197,10 @@ def main_vix_structure():
     col_title, col_refresh = st.columns([6, 1])
     
     with col_title:
-        st.markdown('<h1 class="vix-title"> 🐣 VIX Futures Term Structure</h1>', unsafe_allow_html=True)
+        st.markdown(
+        '<h1 class="vix-title"><span style="font-size: 1.5em;">🐣</span> VIX Futures Term Structure</h1>', 
+        unsafe_allow_html=True
+        )
         st.markdown('<p class="vix-subtitle">Source: CBOE Delayed Quotes · vixcentral.com</p>', unsafe_allow_html=True)
     
     with col_refresh:
