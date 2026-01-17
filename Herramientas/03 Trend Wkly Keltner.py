@@ -10,11 +10,11 @@ from utils.utils import check_password
 warnings.filterwarnings('ignore')
 
 # Configuración de página
-st.set_page_config(
-    page_title="Trend Analyzer Keltner",
-    page_icon="📈",
-    layout="wide"
-)
+#st.set_page_config(
+#    page_title="Trend Analyzer Keltner",
+#    page_icon="📈",
+#    layout="wide"
+#)
 
 # ============= FUNCIONES TÉCNICAS =============
 def nadaraya_watson_kernel(x, y, bandwidth=8):
