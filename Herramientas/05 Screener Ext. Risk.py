@@ -7,9 +7,6 @@ from datetime import datetime
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
-import os
-from utils.utils import check_password
-from utils.tickers import create_tickers_universe
 
 warnings.filterwarnings('ignore')
 
@@ -106,8 +103,9 @@ def safe_extract_value(series_or_df, index=-1):
         return None
 
 def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_period=20, 
-                   zscore_threshold=2.5, bb_threshold_upper=1.1, bb_threshold_lower=-0.1, 
-                   use_lock=True):
+                   zscore_threshold_pos=2.5, zscore_threshold_neg=-2.5,
+                   bb_threshold_upper=1.1, bb_threshold_lower=-0.1, 
+                   macdv_threshold=50, filter_sma200=False, use_lock=True):
     """Analiza un ticker buscando sobreextensión estadística"""
     try:
         if use_lock:
@@ -166,6 +164,10 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
             company_name = ticker
         
         df_copy = data.copy(deep=True)
+        
+        # Calcular SMA 200
+        sma_200 = calculate_sma(df_copy['Close'], 200)
+        
         bb_sma, bb_upper, bb_lower, bb_percent = calculate_bollinger_bands(
             df_copy, period=bb_period, std_dev=2.5
         )
@@ -182,12 +184,14 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         zscore = zscore.copy(deep=True) if zscore is not None else None
         macd_v = macd_v.copy(deep=True) if macd_v is not None else None
         macd_v_signal = macd_v_signal.copy(deep=True) if macd_v_signal is not None else None
+        sma_200 = sma_200.copy(deep=True) if sma_200 is not None else None
         
         current_price = safe_extract_value(data['Close'])
         current_zscore = safe_extract_value(zscore)
         current_bb_percent = safe_extract_value(bb_percent)
         current_macdv = safe_extract_value(macd_v) or 0.0
         current_signal = safe_extract_value(macd_v_signal) or 0.0
+        current_sma200 = safe_extract_value(sma_200)
         
         if current_price is None or current_zscore is None or current_bb_percent is None:
             return None
@@ -195,18 +199,30 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         if current_price <= 0:
             return None
         
-        zscore_check = abs(current_zscore) >= zscore_threshold
+        # Filtro SMA 200
+        if filter_sma200 and current_sma200 is not None:
+            if current_price < current_sma200:
+                return None
+        
+        # Filtro Z-Score (positivo o negativo)
+        zscore_check = (current_zscore >= zscore_threshold_pos) or (current_zscore <= zscore_threshold_neg)
         if not zscore_check:
             return None
         
+        # Filtro Bollinger Bands
         bb_check = current_bb_percent >= bb_threshold_upper or current_bb_percent <= bb_threshold_lower
         if not bb_check:
             return None
         
-        if current_zscore > zscore_threshold and current_bb_percent > bb_threshold_upper:
+        # Filtro MACD-V
+        if abs(current_macdv) < macdv_threshold:
+            return None
+        
+        # Determinar tipo de señal
+        if current_zscore >= zscore_threshold_pos and current_bb_percent >= bb_threshold_upper:
             signal_type = 'SOBRECOMPRA'
             signal_strength = min(current_zscore, 5.0)
-        elif current_zscore < -zscore_threshold and current_bb_percent < bb_threshold_lower:
+        elif current_zscore <= zscore_threshold_neg and current_bb_percent <= bb_threshold_lower:
             signal_type = 'SOBREVENTA'
             signal_strength = min(abs(current_zscore), 5.0)
         else:
@@ -224,6 +240,7 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
             'Ticker': str(ticker),
             'Company': str(company_name),
             'Price': current_price,
+            'SMA_200': current_sma200,
             'Z-Score': current_zscore,
             'BB_%B': current_bb_percent,
             'MACD_V': current_macdv,
@@ -239,6 +256,7 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
             'ZScore_Series': zscore.copy(deep=True) if zscore is not None else None,
             'MACD_V_Series': macd_v.copy(deep=True) if macd_v is not None else None,
             'Signal_Series': macd_v_signal.copy(deep=True) if macd_v_signal is not None else None,
+            'SMA_200_Series': sma_200.copy(deep=True) if sma_200 is not None else None,
             'ID': f"{ticker}_{timestamp}"
         }
     except Exception as e:
@@ -327,10 +345,10 @@ def ensure_series(data_series):
     return data_series
 
 def plot_ticker_analysis(ticker_data):
-    """Genera gráfico completo con 4 paneles"""
+    """Genera gráfico completo con 5 paneles (añadiendo SMA 200)"""
     plt.style.use('dark_background')
-    fig = plt.figure(figsize=(18, 14), facecolor='#0E1117')
-    gs = fig.add_gridspec(4, 1, height_ratios=[2.5, 1, 1, 1], hspace=0.3)
+    fig = plt.figure(figsize=(18, 16), facecolor='#0E1117')
+    gs = fig.add_gridspec(5, 1, height_ratios=[2.5, 1, 1, 1, 1], hspace=0.3)
     
     data = ticker_data['Data']
     ticker = ticker_data['Ticker']
@@ -347,13 +365,14 @@ def plot_ticker_analysis(ticker_data):
         if col in data.columns:
             data[col] = ensure_series(data[col])
     
-    # PANEL 1: PRECIO + BOLLINGER BANDS
+    # PANEL 1: PRECIO + BOLLINGER BANDS + SMA 200
     ax1 = fig.add_subplot(gs[0])
     ax1.set_facecolor('#1A1D29')
     
     bb_lower = ensure_series(ticker_data.get('BB_Lower'))
     bb_upper = ensure_series(ticker_data.get('BB_Upper'))
     bb_sma = ensure_series(ticker_data.get('BB_SMA'))
+    sma_200 = ensure_series(ticker_data.get('SMA_200_Series'))
     
     if bb_lower is not None and bb_upper is not None and len(bb_lower) > 0 and len(bb_upper) > 0:
         ax1.fill_between(data.index, bb_lower, bb_upper,
@@ -366,6 +385,11 @@ def plot_ticker_analysis(ticker_data):
         ax1.plot(data.index, bb_lower, color='#FFB86C', 
                 linewidth=2, linestyle='--', alpha=0.7, zorder=2)
     
+    # Añadir SMA 200
+    if sma_200 is not None and len(sma_200) > 0:
+        ax1.plot(data.index, sma_200, color='#00D9FF', 
+                linewidth=3, label='SMA(200)', zorder=2, alpha=0.8)
+    
     close_series = ensure_series(data['Close'])
     if close_series is not None and len(close_series) > 0:
         ax1.plot(data.index, close_series, color='#FFFFFF', linewidth=2.5, 
@@ -376,7 +400,8 @@ def plot_ticker_analysis(ticker_data):
                    color=current_color, s=200, edgecolors='white', 
                    linewidth=3, zorder=10, label='Actual')
     
-    ax1.set_title(f'{ticker} - {company_name}\n${ticker_data["Price"]:.2f} | {ticker_data["Type"]} ({ticker_data["Strength"]:.1f}σ)', 
+    sma200_text = f" | SMA200: ${ticker_data.get('SMA_200', 0):.2f}" if ticker_data.get('SMA_200') else ""
+    ax1.set_title(f'{ticker} - {company_name}\n${ticker_data["Price"]:.2f}{sma200_text} | {ticker_data["Type"]} ({ticker_data["Strength"]:.1f}σ)', 
                   fontsize=18, fontweight='bold', color='#FFFFFF', pad=15)
     ax1.set_ylabel('Precio ($)', fontsize=13, fontweight='bold', color='#FFFFFF')
     ax1.legend(loc='upper left', fontsize=10, framealpha=0.9)
@@ -478,7 +503,9 @@ def plot_ticker_analysis(ticker_data):
                     alpha=0.5, linestyle='--', zorder=3)
         
         ax3.axhline(y=150, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8)
+        ax3.axhline(y=50, color='#4ECDC4', linestyle='--', linewidth=2, alpha=0.8, label='±50')
         ax3.axhline(y=0, color='#8E93A1', linestyle='-', linewidth=1.5, alpha=0.7)
+        ax3.axhline(y=-50, color='#EE5A6F', linestyle='--', linewidth=2, alpha=0.8)
         ax3.axhline(y=-150, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8)
         
         current_macdv = ticker_data['MACD_V']
@@ -491,6 +518,7 @@ def plot_ticker_analysis(ticker_data):
                          alpha=0.95, edgecolor='white', linewidth=2))
     
     ax3.set_ylabel('MACD-V', fontsize=12, fontweight='bold', color='#FFFFFF')
+    ax3.legend(loc='upper right', fontsize=9, framealpha=0.9)
     ax3.grid(True, alpha=0.1, linestyle=':', linewidth=1)
     ax3.tick_params(labelsize=10, colors='#B0B0B0', labelbottom=False)
     
@@ -542,13 +570,38 @@ def plot_ticker_analysis(ticker_data):
                          alpha=0.95, edgecolor='white', linewidth=2))
     
     ax4.set_ylabel('Bollinger %B', fontsize=12, fontweight='bold', color='#FFFFFF')
-    ax4.set_xlabel('Fecha', fontsize=13, fontweight='bold', color='#FFFFFF')
     ax4.set_ylim([-0.5, 1.5])
     ax4.legend(loc='upper right', fontsize=9, framealpha=0.9, ncol=3)
     ax4.grid(True, alpha=0.1, linestyle=':', linewidth=1)
-    ax4.tick_params(labelsize=10, colors='#B0B0B0')
+    ax4.tick_params(labelsize=10, colors='#B0B0B0', labelbottom=False)
     
     for spine in ax4.spines.values():
+        spine.set_color('#2D3142')
+        spine.set_linewidth(1.5)
+    
+    # PANEL 5: VOLUMEN
+    ax5 = fig.add_subplot(gs[4], sharex=ax1)
+    ax5.set_facecolor('#1A1D29')
+    
+    volume = ensure_series(data['Volume'])
+    if volume is not None and len(volume) > 0:
+        colors = ['#4ECDC4' if close_series.iloc[i] >= close_series.iloc[i-1] else '#FF6B6B' 
+                  for i in range(1, len(close_series))]
+        colors.insert(0, '#95A5A6')
+        
+        ax5.bar(data.index, volume, color=colors, alpha=0.6, width=0.8)
+        
+        vol_avg = volume.rolling(window=20).mean()
+        ax5.plot(data.index, vol_avg, color='#FFB86C', linewidth=2, 
+                label='Vol Avg (20)', alpha=0.8)
+    
+    ax5.set_ylabel('Volumen', fontsize=12, fontweight='bold', color='#FFFFFF')
+    ax5.set_xlabel('Fecha', fontsize=13, fontweight='bold', color='#FFFFFF')
+    ax5.legend(loc='upper right', fontsize=9, framealpha=0.9)
+    ax5.grid(True, alpha=0.1, linestyle=':', linewidth=1)
+    ax5.tick_params(labelsize=10, colors='#B0B0B0')
+    
+    for spine in ax5.spines.values():
         spine.set_color('#2D3142')
         spine.set_linewidth(1.5)
     
@@ -574,66 +627,18 @@ def main_app():
     """, unsafe_allow_html=True)
     
     st.title("🎯 Mean Reversion Screener - Bollinger + Z-Score")
-    st.markdown("**Detecta valores sobreextendidos estadísticamente (2.5σ)**")
+    st.markdown("**Detecta valores sobreextendidos estadísticamente**")
     st.markdown("---")
     
-    # ============= PASO 1: GESTIÓN DE TICKERS =============
-    st.markdown("### 📊 PASO 1: Gestión de Tickers")
+    # ============= PASO 1: ENTRADA DE TICKERS =============
+    st.markdown("### 📊 PASO 1: Tickers a Analizar")
     
-    # Verificar si existe Tks.csv
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    csv_path = os.path.join(current_dir, "Tks.csv")
-    csv_exists = os.path.exists(csv_path)
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        if st.button("🔄 Actualizar/Descargar Tickers (Russell 1000 + ETFs + Índices)", 
-                     type="primary", use_container_width=True):
-            with st.spinner("📥 Descargando universo completo de tickers..."):
-                try:
-                    df_tickers = create_tickers_universe(output_filename=csv_path)
-                    if df_tickers is not None:
-                        st.success(f"✅ {len(df_tickers)} tickers descargados correctamente!")
-                        st.session_state['tickers_loaded'] = True
-                        st.session_state['tickers_info'] = {
-                            'total': len(df_tickers),
-                            'stocks': len(df_tickers[df_tickers['Type'] == 'Stock']),
-                            'etfs': len(df_tickers[df_tickers['Type'] == 'ETF']),
-                            'indices': len(df_tickers[df_tickers['Type'] == 'Index']),
-                            'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                        }
-                        st.rerun()
-                    else:
-                        st.error("❌ Error al descargar los tickers. Intenta nuevamente.")
-                except Exception as e:
-                    st.error(f"❌ Error: {str(e)}")
-    
-    with col2:
-        if csv_exists:
-            try:
-                df_info = pd.read_csv(csv_path)
-                if 'LastUpdate' in df_info.columns and len(df_info) > 0:
-                    last_update = df_info['LastUpdate'].iloc[0]
-                else:
-                    last_update = "Desconocida"
-                
-                st.info(f"""
-                ℹ️ **Archivo existente:**
-                - Tickers: {len(df_info):,}
-                - Última actualización: {last_update}
-                """)
-                
-                if 'Type' in df_info.columns:
-                    type_counts = df_info['Type'].value_counts()
-                    with st.expander("📋 Ver distribución por tipo"):
-                        for t, count in type_counts.items():
-                            st.write(f"• {t}: {count:,}")
-                        
-            except Exception as e:
-                st.warning(f"⚠️ Error leyendo archivo: {str(e)}")
-        else:
-            st.warning("⚠️ No existe archivo Tks.csv. Descárgalo primero.")
+    ticker_input = st.text_area(
+        "Introduce los tickers separados por comas o espacios",
+        placeholder="Ejemplo: AAPL, MSFT, GOOGL, TSLA, NVDA",
+        height=100,
+        help="Puedes pegar una lista de tickers del Russell 1000, S&P 500, o cualquier lista personalizada"
+    )
     
     st.markdown("---")
     
@@ -646,22 +651,60 @@ def main_app():
         st.markdown("**📅 Datos Históricos**")
         period = st.selectbox("Periodo", ["3mo", "6mo", "1y", "2y"], index=1)
         interval = st.selectbox("Intervalo", ["1d", "1wk"], index=0)
+        
+        st.markdown("**📊 Periodos de Cálculo**")
+        bb_period = st.number_input("Periodo Bollinger", min_value=5, max_value=50, value=20, step=1)
+        zscore_period = st.number_input("Periodo Z-Score", min_value=5, max_value=50, value=20, step=1)
     
     with col2:
-        st.markdown("**📊 Filtros Estadísticos**")
-        zscore_threshold = st.slider("Z-Score Mínimo (σ)", 2.0, 4.0, 2.5, 0.1)
+        st.markdown("**📈 Filtros Estadísticos**")
+        
+        zscore_threshold_pos = st.number_input(
+            "Z-Score Positivo (≥)", 
+            min_value=1.0, 
+            max_value=5.0, 
+            value=2.5, 
+            step=0.1,
+            help="Mínimo Z-Score positivo para SOBRECOMPRA"
+        )
+        
+        zscore_threshold_neg = st.number_input(
+            "Z-Score Negativo (≤)", 
+            min_value=-5.0, 
+            max_value=-1.0, 
+            value=-2.5, 
+            step=0.1,
+            help="Máximo Z-Score negativo para SOBREVENTA"
+        )
+        
         bb_threshold = st.slider("BB %B Threshold", 0.0, 0.5, 0.1, 0.05)
         
         bb_threshold_upper = 1.0 + bb_threshold
         bb_threshold_lower = 0.0 - bb_threshold
         
-        st.caption(f"📊 Superior: %B > {bb_threshold_upper:.2f} | Inferior: %B < {bb_threshold_lower:.2f}")
+        st.caption(f"📊 Superior: %B ≥ {bb_threshold_upper:.2f} | Inferior: %B ≤ {bb_threshold_lower:.2f}")
     
     with col3:
+        st.markdown("**🎯 Filtros Adicionales**")
+        
+        macdv_threshold = st.number_input(
+            "MACD-V Mínimo (|valor|)", 
+            min_value=0, 
+            max_value=200, 
+            value=50, 
+            step=10,
+            help="Valor absoluto mínimo de MACD-V"
+        )
+        
+        filter_sma200 = st.checkbox(
+            "Filtrar por encima SMA 200",
+            value=False,
+            help="Solo mostrar valores cuyo precio esté por encima de la SMA de 200 períodos"
+        )
+        
         st.markdown("**⚡ Rendimiento**")
         max_workers = st.slider("Threads paralelos", 3, 10, 5, 1,
                                help="Recomendado: 3-5 threads")
-        st.caption(f"Procesamiento en {max_workers} threads simultáneos")
     
     st.markdown("---")
     
@@ -671,57 +714,63 @@ def main_app():
     scan_button = st.button("🚀 INICIAR ESCANEO", type="primary", use_container_width=True)
     
     if scan_button:
-        if not csv_exists:
-            st.error("❌ No existe el archivo Tks.csv")
-            st.warning("⚠️ Por favor, ve al **PASO 1** y descarga los tickers primero.")
+        if not ticker_input.strip():
+            st.error("❌ Por favor introduce al menos un ticker")
+            st.stop()
+        
+        # Procesar los tickers del input
+        import re
+        tickers_list = re.split(r'[,\s]+', ticker_input.strip())
+        tickers_list = [t.upper().strip() for t in tickers_list if t.strip()]
+        
+        if not tickers_list:
+            st.error("❌ No se encontraron tickers válidos")
             st.stop()
         
         st.markdown("### 🔄 Escaneando tickers...")
+        st.info(f"📊 Analizando {len(tickers_list):,} tickers...")
         
-        try:
-            tickers_df = pd.read_csv(csv_path)
-            tickers_list = tickers_df['Ticker'].tolist()
-            st.info(f"📊 Analizando {len(tickers_list):,} tickers...")
+        with st.spinner("Analizando..."):
+            results = scan_tickers(
+                tickers_list, 
+                max_workers=max_workers,
+                use_lock=True,
+                period=period,
+                interval=interval,
+                bb_period=bb_period,
+                zscore_period=zscore_period,
+                zscore_threshold_pos=zscore_threshold_pos,
+                zscore_threshold_neg=zscore_threshold_neg,
+                bb_threshold_upper=bb_threshold_upper,
+                bb_threshold_lower=bb_threshold_lower,
+                macdv_threshold=macdv_threshold,
+                filter_sma200=filter_sma200
+            )
+        
+        if results:
+            st.session_state['scan_results'] = results
+            st.success(f"✅ {len(results)} tickers detectados con sobreextensión estadística")
+            st.rerun()
+        else:
+            st.warning("⚠️ No se encontraron tickers con las condiciones especificadas")
             
-            with st.spinner("Analizando..."):
-                results = scan_tickers(
-                    tickers_list, 
-                    max_workers=max_workers,
-                    use_lock=True,
-                    period=period,
-                    interval=interval,
-                    zscore_threshold=zscore_threshold,
-                    bb_threshold_upper=bb_threshold_upper,
-                    bb_threshold_lower=bb_threshold_lower
-                )
+            st.info(f"""
+            **💡 Sugerencias para encontrar más resultados:**
             
-            if results:
-                st.session_state['scan_results'] = results
-                st.success(f"✅ {len(results)} tickers detectados con sobreextensión estadística")
-                st.rerun()
-            else:
-                st.warning("⚠️ No se encontraron tickers con las condiciones especificadas")
-                
-                st.info(f"""
-                **💡 Sugerencias para encontrar más resultados:**
-                
-                1️⃣ **Relajar Z-Score:** Actual = {zscore_threshold}σ → Prueba con 2.0σ o 2.2σ
-                
-                2️⃣ **Relajar BB %B:** Actual = {bb_threshold:.2f} → Prueba con 0.05 o 0.0
-                
-                3️⃣ **Cambiar periodo:** Actual = {period} → Prueba con "3mo" o "1y"
-                
-                4️⃣ **Verificar datos:** Es posible que el mercado no tenga valores muy sobreextendidos en este momento
-                
-                📊 Recuerda: Los filtros detectan sobreextensión **estadísticamente significativa** (2.5σ = eventos raros)
-                """)
-                
-        except FileNotFoundError:
-            st.error(f"❌ Error: No se encuentra el archivo Tks.csv en {csv_path}")
-            st.stop()
-        except Exception as e:
-            st.error(f"❌ Error cargando Tks.csv: {str(e)}")
-            st.stop()
+            1️⃣ **Relajar Z-Score Positivo:** Actual = {zscore_threshold_pos}σ → Prueba con 2.0σ
+            
+            2️⃣ **Relajar Z-Score Negativo:** Actual = {zscore_threshold_neg}σ → Prueba con -2.0σ
+            
+            3️⃣ **Relajar MACD-V:** Actual = {macdv_threshold} → Prueba con 30 o 0
+            
+            4️⃣ **Desactivar filtro SMA 200:** {'Activo' if filter_sma200 else 'Inactivo'}
+            
+            5️⃣ **Relajar BB %B:** Actual = {bb_threshold:.2f} → Prueba con 0.05 o 0.0
+            
+            6️⃣ **Cambiar periodo:** Actual = {period} → Prueba con "3mo" o "1y"
+            
+            📊 Recuerda: Los filtros detectan sobreextensión **estadísticamente significativa**
+            """)
     
     st.markdown("---")
     
@@ -741,6 +790,7 @@ def main_app():
                 'BB %B': round(r['BB_%B'], 2),
                 'MACD-V': round(r['MACD_V'], 1),
                 'Precio': round(r['Price'], 2),
+                'SMA 200': round(r['SMA_200'], 2) if r.get('SMA_200') else None,
                 'Confirm': '✓' if r['MACDV_Confirm'] else ''
             }
             for r in results
@@ -777,6 +827,7 @@ def main_app():
                 "BB %B": st.column_config.NumberColumn("BB %B", format="%.2f"),
                 "MACD-V": st.column_config.NumberColumn("MACD-V", format="%.1f"),
                 "Precio": st.column_config.NumberColumn("Precio", format="$%.2f"),
+                "SMA 200": st.column_config.NumberColumn("SMA 200", format="$%.2f"),
                 "Confirm": st.column_config.TextColumn("Confirm", width="small"),
             }
         )
@@ -799,7 +850,7 @@ def main_app():
             if ticker_data:
                 st.markdown(f"### 📈 Análisis Detallado: {selected_ticker}")
                 
-                col1, col2, col3, col4 = st.columns(4)
+                col1, col2, col3, col4, col5 = st.columns(5)
                 with col1:
                     st.metric("Precio", f"${ticker_data['Price']:.2f}")
                 with col2:
@@ -809,6 +860,9 @@ def main_app():
                 with col4:
                     confirm_icon = "✅" if ticker_data['MACDV_Confirm'] else "⚪"
                     st.metric("MACD-V", f"{ticker_data['MACD_V']:.0f} {confirm_icon}")
+                with col5:
+                    if ticker_data.get('SMA_200'):
+                        st.metric("SMA 200", f"${ticker_data['SMA_200']:.2f}")
                 
                 with st.spinner(f"Generando gráfico para {selected_ticker}..."):
                     try:
@@ -833,28 +887,19 @@ def main_app():
                 Sigue los 3 pasos para comenzar
             </p>
             <p style='color: #8E93A1; font-size: 14px;'>
-                1️⃣ Descarga los tickers (Russell 1000 + ETFs + Índices)<br>
+                1️⃣ Introduce los tickers a analizar<br>
                 2️⃣ Configura los parámetros del escaneo<br>
                 3️⃣ Inicia el escaneo y revisa resultados
             </p>
             <p style='color: #8E93A1; font-size: 14px; margin-top: 20px;'>
                 ✨ Bollinger Bands (2.5σ)<br>
-                ✨ Z-Score estadístico<br>
-                ✨ MACD-V confirmación<br>
+                ✨ Z-Score estadístico configurable<br>
+                ✨ MACD-V confirmación ajustable<br>
+                ✨ Filtro SMA 200 opcional<br>
                 ✨ Alta probabilidad de reversión
             </p>
         </div>
         """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
-    if check_password():
-        main_app()
-    else:
-        st.markdown("""
-        <div style='text-align: center; padding: 60px 20px;'>
-            <h1 style='color: #FF6B6B; font-size: 48px;'>🔒 Acceso Restringido</h1>
-            <p style='color: #B0B0B0; font-size: 20px; margin-top: 20px;'>
-                Introduce tus credenciales en el menú lateral.
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
+    main_app()
