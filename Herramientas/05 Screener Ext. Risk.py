@@ -14,11 +14,11 @@ warnings.filterwarnings('ignore')
 # Lock global para sincronizar descargas de yfinance
 _yfinance_lock = Lock()
 
-st.set_page_config(
-    page_title="Mean Reversion Screener",
-    page_icon="🎯",
-    layout="wide"
-)
+#st.set_page_config(
+#    page_title="Mean Reversion Screener",
+#    page_icon="🎯",
+#    layout="wide"
+#)
 
 # ============= FUNCIONES TÉCNICAS =============
 def calculate_ema(data, period):
