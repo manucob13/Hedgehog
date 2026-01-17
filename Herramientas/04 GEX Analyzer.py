@@ -22,12 +22,12 @@ from utils.utils import check_password
 warnings.filterwarnings('ignore')
 
 # Configuración de la página
-st.set_page_config(
-    page_title="GEX Analyzer | bquantfinance",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+#st.set_page_config(
+#    page_title="GEX Analyzer | bquantfinance",
+#    page_icon="📊",
+#    layout="wide",
+#    initial_sidebar_state="expanded"
+#)
 
 # CSS personalizado para tema oscuro
 st.markdown("""
