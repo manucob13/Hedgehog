@@ -18,7 +18,7 @@ st.set_page_config(
 # 2. DEFINICIÓN DE LAS PÁGINAS (Con el espacio detectado en el log)
 # Sección TE
 te_signals = st.Page(
-    "Estrategias /TE/00 TE Signals.py", # He añadido el espacio antes de la barra
+    "Estrategias /TE/00 TE Signals.py", 
     title="Signals", 
     icon="🦔", 
     default=True
@@ -41,7 +41,7 @@ tc_calculos = st.Page(
     icon="🦉"
 )
 
-# Sección Herramientas (Esta parece que NO tiene espacio según el log)
+# Sección Herramientas
 vix_term = st.Page(
     "Herramientas/01 VIX Term Structure.py", 
     title="VIX Term Structure", 
@@ -56,36 +56,4 @@ pg = st.navigation({
 })
 
 # 4. EJECUCIÓN
-pg.run()import streamlit as st
-import os
-import sys
-
-# --- DIAGNÓSTICO DE RUTAS ---
-st.write("### 🔍 Buscando archivos en el servidor:")
-base_path = os.getcwd()
-st.write(f"Ruta actual: `{base_path}`")
-
-# Listar carpetas principales
-st.write("Carpetas en raíz:", os.listdir("."))
-
-# Verificar si la carpeta existe (Sensible a mayúsculas)
-folder = "Estrategias/TE"
-if os.path.exists(folder):
-    st.write(f"✅ Carpeta `{folder}` encontrada.")
-    st.write("Archivos dentro:", os.listdir(folder))
-else:
-    st.error(f"❌ La carpeta `{folder}` NO existe. Revisa si es 'estrategias' o si está en otra ruta.")
-
-# --- DEFINICIÓN DE PÁGINAS ---
-try:
-    te_signals = st.Page(
-        "Estrategias/TE/00 TE Signals.py", 
-        title="Signals", 
-        icon="🦔", 
-        default=True
-    )
-    
-    pg = st.navigation({"ESTRATEGIAS TE": [te_signals]})
-    pg.run()
-except Exception as e:
-    st.error(f"Error al crear la página: {e}")
+pg.run()
