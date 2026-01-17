@@ -4,19 +4,20 @@ import os
 from pathlib import Path
 
 # --- CONFIGURACIÓN DE RUTAS ---
+# Esto permite que 'from utils.utils import check_password' funcione siempre
 root_path = Path(__file__).parent.absolute()
 if str(root_path) not in sys.path:
     sys.path.append(str(root_path))
 
-# 1. CONFIGURACIÓN GLOBAL
+# 1. CONFIGURACIÓN GLOBAL DE LA PESTAÑA Y LAYOUT
 st.set_page_config(
     page_title="Hedgehog opciones",
     layout="wide",
     page_icon="🦔"
 )
 
-# 2. DEFINICIÓN DE LAS PÁGINAS (Con el espacio detectado en el log)
-# Sección TE
+# 2. DEFINICIÓN DE LAS PÁGINAS
+# --- Sección ESTRATEGIAS TE ---
 te_signals = st.Page(
     "Estrategias /TE/00 TE Signals.py", 
     title="Signals", 
@@ -29,7 +30,7 @@ te_calculos = st.Page(
     icon="🦔"
 )
 
-# Sección TC
+# --- Sección ESTRATEGIAS TC ---
 tc_signals = st.Page(
     "Estrategias /TC/00 TC Signals.py", 
     title="Signals", 
@@ -41,18 +42,50 @@ tc_calculos = st.Page(
     icon="🦉"
 )
 
-# Sección Herramientas
+# --- Sección HERRAMIENTAS ---
 vix_term = st.Page(
     "Herramientas/01 VIX Term Structure.py", 
     title="VIX Term Structure", 
     icon="🐣"
 )
+trend_donchian = st.Page(
+    "Herramientas/02 Trend Wkly Donchian.py", 
+    title="Trend Wkly Donchian", 
+    icon="📉"
+)
+trend_keltner = st.Page(
+    "Herramientas/03 Trend Wkly Keltner.py", 
+    title="Trend Wkly Keltner", 
+    icon="📉"
+)
+gex_analyzer = st.Page(
+    "Herramientas/04 GEX Analyzer.py", 
+    title="GEX Analyzer", 
+    icon="🧪"
+)
+screener_risk = st.Page(
+    "Herramientas/05 Screener Ext Risk.py", 
+    title="Screener Ext. Risk", 
+    icon="🚨"
+)
+options_ratio = st.Page(
+    "Herramientas/06 Tools Stocks Options Ratio.py", 
+    title="Tools Stocks Options Ratio", 
+    icon="⚖️"
+)
 
-# 3. NAVEGACIÓN
+# 3. CREACIÓN DE LA NAVEGACIÓN JERÁRQUICA
 pg = st.navigation({
     "ESTRATEGIAS TE": [te_signals, te_calculos],
     "ESTRATEGIAS TC": [tc_signals, tc_calculos],
-    "HERRAMIENTAS": [vix_term]
+    "HERRAMIENTAS": [
+        vix_term, 
+        gex_analyzer, 
+        trend_donchian, 
+        trend_keltner, 
+        screener_risk, 
+        options_ratio
+    ]
 })
 
 # 4. EJECUCIÓN
