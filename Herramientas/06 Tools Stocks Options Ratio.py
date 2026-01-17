@@ -13,7 +13,7 @@ from typing import Optional, Tuple
 # 0. CONFIGURACIÓN Y VARIABLES
 # =========================================================================
 
-st.set_page_config(page_title="Trend Stocks", layout="wide")
+#st.set_page_config(page_title="Trend Stocks", layout="wide")
 
 CONTRACT_SIZE = 100
 CACHE_DIR = "data"
