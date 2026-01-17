@@ -7,18 +7,14 @@ from datetime import datetime
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
+import os
 from utils.utils import check_password
+from utils.tickers import create_tickers_universe
 
 warnings.filterwarnings('ignore')
 
 # Lock global para sincronizar descargas de yfinance
 _yfinance_lock = Lock()
-
-#st.set_page_config(
-#    page_title="Mean Reversion Screener",
-#    page_icon="🎯",
-#    layout="wide"
-#)
 
 # ============= FUNCIONES TÉCNICAS =============
 def calculate_ema(data, period):
@@ -31,7 +27,6 @@ def calculate_sma(data, period):
 
 def calculate_bollinger_bands(df, period=20, std_dev=2.5):
     """Calcula Bollinger Bands y %B"""
-    # Asegurar que Close es una Serie, no DataFrame
     close = df['Close'].squeeze() if isinstance(df['Close'], pd.DataFrame) else df['Close']
     
     sma = calculate_sma(close, period)
@@ -40,15 +35,12 @@ def calculate_bollinger_bands(df, period=20, std_dev=2.5):
     upper_band = sma + (std_dev * std)
     lower_band = sma - (std_dev * std)
     
-    # %B: Posición relativa dentro de las bandas
     percent_b = (close - lower_band) / (upper_band - lower_band)
     
-    # Asegurar que todo son Series simples
     return sma.squeeze(), upper_band.squeeze(), lower_band.squeeze(), percent_b.squeeze()
 
 def calculate_zscore(df, period=20):
     """Calcula Z-Score: (Precio - Media) / Desviación Estándar"""
-    # Asegurar que Close es una Serie, no DataFrame
     close = df['Close'].squeeze() if isinstance(df['Close'], pd.DataFrame) else df['Close']
     
     sma = calculate_sma(close, period)
@@ -56,7 +48,6 @@ def calculate_zscore(df, period=20):
     
     zscore = (close - sma) / std
     
-    # Asegurar que retorna Serie simple
     return zscore.squeeze()
 
 def calculate_macd_v(df, fast_len=12, slow_len=26, signal_len=9, atr_len=26):
@@ -79,42 +70,32 @@ def calculate_macd_v(df, fast_len=12, slow_len=26, signal_len=9, atr_len=26):
         return None, None
 
 def safe_extract_value(series_or_df, index=-1):
-    """
-    Extrae un valor escalar de una Serie o DataFrame de pandas de forma segura.
-    Maneja múltiples formatos que yfinance puede devolver.
-    """
+    """Extrae un valor escalar de una Serie o DataFrame de pandas de forma segura"""
     try:
-        # Si es None, devolver None
         if series_or_df is None:
             return None
         
-        # Si ya es un escalar numpy o python, devolverlo
         if np.isscalar(series_or_df):
             return float(series_or_df) if not pd.isna(series_or_df) else None
         
-        # Si es DataFrame, obtener la primera columna
         if isinstance(series_or_df, pd.DataFrame):
             if series_or_df.empty:
                 return None
-            # Aplanar si tiene múltiples niveles de columnas
             if isinstance(series_or_df.columns, pd.MultiIndex):
                 series_or_df = series_or_df.iloc[:, 0]
             else:
                 series_or_df = series_or_df.squeeze()
         
-        # Si es Series
         if isinstance(series_or_df, pd.Series):
             if len(series_or_df) == 0:
                 return None
             value = series_or_df.iloc[index]
         else:
-            # Último intento: convertir a numpy y extraer
             arr = np.asarray(series_or_df)
             if arr.size == 0:
                 return None
             value = arr.flat[index]
         
-        # Convertir a float
         if pd.isna(value):
             return None
         
@@ -129,7 +110,6 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
                    use_lock=True):
     """Analiza un ticker buscando sobreextensión estadística"""
     try:
-        # SINCRONIZAR descarga para evitar race conditions en yfinance (si use_lock=True)
         if use_lock:
             with _yfinance_lock:
                 data = yf.download(
@@ -158,27 +138,20 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
             if not data.empty:
                 data = data.copy(deep=True)
         
-        if data.empty:
-            return None
-            
-        if len(data) < 50:
+        if data.empty or len(data) < 50:
             return None
         
-        # Limpiar columnas MultiIndex si existen
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
         
-        # Asegurar que tenemos las columnas necesarias
         required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
         if not all(col in data.columns for col in required_cols):
             return None
         
-        # Convertir todas las columnas a Series simples
         for col in required_cols:
             if isinstance(data[col], pd.DataFrame):
                 data[col] = data[col].squeeze()
         
-        # Obtener nombre de la compañía (también con lock)
         try:
             if use_lock:
                 with _yfinance_lock:
@@ -192,7 +165,6 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         except:
             company_name = ticker
         
-        # Calcular indicadores (trabajar sobre copias)
         df_copy = data.copy(deep=True)
         bb_sma, bb_upper, bb_lower, bb_percent = calculate_bollinger_bands(
             df_copy, period=bb_period, std_dev=2.5
@@ -200,11 +172,9 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         zscore = calculate_zscore(df_copy, period=zscore_period)
         macd_v, macd_v_signal = calculate_macd_v(df_copy)
         
-        # Verificar que tenemos datos válidos
         if zscore is None or len(zscore) == 0:
             return None
         
-        # Hacer copias independientes de las series antes de extraer valores
         bb_sma = bb_sma.copy(deep=True) if bb_sma is not None else None
         bb_upper = bb_upper.copy(deep=True) if bb_upper is not None else None
         bb_lower = bb_lower.copy(deep=True) if bb_lower is not None else None
@@ -213,31 +183,26 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         macd_v = macd_v.copy(deep=True) if macd_v is not None else None
         macd_v_signal = macd_v_signal.copy(deep=True) if macd_v_signal is not None else None
         
-        # Extraer valores actuales usando la función segura
         current_price = safe_extract_value(data['Close'])
         current_zscore = safe_extract_value(zscore)
         current_bb_percent = safe_extract_value(bb_percent)
         current_macdv = safe_extract_value(macd_v) or 0.0
         current_signal = safe_extract_value(macd_v_signal) or 0.0
         
-        # Validar que obtuvimos valores válidos
         if current_price is None or current_zscore is None or current_bb_percent is None:
             return None
         
         if current_price <= 0:
             return None
         
-        # FILTRO PRINCIPAL: Z-Score >= 2.5 o <= -2.5
         zscore_check = abs(current_zscore) >= zscore_threshold
         if not zscore_check:
             return None
         
-        # FILTRO SECUNDARIO: Bollinger %B fuera de bandas
         bb_check = current_bb_percent >= bb_threshold_upper or current_bb_percent <= bb_threshold_lower
         if not bb_check:
             return None
         
-        # Determinar tipo de señal
         if current_zscore > zscore_threshold and current_bb_percent > bb_threshold_upper:
             signal_type = 'SOBRECOMPRA'
             signal_strength = min(current_zscore, 5.0)
@@ -247,14 +212,12 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         else:
             return None
         
-        # Confirmación MACD-V
         macdv_confirms = False
         if signal_type == 'SOBRECOMPRA' and current_macdv > 150:
             macdv_confirms = True
         elif signal_type == 'SOBREVENTA' and current_macdv < -150:
             macdv_confirms = True
         
-        # Timestamp único para identificar este análisis específico
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         
         return {
@@ -279,7 +242,6 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
             'ID': f"{ticker}_{timestamp}"
         }
     except Exception as e:
-        # Log error con más detalle
         print(f"Error analyzing {ticker}: {type(e).__name__}: {str(e)}")
         return None
 
@@ -344,12 +306,6 @@ def scan_tickers(tickers_list, max_workers=5, use_lock=True, **kwargs):
             for error in errors[:20]:
                 st.caption(error)
     
-    if st.session_state.get('debug_mode', False) and len(filtered_out) > 0:
-        with st.expander(f"🔍 Tickers filtrados - Muestra ({min(10, len(filtered_out))} de {len(filtered_out)})"):
-            st.write("Estos tickers se descargaron correctamente pero no cumplieron los criterios:")
-            for ticker in filtered_out[:10]:
-                st.caption(f"- {ticker}")
-    
     return results
 
 def ensure_series(data_series):
@@ -357,17 +313,14 @@ def ensure_series(data_series):
     if data_series is None:
         return None
     
-    # Si es DataFrame, extraer primera columna
     if isinstance(data_series, pd.DataFrame):
         if data_series.empty:
             return None
         data_series = data_series.iloc[:, 0]
     
-    # Si es Series, asegurar que sea 1D
     if isinstance(data_series, pd.Series):
         return data_series.squeeze()
     
-    # Si es numpy array, convertir a Series
     if isinstance(data_series, np.ndarray):
         return pd.Series(data_series)
     
@@ -387,11 +340,9 @@ def plot_ticker_analysis(ticker_data):
         st.error(f"No hay datos disponibles para {ticker}")
         return None
     
-    # Limpiar MultiIndex si existe
     if isinstance(data.columns, pd.MultiIndex):
         data.columns = data.columns.get_level_values(0)
     
-    # Asegurar que todas las columnas sean Series 1D
     for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
         if col in data.columns:
             data[col] = ensure_series(data[col])
@@ -443,7 +394,6 @@ def plot_ticker_analysis(ticker_data):
     zscore = ensure_series(ticker_data.get('ZScore_Series'))
     
     if zscore is not None and len(zscore) > 0:
-        # Asegurar que el índice coincida con data.index
         if len(zscore) != len(data.index):
             zscore = zscore.iloc[:len(data.index)]
         
@@ -500,7 +450,6 @@ def plot_ticker_analysis(ticker_data):
     signal = ensure_series(ticker_data.get('Signal_Series'))
     
     if macd_v is not None and len(macd_v) > 0 and not macd_v.isna().all():
-        # Asegurar que el índice coincida con data.index
         if len(macd_v) != len(data.index):
             macd_v = macd_v.iloc[:len(data.index)]
         
@@ -523,7 +472,6 @@ def plot_ticker_analysis(ticker_data):
                         color=color, linewidth=width, alpha=0.95, zorder=5)
         
         if signal is not None and len(signal) > 0:
-            # Asegurar que el índice coincida
             if len(signal) != len(data.index):
                 signal = signal.iloc[:len(data.index)]
             ax3.plot(data.index, signal, color='#FFB86C', linewidth=1.5, 
@@ -557,7 +505,6 @@ def plot_ticker_analysis(ticker_data):
     bb_percent = ensure_series(ticker_data.get('BB_%B'))
     
     if bb_percent is not None and len(bb_percent) > 0:
-        # Asegurar que el índice coincida con data.index
         if len(bb_percent) != len(data.index):
             bb_percent = bb_percent.iloc[:len(data.index)]
         
@@ -622,6 +569,7 @@ def main_app():
         border-radius: 8px; 
     }
     h1, h2, h3 { color: #FFFFFF !important; font-weight: 800 !important; }
+    .stNumberInput > div > div > input { background-color: #1A1D29; }
     </style>
     """, unsafe_allow_html=True)
     
@@ -629,29 +577,78 @@ def main_app():
     st.markdown("**Detecta valores sobreextendidos estadísticamente (2.5σ)**")
     st.markdown("---")
     
-    with st.sidebar:
-        st.markdown("""
-        <div style='text-align: center; padding: 20px; 
-                    background: linear-gradient(135deg, #4ECDC4 0%, #00D9FF 100%); 
-                    border-radius: 15px; margin-bottom: 20px;'>
-            <h2 style='color: white; margin: 0;'>⚙️ Configuración</h2>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        if st.button("🔄 RESET", type="secondary", use_container_width=True):
-            for key in ['scan_results', 'selected_ticker']:
-                if key in st.session_state:
-                    del st.session_state[key]
-            st.rerun()
-        
-        st.markdown("---")
-        
-        period = st.selectbox("Periodo Histórico", ["3mo", "6mo", "1y", "2y"], index=1)
+    # ============= PASO 1: GESTIÓN DE TICKERS =============
+    st.markdown("### 📊 PASO 1: Gestión de Tickers")
+    
+    # Verificar si existe Tks.csv
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    csv_path = os.path.join(current_dir, "Tks.csv")
+    csv_exists = os.path.exists(csv_path)
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        if st.button("🔄 Actualizar/Descargar Tickers (Russell 1000 + ETFs + Índices)", 
+                     type="primary", use_container_width=True):
+            with st.spinner("📥 Descargando universo completo de tickers..."):
+                try:
+                    df_tickers = create_tickers_universe(output_filename=csv_path)
+                    if df_tickers is not None:
+                        st.success(f"✅ {len(df_tickers)} tickers descargados correctamente!")
+                        st.session_state['tickers_loaded'] = True
+                        st.session_state['tickers_info'] = {
+                            'total': len(df_tickers),
+                            'stocks': len(df_tickers[df_tickers['Type'] == 'Stock']),
+                            'etfs': len(df_tickers[df_tickers['Type'] == 'ETF']),
+                            'indices': len(df_tickers[df_tickers['Type'] == 'Index']),
+                            'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        }
+                        st.rerun()
+                    else:
+                        st.error("❌ Error al descargar los tickers. Intenta nuevamente.")
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
+    
+    with col2:
+        if csv_exists:
+            try:
+                df_info = pd.read_csv(csv_path)
+                if 'LastUpdate' in df_info.columns and len(df_info) > 0:
+                    last_update = df_info['LastUpdate'].iloc[0]
+                else:
+                    last_update = "Desconocida"
+                
+                st.info(f"""
+                ℹ️ **Archivo existente:**
+                - Tickers: {len(df_info):,}
+                - Última actualización: {last_update}
+                """)
+                
+                if 'Type' in df_info.columns:
+                    type_counts = df_info['Type'].value_counts()
+                    with st.expander("📋 Ver distribución por tipo"):
+                        for t, count in type_counts.items():
+                            st.write(f"• {t}: {count:,}")
+                        
+            except Exception as e:
+                st.warning(f"⚠️ Error leyendo archivo: {str(e)}")
+        else:
+            st.warning("⚠️ No existe archivo Tks.csv. Descárgalo primero.")
+    
+    st.markdown("---")
+    
+    # ============= PASO 2: CONFIGURACIÓN DEL ESCANEO =============
+    st.markdown("### ⚙️ PASO 2: Configuración del Escaneo")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("**📅 Datos Históricos**")
+        period = st.selectbox("Periodo", ["3mo", "6mo", "1y", "2y"], index=1)
         interval = st.selectbox("Intervalo", ["1d", "1wk"], index=0)
-        
-        st.markdown("---")
-        st.subheader("📊 Filtros Estadísticos")
-        
+    
+    with col2:
+        st.markdown("**📊 Filtros Estadísticos**")
         zscore_threshold = st.slider("Z-Score Mínimo (σ)", 2.0, 4.0, 2.5, 0.1)
         bb_threshold = st.slider("BB %B Threshold", 0.0, 0.5, 0.1, 0.05)
         
@@ -659,217 +656,80 @@ def main_app():
         bb_threshold_lower = 0.0 - bb_threshold
         
         st.caption(f"📊 Superior: %B > {bb_threshold_upper:.2f} | Inferior: %B < {bb_threshold_lower:.2f}")
-        
-        st.markdown("---")
-        
+    
+    with col3:
+        st.markdown("**⚡ Rendimiento**")
         max_workers = st.slider("Threads paralelos", 3, 10, 5, 1,
-                               help="Recomendado: 3-5 threads (con sincronización de descargas)")
-        
-        st.markdown("---")
-        
-        debug_mode = st.checkbox("🐛 Modo Debug", value=False, 
-                                help="Muestra información adicional para diagnóstico")
-        
-        if debug_mode:
-            disable_lock = st.checkbox("⚠️ Deshabilitar Lock (experimental)", value=False,
-                                      help="Puede causar duplicados pero es más rápido")
-            if disable_lock:
-                st.session_state['disable_lock'] = True
-            elif 'disable_lock' in st.session_state:
-                del st.session_state['disable_lock']
-        
-        if debug_mode:
-            st.session_state['debug_mode'] = True
-        elif 'debug_mode' in st.session_state:
-            del st.session_state['debug_mode']
-        
-        st.markdown("---")
-        
-        if debug_mode:
-            st.markdown("#### 🔬 Test Individual")
-            test_ticker = st.text_input("Ticker a probar:", "AAPL")
-            if st.button("🧪 Probar Ticker", use_container_width=True):
-                with st.spinner(f"Analizando {test_ticker}..."):
-                    result = analyze_ticker(
-                        test_ticker,
-                        period=period,
-                        interval=interval,
-                        zscore_threshold=zscore_threshold,
-                        bb_threshold_upper=bb_threshold_upper,
-                        bb_threshold_lower=bb_threshold_lower,
-                        use_lock=False
-                    )
-                    
-                    if result:
-                        st.success(f"✅ {test_ticker} PASA los filtros!")
-                        st.json({
-                            'Z-Score': result['Z-Score'],
-                            'BB_%B': result['BB_%B'],
-                            'MACD_V': result['MACD_V'],
-                            'Type': result['Type'],
-                            'Strength': result['Strength']
-                        })
-                    else:
-                        st.warning(f"⚠️ {test_ticker} NO pasa los filtros")
-                        st.info("Probando con filtros más relajados...")
-                        
-                        try:
-                            data = yf.download(test_ticker, period=period, interval=interval, 
-                                             progress=False, auto_adjust=True, actions=False)
-                            if not data.empty and len(data) >= 50:
-                                # Limpiar MultiIndex si existe
-                                if isinstance(data.columns, pd.MultiIndex):
-                                    data.columns = data.columns.get_level_values(0)
-                                
-                                bb_sma, bb_upper, bb_lower, bb_percent = calculate_bollinger_bands(data, period=20, std_dev=2.5)
-                                zscore = calculate_zscore(data, period=20)
-                                macd_v, _ = calculate_macd_v(data)
-                                
-                                current_zscore = safe_extract_value(zscore)
-                                current_bb = safe_extract_value(bb_percent)
-                                current_macdv = safe_extract_value(macd_v) or 0.0
-                                
-                                if current_zscore is not None and current_bb is not None:
-                                    st.info(f"""
-                                    **Valores actuales:**
-                                    - Z-Score: {current_zscore:.2f} (necesita ≥{zscore_threshold} o ≤{-zscore_threshold})
-                                    - BB %B: {current_bb:.2f} (necesita >{bb_threshold_upper} o <{bb_threshold_lower})
-                                    - MACD-V: {current_macdv:.1f}
-                                    
-                                    **¿Por qué NO pasa?**
-                                    {'❌ Z-Score insuficiente' if abs(current_zscore) < zscore_threshold else '✅ Z-Score OK'}
-                                    {'❌ BB %B dentro de bandas' if bb_threshold_lower < current_bb < bb_threshold_upper else '✅ BB %B OK'}
-                                    """)
-                                else:
-                                    st.error("No se pudieron extraer los valores correctamente")
-                            else:
-                                st.error("No se pudieron descargar suficientes datos")
-                        except Exception as e:
-                            st.error(f"Error: {str(e)}")
-        
-        st.markdown("---")
-        
-        scan_button = st.button("🚀 ESCANEAR", type="primary", use_container_width=True)
+                               help="Recomendado: 3-5 threads")
+        st.caption(f"Procesamiento en {max_workers} threads simultáneos")
+    
+    st.markdown("---")
+    
+    # ============= PASO 3: ESCANEAR =============
+    st.markdown("### 🚀 PASO 3: Escanear")
+    
+    scan_button = st.button("🚀 INICIAR ESCANEO", type="primary", use_container_width=True)
     
     if scan_button:
-        st.markdown("### 🔄 Escaneando tickers...")
-        
-        import os
-        try:
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            root_dir = os.path.dirname(current_dir)
-            csv_path = os.path.join(root_dir, "Tickers.csv")
-            tickers_df = pd.read_csv(csv_path)
-        except Exception as e:
-            st.error(f"❌ Error cargando Tickers.csv: {str(e)}")
+        if not csv_exists:
+            st.error("❌ No existe el archivo Tks.csv")
+            st.warning("⚠️ Por favor, ve al **PASO 1** y descarga los tickers primero.")
             st.stop()
         
-        tickers_list = tickers_df['Ticker'].tolist()
-        st.info(f"📊 Analizando {len(tickers_list)} tickers...")
+        st.markdown("### 🔄 Escaneando tickers...")
         
-        debug_mode = st.session_state.get('debug_mode', False)
-        disable_lock = st.session_state.get('disable_lock', False)
-        
-        if disable_lock:
-            st.warning("⚠️ Lock deshabilitado - puede haber duplicados pero será más rápido")
-        
-        with st.spinner("Analizando..."):
-            results = scan_tickers(
-                tickers_list, 
-                max_workers=max_workers,
-                use_lock=not disable_lock,
-                period=period,
-                interval=interval,
-                zscore_threshold=zscore_threshold,
-                bb_threshold_upper=bb_threshold_upper,
-                bb_threshold_lower=bb_threshold_lower
-            )
-        
-        if results:
-            st.session_state['scan_results'] = results
-            st.success(f"✅ {len(results)} tickers detectados con sobreextensión estadística")
+        try:
+            tickers_df = pd.read_csv(csv_path)
+            tickers_list = tickers_df['Ticker'].tolist()
+            st.info(f"📊 Analizando {len(tickers_list):,} tickers...")
             
-            if debug_mode:
-                with st.expander("🐛 Información de Debug"):
-                    st.write(f"**Total tickers analizados:** {len(tickers_list)}")
-                    st.write(f"**Tickers detectados:** {len(results)}")
-                    st.write(f"**Tasa de detección:** {len(results)/len(tickers_list)*100:.1f}%")
-                    
-                    ids = [r['ID'] for r in results]
-                    unique_ids = len(set(ids))
-                    st.write(f"**IDs únicos:** {unique_ids} de {len(ids)}")
-                    if unique_ids != len(ids):
-                        st.error("⚠️ ¡ADVERTENCIA! Hay IDs duplicados (problema de concurrencia)")
-                    else:
-                        st.success("✅ Todos los IDs son únicos")
-                    
-                    ticker_prices = {}
-                    for r in results:
-                        tick = r['Ticker']
-                        price = r['Price']
-                        if tick in ticker_prices:
-                            if ticker_prices[tick] == price:
-                                st.warning(f"⚠️ {tick} aparece con el mismo precio: ${price}")
-                        else:
-                            ticker_prices[tick] = price
-                    
-                    st.write("**Muestra de datos (primer resultado):**")
-                    if len(results) > 0:
-                        first = results[0]
-                        st.json({
-                            'ID': first['ID'],
-                            'Ticker': first['Ticker'],
-                            'Company': first.get('Company', 'N/A'),
-                            'Price': first['Price'],
-                            'Z-Score': first['Z-Score'],
-                            'BB_%B': first['BB_%B'],
-                            'MACD_V': first['MACD_V'],
-                            'Data_Shape': str(first['Data'].shape),
-                            'Date': str(first['Date'])
-                        })
-        else:
-            st.warning("⚠️ No se encontraron tickers con las condiciones especificadas")
+            with st.spinner("Analizando..."):
+                results = scan_tickers(
+                    tickers_list, 
+                    max_workers=max_workers,
+                    use_lock=True,
+                    period=period,
+                    interval=interval,
+                    zscore_threshold=zscore_threshold,
+                    bb_threshold_upper=bb_threshold_upper,
+                    bb_threshold_lower=bb_threshold_lower
+                )
             
-            st.info(f"""
-            **💡 Sugerencias para encontrar más resultados:**
-            
-            1️⃣ **Relajar Z-Score:** Actual = {zscore_threshold}σ → Prueba con 2.0σ o 2.2σ
-            
-            2️⃣ **Relajar BB %B:** Actual = {bb_threshold:.2f} → Prueba con 0.05 o 0.0
-            
-            3️⃣ **Cambiar periodo:** Actual = {period} → Prueba con "3mo" o "1y"
-            
-            4️⃣ **Usar modo Debug:** Activa el checkbox "🐛 Modo Debug" para probar tickers individuales
-            
-            5️⃣ **Verificar datos:** Es posible que el mercado no tenga valores muy sobreextendidos en este momento
-            
-            📊 Recuerda: Los filtros detectan sobreextensión **estadísticamente significativa** (2.5σ = eventos raros)
-            """)
-            
-            if st.button("🔄 Intentar con filtros más relajados (Z-Score 2.0σ, BB 0.05)", type="secondary"):
-                st.info("Re-ejecutando con filtros más relajados...")
-                disable_lock_relaxed = st.session_state.get('disable_lock', False)
-                with st.spinner("Analizando..."):
-                    results_relaxed = scan_tickers(
-                        tickers_list, 
-                        max_workers=max_workers,
-                        use_lock=not disable_lock_relaxed,
-                        period=period,
-                        interval=interval,
-                        zscore_threshold=2.0,
-                        bb_threshold_upper=1.05,
-                        bb_threshold_lower=-0.05
-                    )
+            if results:
+                st.session_state['scan_results'] = results
+                st.success(f"✅ {len(results)} tickers detectados con sobreextensión estadística")
+                st.rerun()
+            else:
+                st.warning("⚠️ No se encontraron tickers con las condiciones especificadas")
                 
-                if results_relaxed:
-                    st.session_state['scan_results'] = results_relaxed
-                    st.success(f"✅ {len(results_relaxed)} tickers encontrados con filtros relajados")
-                    st.rerun()
-                else:
-                    st.error("❌ Incluso con filtros relajados no se encontraron resultados")
+                st.info(f"""
+                **💡 Sugerencias para encontrar más resultados:**
+                
+                1️⃣ **Relajar Z-Score:** Actual = {zscore_threshold}σ → Prueba con 2.0σ o 2.2σ
+                
+                2️⃣ **Relajar BB %B:** Actual = {bb_threshold:.2f} → Prueba con 0.05 o 0.0
+                
+                3️⃣ **Cambiar periodo:** Actual = {period} → Prueba con "3mo" o "1y"
+                
+                4️⃣ **Verificar datos:** Es posible que el mercado no tenga valores muy sobreextendidos en este momento
+                
+                📊 Recuerda: Los filtros detectan sobreextensión **estadísticamente significativa** (2.5σ = eventos raros)
+                """)
+                
+        except FileNotFoundError:
+            st.error(f"❌ Error: No se encuentra el archivo Tks.csv en {csv_path}")
+            st.stop()
+        except Exception as e:
+            st.error(f"❌ Error cargando Tks.csv: {str(e)}")
+            st.stop()
     
+    st.markdown("---")
+    
+    # ============= PASO 4: RESULTADOS =============
     if 'scan_results' in st.session_state:
         results = st.session_state['scan_results']
+        
+        st.markdown("### 📈 PASO 4: Resultados del Escaneo")
         
         df_results = pd.DataFrame([
             {
@@ -887,16 +747,6 @@ def main_app():
         ])
         
         df_results = df_results.sort_values('Fuerza (σ)', ascending=False).reset_index(drop=True)
-        
-        if st.session_state.get('debug_mode', False):
-            duplicates = df_results[df_results.duplicated(subset=['Precio', 'Z-Score', 'BB %B'], keep=False)]
-            if len(duplicates) > 0:
-                st.warning(f"⚠️ Se detectaron {len(duplicates)} posibles duplicados en los datos")
-                with st.expander("Ver duplicados detectados"):
-                    st.dataframe(duplicates)
-        
-        st.markdown("---")
-        st.markdown("### 📊 Resultados del Escaneo")
         
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -980,9 +830,14 @@ def main_app():
                 🎯 Mean Reversion Screener
             </h2>
             <p style='color: #B0B0B0; font-size: 18px; margin: 20px 0;'>
-                Presiona "🚀 ESCANEAR" para comenzar
+                Sigue los 3 pasos para comenzar
             </p>
             <p style='color: #8E93A1; font-size: 14px;'>
+                1️⃣ Descarga los tickers (Russell 1000 + ETFs + Índices)<br>
+                2️⃣ Configura los parámetros del escaneo<br>
+                3️⃣ Inicia el escaneo y revisa resultados
+            </p>
+            <p style='color: #8E93A1; font-size: 14px; margin-top: 20px;'>
                 ✨ Bollinger Bands (2.5σ)<br>
                 ✨ Z-Score estadístico<br>
                 ✨ MACD-V confirmación<br>
