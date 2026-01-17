@@ -9,11 +9,11 @@ from utils.utils import check_password
 # --- CONFIGURACIÓN DE PÁGINA ---
 
 # Configuración de página
-st.set_page_config(
-    page_title="VIX Term Structure",
-    page_icon="🐣",
-    layout="wide"
-)
+#st.set_page_config(
+#    page_title="VIX Term Structure",
+#    page_icon="🐣",
+#    layout="wide"
+#)
 
 # CSS personalizado para mejorar la presentación
 st.markdown("""
