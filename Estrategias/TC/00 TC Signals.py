@@ -353,7 +353,7 @@ def main_triple_calendar():
     st.markdown("---")
 
     # ==============================================================================
-    # SECCIÓN 5: SEMÁFORO GLOBAL
+    # SECCIÓN 5: SEMÁFORO GLOBAL - AHORA SIEMPRE VISIBLE
     # ==============================================================================
     st.header("5. Semáforo de Entrada - Triple Calendar 🚥")
 
@@ -413,51 +413,53 @@ def main_triple_calendar():
     
     st.markdown("---")
     
-    if st.button("🚀 Recalcular Semáforo", key='calc_semaforo_triple'):
+    # CAMBIO CRÍTICO: Calcular el semáforo automáticamente siempre
+    calcular_y_mostrar_semaforo_triple(st.session_state['config_df_triple'], metricas_actuales, rv5d_ayer)
+    
+    # Botón opcional para forzar recálculo si se necesita
+    if st.button("🔄 Recalcular Semáforo Manualmente", key='calc_semaforo_triple'):
         calcular_y_mostrar_semaforo_triple(st.session_state['config_df_triple'], metricas_actuales, rv5d_ayer)
+        st.success("✅ Semáforo recalculado")
     
     st.markdown("### Tabla Consolidada de Análisis 🚦")
     
-    if 'df_semaforo_body_triple' in st.session_state:
-        df_body = st.session_state['df_semaforo_body_triple']
-        df_footer = st.session_state['df_semaforo_footer_triple']
-        senal_color = st.session_state['senal_color_triple']
+    # AHORA SIEMPRE SE MUESTRA (ya no hay condicional if)
+    df_body = st.session_state['df_semaforo_body_triple']
+    df_footer = st.session_state['df_semaforo_footer_triple']
+    senal_color = st.session_state['senal_color_triple']
+    
+    def color_cumple_body(row):
+        styles = pd.Series('', index=row.index)
         
-        def color_cumple_body(row):
-            styles = pd.Series('', index=row.index)
-            
-            if row['Cumple'] == 'SÍ':
-                styles['Cumple'] = 'background-color: #008000; color: white'
-            elif row['Cumple'] == 'NO':
-                styles['Cumple'] = 'background-color: #8B0000; color: white'
-            
-            return styles
-
-        styled_df_body = df_body.style.apply(color_cumple_body, axis=1)
-        styled_df_body = styled_df_body.set_properties(**{'text-align': 'center'}, 
-                                     subset=['Operador', 'Umbral', 'Valor Actual', 'Cumple'])
+        if row['Cumple'] == 'SÍ':
+            styles['Cumple'] = 'background-color: #008000; color: white'
+        elif row['Cumple'] == 'NO':
+            styles['Cumple'] = 'background-color: #8B0000; color: white'
         
-        st.dataframe(
-            styled_df_body,
-            hide_index=True,
-            use_container_width=True,
-            column_order=('Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'), 
-            column_config={'ID': st.column_config.Column(disabled=True, width="tiny")} 
-        )
+        return styles
 
-        st.markdown("<br>", unsafe_allow_html=True) 
+    styled_df_body = df_body.style.apply(color_cumple_body, axis=1)
+    styled_df_body = styled_df_body.set_properties(**{'text-align': 'center'}, 
+                                 subset=['Operador', 'Umbral', 'Valor Actual', 'Cumple'])
+    
+    st.dataframe(
+        styled_df_body,
+        hide_index=True,
+        use_container_width=True,
+        column_order=('Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'), 
+        column_config={'ID': st.column_config.Column(disabled=True, width="tiny")} 
+    )
 
-        footer_text = df_footer.iloc[0]['Regla']
-        
-        st.markdown(
-            f"<div style='text-align: center; font-size: 1.2em; padding: 10px; border-radius: 5px; {senal_color}'>"
-            f"**{footer_text}**" 
-            f"</div>",
-            unsafe_allow_html=True
-        )
+    st.markdown("<br>", unsafe_allow_html=True) 
 
-    else:
-        st.info("Presione '🚀 Recalcular Semáforo' para ver el análisis completo.")
+    footer_text = df_footer.iloc[0]['Regla']
+    
+    st.markdown(
+        f"<div style='text-align: center; font-size: 1.2em; padding: 10px; border-radius: 5px; {senal_color}'>"
+        f"**{footer_text}**" 
+        f"</div>",
+        unsafe_allow_html=True
+    )
 
     st.markdown("---")
     
