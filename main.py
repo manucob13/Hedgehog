@@ -1,92 +1,33 @@
 import streamlit as st
-import sys
 import os
-from pathlib import Path
+import sys
 
-# --- CONFIGURACIÓN DE RUTAS ---
-# Esto permite que 'from utils.utils import check_password' funcione siempre
-root_path = Path(__file__).parent.absolute()
-if str(root_path) not in sys.path:
-    sys.path.append(str(root_path))
+# --- DIAGNÓSTICO DE RUTAS ---
+st.write("### 🔍 Buscando archivos en el servidor:")
+base_path = os.getcwd()
+st.write(f"Ruta actual: `{base_path}`")
 
-# 1. CONFIGURACIÓN GLOBAL DE LA PESTAÑA Y LAYOUT
-st.set_page_config(
-    page_title="Hedgehog opciones",
-    layout="wide",
-    page_icon="🦔"
-)
+# Listar carpetas principales
+st.write("Carpetas en raíz:", os.listdir("."))
 
-# 2. DEFINICIÓN DE LAS PÁGINAS
-# --- Sección ESTRATEGIAS TE ---
-te_signals = st.Page(
-    "Estrategias/TE/00 TE Signals.py", 
-    title="Signals", 
-    icon="🦔", 
-    default=True
-)
-te_calculos = st.Page(
-    "Estrategias/TE/01 TE Calculos.py", 
-    title="Cálculos", 
-    icon="🦔"
-)
+# Verificar si la carpeta existe (Sensible a mayúsculas)
+folder = "Estrategias/TE"
+if os.path.exists(folder):
+    st.write(f"✅ Carpeta `{folder}` encontrada.")
+    st.write("Archivos dentro:", os.listdir(folder))
+else:
+    st.error(f"❌ La carpeta `{folder}` NO existe. Revisa si es 'estrategias' o si está en otra ruta.")
 
-# --- Sección ESTRATEGIAS TC ---
-tc_signals = st.Page(
-    "Estrategias/TC/00 TC Signals.py", 
-    title="Signals", 
-    icon="🦉"
-)
-tc_calculos = st.Page(
-    "Estrategias/TC/01 TC Calculos.py", 
-    title="Cálculos", 
-    icon="🦉"
-)
-
-# --- Sección HERRAMIENTAS ---
-vix_term = st.Page(
-    "Herramientas/01 VIX Term Structure.py", 
-    title="VIX Term Structure", 
-    icon="🐣"
-)
-trend_donchian = st.Page(
-    "Herramientas/02 Trend Wkly Donchian.py", 
-    title="Trend Wkly Donchian", 
-    icon="📉"
-)
-trend_keltner = st.Page(
-    "Herramientas/03 Trend Wkly Keltner.py", 
-    title="Trend Wkly Keltner", 
-    icon="📉"
-)
-gex_analyzer = st.Page(
-    "Herramientas/04 GEX Analyzer.py", 
-    title="GEX Analyzer", 
-    icon="🧪"
-)
-screener_risk = st.Page(
-    "Herramientas/05 Screener Ext Risk.py", 
-    title="Screener Ext. Risk", 
-    icon="🚨"
-)
-options_ratio = st.Page(
-    "Herramientas/06 Tools Stocks Options Ratio.py", 
-    title="Tools Stocks Options Ratio", 
-    icon="⚖️"
-)
-
-# 3. CREACIÓN DE LA NAVEGACIÓN JERÁRQUICA
-pg = st.navigation({
-    "ESTRATEGIAS TE": [te_signals, te_calculos],
-    "ESTRATEGIAS TC": [tc_signals, tc_calculos],
-    "HERRAMIENTAS": [
-        vix_term, 
-        gex_analyzer, 
-        trend_donchian, 
-        trend_keltner, 
-        screener_risk, 
-        options_ratio
-    ]
-})
-
-# 4. EJECUCIÓN
-pg.run()
+# --- DEFINICIÓN DE PÁGINAS ---
+try:
+    te_signals = st.Page(
+        "Estrategias/TE/00 TE Signals.py", 
+        title="Signals", 
+        icon="🦔", 
+        default=True
+    )
+    
+    pg = st.navigation({"ESTRATEGIAS TE": [te_signals]})
+    pg.run()
+except Exception as e:
+    st.error(f"Error al crear la página: {e}")
