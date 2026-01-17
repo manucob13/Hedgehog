@@ -8,7 +8,7 @@ from utils.utils_schwab import connect_to_schwab, get_current_price_schwab, obte
 import io
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="🦉 TC Calculos", layout="wide")
+# st.set_page_config(page_title="🦉 TC Calculos", layout="wide")
 
 # ==============================================================================
 # FUNCIONES AUXILIARES
