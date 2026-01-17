@@ -19,57 +19,57 @@ st.set_page_config(
 # 2. DEFINICIÓN DE LAS PÁGINAS
 # --- Sección ESTRATEGIAS TE ---
 te_signals = st.Page(
-    "Estrategias/TE/TE Signals.py", 
+    "Estrategias/TE/00 TE Signals.py", 
     title="Signals", 
     icon="🦔", 
     default=True
 )
 te_calculos = st.Page(
-    "Estrategias/TE/06 TP Calculos.py", 
+    "Estrategias/TE/01 TE Calculos.py", 
     title="Cálculos", 
     icon="🦔"
 )
 
 # --- Sección ESTRATEGIAS TC ---
 tc_signals = st.Page(
-    "Estrategias/TC/TC Signals.py", 
+    "Estrategias/TC/00 TC Signals.py", 
     title="Signals", 
     icon="🦉"
 )
 tc_calculos = st.Page(
-    "Estrategias/TC/TC Calculos.py", 
+    "Estrategias/TC/01 TC Calculos.py", 
     title="Cálculos", 
     icon="🦉"
 )
 
 # --- Sección HERRAMIENTAS ---
 vix_term = st.Page(
-    "Herramientas/VIX Term Structure.py", 
+    "Herramientas/01 VIX Term Structure.py", 
     title="VIX Term Structure", 
     icon="🐣"
 )
-gex_analyzer = st.Page(
-    "Herramientas/GEX Analyzer.py", 
-    title="GEX Analyzer", 
-    icon="🧪"
-)
 trend_donchian = st.Page(
-    "Herramientas/Trend Wkly Donchian.py", 
+    "Herramientas/02 Trend Wkly Donchian.py", 
     title="Trend Wkly Donchian", 
-    icon="📊"
+    icon="📉"
 )
 trend_keltner = st.Page(
-    "Herramientas/Trend Wkly Keltner.py", 
+    "Herramientas/03 Trend Wkly Keltner.py", 
     title="Trend Wkly Keltner", 
     icon="📉"
 )
+gex_analyzer = st.Page(
+    "Herramientas/04 GEX Analyzer.py", 
+    title="GEX Analyzer", 
+    icon="🧪"
+)
 screener_risk = st.Page(
-    "Herramientas/Screener Ext Risk.py", 
+    "Herramientas/05 Screener Ext Risk.py", 
     title="Screener Ext. Risk", 
     icon="🚨"
 )
 options_ratio = st.Page(
-    "Herramientas/Tools Stocks Options Ratio.py", 
+    "Herramientas/06 Tools Stocks Options Ratio.py", 
     title="Tools Stocks Options Ratio", 
     icon="⚖️"
 )
