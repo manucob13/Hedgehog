@@ -11,11 +11,11 @@ from utils.utils import check_password
 warnings.filterwarnings('ignore')
 
 # Configuración de página
-st.set_page_config(
-    page_title="Trend Analyzer",
-    page_icon="📈",
-    layout="wide"
-)
+#st.set_page_config(
+#    page_title="Trend Analyzer",
+#    page_icon="📈",
+#    layout="wide"
+#)
 
 # Colores para regímenes semanales (con dos tipos de riesgo)
 REGIME_COLORS_WEEKLY = {
