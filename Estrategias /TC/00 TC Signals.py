@@ -18,7 +18,7 @@ from utils.utils import (
 )
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="🦉 TC Signals ", layout="wide")
+# st.set_page_config(page_title="🦉 TC Signals ", layout="wide")
 
 # ==============================================================================
 # CONFIGURACIÓN Y VALORES POR DEFECTO PARA TRIPLE CALENDAR
