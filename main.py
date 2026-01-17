@@ -80,9 +80,9 @@ pg = st.navigation({
     "ESTRATEGIAS TC": [tc_signals, tc_calculos],
     "HERRAMIENTAS": [
         vix_term, 
-        gex_analyzer, 
         trend_donchian, 
         trend_keltner, 
+        gex_analyzer,
         screener_risk, 
         options_ratio
     ]
