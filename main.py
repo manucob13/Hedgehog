@@ -44,32 +44,32 @@ tc_calculos = st.Page(
 
 # --- Sección HERRAMIENTAS ---
 vix_term = st.Page(
-    "Herramientas/01 VIX Term Structure.py", 
+    "Herramientas /01 VIX Term Structure.py", 
     title="VIX Term Structure", 
     icon="🐣"
 )
 trend_donchian = st.Page(
-    "Herramientas/02 Trend Wkly Donchian.py", 
+    "Herramientas /02 Trend Wkly Donchian.py", 
     title="Trend Wkly Donchian", 
     icon="📉"
 )
 trend_keltner = st.Page(
-    "Herramientas/03 Trend Wkly Keltner.py", 
+    "Herramientas /03 Trend Wkly Keltner.py", 
     title="Trend Wkly Keltner", 
     icon="📉"
 )
 gex_analyzer = st.Page(
-    "Herramientas/04 GEX Analyzer.py", 
+    "Herramientas /04 GEX Analyzer.py", 
     title="GEX Analyzer", 
     icon="🧪"
 )
 screener_risk = st.Page(
-    "Herramientas/05 Screener Ext Risk.py", 
+    "Herramientas /05 Screener Ext Risk.py", 
     title="Screener Ext. Risk", 
     icon="🚨"
 )
 options_ratio = st.Page(
-    "Herramientas/06 Tools Stocks Options Ratio.py", 
+    "Herramientas /06 Tools Stocks Options Ratio.py", 
     title="Tools Stocks Options Ratio", 
     icon="⚖️"
 )
