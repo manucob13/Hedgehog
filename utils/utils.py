@@ -65,8 +65,9 @@ def check_password():
 
 @st.cache_data(ttl=86400)
 def fetch_data():
+    
     """Descarga datos históricos del ^GSPC (SPX) y ^VIX (VIX)."""
-    start = "2010-01-01" 
+    start = (datetime.now() - timedelta(days=730)).strftime("%Y-%m-%d")  # 2 años
     end = datetime.now() + timedelta(days=1) 
 
     spx = yf.download("^GSPC", start=start, end=end, auto_adjust=False, multi_level_index=False, progress=False)
@@ -366,7 +367,7 @@ def fetch_data_with_ticker(ticker):
     # Obtener el símbolo correcto
     yahoo_symbol = ticker_map.get(ticker, ticker)
     
-    start = "2010-01-01"
+    start = (datetime.now() - timedelta(days=730)).strftime("%Y-%m-%d")  # 2 años
     end = datetime.now() + timedelta(days=1)
     
     # Descargar datos del ticker seleccionado
