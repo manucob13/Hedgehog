@@ -262,7 +262,6 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
             'BB_SMA': bb_sma,
             'BB_Upper': bb_upper,
             'BB_Lower': bb_lower,
-            'BB_%B_Series': bb_percent,
             'ZScore_Series': zscore,
             'MACD_V_Series': macd_v,
             'Signal_Series': macd_v_signal,
@@ -361,15 +360,14 @@ def ensure_series(data_series):
     return data_series
 
 def plot_ticker_analysis(ticker_data):
-    """Genera gráfico completo con 5 paneles (añadiendo SMA 200 y Volumen)"""
+    """Genera gráfico completo con 4 paneles: Precio + BB + SMA200, Z-Score, MACD-V, Volumen"""
     try:
         plt.style.use('dark_background')
-        fig = plt.figure(figsize=(18, 16), facecolor='#0E1117')
-        gs = fig.add_gridspec(5, 1, height_ratios=[2.5, 1, 1, 1, 1], hspace=0.3)
+        fig = plt.figure(figsize=(18, 14), facecolor='#0E1117')
+        gs = fig.add_gridspec(4, 1, height_ratios=[2.5, 1, 1, 1], hspace=0.3)
         
         data = ticker_data['Data']
         ticker = ticker_data['Ticker']
-        company_name = ticker_data.get('Company', ticker)
         
         if data is None or len(data) == 0:
             st.error(f"No hay datos disponibles para {ticker}")
@@ -417,9 +415,6 @@ def plot_ticker_analysis(ticker_data):
                        color=current_color, s=200, edgecolors='white', 
                        linewidth=3, zorder=10, label='Actual')
         
-        sma200_text = f" | SMA200: ${ticker_data.get('SMA_200', 0):.2f}" if ticker_data.get('SMA_200') else ""
-        ax1.set_title(f'{ticker} - {company_name}\n${ticker_data["Price"]:.2f}{sma200_text} | {ticker_data["Type"]} ({ticker_data["Strength"]:.1f}σ)', 
-                      fontsize=18, fontweight='bold', color='#FFFFFF', pad=15)
         ax1.set_ylabel('Precio ($)', fontsize=13, fontweight='bold', color='#FFFFFF')
         ax1.legend(loc='upper left', fontsize=10, framealpha=0.9)
         ax1.grid(True, alpha=0.1, linestyle='-', linewidth=0.8)
@@ -543,62 +538,9 @@ def plot_ticker_analysis(ticker_data):
             spine.set_color('#2D3142')
             spine.set_linewidth(1.5)
         
-        # PANEL 4: BOLLINGER %B
+        # PANEL 4: VOLUMEN
         ax4 = fig.add_subplot(gs[3], sharex=ax1)
         ax4.set_facecolor('#1A1D29')
-        
-        bb_percent = ensure_series(ticker_data.get('BB_%B_Series'))
-        
-        if bb_percent is not None and len(bb_percent) > 0:
-            if len(bb_percent) != len(data.index):
-                bb_percent = bb_percent.iloc[:len(data.index)]
-            
-            for i in range(1, len(bb_percent)):
-                if pd.notna(bb_percent.iloc[i-1]) and pd.notna(bb_percent.iloc[i]):
-                    y2 = float(bb_percent.iloc[i])
-                    if y2 > 1.2:
-                        color, width = '#FF6B6B', 3.5
-                    elif y2 > 1.0:
-                        color, width = '#FFB86C', 3
-                    elif y2 < -0.2:
-                        color, width = '#FF6B6B', 3.5
-                    elif y2 < 0:
-                        color, width = '#4ECDC4', 3
-                    else:
-                        color, width = '#95A5A6', 2
-                    
-                    ax4.plot([data.index[i-1], data.index[i]], 
-                            [float(bb_percent.iloc[i-1]), y2], 
-                            color=color, linewidth=width, alpha=0.95, zorder=5)
-            
-            ax4.axhline(y=1.0, color='#FFB86C', linestyle='--', linewidth=2, alpha=0.8, label='Banda Superior')
-            ax4.axhline(y=0.5, color='#BD93F9', linestyle='-', linewidth=1.5, alpha=0.7, label='Media')
-            ax4.axhline(y=0.0, color='#4ECDC4', linestyle='--', linewidth=2, alpha=0.8, label='Banda Inferior')
-            
-            ax4.fill_between(data.index, 1.0, 1.5, alpha=0.12, color='#FFB86C', zorder=0)
-            ax4.fill_between(data.index, -0.5, 0.0, alpha=0.12, color='#4ECDC4', zorder=0)
-            
-            current_bb = ticker_data.get('BB_%B', 0)
-            bb_color = '#FF6B6B' if current_bb > 1.1 or current_bb < -0.1 else '#FFB86C' if current_bb > 1.0 else '#4ECDC4' if current_bb < 0 else '#95A5A6'
-            ax4.text(0.02, 0.95, f'%B: {current_bb:.2f}', 
-                    transform=ax4.transAxes, fontsize=13, fontweight='bold', 
-                    color='white', verticalalignment='top',
-                    bbox=dict(boxstyle='round,pad=0.7', facecolor=bb_color, 
-                             alpha=0.95, edgecolor='white', linewidth=2))
-        
-        ax4.set_ylabel('Bollinger %B', fontsize=12, fontweight='bold', color='#FFFFFF')
-        ax4.set_ylim([-0.5, 1.5])
-        ax4.legend(loc='upper right', fontsize=9, framealpha=0.9, ncol=3)
-        ax4.grid(True, alpha=0.1, linestyle=':', linewidth=1)
-        ax4.tick_params(labelsize=10, colors='#B0B0B0', labelbottom=False)
-        
-        for spine in ax4.spines.values():
-            spine.set_color('#2D3142')
-            spine.set_linewidth(1.5)
-        
-        # PANEL 5: VOLUMEN
-        ax5 = fig.add_subplot(gs[4], sharex=ax1)
-        ax5.set_facecolor('#1A1D29')
         
         volume = ensure_series(data['Volume'])
         if volume is not None and len(volume) > 0:
@@ -606,19 +548,19 @@ def plot_ticker_analysis(ticker_data):
                       for i in range(1, len(close_series))]
             colors.insert(0, '#95A5A6')
             
-            ax5.bar(data.index, volume, color=colors, alpha=0.6, width=0.8)
+            ax4.bar(data.index, volume, color=colors, alpha=0.6, width=0.8)
             
             vol_avg = volume.rolling(window=20).mean()
-            ax5.plot(data.index, vol_avg, color='#FFB86C', linewidth=2, 
+            ax4.plot(data.index, vol_avg, color='#FFB86C', linewidth=2, 
                     label='Vol Avg (20)', alpha=0.8)
         
-        ax5.set_ylabel('Volumen', fontsize=12, fontweight='bold', color='#FFFFFF')
-        ax5.set_xlabel('Fecha', fontsize=13, fontweight='bold', color='#FFFFFF')
-        ax5.legend(loc='upper right', fontsize=9, framealpha=0.9)
-        ax5.grid(True, alpha=0.1, linestyle=':', linewidth=1)
-        ax5.tick_params(labelsize=10, colors='#B0B0B0')
+        ax4.set_ylabel('Volumen', fontsize=12, fontweight='bold', color='#FFFFFF')
+        ax4.set_xlabel('Fecha', fontsize=13, fontweight='bold', color='#FFFFFF')
+        ax4.legend(loc='upper right', fontsize=9, framealpha=0.9)
+        ax4.grid(True, alpha=0.1, linestyle=':', linewidth=1)
+        ax4.tick_params(labelsize=10, colors='#B0B0B0')
         
-        for spine in ax5.spines.values():
+        for spine in ax4.spines.values():
             spine.set_color('#2D3142')
             spine.set_linewidth(1.5)
         
@@ -978,14 +920,6 @@ def main_app():
             }
         )
         
-        csv = df_results.to_csv(index=False)
-        st.download_button(
-            "📥 Descargar CSV",
-            data=csv,
-            file_name=f"mean_reversion_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv"
-        )
-        
         st.markdown("---")
         
         if len(event.selection.rows) > 0:
@@ -1009,6 +943,8 @@ def main_app():
                 with col5:
                     if ticker_data.get('SMA_200'):
                         st.metric("SMA 200", f"${ticker_data['SMA_200']:.2f}")
+                    else:
+                        st.metric("Tipo", ticker_data['Type'])
                 
                 with st.spinner(f"Generando gráfico para {selected_ticker}..."):
                     try:
