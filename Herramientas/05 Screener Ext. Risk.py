@@ -340,7 +340,6 @@ def ensure_series(data_series):
     if data_series is None:
         return None
     
-    # Si ya es un escalar, devolver None (no es una serie)
     if np.isscalar(data_series):
         return None
     
@@ -414,6 +413,25 @@ def plot_ticker_analysis(ticker_data):
             ax1.scatter(data.index[-1], close_series.iloc[-1], 
                        color=current_color, s=200, edgecolors='white', 
                        linewidth=3, zorder=10, label='Actual')
+        
+        # MEJORAR ZOOM: Calcular rango dinámico para incluir SMA 200
+        if close_series is not None and len(close_series) > 0:
+            all_values = [close_series]
+            if bb_lower is not None and len(bb_lower) > 0:
+                all_values.append(bb_lower)
+            if bb_upper is not None and len(bb_upper) > 0:
+                all_values.append(bb_upper)
+            if sma_200 is not None and len(sma_200) > 0:
+                all_values.append(sma_200)
+            
+            # Concatenar todas las series y obtener min/max
+            combined = pd.concat(all_values, axis=1)
+            y_min = combined.min().min()
+            y_max = combined.max().max()
+            
+            # Añadir un margen del 5% arriba y abajo
+            margin = (y_max - y_min) * 0.05
+            ax1.set_ylim(y_min - margin, y_max + margin)
         
         ax1.set_ylabel('Precio ($)', fontsize=13, fontweight='bold', color='#FFFFFF')
         ax1.legend(loc='upper left', fontsize=10, framealpha=0.9)
@@ -522,8 +540,7 @@ def plot_ticker_analysis(ticker_data):
             
             current_macdv = ticker_data['MACD_V']
             macd_color = '#FF6B6B' if abs(current_macdv) > 150 else '#4ECDC4' if current_macdv > 50 else '#EE5A6F' if current_macdv < -50 else '#95A5A6'
-            confirm_text = " ✓" if ticker_data['MACDV_Confirm'] else ""
-            ax3.text(0.02, 0.95, f'MACD-V: {current_macdv:.1f}{confirm_text}', 
+            ax3.text(0.02, 0.95, f'MACD-V: {current_macdv:.1f}', 
                     transform=ax3.transAxes, fontsize=13, fontweight='bold', 
                     color='white', verticalalignment='top',
                     bbox=dict(boxstyle='round,pad=0.7', facecolor=macd_color, 
@@ -878,7 +895,7 @@ def main_app():
                 'BB %B': round(r['BB_%B'], 2),
                 'MACD-V': round(r['MACD_V'], 1),
                 'Precio': round(r['Price'], 2),
-                'SMA 200': round(r['SMA_200'], 2) if r.get('SMA_200') and r['SMA_200'] is not None else None
+                'SMA 200': round(r['SMA_200'], 2) if r.get('SMA_200') is not None and not pd.isna(r['SMA_200']) else '-'
             }
             for r in results
         ])
@@ -914,7 +931,7 @@ def main_app():
                 "BB %B": st.column_config.NumberColumn("BB %B", format="%.2f"),
                 "MACD-V": st.column_config.NumberColumn("MACD-V", format="%.1f"),
                 "Precio": st.column_config.NumberColumn("Precio", format="$%.2f"),
-                "SMA 200": st.column_config.NumberColumn("SMA 200", format="$%.2f"),
+                "SMA 200": st.column_config.TextColumn("SMA 200", width="small"),
             }
         )
         
@@ -936,8 +953,7 @@ def main_app():
                 with col3:
                     st.metric("BB %B", f"{ticker_data['BB_%B']:.2f}")
                 with col4:
-                    confirm_icon = "✅" if ticker_data['MACDV_Confirm'] else "⚪"
-                    st.metric("MACD-V", f"{ticker_data['MACD_V']:.0f} {confirm_icon}")
+                    st.metric("MACD-V", f"{ticker_data['MACD_V']:.0f}")
                 with col5:
                     sma_value = ticker_data.get('SMA_200')
                     if sma_value and sma_value is not None and not pd.isna(sma_value):
