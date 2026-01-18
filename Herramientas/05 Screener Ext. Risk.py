@@ -7,6 +7,8 @@ from datetime import datetime
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
+from utils.utils import check_password
+from utils.tickers import create_tickers_universe
 
 warnings.filterwarnings('ignore')
 
@@ -345,7 +347,7 @@ def ensure_series(data_series):
     return data_series
 
 def plot_ticker_analysis(ticker_data):
-    """Genera gráfico completo con 5 paneles (añadiendo SMA 200)"""
+    """Genera gráfico completo con 5 paneles (añadiendo SMA 200 y Volumen)"""
     plt.style.use('dark_background')
     fig = plt.figure(figsize=(18, 16), facecolor='#0E1117')
     gs = fig.add_gridspec(5, 1, height_ratios=[2.5, 1, 1, 1, 1], hspace=0.3)
@@ -630,15 +632,57 @@ def main_app():
     st.markdown("**Detecta valores sobreextendidos estadísticamente**")
     st.markdown("---")
     
-    # ============= PASO 1: ENTRADA DE TICKERS =============
-    st.markdown("### 📊 PASO 1: Tickers a Analizar")
+    # ============= PASO 1: OBTENER TICKERS AUTOMÁTICAMENTE =============
+    st.markdown("### 📊 PASO 1: Universo de Tickers")
     
-    ticker_input = st.text_area(
-        "Introduce los tickers separados por comas o espacios",
-        placeholder="Ejemplo: AAPL, MSFT, GOOGL, TSLA, NVDA",
-        height=100,
-        help="Puedes pegar una lista de tickers del Russell 1000, S&P 500, o cualquier lista personalizada"
-    )
+    # Inicializar el universo de tickers si no existe
+    if 'tickers_universe' not in st.session_state:
+        with st.spinner("📥 Descargando universo de tickers (Russell 1000 + ETFs + Índices)..."):
+            try:
+                df_tickers = create_tickers_universe()
+                
+                if df_tickers is not None and len(df_tickers) > 0:
+                    st.session_state['tickers_universe'] = df_tickers['Ticker'].tolist()
+                    st.session_state['tickers_info'] = {
+                        'total': len(df_tickers),
+                        'stocks': len(df_tickers[df_tickers['Type'] == 'Stock']) if 'Type' in df_tickers.columns else 0,
+                        'etfs': len(df_tickers[df_tickers['Type'] == 'ETF']) if 'Type' in df_tickers.columns else 0,
+                        'indices': len(df_tickers[df_tickers['Type'] == 'Index']) if 'Type' in df_tickers.columns else 0,
+                        'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                    st.success(f"✅ {len(df_tickers)} tickers cargados correctamente!")
+                else:
+                    st.error("❌ Error al descargar los tickers")
+                    st.session_state['tickers_universe'] = []
+            except Exception as e:
+                st.error(f"❌ Error descargando tickers: {str(e)}")
+                st.session_state['tickers_universe'] = []
+    
+    # Mostrar información del universo de tickers
+    if 'tickers_info' in st.session_state:
+        info = st.session_state['tickers_info']
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Tickers", f"{info['total']:,}")
+        with col2:
+            st.metric("Stocks", f"{info['stocks']:,}")
+        with col3:
+            st.metric("ETFs", f"{info['etfs']:,}")
+        with col4:
+            st.metric("Índices", f"{info['indices']:,}")
+        
+        st.caption(f"📅 Última actualización: {info['date']}")
+    
+    # Botón para recargar el universo de tickers
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("🔄 Recargar Tickers", help="Volver a descargar el universo de tickers"):
+            if 'tickers_universe' in st.session_state:
+                del st.session_state['tickers_universe']
+            if 'tickers_info' in st.session_state:
+                del st.session_state['tickers_info']
+            st.rerun()
     
     st.markdown("---")
     
@@ -714,18 +758,13 @@ def main_app():
     scan_button = st.button("🚀 INICIAR ESCANEO", type="primary", use_container_width=True)
     
     if scan_button:
-        if not ticker_input.strip():
-            st.error("❌ Por favor introduce al menos un ticker")
+        # Verificar que tengamos el universo de tickers
+        if 'tickers_universe' not in st.session_state or not st.session_state['tickers_universe']:
+            st.error("❌ No hay tickers disponibles para escanear")
+            st.warning("⚠️ Por favor, recarga los tickers usando el botón 'Recargar Tickers'")
             st.stop()
         
-        # Procesar los tickers del input
-        import re
-        tickers_list = re.split(r'[,\s]+', ticker_input.strip())
-        tickers_list = [t.upper().strip() for t in tickers_list if t.strip()]
-        
-        if not tickers_list:
-            st.error("❌ No se encontraron tickers válidos")
-            st.stop()
+        tickers_list = st.session_state['tickers_universe']
         
         st.markdown("### 🔄 Escaneando tickers...")
         st.info(f"📊 Analizando {len(tickers_list):,} tickers...")
@@ -887,7 +926,7 @@ def main_app():
                 Sigue los 3 pasos para comenzar
             </p>
             <p style='color: #8E93A1; font-size: 14px;'>
-                1️⃣ Introduce los tickers a analizar<br>
+                1️⃣ Carga automática de tickers (Russell 1000 + ETFs + Índices)<br>
                 2️⃣ Configura los parámetros del escaneo<br>
                 3️⃣ Inicia el escaneo y revisa resultados
             </p>
@@ -902,4 +941,14 @@ def main_app():
         """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
-    main_app()
+    if check_password():
+        main_app()
+    else:
+        st.markdown("""
+        <div style='text-align: center; padding: 60px 20px;'>
+            <h1 style='color: #FF6B6B; font-size: 48px;'>🔒 Acceso Restringido</h1>
+            <p style='color: #B0B0B0; font-size: 20px; margin-top: 20px;'>
+                Introduce tus credenciales en el menú lateral.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
