@@ -169,14 +169,14 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         
         df_copy = data.copy(deep=True)
         
-        # Calcular SMA 200
-        sma_200 = calculate_sma(df_copy['Close'], 200)
-        
         bb_sma, bb_upper, bb_lower, bb_percent = calculate_bollinger_bands(
             df_copy, period=bb_period, std_dev=2.5
         )
         zscore = calculate_zscore(df_copy, period=zscore_period)
         macd_v, macd_v_signal = calculate_macd_v(df_copy)
+        
+        # Calcular SMA 200 DESPUÉS de otros cálculos
+        sma_200 = calculate_sma(df_copy['Close'], 200)
         
         if zscore is None or len(zscore) == 0:
             return None
@@ -399,10 +399,13 @@ def plot_ticker_analysis(ticker_data):
             ax1.plot(data.index, bb_lower, color='#FFB86C', 
                     linewidth=2, linestyle='--', alpha=0.7, zorder=2)
         
-        # Añadir SMA 200
+        # Añadir SMA 200 con manejo mejorado
         if sma_200 is not None and len(sma_200) > 0:
-            ax1.plot(data.index, sma_200, color='#00D9FF', 
-                    linewidth=3, label='SMA(200)', zorder=2, alpha=0.8)
+            # Filtrar valores válidos (no NaN)
+            valid_sma = sma_200.dropna()
+            if len(valid_sma) > 0:
+                ax1.plot(valid_sma.index, valid_sma.values, color='#00D9FF', 
+                        linewidth=3, label='SMA(200)', zorder=2, alpha=0.8)
         
         close_series = ensure_series(data['Close'])
         if close_series is not None and len(close_series) > 0:
@@ -418,19 +421,21 @@ def plot_ticker_analysis(ticker_data):
         if close_series is not None and len(close_series) > 0:
             all_values = [close_series]
             if bb_lower is not None and len(bb_lower) > 0:
-                all_values.append(bb_lower)
+                all_values.append(bb_lower.dropna())
             if bb_upper is not None and len(bb_upper) > 0:
-                all_values.append(bb_upper)
+                all_values.append(bb_upper.dropna())
             if sma_200 is not None and len(sma_200) > 0:
-                all_values.append(sma_200)
+                valid_sma = sma_200.dropna()
+                if len(valid_sma) > 0:
+                    all_values.append(valid_sma)
             
             # Concatenar todas las series y obtener min/max
             combined = pd.concat(all_values, axis=1)
             y_min = combined.min().min()
             y_max = combined.max().max()
             
-            # Añadir un margen del 5% arriba y abajo
-            margin = (y_max - y_min) * 0.05
+            # Añadir un margen del 8% arriba y abajo para mejor visualización
+            margin = (y_max - y_min) * 0.08
             ax1.set_ylim(y_min - margin, y_max + margin)
         
         ax1.set_ylabel('Precio ($)', fontsize=13, fontweight='bold', color='#FFFFFF')
@@ -895,7 +900,7 @@ def main_app():
                 'BB %B': round(r['BB_%B'], 2),
                 'MACD-V': round(r['MACD_V'], 1),
                 'Precio': round(r['Price'], 2),
-                'SMA 200': round(r['SMA_200'], 2) if r.get('SMA_200') is not None and not pd.isna(r['SMA_200']) else '-'
+                'SMA 200': f"${round(r['SMA_200'], 2)}" if r.get('SMA_200') is not None and not pd.isna(r['SMA_200']) else '-'
             }
             for r in results
         ])
