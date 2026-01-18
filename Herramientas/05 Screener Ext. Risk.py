@@ -181,7 +181,6 @@ def get_options_volume_yahoo(ticker, days=7):
             return None
         
         total_volume = 0
-        # Tomamos primeras 3 expiraciones por eficiencia
         for exp_date in valid_expirations[:3]:
             try:
                 opt_chain = stock.option_chain(exp_date)
@@ -225,9 +224,7 @@ def get_call_put_ratio_cboe(ticker):
         return None
 
 def calculate_put_wall_gex(ticker, spot_price=None):
-    """
-    Put Wall = strike con mayor GEX negativo (puts) en los próximos 60 días
-    """
+    """Put Wall = strike con mayor GEX negativo (puts) en los próximos 60 días"""
     try:
         raw_data = fetch_option_data_cboe(ticker)
         if not raw_data:
@@ -282,7 +279,7 @@ def get_options_metrics(ticker, current_price=None):
 
 # ============= ANALISIS DE TICKER (MODIFICADO) =============
 
-def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_period=20, 
+def analyze_ticker(ticker, period="2y", interval="1d", bb_period=20, zscore_period=20, 
                    zscore_threshold_pos=2.5, zscore_threshold_neg=-2.5,
                    bb_threshold_upper=1.1, bb_threshold_lower=-0.1, 
                    macdv_threshold=50, filter_sma200=False, 
@@ -378,12 +375,10 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         if current_price <= 0:
             return None
         
-        # Filtro SMA 200
         if filter_sma200 and current_sma200 is not None:
             if current_price < current_sma200:
                 return None
         
-        # Filtro Z-Score
         zscore_check = False
         if filter_zscore_positive and current_zscore >= zscore_threshold_pos:
             zscore_check = True
@@ -393,16 +388,13 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         if not zscore_check:
             return None
         
-        # Filtro Bollinger Bands
         bb_check = current_bb_percent >= bb_threshold_upper or current_bb_percent <= bb_threshold_lower
         if not bb_check:
             return None
         
-        # Filtro MACD-V
         if abs(current_macdv) < macdv_threshold:
             return None
         
-        # Determinar tipo de señal
         if current_zscore >= zscore_threshold_pos and current_bb_percent >= bb_threshold_upper:
             signal_type = 'SOBRECOMPRA'
             signal_strength = min(current_zscore, 5.0)
@@ -418,7 +410,6 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
         elif signal_type == 'SOBREVENTA' and current_macdv < -150:
             macdv_confirms = True
         
-        # Métricas de opciones
         options_metrics = get_options_metrics(ticker, current_price)
         
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
@@ -436,11 +427,9 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
             'Strength': signal_strength,
             'MACDV_Confirm': bool(macdv_confirms),
             'Date': data.index[-1],
-            # Opciones
             'Options_Volume': options_metrics['options_volume'],
             'Call_Put_Ratio': options_metrics['call_put_ratio'],
             'Put_Wall': options_metrics['put_wall'],
-            # Series
             'Data': data.copy(deep=True),
             'BB_SMA': bb_sma,
             'BB_Upper': bb_upper,
@@ -545,12 +534,22 @@ def ensure_series(data_series):
     
     return data_series
 
-def plot_ticker_analysis(ticker_data):
-    """Genera gráfico completo con 4 paneles + Put Wall"""
+def plot_ticker_analysis(ticker_data, chart_period='3mo'):
+    """
+    Genera gráfico con 3 paneles (sin volumen):
+    - Precio + BB + SMA200 + Put Wall
+    - Z-Score
+    - MACD-V
+    
+    Args:
+        ticker_data: Dict con datos del ticker
+        chart_period: Periodo a mostrar ('3mo', '6mo', '1y', '2y')
+    """
     try:
         plt.style.use('dark_background')
-        fig = plt.figure(figsize=(18, 14), facecolor='#0E1117')
-        gs = fig.add_gridspec(4, 1, height_ratios=[2.5, 1, 1, 1], hspace=0.3)
+        # 3 paneles sin volumen
+        fig = plt.figure(figsize=(18, 11), facecolor='#0E1117')
+        gs = fig.add_gridspec(3, 1, height_ratios=[2.5, 1, 1], hspace=0.3)
         
         data = ticker_data['Data']
         ticker = ticker_data['Ticker']
@@ -560,63 +559,87 @@ def plot_ticker_analysis(ticker_data):
             st.error(f"No hay datos disponibles para {ticker}")
             return None
         
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
+        # Filtrar datos según periodo seleccionado
+        period_map = {
+            '3mo': 90,
+            '6mo': 180,
+            '1y': 365,
+            '2y': 730
+        }
+        days = period_map.get(chart_period, 90)
+        cutoff_date = datetime.now() - timedelta(days=days)
+        data_filtered = data[data.index >= cutoff_date].copy()
+        
+        if data_filtered.empty:
+            data_filtered = data.copy()
+        
+        if isinstance(data_filtered.columns, pd.MultiIndex):
+            data_filtered.columns = data_filtered.columns.get_level_values(0)
         
         for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
-            if col in data.columns:
-                data[col] = ensure_series(data[col])
+            if col in data_filtered.columns:
+                data_filtered[col] = ensure_series(data_filtered[col])
         
-        # PANEL 1: PRECIO + BOLLINGER + SMA 200 + PUT WALL
-        ax1 = fig.add_subplot(gs[0])
-        ax1.set_facecolor('#1A1D29')
-        
+        # Filtrar series temporales
         bb_lower = ensure_series(ticker_data.get('BB_Lower'))
         bb_upper = ensure_series(ticker_data.get('BB_Upper'))
         bb_sma = ensure_series(ticker_data.get('BB_SMA'))
         sma_200 = ensure_series(ticker_data.get('SMA_200_Series'))
         
+        if bb_lower is not None:
+            bb_lower = bb_lower[bb_lower.index >= cutoff_date]
+        if bb_upper is not None:
+            bb_upper = bb_upper[bb_upper.index >= cutoff_date]
+        if bb_sma is not None:
+            bb_sma = bb_sma[bb_sma.index >= cutoff_date]
+        if sma_200 is not None:
+            sma_200 = sma_200[sma_200.index >= cutoff_date]
+        
+        # PANEL 1: PRECIO + BB + SMA200 + PUT WALL
+        ax1 = fig.add_subplot(gs[0])
+        ax1.set_facecolor('#1A1D29')
+        
         if bb_lower is not None and bb_upper is not None and len(bb_lower) > 0 and len(bb_upper) > 0:
-            ax1.fill_between(data.index, bb_lower, bb_upper,
+            ax1.fill_between(data_filtered.index, bb_lower, bb_upper,
                              color='#FFB86C', alpha=0.1, label='Bollinger Bands (2.5σ)', zorder=1)
-            ax1.plot(data.index, bb_upper, color='#FFB86C', 
-                     linewidth=2, linestyle='--', alpha=0.7, zorder=2)
+            ax1.plot(data_filtered.index, bb_upper, color='#FFB86C', 
+                     linewidth=1.2, linestyle='--', alpha=0.7, zorder=2)
             if bb_sma is not None and len(bb_sma) > 0:
-                ax1.plot(data.index, bb_sma, color='#BD93F9', 
-                         linewidth=2.5, label='SMA(20)', zorder=2)
-            ax1.plot(data.index, bb_lower, color='#FFB86C', 
-                     linewidth=2, linestyle='--', alpha=0.7, zorder=2)
+                ax1.plot(data_filtered.index, bb_sma, color='#BD93F9', 
+                         linewidth=1.5, label='SMA(20)', zorder=2)
+            ax1.plot(data_filtered.index, bb_lower, color='#FFB86C', 
+                     linewidth=1.2, linestyle='--', alpha=0.7, zorder=2)
         
         if sma_200 is not None and len(sma_200) > 0:
             valid_sma = sma_200.dropna()
             if len(valid_sma) > 0:
                 ax1.plot(valid_sma.index, valid_sma.values, color='#00D9FF', 
-                         linewidth=3, label='SMA(200)', zorder=2, alpha=0.8)
+                         linewidth=1.8, label='SMA(200)', zorder=2, alpha=0.8)
         
-        close_series = ensure_series(data['Close'])
+        close_series = ensure_series(data_filtered['Close'])
         if close_series is not None and len(close_series) > 0:
-            ax1.plot(data.index, close_series, color='#FFFFFF', linewidth=2.5, 
+            ax1.plot(data_filtered.index, close_series, color='#FFFFFF', linewidth=1.8, 
                      label='Precio', zorder=3)
             current_color = '#FF6B6B' if ticker_data['Type'] == 'SOBRECOMPRA' else '#4ECDC4'
-            ax1.scatter(data.index[-1], close_series.iloc[-1], 
-                        color=current_color, s=200, edgecolors='white', 
-                        linewidth=3, zorder=10, label='Actual')
+            ax1.scatter(data_filtered.index[-1], close_series.iloc[-1], 
+                        color=current_color, s=150, edgecolors='white', 
+                        linewidth=2, zorder=10, label='Actual')
         
-        # Put Wall como línea horizontal en precio
+        # Put Wall
         if put_wall is not None and not pd.isna(put_wall):
-            ax1.axhline(y=put_wall, color='#FE53BB', linestyle=':', linewidth=3, 
+            ax1.axhline(y=put_wall, color='#FE53BB', linestyle=':', linewidth=2, 
                         alpha=0.9, label=f'Put Wall: ${put_wall:.2f}', zorder=4)
             ax1.annotate(
                 f'PUT WALL\n${put_wall:.2f}', 
-                xy=(data.index[-1], put_wall),
-                xytext=(data.index[-10], put_wall),
-                fontsize=11, fontweight='bold', color='#FE53BB',
-                bbox=dict(boxstyle='round,pad=0.5', facecolor='#FE53BB', 
-                          alpha=0.3, edgecolor='#FE53BB', linewidth=2),
+                xy=(data_filtered.index[-1], put_wall),
+                xytext=(data_filtered.index[int(len(data_filtered)*0.85)], put_wall),
+                fontsize=10, fontweight='bold', color='#FE53BB',
+                bbox=dict(boxstyle='round,pad=0.4', facecolor='#FE53BB', 
+                          alpha=0.3, edgecolor='#FE53BB', linewidth=1.5),
                 ha='right', va='center'
             )
         
-        # Rango dinámico incluyendo put wall
+        # Rango dinámico
         if close_series is not None and len(close_series) > 0:
             all_values = [close_series]
             if bb_lower is not None and len(bb_lower) > 0:
@@ -636,60 +659,61 @@ def plot_ticker_analysis(ticker_data):
             margin = (y_max - y_min) * 0.08
             ax1.set_ylim(y_min - margin, y_max + margin)
         
-        ax1.set_ylabel('Precio ($)', fontsize=13, fontweight='bold', color='#FFFFFF')
-        ax1.legend(loc='upper left', fontsize=10, framealpha=0.9)
-        ax1.grid(True, alpha=0.1, linestyle='-', linewidth=0.8)
-        ax1.tick_params(labelsize=10, colors='#B0B0B0', labelbottom=False)
+        ax1.set_ylabel('Precio ($)', fontsize=12, fontweight='bold', color='#FFFFFF')
+        ax1.legend(loc='upper left', fontsize=9, framealpha=0.9)
+        ax1.grid(True, alpha=0.1, linestyle='-', linewidth=0.6)
+        ax1.tick_params(labelsize=9, colors='#B0B0B0', labelbottom=False)
         for spine in ax1.spines.values():
             spine.set_color('#2D3142')
-            spine.set_linewidth(1.5)
+            spine.set_linewidth(1.2)
         
         # PANEL 2: Z-SCORE
         ax2 = fig.add_subplot(gs[1], sharex=ax1)
         ax2.set_facecolor('#1A1D29')
         
         zscore = ensure_series(ticker_data.get('ZScore_Series'))
+        if zscore is not None:
+            zscore = zscore[zscore.index >= cutoff_date]
+        
         if zscore is not None and len(zscore) > 0:
-            if len(zscore) != len(data.index):
-                zscore = zscore.iloc[:len(data.index)]
             for i in range(1, len(zscore)):
                 if pd.notna(zscore.iloc[i-1]) and pd.notna(zscore.iloc[i]):
                     y2 = float(zscore.iloc[i])
                     if abs(y2) > 3:
-                        color, width = '#FF6B6B', 3.5
+                        color, width = '#FF6B6B', 2.2
                     elif abs(y2) > 2.5:
-                        color, width = '#FFB86C', 3
+                        color, width = '#FFB86C', 1.8
                     elif abs(y2) > 2:
-                        color, width = '#FFD93D', 2.5
+                        color, width = '#FFD93D', 1.5
                     else:
-                        color, width = '#95A5A6', 2
-                    ax2.plot([data.index[i-1], data.index[i]], 
+                        color, width = '#95A5A6', 1.2
+                    ax2.plot([zscore.index[i-1], zscore.index[i]], 
                              [float(zscore.iloc[i-1]), y2], 
                              color=color, linewidth=width, alpha=0.95, zorder=5)
-            ax2.axhline(y=3, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8, label='±3σ')
-            ax2.axhline(y=2.5, color='#FFB86C', linestyle='--', linewidth=2, alpha=0.8, label='±2.5σ')
-            ax2.axhline(y=0, color='#8E93A1', linestyle='-', linewidth=1.5, alpha=0.7)
-            ax2.axhline(y=-2.5, color='#FFB86C', linestyle='--', linewidth=2, alpha=0.8)
-            ax2.axhline(y=-3, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8)
-            ax2.fill_between(data.index, 2.5, 5, alpha=0.12, color='#FFB86C', zorder=0)
-            ax2.fill_between(data.index, -5, -2.5, alpha=0.12, color='#FFB86C', zorder=0)
-            ax2.fill_between(data.index, 3, 5, alpha=0.15, color='#FF6B6B', zorder=0)
-            ax2.fill_between(data.index, -5, -3, alpha=0.15, color='#FF6B6B', zorder=0)
+            ax2.axhline(y=3, color='#FF6B6B', linestyle='--', linewidth=1.5, alpha=0.8, label='±3σ')
+            ax2.axhline(y=2.5, color='#FFB86C', linestyle='--', linewidth=1.5, alpha=0.8, label='±2.5σ')
+            ax2.axhline(y=0, color='#8E93A1', linestyle='-', linewidth=1.2, alpha=0.7)
+            ax2.axhline(y=-2.5, color='#FFB86C', linestyle='--', linewidth=1.5, alpha=0.8)
+            ax2.axhline(y=-3, color='#FF6B6B', linestyle='--', linewidth=1.5, alpha=0.8)
+            ax2.fill_between(zscore.index, 2.5, 5, alpha=0.12, color='#FFB86C', zorder=0)
+            ax2.fill_between(zscore.index, -5, -2.5, alpha=0.12, color='#FFB86C', zorder=0)
+            ax2.fill_between(zscore.index, 3, 5, alpha=0.15, color='#FF6B6B', zorder=0)
+            ax2.fill_between(zscore.index, -5, -3, alpha=0.15, color='#FF6B6B', zorder=0)
             current_zscore = ticker_data['Z-Score']
             zscore_color = '#FF6B6B' if abs(current_zscore) > 3 else '#FFB86C' if abs(current_zscore) > 2.5 else '#FFD93D'
             ax2.text(0.02, 0.95, f'Z-Score: {current_zscore:.2f}σ', 
-                     transform=ax2.transAxes, fontsize=13, fontweight='bold', 
+                     transform=ax2.transAxes, fontsize=11, fontweight='bold', 
                      color='white', verticalalignment='top',
-                     bbox=dict(boxstyle='round,pad=0.7', facecolor=zscore_color, 
-                               alpha=0.95, edgecolor='white', linewidth=2))
-        ax2.set_ylabel('Z-Score (σ)', fontsize=12, fontweight='bold', color='#FFFFFF')
+                     bbox=dict(boxstyle='round,pad=0.5', facecolor=zscore_color, 
+                               alpha=0.95, edgecolor='white', linewidth=1.5))
+        ax2.set_ylabel('Z-Score (σ)', fontsize=11, fontweight='bold', color='#FFFFFF')
         ax2.set_ylim([-5, 5])
-        ax2.legend(loc='upper right', fontsize=9, framealpha=0.9, ncol=2)
-        ax2.grid(True, alpha=0.1, linestyle=':', linewidth=1)
-        ax2.tick_params(labelsize=10, colors='#B0B0B0', labelbottom=False)
+        ax2.legend(loc='upper right', fontsize=8, framealpha=0.9, ncol=2)
+        ax2.grid(True, alpha=0.1, linestyle=':', linewidth=0.8)
+        ax2.tick_params(labelsize=9, colors='#B0B0B0', labelbottom=False)
         for spine in ax2.spines.values():
             spine.set_color('#2D3142')
-            spine.set_linewidth(1.5)
+            spine.set_linewidth(1.2)
         
         # PANEL 3: MACD-V
         ax3 = fig.add_subplot(gs[2], sharex=ax1)
@@ -697,71 +721,52 @@ def plot_ticker_analysis(ticker_data):
         
         macd_v = ensure_series(ticker_data.get('MACD_V_Series'))
         signal = ensure_series(ticker_data.get('Signal_Series'))
+        
+        if macd_v is not None:
+            macd_v = macd_v[macd_v.index >= cutoff_date]
+        if signal is not None:
+            signal = signal[signal.index >= cutoff_date]
+        
         if macd_v is not None and len(macd_v) > 0 and not macd_v.isna().all():
-            if len(macd_v) != len(data.index):
-                macd_v = macd_v.iloc[:len(data.index)]
             for i in range(1, len(macd_v)):
                 if pd.notna(macd_v.iloc[i-1]) and pd.notna(macd_v.iloc[i]):
                     y2 = float(macd_v.iloc[i])
                     if y2 > 150:
-                        color, width = '#FF6B6B', 3.5
+                        color, width = '#FF6B6B', 2.2
                     elif y2 > 50:
-                        color, width = '#4ECDC4', 3
+                        color, width = '#4ECDC4', 1.8
                     elif y2 > -50:
-                        color, width = '#95A5A6', 2.5
+                        color, width = '#95A5A6', 1.5
                     elif y2 > -150:
-                        color, width = '#EE5A6F', 3
+                        color, width = '#EE5A6F', 1.8
                     else:
-                        color, width = '#FF6B6B', 3.5
-                    ax3.plot([data.index[i-1], data.index[i]], 
+                        color, width = '#FF6B6B', 2.2
+                    ax3.plot([macd_v.index[i-1], macd_v.index[i]], 
                              [float(macd_v.iloc[i-1]), y2], 
                              color=color, linewidth=width, alpha=0.95, zorder=5)
             if signal is not None and len(signal) > 0:
-                if len(signal) != len(data.index):
-                    signal = signal.iloc[:len(data.index)]
-                ax3.plot(data.index, signal, color='#FFB86C', linewidth=1.5, 
+                ax3.plot(signal.index, signal, color='#FFB86C', linewidth=1.2, 
                          alpha=0.5, linestyle='--', zorder=3)
-            ax3.axhline(y=150, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8)
-            ax3.axhline(y=50, color='#4ECDC4', linestyle='--', linewidth=2, alpha=0.8, label='±50')
-            ax3.axhline(y=0, color='#8E93A1', linestyle='-', linewidth=1.5, alpha=0.7)
-            ax3.axhline(y=-50, color='#EE5A6F', linestyle='--', linewidth=2, alpha=0.8)
-            ax3.axhline(y=-150, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8)
+            ax3.axhline(y=150, color='#FF6B6B', linestyle='--', linewidth=1.5, alpha=0.8)
+            ax3.axhline(y=50, color='#4ECDC4', linestyle='--', linewidth=1.5, alpha=0.8, label='±50')
+            ax3.axhline(y=0, color='#8E93A1', linestyle='-', linewidth=1.2, alpha=0.7)
+            ax3.axhline(y=-50, color='#EE5A6F', linestyle='--', linewidth=1.5, alpha=0.8)
+            ax3.axhline(y=-150, color='#FF6B6B', linestyle='--', linewidth=1.5, alpha=0.8)
             current_macdv = ticker_data['MACD_V']
             macd_color = '#FF6B6B' if abs(current_macdv) > 150 else '#4ECDC4' if current_macdv > 50 else '#EE5A6F' if current_macdv < -50 else '#95A5A6'
             ax3.text(0.02, 0.95, f'MACD-V: {current_macdv:.1f}', 
-                     transform=ax3.transAxes, fontsize=13, fontweight='bold', 
+                     transform=ax3.transAxes, fontsize=11, fontweight='bold', 
                      color='white', verticalalignment='top',
-                     bbox=dict(boxstyle='round,pad=0.7', facecolor=macd_color, 
-                               alpha=0.95, edgecolor='white', linewidth=2))
-        ax3.set_ylabel('MACD-V', fontsize=12, fontweight='bold', color='#FFFFFF')
-        ax3.legend(loc='upper right', fontsize=9, framealpha=0.9)
-        ax3.grid(True, alpha=0.1, linestyle=':', linewidth=1)
-        ax3.tick_params(labelsize=10, colors='#B0B0B0', labelbottom=False)
+                     bbox=dict(boxstyle='round,pad=0.5', facecolor=macd_color, 
+                               alpha=0.95, edgecolor='white', linewidth=1.5))
+        ax3.set_ylabel('MACD-V', fontsize=11, fontweight='bold', color='#FFFFFF')
+        ax3.set_xlabel('Fecha', fontsize=12, fontweight='bold', color='#FFFFFF')
+        ax3.legend(loc='upper right', fontsize=8, framealpha=0.9)
+        ax3.grid(True, alpha=0.1, linestyle=':', linewidth=0.8)
+        ax3.tick_params(labelsize=9, colors='#B0B0B0')
         for spine in ax3.spines.values():
             spine.set_color('#2D3142')
-            spine.set_linewidth(1.5)
-        
-        # PANEL 4: VOLUMEN
-        ax4 = fig.add_subplot(gs[3], sharex=ax1)
-        ax4.set_facecolor('#1A1D29')
-        
-        volume = ensure_series(data['Volume'])
-        if volume is not None and len(volume) > 0:
-            colors = ['#4ECDC4' if close_series.iloc[i] >= close_series.iloc[i-1] else '#FF6B6B' 
-                      for i in range(1, len(close_series))]
-            colors.insert(0, '#95A5A6')
-            ax4.bar(data.index, volume, color=colors, alpha=0.6, width=0.8)
-            vol_avg = volume.rolling(window=20).mean()
-            ax4.plot(data.index, vol_avg, color='#FFB86C', linewidth=2, 
-                     label='Vol Avg (20)', alpha=0.8)
-        ax4.set_ylabel('Volumen', fontsize=12, fontweight='bold', color='#FFFFFF')
-        ax4.set_xlabel('Fecha', fontsize=13, fontweight='bold', color='#FFFFFF')
-        ax4.legend(loc='upper right', fontsize=9, framealpha=0.9)
-        ax4.grid(True, alpha=0.1, linestyle=':', linewidth=1)
-        ax4.tick_params(labelsize=10, colors='#B0B0B0')
-        for spine in ax4.spines.values():
-            spine.set_color('#2D3142')
-            spine.set_linewidth(1.5)
+            spine.set_linewidth(1.2)
         
         plt.tight_layout()
         return fig
@@ -793,7 +798,6 @@ def main():
             st.info("🔄 Cargando universo de tickers...")
             try:
                 df_tickers = create_tickers_universe()
-                # Si la función devuelve DataFrame, extraer columna Ticker
                 if isinstance(df_tickers, pd.DataFrame):
                     tickers_list = df_tickers['Ticker'].astype(str).tolist()
                 else:
@@ -827,7 +831,7 @@ def main():
             st.markdown("**📅 Periodo de Datos**")
             period = st.selectbox("Periodo histórico", 
                                   ["1mo", "3mo", "6mo", "1y", "2y"],
-                                  index=2)
+                                  index=4)  # 2y por defecto
             interval = st.selectbox("Intervalo", 
                                     ["1d", "1wk"],
                                     index=0)
@@ -955,7 +959,6 @@ def main():
                 'Vol Opciones': f"{r.get('Options_Volume', 0):,.0f}" if r.get('Options_Volume') else '-',
                 'C/P Ratio': f"{r.get('Call_Put_Ratio', 0):.2f}" if r.get('Call_Put_Ratio') else '-',
                 'Put Wall': f"${r.get('Put_Wall', 0):.2f}" if r.get('Put_Wall') else '-',
-                'MACD Confirm': '✅' if r['MACDV_Confirm'] else '❌',
                 'ID': r['ID']
             }
             for r in results
@@ -979,10 +982,13 @@ def main():
         tab1, tab2 = st.tabs(["📊 Tabla de Resultados", "📈 Análisis Individual"])
         
         with tab1:
+            # Altura dinámica según cantidad de resultados (max 600px, min 200px)
+            table_height = min(max(len(results) * 40 + 50, 200), 600)
+            
             st.dataframe(
                 df_results.drop('ID', axis=1),
                 use_container_width=True,
-                height=500
+                height=table_height
             )
             csv = df_results.drop('ID', axis=1).to_csv(index=False)
             st.download_button(
@@ -994,8 +1000,21 @@ def main():
         
         with tab2:
             st.markdown("#### Selecciona un ticker para análisis detallado")
-            ticker_options = {f"{r['Ticker']} - {r['Company'][:30]}": r['ID'] for r in results}
-            selected_display = st.selectbox("Ticker", options=list(ticker_options.keys()))
+            
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                ticker_options = {f"{r['Ticker']} - {r['Company'][:30]}": r['ID'] for r in results}
+                selected_display = st.selectbox("Ticker", options=list(ticker_options.keys()))
+            
+            with col2:
+                chart_period = st.selectbox(
+                    "Periodo del gráfico",
+                    options=['3mo', '6mo', '1y', '2y'],
+                    index=0,
+                    help="Selecciona el periodo a mostrar en el gráfico"
+                )
+            
             if selected_display:
                 selected_id = ticker_options[selected_display]
                 selected_result = next((r for r in results if r['ID'] == selected_id), None)
@@ -1017,7 +1036,7 @@ def main():
                         put_wall = selected_result.get('Put_Wall')
                         st.metric("Put Wall", f"${put_wall:.2f}" if put_wall else 'N/A')
                     st.markdown("---")
-                    fig = plot_ticker_analysis(selected_result)
+                    fig = plot_ticker_analysis(selected_result, chart_period=chart_period)
                     if fig:
                         st.pyplot(fig)
                         plt.close(fig)
