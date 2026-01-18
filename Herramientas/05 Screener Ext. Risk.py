@@ -878,8 +878,7 @@ def main_app():
                 'BB %B': round(r['BB_%B'], 2),
                 'MACD-V': round(r['MACD_V'], 1),
                 'Precio': round(r['Price'], 2),
-                'SMA 200': round(r['SMA_200'], 2) if r.get('SMA_200') else None,
-                'Confirm': '✓' if r['MACDV_Confirm'] else ''
+                'SMA 200': round(r['SMA_200'], 2) if r.get('SMA_200') and r['SMA_200'] is not None else None
             }
             for r in results
         ])
@@ -916,7 +915,6 @@ def main_app():
                 "MACD-V": st.column_config.NumberColumn("MACD-V", format="%.1f"),
                 "Precio": st.column_config.NumberColumn("Precio", format="$%.2f"),
                 "SMA 200": st.column_config.NumberColumn("SMA 200", format="$%.2f"),
-                "Confirm": st.column_config.TextColumn("Confirm", width="small"),
             }
         )
         
@@ -941,8 +939,9 @@ def main_app():
                     confirm_icon = "✅" if ticker_data['MACDV_Confirm'] else "⚪"
                     st.metric("MACD-V", f"{ticker_data['MACD_V']:.0f} {confirm_icon}")
                 with col5:
-                    if ticker_data.get('SMA_200'):
-                        st.metric("SMA 200", f"${ticker_data['SMA_200']:.2f}")
+                    sma_value = ticker_data.get('SMA_200')
+                    if sma_value and sma_value is not None and not pd.isna(sma_value):
+                        st.metric("SMA 200", f"${sma_value:.2f}")
                     else:
                         st.metric("Tipo", ticker_data['Type'])
                 
