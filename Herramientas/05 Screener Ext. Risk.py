@@ -7,6 +7,7 @@ from datetime import datetime
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
+import random
 from utils.utils import check_password
 from utils.tickers import create_tickers_universe
 
@@ -107,7 +108,8 @@ def safe_extract_value(series_or_df, index=-1):
 def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_period=20, 
                    zscore_threshold_pos=2.5, zscore_threshold_neg=-2.5,
                    bb_threshold_upper=1.1, bb_threshold_lower=-0.1, 
-                   macdv_threshold=50, filter_sma200=False, use_lock=True):
+                   macdv_threshold=50, filter_sma200=False, 
+                   filter_zscore_positive=True, filter_zscore_negative=True, use_lock=True):
     """Analiza un ticker buscando sobreextensión estadística"""
     try:
         if use_lock:
@@ -206,8 +208,13 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
             if current_price < current_sma200:
                 return None
         
-        # Filtro Z-Score (positivo o negativo)
-        zscore_check = (current_zscore >= zscore_threshold_pos) or (current_zscore <= zscore_threshold_neg)
+        # Filtro Z-Score (positivo o negativo según selección)
+        zscore_check = False
+        if filter_zscore_positive and current_zscore >= zscore_threshold_pos:
+            zscore_check = True
+        if filter_zscore_negative and current_zscore <= zscore_threshold_neg:
+            zscore_check = True
+        
         if not zscore_check:
             return None
         
@@ -252,13 +259,14 @@ def analyze_ticker(ticker, period="6mo", interval="1d", bb_period=20, zscore_per
             'MACDV_Confirm': bool(macdv_confirms),
             'Date': data.index[-1],
             'Data': data.copy(deep=True),
-            'BB_SMA': bb_sma.copy(deep=True) if bb_sma is not None else None,
-            'BB_Upper': bb_upper.copy(deep=True) if bb_upper is not None else None,
-            'BB_Lower': bb_lower.copy(deep=True) if bb_lower is not None else None,
-            'ZScore_Series': zscore.copy(deep=True) if zscore is not None else None,
-            'MACD_V_Series': macd_v.copy(deep=True) if macd_v is not None else None,
-            'Signal_Series': macd_v_signal.copy(deep=True) if macd_v_signal is not None else None,
-            'SMA_200_Series': sma_200.copy(deep=True) if sma_200 is not None else None,
+            'BB_SMA': bb_sma,
+            'BB_Upper': bb_upper,
+            'BB_Lower': bb_lower,
+            'BB_%B_Series': bb_percent,
+            'ZScore_Series': zscore,
+            'MACD_V_Series': macd_v,
+            'Signal_Series': macd_v_signal,
+            'SMA_200_Series': sma_200,
             'ID': f"{ticker}_{timestamp}"
         }
     except Exception as e:
@@ -333,6 +341,10 @@ def ensure_series(data_series):
     if data_series is None:
         return None
     
+    # Si ya es un escalar, devolver None (no es una serie)
+    if np.isscalar(data_series):
+        return None
+    
     if isinstance(data_series, pd.DataFrame):
         if data_series.empty:
             return None
@@ -342,273 +354,282 @@ def ensure_series(data_series):
         return data_series.squeeze()
     
     if isinstance(data_series, np.ndarray):
+        if data_series.size == 0:
+            return None
         return pd.Series(data_series)
     
     return data_series
 
 def plot_ticker_analysis(ticker_data):
     """Genera gráfico completo con 5 paneles (añadiendo SMA 200 y Volumen)"""
-    plt.style.use('dark_background')
-    fig = plt.figure(figsize=(18, 16), facecolor='#0E1117')
-    gs = fig.add_gridspec(5, 1, height_ratios=[2.5, 1, 1, 1, 1], hspace=0.3)
+    try:
+        plt.style.use('dark_background')
+        fig = plt.figure(figsize=(18, 16), facecolor='#0E1117')
+        gs = fig.add_gridspec(5, 1, height_ratios=[2.5, 1, 1, 1, 1], hspace=0.3)
+        
+        data = ticker_data['Data']
+        ticker = ticker_data['Ticker']
+        company_name = ticker_data.get('Company', ticker)
+        
+        if data is None or len(data) == 0:
+            st.error(f"No hay datos disponibles para {ticker}")
+            return None
+        
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+        
+        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+            if col in data.columns:
+                data[col] = ensure_series(data[col])
+        
+        # PANEL 1: PRECIO + BOLLINGER BANDS + SMA 200
+        ax1 = fig.add_subplot(gs[0])
+        ax1.set_facecolor('#1A1D29')
+        
+        bb_lower = ensure_series(ticker_data.get('BB_Lower'))
+        bb_upper = ensure_series(ticker_data.get('BB_Upper'))
+        bb_sma = ensure_series(ticker_data.get('BB_SMA'))
+        sma_200 = ensure_series(ticker_data.get('SMA_200_Series'))
+        
+        if bb_lower is not None and bb_upper is not None and len(bb_lower) > 0 and len(bb_upper) > 0:
+            ax1.fill_between(data.index, bb_lower, bb_upper,
+                             color='#FFB86C', alpha=0.1, label='Bollinger Bands (2.5σ)', zorder=1)
+            ax1.plot(data.index, bb_upper, color='#FFB86C', 
+                    linewidth=2, linestyle='--', alpha=0.7, zorder=2)
+            if bb_sma is not None and len(bb_sma) > 0:
+                ax1.plot(data.index, bb_sma, color='#BD93F9', 
+                        linewidth=2.5, label='SMA(20)', zorder=2)
+            ax1.plot(data.index, bb_lower, color='#FFB86C', 
+                    linewidth=2, linestyle='--', alpha=0.7, zorder=2)
+        
+        # Añadir SMA 200
+        if sma_200 is not None and len(sma_200) > 0:
+            ax1.plot(data.index, sma_200, color='#00D9FF', 
+                    linewidth=3, label='SMA(200)', zorder=2, alpha=0.8)
+        
+        close_series = ensure_series(data['Close'])
+        if close_series is not None and len(close_series) > 0:
+            ax1.plot(data.index, close_series, color='#FFFFFF', linewidth=2.5, 
+                    label='Precio', zorder=3)
+            
+            current_color = '#FF6B6B' if ticker_data['Type'] == 'SOBRECOMPRA' else '#4ECDC4'
+            ax1.scatter(data.index[-1], close_series.iloc[-1], 
+                       color=current_color, s=200, edgecolors='white', 
+                       linewidth=3, zorder=10, label='Actual')
+        
+        sma200_text = f" | SMA200: ${ticker_data.get('SMA_200', 0):.2f}" if ticker_data.get('SMA_200') else ""
+        ax1.set_title(f'{ticker} - {company_name}\n${ticker_data["Price"]:.2f}{sma200_text} | {ticker_data["Type"]} ({ticker_data["Strength"]:.1f}σ)', 
+                      fontsize=18, fontweight='bold', color='#FFFFFF', pad=15)
+        ax1.set_ylabel('Precio ($)', fontsize=13, fontweight='bold', color='#FFFFFF')
+        ax1.legend(loc='upper left', fontsize=10, framealpha=0.9)
+        ax1.grid(True, alpha=0.1, linestyle='-', linewidth=0.8)
+        ax1.tick_params(labelsize=10, colors='#B0B0B0', labelbottom=False)
+        
+        for spine in ax1.spines.values():
+            spine.set_color('#2D3142')
+            spine.set_linewidth(1.5)
+        
+        # PANEL 2: Z-SCORE
+        ax2 = fig.add_subplot(gs[1], sharex=ax1)
+        ax2.set_facecolor('#1A1D29')
+        
+        zscore = ensure_series(ticker_data.get('ZScore_Series'))
+        
+        if zscore is not None and len(zscore) > 0:
+            if len(zscore) != len(data.index):
+                zscore = zscore.iloc[:len(data.index)]
+            
+            for i in range(1, len(zscore)):
+                if pd.notna(zscore.iloc[i-1]) and pd.notna(zscore.iloc[i]):
+                    y2 = float(zscore.iloc[i])
+                    if abs(y2) > 3:
+                        color, width = '#FF6B6B', 3.5
+                    elif abs(y2) > 2.5:
+                        color, width = '#FFB86C', 3
+                    elif abs(y2) > 2:
+                        color, width = '#FFD93D', 2.5
+                    else:
+                        color, width = '#95A5A6', 2
+                    
+                    ax2.plot([data.index[i-1], data.index[i]], 
+                            [float(zscore.iloc[i-1]), y2], 
+                            color=color, linewidth=width, alpha=0.95, zorder=5)
+            
+            ax2.axhline(y=3, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8, label='±3σ')
+            ax2.axhline(y=2.5, color='#FFB86C', linestyle='--', linewidth=2, alpha=0.8, label='±2.5σ')
+            ax2.axhline(y=0, color='#8E93A1', linestyle='-', linewidth=1.5, alpha=0.7)
+            ax2.axhline(y=-2.5, color='#FFB86C', linestyle='--', linewidth=2, alpha=0.8)
+            ax2.axhline(y=-3, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8)
+            
+            ax2.fill_between(data.index, 2.5, 5, alpha=0.12, color='#FFB86C', zorder=0)
+            ax2.fill_between(data.index, -5, -2.5, alpha=0.12, color='#FFB86C', zorder=0)
+            ax2.fill_between(data.index, 3, 5, alpha=0.15, color='#FF6B6B', zorder=0)
+            ax2.fill_between(data.index, -5, -3, alpha=0.15, color='#FF6B6B', zorder=0)
+            
+            current_zscore = ticker_data['Z-Score']
+            zscore_color = '#FF6B6B' if abs(current_zscore) > 3 else '#FFB86C' if abs(current_zscore) > 2.5 else '#FFD93D'
+            ax2.text(0.02, 0.95, f'Z-Score: {current_zscore:.2f}σ', 
+                    transform=ax2.transAxes, fontsize=13, fontweight='bold', 
+                    color='white', verticalalignment='top',
+                    bbox=dict(boxstyle='round,pad=0.7', facecolor=zscore_color, 
+                             alpha=0.95, edgecolor='white', linewidth=2))
+        
+        ax2.set_ylabel('Z-Score (σ)', fontsize=12, fontweight='bold', color='#FFFFFF')
+        ax2.set_ylim([-5, 5])
+        ax2.legend(loc='upper right', fontsize=9, framealpha=0.9, ncol=2)
+        ax2.grid(True, alpha=0.1, linestyle=':', linewidth=1)
+        ax2.tick_params(labelsize=10, colors='#B0B0B0', labelbottom=False)
+        
+        for spine in ax2.spines.values():
+            spine.set_color('#2D3142')
+            spine.set_linewidth(1.5)
+        
+        # PANEL 3: MACD-V
+        ax3 = fig.add_subplot(gs[2], sharex=ax1)
+        ax3.set_facecolor('#1A1D29')
+        
+        macd_v = ensure_series(ticker_data.get('MACD_V_Series'))
+        signal = ensure_series(ticker_data.get('Signal_Series'))
+        
+        if macd_v is not None and len(macd_v) > 0 and not macd_v.isna().all():
+            if len(macd_v) != len(data.index):
+                macd_v = macd_v.iloc[:len(data.index)]
+            
+            for i in range(1, len(macd_v)):
+                if pd.notna(macd_v.iloc[i-1]) and pd.notna(macd_v.iloc[i]):
+                    y2 = float(macd_v.iloc[i])
+                    if y2 > 150:
+                        color, width = '#FF6B6B', 3.5
+                    elif y2 > 50:
+                        color, width = '#4ECDC4', 3
+                    elif y2 > -50:
+                        color, width = '#95A5A6', 2.5
+                    elif y2 > -150:
+                        color, width = '#EE5A6F', 3
+                    else:
+                        color, width = '#FF6B6B', 3.5
+                    
+                    ax3.plot([data.index[i-1], data.index[i]], 
+                            [float(macd_v.iloc[i-1]), y2], 
+                            color=color, linewidth=width, alpha=0.95, zorder=5)
+            
+            if signal is not None and len(signal) > 0:
+                if len(signal) != len(data.index):
+                    signal = signal.iloc[:len(data.index)]
+                ax3.plot(data.index, signal, color='#FFB86C', linewidth=1.5, 
+                        alpha=0.5, linestyle='--', zorder=3)
+            
+            ax3.axhline(y=150, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8)
+            ax3.axhline(y=50, color='#4ECDC4', linestyle='--', linewidth=2, alpha=0.8, label='±50')
+            ax3.axhline(y=0, color='#8E93A1', linestyle='-', linewidth=1.5, alpha=0.7)
+            ax3.axhline(y=-50, color='#EE5A6F', linestyle='--', linewidth=2, alpha=0.8)
+            ax3.axhline(y=-150, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8)
+            
+            current_macdv = ticker_data['MACD_V']
+            macd_color = '#FF6B6B' if abs(current_macdv) > 150 else '#4ECDC4' if current_macdv > 50 else '#EE5A6F' if current_macdv < -50 else '#95A5A6'
+            confirm_text = " ✓" if ticker_data['MACDV_Confirm'] else ""
+            ax3.text(0.02, 0.95, f'MACD-V: {current_macdv:.1f}{confirm_text}', 
+                    transform=ax3.transAxes, fontsize=13, fontweight='bold', 
+                    color='white', verticalalignment='top',
+                    bbox=dict(boxstyle='round,pad=0.7', facecolor=macd_color, 
+                             alpha=0.95, edgecolor='white', linewidth=2))
+        
+        ax3.set_ylabel('MACD-V', fontsize=12, fontweight='bold', color='#FFFFFF')
+        ax3.legend(loc='upper right', fontsize=9, framealpha=0.9)
+        ax3.grid(True, alpha=0.1, linestyle=':', linewidth=1)
+        ax3.tick_params(labelsize=10, colors='#B0B0B0', labelbottom=False)
+        
+        for spine in ax3.spines.values():
+            spine.set_color('#2D3142')
+            spine.set_linewidth(1.5)
+        
+        # PANEL 4: BOLLINGER %B
+        ax4 = fig.add_subplot(gs[3], sharex=ax1)
+        ax4.set_facecolor('#1A1D29')
+        
+        bb_percent = ensure_series(ticker_data.get('BB_%B_Series'))
+        
+        if bb_percent is not None and len(bb_percent) > 0:
+            if len(bb_percent) != len(data.index):
+                bb_percent = bb_percent.iloc[:len(data.index)]
+            
+            for i in range(1, len(bb_percent)):
+                if pd.notna(bb_percent.iloc[i-1]) and pd.notna(bb_percent.iloc[i]):
+                    y2 = float(bb_percent.iloc[i])
+                    if y2 > 1.2:
+                        color, width = '#FF6B6B', 3.5
+                    elif y2 > 1.0:
+                        color, width = '#FFB86C', 3
+                    elif y2 < -0.2:
+                        color, width = '#FF6B6B', 3.5
+                    elif y2 < 0:
+                        color, width = '#4ECDC4', 3
+                    else:
+                        color, width = '#95A5A6', 2
+                    
+                    ax4.plot([data.index[i-1], data.index[i]], 
+                            [float(bb_percent.iloc[i-1]), y2], 
+                            color=color, linewidth=width, alpha=0.95, zorder=5)
+            
+            ax4.axhline(y=1.0, color='#FFB86C', linestyle='--', linewidth=2, alpha=0.8, label='Banda Superior')
+            ax4.axhline(y=0.5, color='#BD93F9', linestyle='-', linewidth=1.5, alpha=0.7, label='Media')
+            ax4.axhline(y=0.0, color='#4ECDC4', linestyle='--', linewidth=2, alpha=0.8, label='Banda Inferior')
+            
+            ax4.fill_between(data.index, 1.0, 1.5, alpha=0.12, color='#FFB86C', zorder=0)
+            ax4.fill_between(data.index, -0.5, 0.0, alpha=0.12, color='#4ECDC4', zorder=0)
+            
+            current_bb = ticker_data.get('BB_%B', 0)
+            bb_color = '#FF6B6B' if current_bb > 1.1 or current_bb < -0.1 else '#FFB86C' if current_bb > 1.0 else '#4ECDC4' if current_bb < 0 else '#95A5A6'
+            ax4.text(0.02, 0.95, f'%B: {current_bb:.2f}', 
+                    transform=ax4.transAxes, fontsize=13, fontweight='bold', 
+                    color='white', verticalalignment='top',
+                    bbox=dict(boxstyle='round,pad=0.7', facecolor=bb_color, 
+                             alpha=0.95, edgecolor='white', linewidth=2))
+        
+        ax4.set_ylabel('Bollinger %B', fontsize=12, fontweight='bold', color='#FFFFFF')
+        ax4.set_ylim([-0.5, 1.5])
+        ax4.legend(loc='upper right', fontsize=9, framealpha=0.9, ncol=3)
+        ax4.grid(True, alpha=0.1, linestyle=':', linewidth=1)
+        ax4.tick_params(labelsize=10, colors='#B0B0B0', labelbottom=False)
+        
+        for spine in ax4.spines.values():
+            spine.set_color('#2D3142')
+            spine.set_linewidth(1.5)
+        
+        # PANEL 5: VOLUMEN
+        ax5 = fig.add_subplot(gs[4], sharex=ax1)
+        ax5.set_facecolor('#1A1D29')
+        
+        volume = ensure_series(data['Volume'])
+        if volume is not None and len(volume) > 0:
+            colors = ['#4ECDC4' if close_series.iloc[i] >= close_series.iloc[i-1] else '#FF6B6B' 
+                      for i in range(1, len(close_series))]
+            colors.insert(0, '#95A5A6')
+            
+            ax5.bar(data.index, volume, color=colors, alpha=0.6, width=0.8)
+            
+            vol_avg = volume.rolling(window=20).mean()
+            ax5.plot(data.index, vol_avg, color='#FFB86C', linewidth=2, 
+                    label='Vol Avg (20)', alpha=0.8)
+        
+        ax5.set_ylabel('Volumen', fontsize=12, fontweight='bold', color='#FFFFFF')
+        ax5.set_xlabel('Fecha', fontsize=13, fontweight='bold', color='#FFFFFF')
+        ax5.legend(loc='upper right', fontsize=9, framealpha=0.9)
+        ax5.grid(True, alpha=0.1, linestyle=':', linewidth=1)
+        ax5.tick_params(labelsize=10, colors='#B0B0B0')
+        
+        for spine in ax5.spines.values():
+            spine.set_color('#2D3142')
+            spine.set_linewidth(1.5)
+        
+        plt.tight_layout()
+        return fig
     
-    data = ticker_data['Data']
-    ticker = ticker_data['Ticker']
-    company_name = ticker_data.get('Company', ticker)
-    
-    if data is None or len(data) == 0:
-        st.error(f"No hay datos disponibles para {ticker}")
+    except Exception as e:
+        st.error(f"Error generando gráfico: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
         return None
-    
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
-    
-    for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
-        if col in data.columns:
-            data[col] = ensure_series(data[col])
-    
-    # PANEL 1: PRECIO + BOLLINGER BANDS + SMA 200
-    ax1 = fig.add_subplot(gs[0])
-    ax1.set_facecolor('#1A1D29')
-    
-    bb_lower = ensure_series(ticker_data.get('BB_Lower'))
-    bb_upper = ensure_series(ticker_data.get('BB_Upper'))
-    bb_sma = ensure_series(ticker_data.get('BB_SMA'))
-    sma_200 = ensure_series(ticker_data.get('SMA_200_Series'))
-    
-    if bb_lower is not None and bb_upper is not None and len(bb_lower) > 0 and len(bb_upper) > 0:
-        ax1.fill_between(data.index, bb_lower, bb_upper,
-                         color='#FFB86C', alpha=0.1, label='Bollinger Bands (2.5σ)', zorder=1)
-        ax1.plot(data.index, bb_upper, color='#FFB86C', 
-                linewidth=2, linestyle='--', alpha=0.7, zorder=2)
-        if bb_sma is not None and len(bb_sma) > 0:
-            ax1.plot(data.index, bb_sma, color='#BD93F9', 
-                    linewidth=2.5, label='SMA(20)', zorder=2)
-        ax1.plot(data.index, bb_lower, color='#FFB86C', 
-                linewidth=2, linestyle='--', alpha=0.7, zorder=2)
-    
-    # Añadir SMA 200
-    if sma_200 is not None and len(sma_200) > 0:
-        ax1.plot(data.index, sma_200, color='#00D9FF', 
-                linewidth=3, label='SMA(200)', zorder=2, alpha=0.8)
-    
-    close_series = ensure_series(data['Close'])
-    if close_series is not None and len(close_series) > 0:
-        ax1.plot(data.index, close_series, color='#FFFFFF', linewidth=2.5, 
-                label='Precio', zorder=3)
-        
-        current_color = '#FF6B6B' if ticker_data['Type'] == 'SOBRECOMPRA' else '#4ECDC4'
-        ax1.scatter(data.index[-1], close_series.iloc[-1], 
-                   color=current_color, s=200, edgecolors='white', 
-                   linewidth=3, zorder=10, label='Actual')
-    
-    sma200_text = f" | SMA200: ${ticker_data.get('SMA_200', 0):.2f}" if ticker_data.get('SMA_200') else ""
-    ax1.set_title(f'{ticker} - {company_name}\n${ticker_data["Price"]:.2f}{sma200_text} | {ticker_data["Type"]} ({ticker_data["Strength"]:.1f}σ)', 
-                  fontsize=18, fontweight='bold', color='#FFFFFF', pad=15)
-    ax1.set_ylabel('Precio ($)', fontsize=13, fontweight='bold', color='#FFFFFF')
-    ax1.legend(loc='upper left', fontsize=10, framealpha=0.9)
-    ax1.grid(True, alpha=0.1, linestyle='-', linewidth=0.8)
-    ax1.tick_params(labelsize=10, colors='#B0B0B0', labelbottom=False)
-    
-    for spine in ax1.spines.values():
-        spine.set_color('#2D3142')
-        spine.set_linewidth(1.5)
-    
-    # PANEL 2: Z-SCORE
-    ax2 = fig.add_subplot(gs[1], sharex=ax1)
-    ax2.set_facecolor('#1A1D29')
-    
-    zscore = ensure_series(ticker_data.get('ZScore_Series'))
-    
-    if zscore is not None and len(zscore) > 0:
-        if len(zscore) != len(data.index):
-            zscore = zscore.iloc[:len(data.index)]
-        
-        for i in range(1, len(zscore)):
-            if pd.notna(zscore.iloc[i-1]) and pd.notna(zscore.iloc[i]):
-                y2 = float(zscore.iloc[i])
-                if abs(y2) > 3:
-                    color, width = '#FF6B6B', 3.5
-                elif abs(y2) > 2.5:
-                    color, width = '#FFB86C', 3
-                elif abs(y2) > 2:
-                    color, width = '#FFD93D', 2.5
-                else:
-                    color, width = '#95A5A6', 2
-                
-                ax2.plot([data.index[i-1], data.index[i]], 
-                        [float(zscore.iloc[i-1]), y2], 
-                        color=color, linewidth=width, alpha=0.95, zorder=5)
-        
-        ax2.axhline(y=3, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8, label='±3σ')
-        ax2.axhline(y=2.5, color='#FFB86C', linestyle='--', linewidth=2, alpha=0.8, label='±2.5σ')
-        ax2.axhline(y=0, color='#8E93A1', linestyle='-', linewidth=1.5, alpha=0.7)
-        ax2.axhline(y=-2.5, color='#FFB86C', linestyle='--', linewidth=2, alpha=0.8)
-        ax2.axhline(y=-3, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8)
-        
-        ax2.fill_between(data.index, 2.5, 5, alpha=0.12, color='#FFB86C', zorder=0)
-        ax2.fill_between(data.index, -5, -2.5, alpha=0.12, color='#FFB86C', zorder=0)
-        ax2.fill_between(data.index, 3, 5, alpha=0.15, color='#FF6B6B', zorder=0)
-        ax2.fill_between(data.index, -5, -3, alpha=0.15, color='#FF6B6B', zorder=0)
-        
-        current_zscore = ticker_data['Z-Score']
-        zscore_color = '#FF6B6B' if abs(current_zscore) > 3 else '#FFB86C' if abs(current_zscore) > 2.5 else '#FFD93D'
-        ax2.text(0.02, 0.95, f'Z-Score: {current_zscore:.2f}σ', 
-                transform=ax2.transAxes, fontsize=13, fontweight='bold', 
-                color='white', verticalalignment='top',
-                bbox=dict(boxstyle='round,pad=0.7', facecolor=zscore_color, 
-                         alpha=0.95, edgecolor='white', linewidth=2))
-    
-    ax2.set_ylabel('Z-Score (σ)', fontsize=12, fontweight='bold', color='#FFFFFF')
-    ax2.set_ylim([-5, 5])
-    ax2.legend(loc='upper right', fontsize=9, framealpha=0.9, ncol=2)
-    ax2.grid(True, alpha=0.1, linestyle=':', linewidth=1)
-    ax2.tick_params(labelsize=10, colors='#B0B0B0', labelbottom=False)
-    
-    for spine in ax2.spines.values():
-        spine.set_color('#2D3142')
-        spine.set_linewidth(1.5)
-    
-    # PANEL 3: MACD-V
-    ax3 = fig.add_subplot(gs[2], sharex=ax1)
-    ax3.set_facecolor('#1A1D29')
-    
-    macd_v = ensure_series(ticker_data.get('MACD_V_Series'))
-    signal = ensure_series(ticker_data.get('Signal_Series'))
-    
-    if macd_v is not None and len(macd_v) > 0 and not macd_v.isna().all():
-        if len(macd_v) != len(data.index):
-            macd_v = macd_v.iloc[:len(data.index)]
-        
-        for i in range(1, len(macd_v)):
-            if pd.notna(macd_v.iloc[i-1]) and pd.notna(macd_v.iloc[i]):
-                y2 = float(macd_v.iloc[i])
-                if y2 > 150:
-                    color, width = '#FF6B6B', 3.5
-                elif y2 > 50:
-                    color, width = '#4ECDC4', 3
-                elif y2 > -50:
-                    color, width = '#95A5A6', 2.5
-                elif y2 > -150:
-                    color, width = '#EE5A6F', 3
-                else:
-                    color, width = '#FF6B6B', 3.5
-                
-                ax3.plot([data.index[i-1], data.index[i]], 
-                        [float(macd_v.iloc[i-1]), y2], 
-                        color=color, linewidth=width, alpha=0.95, zorder=5)
-        
-        if signal is not None and len(signal) > 0:
-            if len(signal) != len(data.index):
-                signal = signal.iloc[:len(data.index)]
-            ax3.plot(data.index, signal, color='#FFB86C', linewidth=1.5, 
-                    alpha=0.5, linestyle='--', zorder=3)
-        
-        ax3.axhline(y=150, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8)
-        ax3.axhline(y=50, color='#4ECDC4', linestyle='--', linewidth=2, alpha=0.8, label='±50')
-        ax3.axhline(y=0, color='#8E93A1', linestyle='-', linewidth=1.5, alpha=0.7)
-        ax3.axhline(y=-50, color='#EE5A6F', linestyle='--', linewidth=2, alpha=0.8)
-        ax3.axhline(y=-150, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8)
-        
-        current_macdv = ticker_data['MACD_V']
-        macd_color = '#FF6B6B' if abs(current_macdv) > 150 else '#4ECDC4' if current_macdv > 50 else '#EE5A6F' if current_macdv < -50 else '#95A5A6'
-        confirm_text = " ✓" if ticker_data['MACDV_Confirm'] else ""
-        ax3.text(0.02, 0.95, f'MACD-V: {current_macdv:.1f}{confirm_text}', 
-                transform=ax3.transAxes, fontsize=13, fontweight='bold', 
-                color='white', verticalalignment='top',
-                bbox=dict(boxstyle='round,pad=0.7', facecolor=macd_color, 
-                         alpha=0.95, edgecolor='white', linewidth=2))
-    
-    ax3.set_ylabel('MACD-V', fontsize=12, fontweight='bold', color='#FFFFFF')
-    ax3.legend(loc='upper right', fontsize=9, framealpha=0.9)
-    ax3.grid(True, alpha=0.1, linestyle=':', linewidth=1)
-    ax3.tick_params(labelsize=10, colors='#B0B0B0', labelbottom=False)
-    
-    for spine in ax3.spines.values():
-        spine.set_color('#2D3142')
-        spine.set_linewidth(1.5)
-    
-    # PANEL 4: BOLLINGER %B
-    ax4 = fig.add_subplot(gs[3], sharex=ax1)
-    ax4.set_facecolor('#1A1D29')
-    
-    bb_percent = ensure_series(ticker_data.get('BB_%B'))
-    
-    if bb_percent is not None and len(bb_percent) > 0:
-        if len(bb_percent) != len(data.index):
-            bb_percent = bb_percent.iloc[:len(data.index)]
-        
-        for i in range(1, len(bb_percent)):
-            if pd.notna(bb_percent.iloc[i-1]) and pd.notna(bb_percent.iloc[i]):
-                y2 = float(bb_percent.iloc[i])
-                if y2 > 1.2:
-                    color, width = '#FF6B6B', 3.5
-                elif y2 > 1.0:
-                    color, width = '#FFB86C', 3
-                elif y2 < -0.2:
-                    color, width = '#FF6B6B', 3.5
-                elif y2 < 0:
-                    color, width = '#4ECDC4', 3
-                else:
-                    color, width = '#95A5A6', 2
-                
-                ax4.plot([data.index[i-1], data.index[i]], 
-                        [float(bb_percent.iloc[i-1]), y2], 
-                        color=color, linewidth=width, alpha=0.95, zorder=5)
-        
-        ax4.axhline(y=1.0, color='#FFB86C', linestyle='--', linewidth=2, alpha=0.8, label='Banda Superior')
-        ax4.axhline(y=0.5, color='#BD93F9', linestyle='-', linewidth=1.5, alpha=0.7, label='Media')
-        ax4.axhline(y=0.0, color='#4ECDC4', linestyle='--', linewidth=2, alpha=0.8, label='Banda Inferior')
-        
-        ax4.fill_between(data.index, 1.0, 1.5, alpha=0.12, color='#FFB86C', zorder=0)
-        ax4.fill_between(data.index, -0.5, 0.0, alpha=0.12, color='#4ECDC4', zorder=0)
-        
-        current_bb = ticker_data.get('BB_%B', 0)
-        bb_color = '#FF6B6B' if current_bb > 1.1 or current_bb < -0.1 else '#FFB86C' if current_bb > 1.0 else '#4ECDC4' if current_bb < 0 else '#95A5A6'
-        ax4.text(0.02, 0.95, f'%B: {current_bb:.2f}', 
-                transform=ax4.transAxes, fontsize=13, fontweight='bold', 
-                color='white', verticalalignment='top',
-                bbox=dict(boxstyle='round,pad=0.7', facecolor=bb_color, 
-                         alpha=0.95, edgecolor='white', linewidth=2))
-    
-    ax4.set_ylabel('Bollinger %B', fontsize=12, fontweight='bold', color='#FFFFFF')
-    ax4.set_ylim([-0.5, 1.5])
-    ax4.legend(loc='upper right', fontsize=9, framealpha=0.9, ncol=3)
-    ax4.grid(True, alpha=0.1, linestyle=':', linewidth=1)
-    ax4.tick_params(labelsize=10, colors='#B0B0B0', labelbottom=False)
-    
-    for spine in ax4.spines.values():
-        spine.set_color('#2D3142')
-        spine.set_linewidth(1.5)
-    
-    # PANEL 5: VOLUMEN
-    ax5 = fig.add_subplot(gs[4], sharex=ax1)
-    ax5.set_facecolor('#1A1D29')
-    
-    volume = ensure_series(data['Volume'])
-    if volume is not None and len(volume) > 0:
-        colors = ['#4ECDC4' if close_series.iloc[i] >= close_series.iloc[i-1] else '#FF6B6B' 
-                  for i in range(1, len(close_series))]
-        colors.insert(0, '#95A5A6')
-        
-        ax5.bar(data.index, volume, color=colors, alpha=0.6, width=0.8)
-        
-        vol_avg = volume.rolling(window=20).mean()
-        ax5.plot(data.index, vol_avg, color='#FFB86C', linewidth=2, 
-                label='Vol Avg (20)', alpha=0.8)
-    
-    ax5.set_ylabel('Volumen', fontsize=12, fontweight='bold', color='#FFFFFF')
-    ax5.set_xlabel('Fecha', fontsize=13, fontweight='bold', color='#FFFFFF')
-    ax5.legend(loc='upper right', fontsize=9, framealpha=0.9)
-    ax5.grid(True, alpha=0.1, linestyle=':', linewidth=1)
-    ax5.tick_params(labelsize=10, colors='#B0B0B0')
-    
-    for spine in ax5.spines.values():
-        spine.set_color('#2D3142')
-        spine.set_linewidth(1.5)
-    
-    plt.tight_layout()
-    return fig
 
 def main_app():
     """Aplicación principal del screener"""
@@ -674,7 +695,43 @@ def main_app():
         
         st.caption(f"📅 Última actualización: {info['date']}")
     
+    # NUEVA SECCIÓN: Selección de subconjunto aleatorio
+    st.markdown("---")
+    st.markdown("#### 🎲 Subconjunto Aleatorio (Opcional)")
+    
+    col1, col2, col3 = st.columns([2, 2, 1])
+    
+    with col1:
+        use_random_subset = st.checkbox(
+            "Usar subconjunto aleatorio",
+            value=False,
+            help="Seleccionar un número aleatorio de tickers para un escaneo más rápido"
+        )
+    
+    with col2:
+        if use_random_subset and 'tickers_universe' in st.session_state:
+            total_tickers = len(st.session_state['tickers_universe'])
+            random_count = st.slider(
+                "Número de tickers a escanear",
+                min_value=1,
+                max_value=total_tickers,
+                value=min(100, total_tickers),
+                step=1,
+                help="Selecciona cuántos tickers aleatorios quieres analizar"
+            )
+        else:
+            random_count = 0
+    
+    with col3:
+        if use_random_subset and st.button("🔀 Aleatorizar", help="Generar nueva selección aleatoria"):
+            if 'random_seed' in st.session_state:
+                st.session_state['random_seed'] += 1
+            else:
+                st.session_state['random_seed'] = 1
+            st.rerun()
+    
     # Botón para recargar el universo de tickers
+    st.markdown("---")
     col1, col2 = st.columns([3, 1])
     with col2:
         if st.button("🔄 Recargar Tickers", help="Volver a descargar el universo de tickers"):
@@ -682,6 +739,8 @@ def main_app():
                 del st.session_state['tickers_universe']
             if 'tickers_info' in st.session_state:
                 del st.session_state['tickers_info']
+            if 'random_seed' in st.session_state:
+                del st.session_state['random_seed']
             st.rerun()
     
     st.markdown("---")
@@ -703,13 +762,29 @@ def main_app():
     with col2:
         st.markdown("**📈 Filtros Estadísticos**")
         
+        # NUEVO: Checkboxes para seleccionar tipo de señal
+        col2a, col2b = st.columns(2)
+        with col2a:
+            filter_zscore_positive = st.checkbox(
+                "🔴 Sobrecompra",
+                value=True,
+                help="Buscar señales de SOBRECOMPRA (Z-Score positivo alto)"
+            )
+        with col2b:
+            filter_zscore_negative = st.checkbox(
+                "🟢 Sobreventa",
+                value=True,
+                help="Buscar señales de SOBREVENTA (Z-Score negativo bajo)"
+            )
+        
         zscore_threshold_pos = st.number_input(
             "Z-Score Positivo (≥)", 
             min_value=1.0, 
             max_value=5.0, 
             value=2.5, 
             step=0.1,
-            help="Mínimo Z-Score positivo para SOBRECOMPRA"
+            help="Mínimo Z-Score positivo para SOBRECOMPRA",
+            disabled=not filter_zscore_positive
         )
         
         zscore_threshold_neg = st.number_input(
@@ -718,7 +793,8 @@ def main_app():
             max_value=-1.0, 
             value=-2.5, 
             step=0.1,
-            help="Máximo Z-Score negativo para SOBREVENTA"
+            help="Máximo Z-Score negativo para SOBREVENTA",
+            disabled=not filter_zscore_negative
         )
         
         bb_threshold = st.slider("BB %B Threshold", 0.0, 0.5, 0.1, 0.05)
@@ -755,7 +831,16 @@ def main_app():
     # ============= PASO 3: ESCANEAR =============
     st.markdown("### 🚀 PASO 3: Escanear")
     
-    scan_button = st.button("🚀 INICIAR ESCANEO", type="primary", use_container_width=True)
+    # Validación: al menos un tipo de señal debe estar activo
+    if not filter_zscore_positive and not filter_zscore_negative:
+        st.warning("⚠️ Debes seleccionar al menos un tipo de señal (Sobrecompra o Sobreventa)")
+    
+    scan_button = st.button(
+        "🚀 INICIAR ESCANEO", 
+        type="primary", 
+        use_container_width=True,
+        disabled=not filter_zscore_positive and not filter_zscore_negative
+    )
     
     if scan_button:
         # Verificar que tengamos el universo de tickers
@@ -764,7 +849,17 @@ def main_app():
             st.warning("⚠️ Por favor, recarga los tickers usando el botón 'Recargar Tickers'")
             st.stop()
         
-        tickers_list = st.session_state['tickers_universe']
+        # Seleccionar tickers (todos o subconjunto aleatorio)
+        all_tickers = st.session_state['tickers_universe']
+        
+        if use_random_subset and random_count > 0:
+            # Usar seed para reproducibilidad durante la misma sesión
+            seed = st.session_state.get('random_seed', 42)
+            random.seed(seed)
+            tickers_list = random.sample(all_tickers, min(random_count, len(all_tickers)))
+            st.info(f"🎲 Usando subconjunto aleatorio de {len(tickers_list)} tickers (seed: {seed})")
+        else:
+            tickers_list = all_tickers
         
         st.markdown("### 🔄 Escaneando tickers...")
         st.info(f"📊 Analizando {len(tickers_list):,} tickers...")
@@ -783,7 +878,9 @@ def main_app():
                 bb_threshold_upper=bb_threshold_upper,
                 bb_threshold_lower=bb_threshold_lower,
                 macdv_threshold=macdv_threshold,
-                filter_sma200=filter_sma200
+                filter_sma200=filter_sma200,
+                filter_zscore_positive=filter_zscore_positive,
+                filter_zscore_negative=filter_zscore_negative
             )
         
         if results:
@@ -793,8 +890,16 @@ def main_app():
         else:
             st.warning("⚠️ No se encontraron tickers con las condiciones especificadas")
             
+            signal_types = []
+            if filter_zscore_positive:
+                signal_types.append("Sobrecompra")
+            if filter_zscore_negative:
+                signal_types.append("Sobreventa")
+            
             st.info(f"""
             **💡 Sugerencias para encontrar más resultados:**
+            
+            **Señales activas:** {', '.join(signal_types)}
             
             1️⃣ **Relajar Z-Score Positivo:** Actual = {zscore_threshold_pos}σ → Prueba con 2.0σ
             
@@ -807,6 +912,8 @@ def main_app():
             5️⃣ **Relajar BB %B:** Actual = {bb_threshold:.2f} → Prueba con 0.05 o 0.0
             
             6️⃣ **Cambiar periodo:** Actual = {period} → Prueba con "3mo" o "1y"
+            
+            7️⃣ **Activar ambos tipos de señal** si solo tienes uno activo
             
             📊 Recuerda: Los filtros detectan sobreextensión **estadísticamente significativa**
             """)
@@ -927,7 +1034,9 @@ def main_app():
             </p>
             <p style='color: #8E93A1; font-size: 14px;'>
                 1️⃣ Carga automática de tickers (Russell 1000 + ETFs + Índices)<br>
+                   🎲 Opción de subconjunto aleatorio para análisis rápido<br>
                 2️⃣ Configura los parámetros del escaneo<br>
+                   🔴 Selecciona Sobrecompra, 🟢 Sobreventa, o ambos<br>
                 3️⃣ Inicia el escaneo y revisa resultados
             </p>
             <p style='color: #8E93A1; font-size: 14px; margin-top: 20px;'>
