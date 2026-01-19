@@ -1,854 +1,389 @@
-# pages/triple_calendar.py
 import streamlit as st
+import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import date, timedelta
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from utils.utils import (
-    fetch_data, 
-    fetch_data_with_ticker,
-    calculate_indicators, 
-    preparar_datos_markov,
-    calculate_nr_wr_signal,
-    calculate_nr_wr_signal_series,
-    markov_calculation_k2,
-    markov_calculation_k3,
-    check_password 
-)
+from datetime import datetime, timedelta
+from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
+from sklearn.preprocessing import StandardScaler
+import warnings
 
-# --- CONFIGURACIÓN DE PÁGINA ---
-# st.set_page_config(page_title="🦉 TC Signals ", layout="wide")
+warnings.filterwarnings('ignore')
 
 # ==============================================================================
-# CONFIGURACIÓN Y VALORES POR DEFECTO PARA TRIPLE CALENDAR
+# FUNCIONES DE CARGA Y PREPARACIÓN (COMPARTIDAS)
 # ==============================================================================
 
-def get_default_config_df_triple_calendar(rv5d_ayer_val):
-    """Genera el DataFrame de configuración de reglas con valores específicos para Triple Calendar."""
+def check_password():
+    """
+    Controla el acceso. Devuelve True si el usuario ingresa las credenciales correctas
+    y False en caso contrario. Usa un botón explícito para evitar errores de renderizado.
+    """
     
-    default_config_data = {
-        'Regla': [
-            '1. Señal NR/WR Activa', 
-            '2. Prob. K=2 Baja Vol.', 
-            '3. Prob. K=3 Media Vol.', 
-            '4. Prob. K=3 Baja Vol.', 
-            '5. Prob. K=3 Consolidada', 
-            '6. RV_5d Actual', 
-            f'7. RV_5d HOY vs. AYER ({rv5d_ayer_val:.4f})'
-        ],
-        'Operador': ['==', '>=', '>=', '>=', '>=', '<=', '<'],
-        'Umbral': ['ON', '0.9000', '0.7500', '0.1500', '0.9500', '0.1500', 'RV_AYER'], 
-        'Activa': [False, True, False, False, True, True, False], 
-        'ID': ['r1_nr_wr', 'r2_k2_70', 'r3_k3_media_75', 'r4_k3_baja_15', 'r5_k3_consol_95', 'r6_rv5d_10', 'r7_rv5d_menor']
-    }
-    return pd.DataFrame(default_config_data)
-
-def reset_config_callback_triple(rv5d_ayer_val):
-    """Callback para el botón de reset: Restaura la configuración específica de Triple Calendar."""
-    st.session_state['config_df_triple'] = get_default_config_df_triple_calendar(rv5d_ayer_val)
-    for key in ['df_semaforo_body_triple', 'df_semaforo_footer_triple', 'senal_color_triple']:
-        if key in st.session_state:
-            del st.session_state[key]
-    st.rerun()
-
-# ==============================================================================
-# LÓGICA DE CÁLCULO DEL SEMÁFORO
-# ==============================================================================
-
-def calcular_y_mostrar_semaforo_triple(df_config, metricas_actuales, rv5d_ayer):
-    """Calcula el estado de cada regla y el resultado global del Semáforo."""
+    # 1. Intenta obtener las credenciales de st.secrets
+    try:
+        credentials = st.secrets["credentials"]
+    except KeyError:
+        st.error("Error: Las credenciales secretas no están configuradas.")
+        return False
     
-    df_config_calc = df_config.copy()
-    
-    def safe_float_convert(value):
-        try:
-            if isinstance(value, str) and value.upper() in ['ON', 'OFF', 'RV_AYER']:
-                return value
-            return float(value)
-        except (ValueError, TypeError):
-            return value
+    # 2. Control de Acceso (Si ya está correcto, devuelve True inmediatamente)
+    if st.session_state.get("password_correct", False):
+        return True
 
-    df_config_calc['Umbral_Calc'] = df_config_calc['Umbral'].apply(safe_float_convert)
-    
-    df_config_calc['Valor Actual'] = df_config_calc['ID'].apply(lambda id: 
-        (metricas_actuales[id] and '🟢 ACTIVA' or '⚪ INACTIVA') if id == 'r1_nr_wr' else 
-        f"{metricas_actuales[id]:.4f}"
-    )
-
-    senal_entrada_global_interactiva = True
-    num_reglas_activas = 0
-    df_config_calc['Cumple'] = 'NO'
-    
-    for index, row in df_config_calc.iterrows():
-        rule_id = row['ID']
-        metrica_actual = metricas_actuales[rule_id]
-        operador = row['Operador']
-        umbral_calc = row['Umbral_Calc']
-        umbral_str = str(row['Umbral']).upper()
-        regla_cumplida = False
+    # --- Mostrar Formulario de Login ---
+    with st.sidebar:
+        st.header("🔑 Iniciar Sesión")
         
-        if row['ID'] == 'r1_nr_wr':
-            if umbral_str == 'ON':
-                regla_cumplida = metrica_actual 
-            elif umbral_str == 'OFF':
-                regla_cumplida = not metrica_actual
-        
-        elif row['ID'] == 'r7_rv5d_menor':
-            regla_cumplida = metrica_actual < rv5d_ayer
-            
-        else:
-            if isinstance(umbral_calc, (float, int)):
-                if operador == '>=':
-                    regla_cumplida = metrica_actual >= umbral_calc
-                elif operador == '<=':
-                    regla_cumplida = metrica_actual <= umbral_calc
+        # Usamos st.empty() para controlar dónde aparecerá el error
+        error_placeholder = st.empty() 
 
-        if row['Activa']:
-            if regla_cumplida:
-                df_config_calc.loc[index, 'Cumple'] = "SÍ"
+        # Campos de entrada con keys simples
+        username = st.text_input("Usuario", key="login_username_input")
+        password = st.text_input("Contraseña", type="password", key="login_password_input")
+        
+        # Botón para activar la verificación
+        if st.button("Login"):
+            # 3. Verificación al hacer clic en el botón
+            if username == credentials["username"] and password == credentials["password"]:
+                st.session_state["password_correct"] = True
+                
+                # Opcional: Limpiamos los campos para seguridad
+                # Nota: Las keys de los inputs deben coincidir: "login_username_input" y "login_password_input"
+                del st.session_state["login_username_input"]
+                del st.session_state["login_password_input"]
+                
+                # CORRECCIÓN DE ERROR: Usamos st.rerun()
+                st.rerun() 
             else:
-                df_config_calc.loc[index, 'Cumple'] = "NO"
-        else:
-             df_config_calc.loc[index, 'Cumple'] = "INACTIVA"
-
-        if row['Activa']:
-            num_reglas_activas += 1
-            if not regla_cumplida:
-                senal_entrada_global_interactiva = False
-
-    df_presentacion = df_config_calc[['Activa', 'Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple', 'ID']].copy()
-    
-    if num_reglas_activas == 0:
-        res_final_texto = "INACTIVA (0 Reglas Activas)"
-        senal_color = "background-color: #AAAAAA; color: black"
-    elif senal_entrada_global_interactiva:
-        res_final_texto = ""
-        senal_color = "background-color: #008000; color: white"
-    else:
-        res_final_texto = ""
-        senal_color = "background-color: #8B0000; color: white"
+                st.session_state["password_correct"] = False
+                # Mostramos el error solo después del intento fallido
+                error_placeholder.error("😕 Usuario o Contraseña incorrecta")
         
-    fila_resumen = pd.DataFrame([{
-        'Regla': '🚥 SEMÁFORO TRIPLE CALENDAR 🚥', 
-        'ID': 'FINAL' 
-    }])
-    
-    st.session_state['df_semaforo_body_triple'] = df_presentacion
-    st.session_state['df_semaforo_footer_triple'] = fila_resumen
-    st.session_state['senal_color_triple'] = senal_color
+    # 4. Si el login no es correcto o no se ha intentado, el acceso es False
+    return False
 
 
-# ==============================================================================
-# FUNCIÓN PRINCIPAL - TRIPLE CALENDAR
-# ==============================================================================
+@st.cache_data(ttl=86400)
+def fetch_data():
+    """Descarga datos históricos del ^GSPC (SPX) y ^VIX (VIX)."""
+    start = "2010-01-01" 
+    end = datetime.now() + timedelta(days=1) 
 
-def main_triple_calendar():
+    spx = yf.download("^GSPC", start=start, end=end, auto_adjust=False, multi_level_index=False, progress=False)
+    vix = yf.download("^VIX", start=start, end=end, auto_adjust=False, multi_level_index=False, progress=False)
+
+    spx.index = pd.to_datetime(spx.index)
+    vix_series = vix['Close'].rename('VIX')
+    vix_series.index = pd.to_datetime(vix_series.index)
+
+    df_merged = spx.merge(vix_series, how='left', left_index=True, right_index=True)
+    df_merged.dropna(subset=['VIX'], inplace=True)
     
-    st.markdown("<h1><span style='font-size: 1.5em;'>🦉</span> Triple Calendar Signals </h1>", unsafe_allow_html=True)
-    st.markdown("""
-    Esta herramienta analiza las condiciones óptimas para estrategias Triple Calendar en diferentes activos,
-    utilizando modelos de Markov-Switching y señales de compresión de volatilidad.
-    """)
-    st.markdown("---")
+    return df_merged
+
+@st.cache_data(ttl=3600)
+def calculate_indicators(df_raw: pd.DataFrame):
+    """Calcula todos los indicadores técnicos necesarios."""
+    spx = df_raw.copy()
+
+    # 1. Volatilidad Realizada (RV_5d)
+    spx['log_ret'] = np.log(spx['Close'] / spx['Close'].shift(1))
+    spx['RV_5d'] = spx['log_ret'].rolling(window=5).std() * np.sqrt(252)
+
+    # 2. Average True Range (ATR_14)
+    spx['tr1'] = spx['High'] - spx['Low']
+    spx['tr2'] = (spx['High'] - spx['Close'].shift(1)).abs()
+    spx['tr3'] = (spx['Low'] - spx['Close'].shift(1)).abs()
+    spx['true_range'] = spx[['tr1', 'tr2', 'tr3']].max(axis=1)
+    spx['ATR_14'] = spx['true_range'].rolling(window=14).mean()
+    spx.drop(columns=['tr1', 'tr2', 'tr3', 'true_range'], inplace=True)
+
+    # 3. Narrow Range (NR14)
+    window = 14
+    spx['nr14_threshold'] = spx['High'].rolling(window=window).max() - spx['Low'].rolling(window=window).min()
+    spx['NR14'] = (spx['High'] - spx['Low'] < spx['nr14_threshold']).astype(int)
+    spx.drop(columns=['nr14_threshold'], inplace=True)
     
-    # ==============================================================================
-    # SECCIÓN 1: SELECCIÓN DE TICKER Y FECHA
-    # ==============================================================================
-    st.header("1. Configuración Inicial")
+    # 4. Ratio de volatilidad en el VIX
+    spx['VIX_pct_change'] = spx['VIX'].pct_change()
     
-    col1, col2 = st.columns(2)
+    return spx.dropna()
+
+
+def preparar_datos_markov(spx: pd.DataFrame):
+    """Estandariza los datos y alinea las series de tiempo."""
+    endog_variable = 'RV_5d'
+    variables_tvtp = ['VIX', 'ATR_14', 'VIX_pct_change', 'NR14']
     
-    with col1:
-        ticker_options = ['QQQ', 'SPX', 'SPY']
-        selected_ticker = st.selectbox(
-            "Selecciona el Ticker",
-            ticker_options,
-            index=0,
-            key='ticker_selector_triple'
+    data_markov = spx.copy()
+    endog = data_markov[endog_variable].dropna()
+    
+    # Estandarizar exógenas
+    exog_tvtp_original = data_markov[variables_tvtp].copy()
+    scaler_tvtp = StandardScaler()
+    exog_tvtp_scaled_data = scaler_tvtp.fit_transform(exog_tvtp_original.dropna())
+    
+    exog_tvtp_scaled = pd.DataFrame(
+        exog_tvtp_scaled_data,
+        index=exog_tvtp_original.dropna().index,
+        columns=variables_tvtp
+    )
+
+    # Alinear y eliminar NaNs finales
+    data_final = pd.concat([endog, exog_tvtp_scaled], axis=1).dropna()
+    endog_final = data_final[endog_variable]
+    exog_tvtp_final = data_final[variables_tvtp]
+    endog_final = endog_final.loc[exog_tvtp_final.index]
+    
+    if len(endog_final) < 50:
+        return None, None
+    
+    return endog_final, exog_tvtp_final
+
+
+def check_recent_wr(wr_series, tr_series, wr_len, max_delay):
+    """Verifica si hubo un WR en las últimas 'max_delay' barras."""
+    wr_recent = pd.Series(False, index=wr_series.index)
+    
+    for i in range(1, max_delay + 1):
+        condition = (tr_series.shift(i) == tr_series.rolling(window=wr_len).max().shift(i))
+        wr_recent = wr_recent | condition
+    
+    return wr_recent
+
+
+def calculate_nr_wr_signal(spx_raw: pd.DataFrame) -> bool:
+    """Calcula la señal NR/WR (solo última señal)."""
+    df = spx_raw.copy()
+
+    wr4_len = 4
+    nr4_len = 4
+    wr7_len = 7
+    nr7_len = 7
+    max_delay = 3 
+
+    high_low = df['High'] - df['Low']
+    high_prev_close = np.abs(df['High'] - df['Close'].shift(1))
+    low_prev_close = np.abs(df['Low'] - df['Close'].shift(1))
+    df['tr_nr_wr'] = pd.DataFrame({
+        'hl': high_low, 
+        'hpc': high_prev_close, 
+        'lpc': low_prev_close
+    }).max(axis=1)
+
+    df['wr4'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=wr4_len).max())
+    df['wr7'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=wr7_len).max())
+    df['nr4'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=nr4_len).min())
+    df['nr7'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=nr7_len).min())
+    
+    df['wr4_recent'] = check_recent_wr(df['wr4'], df['tr_nr_wr'], wr4_len, max_delay)
+    df['wr7_recent'] = check_recent_wr(df['wr7'], df['tr_nr_wr'], wr7_len, max_delay)
+
+    df['signal_nr4'] = df['nr4'] & df['wr4_recent'] 
+    df['signal_nr7'] = df['nr7'] & df['wr7_recent']
+    df['signal_nr_final'] = df['signal_nr7'] | df['signal_nr4']
+
+    if not df['signal_nr_final'].empty:
+        return df['signal_nr_final'].iloc[-1]
+    return False
+
+
+def calculate_nr_wr_signal_series(spx_raw: pd.DataFrame) -> pd.Series:
+    """Calcula la señal NR/WR como serie temporal completa."""
+    df = spx_raw.copy()
+
+    wr4_len = 4
+    nr4_len = 4
+    wr7_len = 7
+    nr7_len = 7
+    max_delay = 3 
+
+    high_low = df['High'] - df['Low']
+    high_prev_close = np.abs(df['High'] - df['Close'].shift(1))
+    low_prev_close = np.abs(df['Low'] - df['Close'].shift(1))
+    df['tr_nr_wr'] = pd.DataFrame({
+        'hl': high_low, 
+        'hpc': high_prev_close, 
+        'lpc': low_prev_close
+    }).max(axis=1)
+
+    df['wr4'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=wr4_len).max())
+    df['wr7'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=wr7_len).max())
+    df['nr4'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=nr4_len).min())
+    df['nr7'] = (df['tr_nr_wr'] == df['tr_nr_wr'].rolling(window=nr7_len).min())
+    
+    df['wr4_recent'] = check_recent_wr(df['wr4'], df['tr_nr_wr'], wr4_len, max_delay)
+    df['wr7_recent'] = check_recent_wr(df['wr7'], df['tr_nr_wr'], wr7_len, max_delay)
+
+    df['signal_nr4'] = df['nr4'] & df['wr4_recent'] 
+    df['signal_nr7'] = df['nr7'] & df['wr7_recent']
+    df['signal_nr_final'] = df['signal_nr7'] | df['signal_nr4']
+
+    return df['signal_nr_final'].astype(float)
+
+
+@st.cache_data(ttl=3600)
+def markov_calculation_k2(endog_final, exog_tvtp_final):
+    """Modelo de 2 regímenes."""
+    VALOR_OBJETIVO_RV5D = 0.10
+    UMBRAL_COMPRESION = 0.70 
+    
+    if endog_final is None or exog_tvtp_final is None:
+        return {'error': "Datos insuficientes para el modelo K=2."}
+
+    try:
+        modelo = MarkovRegression(
+            endog=endog_final, k_regimes=2, trend='c', 
+            switching_variance=True, switching_trend=True, exog_tvtp=exog_tvtp_final
         )
-        st.info(f"📊 Ticker seleccionado: **{selected_ticker}**")
-    
-    with col2:
-        fecha_hoy = st.date_input(
-            "Fecha de Análisis (Datos)",
-            value=date.today(),
-            max_value=date.today(),
-            key='fecha_hoy_triple'
-        )
-        st.info(f"📅 Fecha de Datos: **{fecha_hoy.strftime('%Y-%m-%d')}**")
-    
-    st.markdown("---")
-    
-    # ==============================================================================
-    # BOTÓN PARA INICIAR EL ESTUDIO
-    # ==============================================================================
-    
-    datos_key = f'datos_calculados_{selected_ticker}'
-    
-    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1])
-    
-    with col_btn1:
-        if st.button("🚀 Iniciar Estudio y Cálculos", key='iniciar_estudio_triple', type="primary", use_container_width=True):
-            st.session_state['iniciar_calculo_triple'] = True
-            st.session_state['ticker_actual_triple'] = selected_ticker
-            st.rerun()
-    
-    with col_btn2:
-        if st.button("🔄 Forzar Actualización (Limpiar Caché)", key='refresh_triple', use_container_width=True):
-            st.cache_data.clear()
-            for key in list(st.session_state.keys()):
-                if key not in ('config_df_triple', 'ticker_selector_triple', 'fecha_hoy_triple', 'password_correct'): 
-                    del st.session_state[key]
-            st.rerun()
-    
-    with col_btn3:
-        if datos_key in st.session_state:
-            if st.button("🗑️ Limpiar Estudio Actual", key='limpiar_estudio_triple', use_container_width=True):
-                if datos_key in st.session_state:
-                    del st.session_state[datos_key]
-                if 'iniciar_calculo_triple' in st.session_state:
-                    del st.session_state['iniciar_calculo_triple']
-                if 'ticker_actual_triple' in st.session_state:
-                    del st.session_state['ticker_actual_triple']
-                for key in ['df_semaforo_body_triple', 'df_semaforo_footer_triple', 'senal_color_triple', 'config_df_triple']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-                st.rerun()
-    
-    st.markdown("---")
-    
-    # ==============================================================================
-    # VERIFICAR SI SE DEBE INICIAR EL CÁLCULO
-    # ==============================================================================
-    
-    if 'iniciar_calculo_triple' not in st.session_state or not st.session_state.get('iniciar_calculo_triple', False):
-        st.info("👆 **Selecciona el ticker y la fecha, luego presiona '🚀 Iniciar Estudio y Cálculos' para comenzar el análisis.**")
-        st.stop()
-    
-    if st.session_state.get('ticker_actual_triple') != selected_ticker:
-        st.warning(f"⚠️ Has cambiado el ticker. Presiona '🚀 Iniciar Estudio y Cálculos' nuevamente para calcular {selected_ticker}.")
-        st.stop()
-    
-    # ==============================================================================
-    # SECCIÓN 2: CARGA Y PREPARACIÓN DE DATOS
-    # ==============================================================================
-    st.header("2. Carga y Preparación de Datos")
-    
-    if datos_key not in st.session_state:
-        
-        with st.spinner(f"Descargando datos históricos de {selected_ticker} y calculando indicadores..."):
-            # CORRECCIÓN CRÍTICA: Pasar el ticker a fetch_data
-            df_raw = fetch_data_with_ticker(ticker=selected_ticker)
-            spx = calculate_indicators(df_raw)
-            endog_final, exog_tvtp_final = preparar_datos_markov(spx)
+        resultado = modelo.fit(maxiter=500, disp=False)
+    except Exception as e:
+        return {'error': f"Error de ajuste K=2: {e}"} 
 
-        if endog_final is None:
-            st.error("❌ Error: No se pudieron preparar los datos para el análisis Markov.")
-            return
+    regimen_vars = resultado.params.filter(regex='sigma2|Variance')
+    regimen_vars_sorted = regimen_vars.sort_values(ascending=True)
+    
+    def extract_regime_index(index_str):
+        return int(index_str.split('[')[1].replace(']', ''))
+    
+    regimen_baja_vol_index = extract_regime_index(regimen_vars_sorted.index[0])
+    
+    best_percentile = None
+    min_diff = float('inf')
+    rv5d_historica = endog_final.values
+    
+    for p in np.linspace(0.10, 0.50, 41):
+        percentile_val = np.percentile(rv5d_historica, p * 100)
+        diff = abs(percentile_val - VALOR_OBJETIVO_RV5D)
         
-        with st.spinner("Ejecutando modelos Markov K=2 y K=3..."):
-            results_k2 = markov_calculation_k2(endog_final, exog_tvtp_final)
-            results_k3 = markov_calculation_k3(endog_final, exog_tvtp_final)
-        
-        with st.spinner("Calculando indicador NR/WR..."):
-            nr_wr_signal_on = calculate_nr_wr_signal(df_raw)
-            nr_wr_series = calculate_nr_wr_signal_series(df_raw)
-        
-        st.session_state[datos_key] = {
-            'df_raw': df_raw, 'spx': spx, 'endog_final': endog_final, 
-            'exog_tvtp_final': exog_tvtp_final, 'results_k2': results_k2, 
-            'results_k3': results_k3, 'nr_wr_signal_on': nr_wr_signal_on, 
-            'nr_wr_series': nr_wr_series
-        }
-        st.success(f"✅ Cálculos completados para {selected_ticker}")
-    
-    else:
-        st.info(f"ℹ️ Usando datos previamente calculados para {selected_ticker}")
-    
-    datos = st.session_state[datos_key]
-    df_raw = datos['df_raw']
-    spx = datos['spx']
-    endog_final = datos['endog_final']
-    results_k2 = datos['results_k2']
-    results_k3 = datos['results_k3']
-    nr_wr_signal_on = datos['nr_wr_signal_on']
-    nr_wr_series = datos['nr_wr_series']
-    
-    st.dataframe(spx.tail(2))
-    st.markdown("---")
+        if diff < min_diff:
+            min_diff = diff
+            best_percentile = p * 100
+            UMBRAL_RV5D_P_OBJETIVO = percentile_val
 
-    # ==============================================================================
-    # SECCIÓN 3: INDICADOR NR/WR
-    # ==============================================================================
-    st.header("3. Indicador NR/WR (Narrow Range after Wide Range)")
+    probabilidades_filtradas = resultado.filtered_marginal_probabilities
+    ultima_probabilidad = probabilidades_filtradas.iloc[-1]
     
-    if nr_wr_signal_on:
-        st.success("🟢 **SEÑAL NR/WR:** La compresión de volatilidad está **ACTIVA**.")
-    else:
-        st.info("⚪ **SEÑAL NR/WR:** La compresión de volatilidad está **INACTIVA**.")
-    st.markdown("---")
+    prob_baja = ultima_probabilidad.get(regimen_baja_vol_index, 0)
     
-    # ==============================================================================
-    # SECCIÓN 4: MODELOS DE MARKOV
-    # ==============================================================================
-    st.header("4. Modelos de Markov")
+    # Para gráficos, devolvemos también la serie completa
+    prob_baja_serie = probabilidades_filtradas[regimen_baja_vol_index].rename('Prob_Baja_K2')
     
-    if 'error' in results_k2:
-        st.error(f"❌ Error K=2: {results_k2['error']}")
-        return
-    if 'error' in results_k3:
-        st.error(f"❌ Error K=3: {results_k3['error']}")
-        return
-    
-    st.markdown(f"**Fecha del Último Cálculo:** {endog_final.index[-1].strftime('%Y-%m-%d')}")
-    st.markdown("---")
-
-    prob_k3_consolidada = results_k3['prob_baja'] + results_k3['prob_media']
-
-    data_comparativa = {
-        'Métrica': [
-            'Probabilidad Baja (HOY)', 
-            'Probabilidad Media (HOY)', 
-            'Probabilidad Consolidada (Baja + Media)', 
-            'Umbral de Señal de Entrada (70%)', 
-            'Varianza Régimen Baja', 
-            'Varianza Régimen Media', 
-            'Varianza Régimen Alta', 
-            'Umbral RV_5d Estimado'
-        ],
-        'K=2 (Original)': [
-            f"{results_k2['prob_baja']:.4f}", 
-            'N/A', 
-            f"{results_k2['prob_baja']:.4f}", 
-            f"{results_k2['UMBRAL_COMPRESION']:.2f}", 
-            f"{results_k2['varianzas_regimen']['Baja']:.5f}", 
-            'N/A', 
-            f"{results_k2['varianzas_regimen']['Alta']:.5f}", 
-            f"{results_k2['UMBRAL_RV5D_P_OBJETIVO']:.4f}"
-        ],
-        'K=3 (Propuesto)': [
-            f"{results_k3['prob_baja']:.4f}", 
-            f"{results_k3['prob_media']:.4f}", 
-            f"**{prob_k3_consolidada:.4f}**", 
-            f"{results_k3['UMBRAL_COMPRESION']:.2f}", 
-            f"{results_k3['varianzas_regimen']['Baja']:.5f}", 
-            f"{results_k3['varianzas_regimen']['Media']:.5f}", 
-            f"{results_k3['varianzas_regimen']['Alta']:.5f}", 
-            'Por Varianza'
-        ]
+    return {
+        'nombre': 'K=2 (Original con Objetivo 0.10)',
+        'endog_final': endog_final,
+        'resultado': resultado,
+        'indices_regimen': {'Baja': regimen_baja_vol_index},
+        'varianzas_regimen': {'Baja': regimen_vars_sorted.iloc[0], 'Alta': regimen_vars_sorted.iloc[1]},
+        'prob_baja': prob_baja,
+        'prob_baja_serie': prob_baja_serie,
+        'UMBRAL_RV5D_P_OBJETIVO': UMBRAL_RV5D_P_OBJETIVO,
+        'P_USADO': best_percentile,
+        'UMBRAL_COMPRESION': UMBRAL_COMPRESION
     }
 
-    df_comparativa = pd.DataFrame(data_comparativa)
-    st.dataframe(df_comparativa, hide_index=True, use_container_width=True)
-    
-    st.markdown("---")
-    st.subheader("Conclusión Operativa para Triple Calendar")
 
-    if prob_k3_consolidada >= results_k3['UMBRAL_COMPRESION']:
-        st.success(f"**✅ CONDICIONES FAVORABLES:** Probabilidad consolidada de **{prob_k3_consolidada:.4f}** (>0.70). Entorno apropiado para estrategias de venta de prima como Triple Calendar.")
-    else:
-        st.warning(f"**⚠️ PRECAUCIÓN:** Probabilidad consolidada de **{prob_k3_consolidada:.4f}** (<0.70). Considerar esperar mejores condiciones o ajustar la estrategia.")
+@st.cache_data(ttl=3600)
+def markov_calculation_k3(endog_final, exog_tvtp_final):
+    """Modelo de 3 regímenes."""
+    UMBRAL_COMPRESION = 0.70 
     
-    st.markdown("---")
+    if endog_final is None or exog_tvtp_final is None:
+        return {'error': "Datos insuficientes para el modelo K=3."}
+        
+    try:
+        modelo = MarkovRegression(
+            endog=endog_final, k_regimes=3, trend='c', 
+            switching_variance=True, switching_trend=True, exog_tvtp=exog_tvtp_final
+        )
+        resultado = modelo.fit(maxiter=500, disp=False)
+    except Exception as e:
+        return {'error': f"Error de ajuste K=3: {e}"} 
 
-    # ==============================================================================
-    # SECCIÓN 5: SEMÁFORO GLOBAL - AHORA SIEMPRE VISIBLE
-    # ==============================================================================
-    st.header("5. Semáforo de Entrada - Triple Calendar 🚥")
+    regimen_vars = resultado.params.filter(regex='sigma2|Variance')
 
-    rv5d_ayer_val = spx["RV_5d"].iloc[-2]
+    if len(regimen_vars) < 3:
+        return {'error': "ADVERTENCIA: No se pudieron extraer los tres parámetros de varianza."}
+
+    regimen_vars_sorted = regimen_vars.sort_values(ascending=True)
     
-    if 'config_df_triple' not in st.session_state:
-        st.session_state['config_df_triple'] = get_default_config_df_triple_calendar(rv5d_ayer_val)
-
-    rv5d_hoy = spx['RV_5d'].iloc[-1]
-    rv5d_ayer = spx['RV_5d'].iloc[-2]
-    
-    metricas_actuales = {
-        'r1_nr_wr': nr_wr_signal_on, 
-        'r2_k2_70': results_k2['prob_baja'],
-        'r3_k3_media_75': results_k3['prob_media'], 
-        'r4_k3_baja_15': results_k3['prob_baja'],
-        'r5_k3_consol_95': prob_k3_consolidada, 
-        'r6_rv5d_10': rv5d_hoy,
-        'r7_rv5d_menor': rv5d_hoy, 
+    def extract_regime_index(index_str):
+        return int(index_str.split('[')[1].replace(']', ''))
+        
+    indices_regimen = {
+        'Baja': extract_regime_index(regimen_vars_sorted.index[0]),
+        'Media': extract_regime_index(regimen_vars_sorted.index[1]),
+        'Alta': extract_regime_index(regimen_vars_sorted.index[2])
     }
     
-    st.markdown("##### Configuración de Reglas")
-
-    st.button(
-        "⚙️ Resetear a Valores por Defecto", 
-        help="Restaura configuración optimizada para Triple Calendar", 
-        on_click=reset_config_callback_triple, 
-        args=(rv5d_ayer_val,),
-        key='reset_triple'
-    )
-
-    df_config = st.session_state['config_df_triple'].copy()
-    
-    df_config['Valor Actual'] = df_config['ID'].apply(lambda id: 
-        (metricas_actuales[id] and '🟢 ACTIVA' or '⚪ INACTIVA') if id == 'r1_nr_wr' else 
-        f"{metricas_actuales[id]:.4f}"
-    )
-
-    col_config_all = {
-        'Regla': st.column_config.TextColumn("Regla (Filtro)", disabled=True),
-        'Operador': st.column_config.TextColumn("Op.", disabled=True, width="tiny"),
-        'Umbral': st.column_config.TextColumn("Umbral"), 
-        'Valor Actual': st.column_config.TextColumn("Valor Actual", disabled=True, width="small"),
-        'Activa': st.column_config.CheckboxColumn("ON/OFF", width="small"),
-        'ID': None
+    varianzas_regimen = {
+        'Baja': regimen_vars_sorted.iloc[0],
+        'Media': regimen_vars_sorted.iloc[1],
+        'Alta': regimen_vars_sorted.iloc[2]
     }
     
-    edited_df = st.data_editor(
-        df_config,
-        column_config=col_config_all,
-        hide_index=True,
-        use_container_width=True, 
-        key='config_editor_triple'
-    )
+    probabilidades_filtradas = resultado.filtered_marginal_probabilities
+    ultima_probabilidad = probabilidades_filtradas.iloc[-1]
     
-    st.session_state['config_df_triple'] = edited_df 
+    prob_baja = ultima_probabilidad.get(indices_regimen['Baja'], 0)
+    prob_media = ultima_probabilidad.get(indices_regimen['Media'], 0)
     
-    st.markdown("---")
+    # Para gráficos, devolvemos también las series completas
+    prob_baja_serie = probabilidades_filtradas[indices_regimen['Baja']].rename('Prob_Baja_K3')
+    prob_media_serie = probabilidades_filtradas[indices_regimen['Media']].rename('Prob_Media_K3')
     
-    # CAMBIO CRÍTICO: Calcular el semáforo automáticamente siempre
-    calcular_y_mostrar_semaforo_triple(st.session_state['config_df_triple'], metricas_actuales, rv5d_ayer)
+    return {
+        'nombre': 'K=3 (Varianza Objetiva)',
+        'resultado': resultado,
+        'indices_regimen': indices_regimen,
+        'varianzas_regimen': varianzas_regimen,
+        'prob_baja': prob_baja,
+        'prob_media': prob_media,
+        'prob_baja_serie': prob_baja_serie,
+        'prob_media_serie': prob_media_serie,
+        'UMBRAL_COMPRESION': UMBRAL_COMPRESION
+    }
+
+
+@st.cache_data(ttl=3600)
+def fetch_data_with_ticker(ticker):
+    """
+    Descarga datos históricos para el ticker especificado junto con VIX.
     
-    # Botón opcional para forzar recálculo si se necesita
-    if st.button("🔄 Recalcular Semáforo Manualmente", key='calc_semaforo_triple'):
-        calcular_y_mostrar_semaforo_triple(st.session_state['config_df_triple'], metricas_actuales, rv5d_ayer)
-        st.success("✅ Semáforo recalculado")
+    Args:
+        ticker: str - Ticker a descargar ('QQQ', 'SPX', 'SPY')
     
-    st.markdown("### Tabla Consolidada de Análisis 🚦")
+    Returns:
+        DataFrame con datos históricos del ticker y VIX
+    """
+    # Mapeo de tickers a símbolos de Yahoo Finance
+    ticker_map = {
+        'SPX': '^GSPC',
+        'SPY': 'SPY',
+        'QQQ': 'QQQ'
+    }
     
-    # AHORA SIEMPRE SE MUESTRA (ya no hay condicional if)
-    df_body = st.session_state['df_semaforo_body_triple']
-    df_footer = st.session_state['df_semaforo_footer_triple']
-    senal_color = st.session_state['senal_color_triple']
+    # Obtener el símbolo correcto
+    yahoo_symbol = ticker_map.get(ticker, ticker)
     
-    def color_cumple_body(row):
-        styles = pd.Series('', index=row.index)
-        
-        if row['Cumple'] == 'SÍ':
-            styles['Cumple'] = 'background-color: #008000; color: white'
-        elif row['Cumple'] == 'NO':
-            styles['Cumple'] = 'background-color: #8B0000; color: white'
-        
-        return styles
-
-    styled_df_body = df_body.style.apply(color_cumple_body, axis=1)
-    styled_df_body = styled_df_body.set_properties(**{'text-align': 'center'}, 
-                                 subset=['Operador', 'Umbral', 'Valor Actual', 'Cumple'])
+    start = "2010-01-01"
+    end = datetime.now() + timedelta(days=1)
     
-    st.dataframe(
-        styled_df_body,
-        hide_index=True,
-        use_container_width=True,
-        column_order=('Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple'), 
-        column_config={'ID': st.column_config.Column(disabled=True, width="tiny")} 
-    )
-
-    st.markdown("<br>", unsafe_allow_html=True) 
-
-    footer_text = df_footer.iloc[0]['Regla']
+    # Descargar datos del ticker seleccionado
+    df_ticker = yf.download(yahoo_symbol, start=start, end=end, 
+                           auto_adjust=False, multi_level_index=False, progress=False)
     
-    st.markdown(
-        f"<div style='text-align: center; font-size: 1.2em; padding: 10px; border-radius: 5px; {senal_color}'>"
-        f"**{footer_text}**" 
-        f"</div>",
-        unsafe_allow_html=True
-    )
-
-    st.markdown("---")
+    # Descargar VIX
+    vix = yf.download("^VIX", start=start, end=end, 
+                     auto_adjust=False, multi_level_index=False, progress=False)
     
-    # ==============================================================================
-    # SECCIÓN 6: GRÁFICOS DE ANÁLISIS TÉCNICO
-    # ==============================================================================
-    st.header("6. Gráficos de Análisis Técnico Combinados")
+    # Procesar índices
+    df_ticker.index = pd.to_datetime(df_ticker.index)
+    vix_series = vix['Close'].rename('VIX')
+    vix_series.index = pd.to_datetime(vix_series.index)
     
-    st.sidebar.header("⚙️ Configuración del Gráfico")
-    fecha_final_grafico = spx.index[-1].date()
-    st.sidebar.info(f"📅 Última fecha disponible: {fecha_final_grafico}")
-    fecha_inicio_default_grafico = fecha_final_grafico - timedelta(days=90)
-
-    fecha_inicio_grafico = st.sidebar.date_input(
-        "Fecha de inicio:",
-        value=fecha_inicio_default_grafico,
-        min_value=spx.index[0].date(),
-        max_value=fecha_final_grafico,
-        key='fecha_inicio_grafico_triple'
-    )
-
-    fecha_inicio_dt_grafico = pd.to_datetime(fecha_inicio_grafico)
-    fecha_final_dt_grafico = pd.to_datetime(fecha_final_grafico)
-
-    spx_filtered = spx[(spx.index >= fecha_inicio_dt_grafico) & (spx.index <= fecha_final_dt_grafico)].copy()
-    spx_filtered = spx_filtered[spx_filtered.index.dayofweek < 5]
-
-    date_labels = [d.strftime('%b %d') if i % 5 == 0 else '' for i, d in enumerate(spx_filtered.index)]
-    date_labels[0] = spx_filtered.index[0].strftime('%b %d')
-    date_labels[-1] = spx_filtered.index[-1].strftime('%b %d')
-
-    spx_filtered['RV_5d_pct'] = spx_filtered['RV_5d'] * 100
-    UMBRAL_RV = 0.15
-    spx_filtered['RV_change'] = spx_filtered['RV_5d_pct'].diff()
-    is_up = spx_filtered['RV_change'] >= 0
-
-    prob_baja_serie_k2 = results_k2['prob_baja_serie'].loc[spx_filtered.index].fillna(method='ffill')
-
-    prob_baja_serie_k3 = results_k3['prob_baja_serie'].loc[spx_filtered.index].fillna(method='ffill')
-    prob_media_serie_k3 = results_k3['prob_media_serie'].loc[spx_filtered.index].fillna(method='ffill')
-    prob_k3_consolidada_serie = prob_baja_serie_k3 + prob_media_serie_k3
-
-    nr_wr_filtered = nr_wr_series.reindex(spx_filtered.index).fillna(0)
-
-    UMBRAL_ALERTA = 0.50 
-    UMBRAL_COMPRESION = results_k2['UMBRAL_COMPRESION']
-
-    fechas_formateadas = spx_filtered.index.strftime('%d-%m-%Y').tolist()
-
-    fig_combined = make_subplots(
-        rows=5, 
-        cols=1, 
-        shared_xaxes=True, 
-        vertical_spacing=0.02, 
-        row_heights=[0.45, 0.13, 0.14, 0.14, 0.14],
-    )
-
-    # 1. GRÁFICO DE VELAS JAPONESAS
-    hover_text_candles = [
-        f"<b>{fecha}</b><br>Open: {o:.2f}<br>High: {h:.2f}<br>Low: {l:.2f}<br>Close: {c:.2f}"
-        for fecha, o, h, l, c in zip(
-            fechas_formateadas,
-            spx_filtered['Open'],
-            spx_filtered['High'],
-            spx_filtered['Low'],
-            spx_filtered['Close']
-        )
-    ]
-
-    fig_combined.add_trace(go.Candlestick(
-        x=list(range(len(spx_filtered))),
-        open=spx_filtered['Open'],
-        high=spx_filtered['High'],
-        low=spx_filtered['Low'],
-        close=spx_filtered['Close'],
-        name=f'{selected_ticker}',
-        text=hover_text_candles,
-        hoverinfo='text',
-        increasing=dict(line=dict(color='#00B06B')),
-        decreasing=dict(line=dict(color='#F13A50'))
-    ), row=1, col=1)
-
-    fig_combined.update_yaxes(title_text='Precio', row=1, col=1)
-    fig_combined.update_xaxes(showticklabels=False, row=1, col=1)
-
-    # 2. GRÁFICO DE VOLATILIDAD REALIZADA (RV_5d)
-    for i in range(len(spx_filtered) - 1):
-        color = '#00B06B' if is_up.iloc[i+1] else '#F13A50'
-        
-        fig_combined.add_trace(go.Scatter(
-            x=[i, i+1],
-            y=[spx_filtered['RV_5d_pct'].iloc[i], spx_filtered['RV_5d_pct'].iloc[i+1]],
-            mode='lines',
-            line=dict(color=color, width=2),
-            showlegend=False,
-            hoverinfo='skip'
-        ), row=2, col=1)
-
-    fig_combined.add_trace(go.Scatter(
-        x=list(range(len(spx_filtered))),
-        y=spx_filtered['RV_5d_pct'],
-        mode='markers',
-        marker=dict(size=0.1, color='rgba(0,0,0,0)'),
-        name='RV',
-        customdata=[[fecha] for fecha in fechas_formateadas],
-        hovertemplate='<b>%{customdata[0]}</b><br>RV: %{y:.2f}%<extra></extra>',
-        showlegend=True
-    ), row=2, col=1)
-
-    fig_combined.add_shape(
-        type="line",
-        x0=0, y0=UMBRAL_RV * 100,
-        x1=len(spx_filtered) - 1, y1=UMBRAL_RV * 100,
-        line=dict(color="orange", width=2, dash="dot"),
-        layer="below",
-        row=2, col=1
-    )
-
-    fig_combined.add_annotation(
-        x=0, y=1.0, 
-        text=f'Umbral RV: {UMBRAL_RV*100:.2f}%', 
-        showarrow=False,
-        xref='x2', yref='y2 domain', 
-        xanchor='left', yanchor='top', 
-        font=dict(size=12, color="orange"),
-        xshift=5, yshift=-5, 
-        row=2, col=1
-    )
-
-    fig_combined.update_yaxes(title_text='RV (%)', row=2, col=1, tickformat=".2f")
-    fig_combined.update_xaxes(showticklabels=False, row=2, col=1) 
-
-    # 3. GRÁFICO DE MARKOV K=2
-    fig_combined.add_trace(go.Scatter(
-        x=list(range(len(spx_filtered))),
-        y=prob_baja_serie_k2,
-        mode='lines',
-        name='Prob. K=2 (Baja Vol.)', 
-        line=dict(color='#8A2BE2', width=2),
-        fill='tozeroy', 
-        fillcolor='rgba(138, 43, 226, 0.3)',
-        customdata=[[fecha] for fecha in fechas_formateadas],
-        hovertemplate='<b>%{customdata[0]}</b><br>Prob. Baja K=2: %{y:.4f}<extra></extra>',
-        showlegend=True 
-    ), row=3, col=1)
-
-    fig_combined.add_shape(
-        type="line",
-        x0=0, y0=UMBRAL_COMPRESION,
-        x1=len(spx_filtered) - 1, y1=UMBRAL_COMPRESION,
-        line=dict(color="#FFD700", width=2, dash="dash"), 
-        layer="below",
-        row=3, col=1
-    )
-
-    fig_combined.add_shape(
-        type="line",
-        x0=0, y0=UMBRAL_ALERTA,
-        x1=len(spx_filtered) - 1, y1=UMBRAL_ALERTA,
-        line=dict(color="#FFFFFF", width=1, dash="dot"),
-        layer="below",
-        row=3, col=1
-    )
-
-    fig_combined.add_annotation(
-        x=0, 
-        y=UMBRAL_COMPRESION, 
-        text=f'Compresión Fuerte ({UMBRAL_COMPRESION*100:.0f}%)', 
-        showarrow=False,
-        xref='x3', yref='y3', 
-        xanchor='left', 
-        yanchor='bottom', 
-        font=dict(size=12, color="#FFD700"),
-        xshift=5, 
-        yshift=5, 
-        row=3, col=1
-    )
-
-    fig_combined.add_annotation(
-        x=0, 
-        y=UMBRAL_ALERTA, 
-        text=f'Alerta ({UMBRAL_ALERTA*100:.0f}%)', 
-        showarrow=False,
-        xref='x3', yref='y3', 
-        xanchor='left', 
-        yanchor='bottom', 
-        font=dict(size=12, color="#FFFFFF"), 
-        xshift=5, 
-        yshift=5,
-        row=3, col=1
-    )
-
-    fig_combined.update_yaxes(title_text='Prob. K=2', row=3, col=1, tickformat=".2f", range=[0, 1])
-    fig_combined.update_xaxes(showticklabels=False, row=3, col=1) 
-
-    # 4. GRÁFICO DE MARKOV K=3
-    fig_combined.add_trace(go.Scatter(
-        x=list(range(len(spx_filtered))),
-        y=prob_k3_consolidada_serie,
-        mode='lines',
-        name='Prob. K=3 (Baja+Media)', 
-        line=dict(color='#00FF7F', width=2),
-        fill='tozeroy', 
-        fillcolor='rgba(0, 255, 127, 0.3)',
-        customdata=[[fecha] for fecha in fechas_formateadas],
-        hovertemplate='<b>%{customdata[0]}</b><br>Prob. Consolidada K=3: %{y:.4f}<extra></extra>',
-        showlegend=True 
-    ), row=4, col=1)
-
-    fig_combined.add_shape(
-        type="line",
-        x0=0, y0=UMBRAL_COMPRESION,
-        x1=len(spx_filtered) - 1, y1=UMBRAL_COMPRESION,
-        line=dict(color="#FFD700", width=2, dash="dash"), 
-        layer="below",
-        row=4, col=1
-    )
-
-    fig_combined.add_shape(
-        type="line",
-        x0=0, y0=UMBRAL_ALERTA,
-        x1=len(spx_filtered) - 1, y1=UMBRAL_ALERTA,
-        line=dict(color="#FFFFFF", width=1, dash="dot"),
-        layer="below",
-        row=4, col=1
-    )
-
-    fig_combined.add_annotation(
-        x=0, 
-        y=UMBRAL_COMPRESION, 
-        text=f'Compresión Fuerte ({UMBRAL_COMPRESION*100:.0f}%)', 
-        showarrow=False,
-        xref='x4', yref='y4', 
-        xanchor='left', 
-        yanchor='bottom', 
-        font=dict(size=12, color="#FFD700"),
-        xshift=5, 
-        yshift=5, 
-        row=4, col=1
-    )
-
-    fig_combined.add_annotation(
-        x=0, 
-        y=UMBRAL_ALERTA, 
-        text=f'Alerta ({UMBRAL_ALERTA*100:.0f}%)', 
-        showarrow=False,
-        xref='x4', yref='y4', 
-        xanchor='left', 
-        yanchor='bottom', 
-        font=dict(size=12, color="#FFFFFF"), 
-        xshift=5, 
-        yshift=5,
-        row=4, col=1
-    )
-
-    fig_combined.update_yaxes(title_text='Prob. K=3', row=4, col=1, tickformat=".2f", range=[0, 1])
-    fig_combined.update_xaxes(showticklabels=False, row=4, col=1)
-
-    # 5. GRÁFICO DE SEÑAL NR/WR
-    fig_combined.add_trace(go.Bar(
-        x=list(range(len(spx_filtered))),
-        y=nr_wr_filtered,
-        name='Señal NR/WR', 
-        marker=dict(
-            color='#FF6B35',
-            line=dict(width=0)
-        ),
-        customdata=[[fecha, 'ACTIVA' if s > 0 else 'INACTIVA'] for fecha, s in zip(fechas_formateadas, nr_wr_filtered)],
-        hovertemplate='<b>%{customdata[0]}</b><br>NR/WR: %{customdata[1]}<extra></extra>',
-        showlegend=True,
-        width=0.8
-    ), row=5, col=1)
-
-    fig_combined.add_shape(
-        type="line",
-        x0=-0.5, y0=0.5,
-        x1=len(spx_filtered) - 0.5, y1=0.5,
-        line=dict(color="#AAAAAA", width=1, dash="dot"),
-        layer="below",
-        row=5, col=1
-    )
-
-    fig_combined.add_annotation(
-        x=0, 
-        y=0.9, 
-        text='COMPRESIÓN ACTIVA', 
-        showarrow=False,
-        xref='x5', yref='y5', 
-        xanchor='left', 
-        yanchor='top', 
-        font=dict(size=11, color="#FF6B35"),
-        xshift=5, 
-        yshift=-5,
-        row=5, col=1
-    )
-
-    fig_combined.update_yaxes(title_text='NR/WR', row=5, col=1, range=[0, 1.05], tickvals=[0, 1], ticktext=['OFF', 'ON'])
-
-    # CONFIGURACIÓN FINAL
-    fig_combined.update_layout(
-        template='plotly_dark',
-        height=1100, 
-        xaxis_rangeslider_visible=False,
-        hovermode='x', 
-        plot_bgcolor='#131722', 
-        paper_bgcolor='#131722', 
-        font=dict(color='#AAAAAA'),
-        margin=dict(t=50, b=100, l=60, r=40),
-        showlegend=True,
-        legend=dict(
-            orientation="v",
-            yanchor="top",
-            y=1, 
-            xanchor="left",
-            x=0.01, 
-            bgcolor="rgba(0,0,0,0.5)",
-            bordercolor="rgba(255,255,255,0.1)",
-            borderwidth=1,
-            font=dict(size=10)
-        )
-    )
-
-    for i in range(1, 6):
-        fig_combined.update_xaxes(
-            showspikes=True,
-            spikemode='across', 
-            spikesnap='cursor',
-            spikecolor='#AAAAAA',
-            spikethickness=1,
-            spikedash='dash',
-            row=i, 
-            col=1
-        )
-
-        fig_combined.update_yaxes(
-            showspikes=False,
-            row=i, 
-            col=1
-        )
-
-    fig_combined.update_xaxes(
-        tickmode='array',
-        tickvals=list(range(len(spx_filtered))),
-        ticktext=date_labels,
-        tickangle=-45,
-        row=5, col=1, 
-        showgrid=False
-    )
-
-    fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=1, col=1)
-    fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=1, col=1)
-    fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=2, col=1)
-    fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=2, col=1)
-    fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=3, col=1)
-    fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=3, col=1)
-    fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=4, col=1)
-    fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=4, col=1)
-    fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=5, col=1)
-    fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=5, col=1)
-
-    st.plotly_chart(fig_combined, use_container_width=True)
-
-    st.markdown("---")
-    col1, col2, col3, col4, col5, col6 = st.columns(6) 
-
-    with col1:
-        st.metric("Precio Actual", f"${spx_filtered['Close'].iloc[-1]:.2f}")
-    with col2:
-        cambio = spx_filtered['Close'].iloc[-1] - spx_filtered['Close'].iloc[0]
-        cambio_pct = (cambio / spx_filtered['Close'].iloc[0]) * 100
-        st.metric(f"Cambio ({fecha_inicio_grafico} al {fecha_final_grafico})", f"${cambio:.2f}", f"{cambio_pct:.2f}%")
-    with col3:
-        st.metric("Máximo", f"${spx_filtered['High'].max():.2f}")
-    with col4:
-        st.metric("Mínimo", f"${spx_filtered['Low'].min():.2f}")
-    with col5:
-        rv_latest = spx_filtered['RV_5d'].iloc[-1] * 100
-        st.metric("RV_5d (Último)", f"{rv_latest:.2f}%")
-    with col6:
-        nr_wr_status = "🟢 ACTIVA" if nr_wr_filtered.iloc[-1] > 0 else "⚪ INACTIVA"
-        st.metric("Señal NR/WR", nr_wr_status)
+    # Merge
+    df_merged = df_ticker.merge(vix_series, how='left', left_index=True, right_index=True)
+    df_merged.dropna(subset=['VIX'], inplace=True)
     
-# ==============================================================================
-# PUNTO DE ENTRADA PROTEGIDO
-# ==============================================================================
-
-if __name__ == "__main__":
-    if check_password():
-        main_triple_calendar()
-    else:
-        st.title("🔒 Acceso Restringido")
-        st.info("Por favor, introduce tus credenciales en el menú lateral (sidebar) para acceder a Triple Calendar.")
+    return df_merged
