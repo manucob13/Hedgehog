@@ -315,43 +315,43 @@ def get_current_price_schwab(client, ticker):
 def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
     """
     Obtiene el strike ATM (at-the-money) más cercano al precio actual.
-    
+
     Args:
         client: Cliente autenticado de Schwab
         ticker (str): Símbolo del ticker
         current_price (float): Precio actual del subyacente
         expiration_date: Fecha de expiración (str, datetime, o date)
-    
+
     Returns:
         float: Strike ATM más cercano, None si hay error
     """
     try:
         symbol = normalize_ticker(ticker)
         target_date = normalize_date(expiration_date)
-        
+
         # Usar el sistema de rango de fechas dinámico
         from_date, to_date = get_date_range_for_ticker(symbol, target_date)
-        
+
         response = client.get_option_chain(
             symbol,
             from_date=from_date,
             to_date=to_date
         )
-        
+
         if response.status_code != 200:
             return None
-        
+
         data = response.json()
         available_strikes = set()
         exp_date_str = target_date.strftime("%Y-%m-%d")
-        
+
         # Buscar en ambos mapas (calls y puts)
         for map_type in ['callExpDateMap', 'putExpDateMap']:
             exp_map = data.get(map_type, {})
-            
+
             if not exp_map:
                 continue
-            
+
             # Buscar la fecha exacta
             for date_key, strikes_dict in exp_map.items():
                 if date_key.startswith(exp_date_str):
@@ -361,14 +361,18 @@ def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
                             available_strikes.add(strike_float)
                         except ValueError:
                             continue
-        
+
         if not available_strikes:
             return None
-        
+
         # Encontrar el strike más cercano al precio actual
         atm_strike = min(available_strikes, key=lambda x: abs(x - current_price))
-        
+
         return atm_strike
+
+    except Exception:
+        return None
+
 
 
 
