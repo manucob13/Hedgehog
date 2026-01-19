@@ -105,8 +105,18 @@ def calculate_indicators(df_raw: pd.DataFrame):
     spx['NR14'] = (spx['High'] - spx['Low'] < spx['nr14_threshold']).astype(int)
     spx.drop(columns=['nr14_threshold'], inplace=True)
     
-    # 4. Ratio de volatilidad en el VIX
+    # 4. Ratio de volatilidad en el VIX - CON PROTECCIÓN CONTRA INFINITOS
     spx['VIX_pct_change'] = spx['VIX'].pct_change()
+    
+    # CORRECCIÓN: Reemplazar infinitos y valores extremos
+    spx['VIX_pct_change'] = spx['VIX_pct_change'].replace([np.inf, -np.inf], np.nan)
+    # Opcional: clipear valores extremos (ej. cambios mayores a 500%)
+    spx['VIX_pct_change'] = spx['VIX_pct_change'].clip(-5.0, 5.0)
+    
+    # Limpiar otros posibles infinitos en las columnas calculadas
+    for col in ['RV_5d', 'ATR_14', 'log_ret']:
+        if col in spx.columns:
+            spx[col] = spx[col].replace([np.inf, -np.inf], np.nan)
     
     return spx.dropna()
 
@@ -127,7 +137,11 @@ def preparar_datos_markov(spx: pd.DataFrame):
     
     # Verificar que hay datos suficientes
     if len(exog_tvtp_clean) == 0:
-        st.error("No hay datos válidos después de limpiar NaN e infinitos")
+        st.warning("⚠️ No hay suficientes datos válidos para análisis Markov")
+        return None, None
+    
+    if len(exog_tvtp_clean) < 50:
+        st.warning(f"⚠️ Datos insuficientes: solo {len(exog_tvtp_clean)} filas disponibles (mínimo 50)")
         return None, None
     
     scaler_tvtp = StandardScaler()
@@ -146,6 +160,7 @@ def preparar_datos_markov(spx: pd.DataFrame):
     endog_final = endog_final.loc[exog_tvtp_final.index]
     
     if len(endog_final) < 50:
+        st.warning(f"⚠️ Datos finales insuficientes: {len(endog_final)} filas (mínimo 50)")
         return None, None
     
     return endog_final, exog_tvtp_final
