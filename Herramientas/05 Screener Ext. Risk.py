@@ -11,7 +11,6 @@ import random
 import requests
 from utils.utils import check_password
 from utils.tickers import create_tickers_universe
-from utils.utils_schwab import connect_to_schwab, get_iv_rank_schwab
 
 warnings.filterwarnings('ignore')
 
@@ -111,7 +110,7 @@ def safe_extract_value(series_or_df, index=-1):
         print(f"Error extrayendo valor: {type(e).__name__}: {str(e)}")
         return None
 
-# ============= FUNCIONES OPCIONES (CBOE + SCHWAB) =============
+# ============= FUNCIONES OPCIONES (CBOE + YAHOO) =============
 
 @st.cache_data(ttl=300)
 def fetch_option_data_cboe(ticker: str):
@@ -164,54 +163,6 @@ def process_option_data_cboe(data: pd.DataFrame) -> pd.DataFrame:
     )
     
     return df[mask]
-
-def get_options_volume_schwab(client, ticker):
-    """Obtiene volumen total de opciones usando Schwab API como alternativa"""
-    try:
-        if client is None:
-            return None
-        
-        from utils.utils_schwab import normalize_ticker
-        
-        symbol = normalize_ticker(ticker)
-        cutoff_date = datetime.now() + timedelta(days=60)
-        from_date = datetime.now().date()
-        to_date = cutoff_date.date()
-        
-        response = client.get_option_chain(
-            symbol,
-            from_date=from_date,
-            to_date=to_date
-        )
-        
-        if response.status_code != 200:
-            return None
-        
-        data = response.json()
-        total_volume = 0
-        
-        # Sumar volumen de calls
-        call_map = data.get('callExpDateMap', {})
-        for exp_date, strikes in call_map.items():
-            for strike, contracts in strikes.items():
-                for contract in contracts:
-                    vol = contract.get('totalVolume', 0)
-                    if vol and vol > 0:
-                        total_volume += int(vol)
-        
-        # Sumar volumen de puts
-        put_map = data.get('putExpDateMap', {})
-        for exp_date, strikes in put_map.items():
-            for strike, contracts in strikes.items():
-                for contract in contracts:
-                    vol = contract.get('totalVolume', 0)
-                    if vol and vol > 0:
-                        total_volume += int(vol)
-        
-        return total_volume if total_volume > 0 else None
-        
-    except Exception as e:
-        return None
 
 def get_options_volume_yahoo(ticker, days=7):
     """Volumen total de opciones (aprox última semana) con Yahoo Finance"""
@@ -311,28 +262,17 @@ def calculate_put_wall_gex(ticker, spot_price=None):
     except Exception:
         return None
 
-def get_options_metrics(ticker, current_price=None, schwab_client=None):
-    """Wrapper para obtener Vol Opciones, C/P ratio, Put Wall e IV Rank"""
+def get_options_metrics(ticker, current_price=None):
+    """Wrapper para obtener Vol Opciones, C/P ratio y Put Wall"""
     metrics = {
         'options_volume': None,
         'call_put_ratio': None,
-        'put_wall': None,
-        'iv_rank': None
+        'put_wall': None
     }
     try:
-        # Intentar volumen con Schwab primero, luego Yahoo
-        if schwab_client:
-            metrics['options_volume'] = get_options_volume_schwab(schwab_client, ticker)
-        
-        if metrics['options_volume'] is None:
-            metrics['options_volume'] = get_options_volume_yahoo(ticker, days=7)
-        
+        metrics['options_volume'] = get_options_volume_yahoo(ticker, days=7)
         metrics['call_put_ratio'] = get_call_put_ratio_cboe(ticker)
         metrics['put_wall'] = calculate_put_wall_gex(ticker, spot_price=current_price)
-        
-        # IV Rank desde Schwab
-        if schwab_client:
-            metrics['iv_rank'] = get_iv_rank_schwab(schwab_client, ticker)
     except Exception:
         pass
     return metrics
@@ -343,9 +283,8 @@ def analyze_ticker(ticker, period="2y", interval="1d", bb_period=20, zscore_peri
                    zscore_threshold_pos=2.5, zscore_threshold_neg=-2.5,
                    bb_threshold_upper=1.1, bb_threshold_lower=-0.1, 
                    macdv_threshold=50, filter_sma200=False, 
-                   filter_zscore_positive=True, filter_zscore_negative=True, 
-                   use_lock=True, schwab_client=None):
-    """Analiza un ticker buscando sobreextensión estadística + métricas de opciones + IV Rank"""
+                   filter_zscore_positive=True, filter_zscore_negative=True, use_lock=True):
+    """Analiza un ticker buscando sobreextensión estadística + métricas de opciones"""
     try:
         if use_lock:
             with _yfinance_lock:
@@ -471,7 +410,7 @@ def analyze_ticker(ticker, period="2y", interval="1d", bb_period=20, zscore_peri
         elif signal_type == 'SOBREVENTA' and current_macdv < -150:
             macdv_confirms = True
         
-        options_metrics = get_options_metrics(ticker, current_price, schwab_client)
+        options_metrics = get_options_metrics(ticker, current_price)
         
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         
@@ -491,7 +430,6 @@ def analyze_ticker(ticker, period="2y", interval="1d", bb_period=20, zscore_peri
             'Options_Volume': options_metrics['options_volume'],
             'Call_Put_Ratio': options_metrics['call_put_ratio'],
             'Put_Wall': options_metrics['put_wall'],
-            'IV_Rank': options_metrics['iv_rank'],
             'Data': data.copy(deep=True),
             'BB_SMA': bb_sma,
             'BB_Upper': bb_upper,
@@ -508,7 +446,7 @@ def analyze_ticker(ticker, period="2y", interval="1d", bb_period=20, zscore_peri
 
 # ============= ESCANEO EN PARALELO =============
 
-def scan_tickers(tickers_list, max_workers=5, use_lock=True, schwab_client=None, **kwargs):
+def scan_tickers(tickers_list, max_workers=5, use_lock=True, **kwargs):
     """Escanea múltiples tickers en paralelo con sincronización"""
     results = []
     errors = []
@@ -524,8 +462,7 @@ def scan_tickers(tickers_list, max_workers=5, use_lock=True, schwab_client=None,
     effective_workers = min(max_workers, 5) if use_lock else max_workers
     
     with ThreadPoolExecutor(max_workers=effective_workers) as executor:
-        futures = {executor.submit(analyze_ticker, ticker, use_lock=use_lock, 
-                                   schwab_client=schwab_client, **kwargs): ticker 
+        futures = {executor.submit(analyze_ticker, ticker, use_lock=use_lock, **kwargs): ticker 
                    for ticker in tickers_list}
         
         for future in as_completed(futures):
@@ -610,6 +547,7 @@ def plot_ticker_analysis(ticker_data, chart_period='3mo'):
     """
     try:
         plt.style.use('dark_background')
+        # 3 paneles sin volumen
         fig = plt.figure(figsize=(18, 11), facecolor='#0E1117')
         gs = fig.add_gridspec(3, 1, height_ratios=[2.5, 1, 1], hspace=0.3)
         
@@ -621,6 +559,7 @@ def plot_ticker_analysis(ticker_data, chart_period='3mo'):
             st.error(f"No hay datos disponibles para {ticker}")
             return None
         
+        # Filtrar datos según periodo seleccionado
         period_map = {
             '3mo': 90,
             '6mo': 180,
@@ -641,6 +580,7 @@ def plot_ticker_analysis(ticker_data, chart_period='3mo'):
             if col in data_filtered.columns:
                 data_filtered[col] = ensure_series(data_filtered[col])
         
+        # Filtrar series temporales
         bb_lower = ensure_series(ticker_data.get('BB_Lower'))
         bb_upper = ensure_series(ticker_data.get('BB_Upper'))
         bb_sma = ensure_series(ticker_data.get('BB_SMA'))
@@ -685,6 +625,7 @@ def plot_ticker_analysis(ticker_data, chart_period='3mo'):
                         color=current_color, s=150, edgecolors='white', 
                         linewidth=2, zorder=10, label='Actual')
         
+        # Put Wall
         if put_wall is not None and not pd.isna(put_wall):
             ax1.axhline(y=put_wall, color='#FE53BB', linestyle=':', linewidth=2, 
                         alpha=0.9, label=f'Put Wall: ${put_wall:.2f}', zorder=4)
@@ -845,19 +786,8 @@ def main():
     )
     
     st.title("📊 Statistical Overextension Screener")
-    st.markdown("**Detecta sobrecompra/sobreventa estadística con Z-Score, Bollinger Bands, MACD-V e IV Rank**")
+    st.markdown("**Detecta sobrecompra/sobreventa estadística con Z-Score, Bollinger Bands y MACD-V, y añade métricas de opciones**")
     st.markdown("---")
-    
-    # Conectar a Schwab al inicio
-    if 'schwab_client' not in st.session_state:
-        with st.spinner("🔐 Conectando con Schwab API..."):
-            st.session_state['schwab_client'] = connect_to_schwab()
-            if st.session_state['schwab_client']:
-                st.success("✅ Conectado a Schwab API")
-            else:
-                st.warning("⚠️ No se pudo conectar a Schwab. Usando solo Yahoo Finance.")
-    
-    schwab_client = st.session_state.get('schwab_client')
     
     # PASO 1: UNIVERSO DE TICKERS
     st.markdown("### 📂 PASO 1: Universo de Tickers")
@@ -901,7 +831,7 @@ def main():
             st.markdown("**📅 Periodo de Datos**")
             period = st.selectbox("Periodo histórico", 
                                   ["1mo", "3mo", "6mo", "1y", "2y"],
-                                  index=4)
+                                  index=4)  # 2y por defecto
             interval = st.selectbox("Intervalo", 
                                     ["1d", "1wk"],
                                     index=0)
@@ -987,7 +917,6 @@ def main():
                 tickers_list, 
                 max_workers=max_workers,
                 use_lock=True,
-                schwab_client=schwab_client,
                 period=period,
                 interval=interval,
                 bb_period=bb_period,
@@ -1030,7 +959,6 @@ def main():
                 'Vol Opciones': f"{r.get('Options_Volume', 0):,.0f}" if r.get('Options_Volume') else '-',
                 'C/P Ratio': f"{r.get('Call_Put_Ratio', 0):.2f}" if r.get('Call_Put_Ratio') else '-',
                 'Put Wall': f"${r.get('Put_Wall', 0):.2f}" if r.get('Put_Wall') else '-',
-                'IV Rank (%)': f"{r.get('IV_Rank', 0):.1f}%" if r.get('IV_Rank') is not None else '-',
                 'ID': r['ID']
             }
             for r in results
@@ -1054,13 +982,20 @@ def main():
         tab1, tab2 = st.tabs(["📊 Tabla de Resultados", "📈 Análisis Individual"])
         
         with tab1:
-            # Altura dinámica según cantidad de resultados
+            # Altura dinámica según cantidad de resultados (max 600px, min 200px)
             table_height = min(max(len(results) * 40 + 50, 200), 600)
             
             st.dataframe(
                 df_results.drop('ID', axis=1),
                 use_container_width=True,
                 height=table_height
+            )
+            csv = df_results.drop('ID', axis=1).to_csv(index=False)
+            st.download_button(
+                label="📥 Descargar CSV",
+                data=csv,
+                file_name=f"screener_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
             )
         
         with tab2:
@@ -1084,7 +1019,7 @@ def main():
                 selected_id = ticker_options[selected_display]
                 selected_result = next((r for r in results if r['ID'] == selected_id), None)
                 if selected_result:
-                    col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
+                    col1, col2, col3, col4, col5, col6 = st.columns(6)
                     with col1:
                         st.metric("Precio", f"${selected_result['Price']:.2f}")
                     with col2:
@@ -1100,9 +1035,6 @@ def main():
                     with col6:
                         put_wall = selected_result.get('Put_Wall')
                         st.metric("Put Wall", f"${put_wall:.2f}" if put_wall else 'N/A')
-                    with col7:
-                        iv_rank = selected_result.get('IV_Rank')
-                        st.metric("IV Rank", f"{iv_rank:.1f}%" if iv_rank is not None else 'N/A')
                     st.markdown("---")
                     fig = plot_ticker_analysis(selected_result, chart_period=chart_period)
                     if fig:
