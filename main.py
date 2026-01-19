@@ -68,11 +68,6 @@ screener_risk = st.Page(
     title="Screener Ext. Risk", 
     icon="🚨"
 )
-options_ratio = st.Page(
-    "Herramientas/06 Tools Stocks Options Ratio.py", 
-    title="Tools Stocks Options Ratio", 
-    icon="⚖️"
-)
 
 # 3. CREACIÓN DE LA NAVEGACIÓN JERÁRQUICA
 pg = st.navigation({
@@ -83,8 +78,7 @@ pg = st.navigation({
         trend_donchian, 
         trend_keltner, 
         gex_analyzer,
-        screener_risk, 
-        options_ratio
+        screener_risk
     ]
 })
 
