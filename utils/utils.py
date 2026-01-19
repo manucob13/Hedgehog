@@ -86,6 +86,8 @@ def fetch_data():
 def calculate_indicators(df_raw: pd.DataFrame):
     """Calcula todos los indicadores técnicos necesarios."""
     spx = df_raw.copy()
+    
+    st.write(f"🔍 DEBUG - Filas en df_raw inicial: {len(spx)}")
 
     # 1. Volatilidad Realizada (RV_5d)
     spx['log_ret'] = np.log(spx['Close'] / spx['Close'].shift(1))
@@ -118,7 +120,16 @@ def calculate_indicators(df_raw: pd.DataFrame):
         if col in spx.columns:
             spx[col] = spx[col].replace([np.inf, -np.inf], np.nan)
     
-    return spx.dropna()
+    st.write(f"🔍 DEBUG - Filas antes de dropna: {len(spx)}")
+    
+    # CORRECCIÓN CRÍTICA: Solo eliminar NaN de las columnas que usaremos
+    # No usar dropna() global porque elimina TODO si hay un solo NaN en log_ret
+    columnas_necesarias = ['VIX', 'ATR_14', 'VIX_pct_change', 'NR14', 'RV_5d']
+    spx_clean = spx.dropna(subset=columnas_necesarias)
+    
+    st.write(f"🔍 DEBUG - Filas después de dropna selectivo: {len(spx_clean)}")
+    
+    return spx_clean
 
 
 def preparar_datos_markov(spx: pd.DataFrame):
