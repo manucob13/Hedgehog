@@ -127,17 +127,30 @@ def preparar_datos_markov(spx: pd.DataFrame):
     variables_tvtp = ['VIX', 'ATR_14', 'VIX_pct_change', 'NR14']
     
     data_markov = spx.copy()
+    
+    # DEBUG: Mostrar info de datos de entrada
+    st.write(f"📊 DEBUG - Filas totales en entrada: {len(data_markov)}")
+    
     endog = data_markov[endog_variable].dropna()
+    st.write(f"📊 DEBUG - Filas en endog después de dropna: {len(endog)}")
     
     # Estandarizar exógenas
     exog_tvtp_original = data_markov[variables_tvtp].copy()
+    st.write(f"📊 DEBUG - Filas en exog original: {len(exog_tvtp_original)}")
+    
+    # Verificar infinitos por columna
+    for col in variables_tvtp:
+        n_inf = np.isinf(exog_tvtp_original[col]).sum()
+        n_nan = exog_tvtp_original[col].isna().sum()
+        st.write(f"   - {col}: {n_inf} infinitos, {n_nan} NaN")
     
     # CORRECCIÓN: Limpiar NaN e infinitos antes de escalar
     exog_tvtp_clean = exog_tvtp_original.replace([np.inf, -np.inf], np.nan).dropna()
+    st.write(f"📊 DEBUG - Filas después de limpiar inf/nan: {len(exog_tvtp_clean)}")
     
     # Verificar que hay datos suficientes
     if len(exog_tvtp_clean) == 0:
-        st.warning("⚠️ No hay suficientes datos válidos para análisis Markov")
+        st.error("❌ No hay datos válidos después de limpiar NaN e infinitos")
         return None, None
     
     if len(exog_tvtp_clean) < 50:
@@ -149,12 +162,14 @@ def preparar_datos_markov(spx: pd.DataFrame):
     
     exog_tvtp_scaled = pd.DataFrame(
         exog_tvtp_scaled_data,
-        index=exog_tvtp_clean.index,  # CORRECCIÓN: Usar índice de datos limpios
+        index=exog_tvtp_clean.index,
         columns=variables_tvtp
     )
 
     # Alinear y eliminar NaNs finales
     data_final = pd.concat([endog, exog_tvtp_scaled], axis=1).dropna()
+    st.write(f"📊 DEBUG - Filas finales después de concat y dropna: {len(data_final)}")
+    
     endog_final = data_final[endog_variable]
     exog_tvtp_final = data_final[variables_tvtp]
     endog_final = endog_final.loc[exog_tvtp_final.index]
@@ -163,6 +178,7 @@ def preparar_datos_markov(spx: pd.DataFrame):
         st.warning(f"⚠️ Datos finales insuficientes: {len(endog_final)} filas (mínimo 50)")
         return None, None
     
+    st.success(f"✅ Datos preparados: {len(endog_final)} filas válidas")
     return endog_final, exog_tvtp_final
 
 
