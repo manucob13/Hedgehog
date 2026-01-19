@@ -121,12 +121,21 @@ def preparar_datos_markov(spx: pd.DataFrame):
     
     # Estandarizar exógenas
     exog_tvtp_original = data_markov[variables_tvtp].copy()
+    
+    # CORRECCIÓN: Limpiar NaN e infinitos antes de escalar
+    exog_tvtp_clean = exog_tvtp_original.replace([np.inf, -np.inf], np.nan).dropna()
+    
+    # Verificar que hay datos suficientes
+    if len(exog_tvtp_clean) == 0:
+        st.error("No hay datos válidos después de limpiar NaN e infinitos")
+        return None, None
+    
     scaler_tvtp = StandardScaler()
-    exog_tvtp_scaled_data = scaler_tvtp.fit_transform(exog_tvtp_original.dropna())
+    exog_tvtp_scaled_data = scaler_tvtp.fit_transform(exog_tvtp_clean)
     
     exog_tvtp_scaled = pd.DataFrame(
         exog_tvtp_scaled_data,
-        index=exog_tvtp_original.dropna().index,
+        index=exog_tvtp_clean.index,  # CORRECCIÓN: Usar índice de datos limpios
         columns=variables_tvtp
     )
 
