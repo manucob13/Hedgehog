@@ -315,43 +315,43 @@ def get_current_price_schwab(client, ticker):
 def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
     """
     Obtiene el strike ATM (at-the-money) más cercano al precio actual.
-
+    
     Args:
         client: Cliente autenticado de Schwab
         ticker (str): Símbolo del ticker
         current_price (float): Precio actual del subyacente
         expiration_date: Fecha de expiración (str, datetime, o date)
-
+    
     Returns:
         float: Strike ATM más cercano, None si hay error
     """
     try:
         symbol = normalize_ticker(ticker)
         target_date = normalize_date(expiration_date)
-
+        
         # Usar el sistema de rango de fechas dinámico
         from_date, to_date = get_date_range_for_ticker(symbol, target_date)
-
+        
         response = client.get_option_chain(
             symbol,
             from_date=from_date,
             to_date=to_date
         )
-
+        
         if response.status_code != 200:
             return None
-
+        
         data = response.json()
         available_strikes = set()
         exp_date_str = target_date.strftime("%Y-%m-%d")
-
+        
         # Buscar en ambos mapas (calls y puts)
         for map_type in ['callExpDateMap', 'putExpDateMap']:
             exp_map = data.get(map_type, {})
-
+            
             if not exp_map:
                 continue
-
+            
             # Buscar la fecha exacta
             for date_key, strikes_dict in exp_map.items():
                 if date_key.startswith(exp_date_str):
@@ -361,181 +361,14 @@ def get_atm_strike_schwab(client, ticker, current_price, expiration_date):
                             available_strikes.add(strike_float)
                         except ValueError:
                             continue
-
+        
         if not available_strikes:
             return None
-
+        
         # Encontrar el strike más cercano al precio actual
         atm_strike = min(available_strikes, key=lambda x: abs(x - current_price))
-
+        
         return atm_strike
-
-    except Exception:
-        return None
-
-
-
-
-def get_iv_rank_schwab(client, ticker):
-    """
-    Obtiene el IV Rank (Implied Volatility Rank) de un ticker desde Schwab.
-    
-    IV Rank = ((IV Actual - IV Min 52w) / (IV Max 52w - IV Min 52w)) * 100
-    
-    Args:
-        client: Cliente autenticado de Schwab
-        ticker (str): Símbolo del ticker (ej: 'AAPL', 'SPY', 'QQQ', 'SPX')
-    
-    Returns:
-        float: IV Rank como porcentaje (0-100), None si hay error o datos insuficientes
-    """
-    try:
-        if client is None:
-            return None
-        
-        symbol = normalize_ticker(ticker)
-        
-        # Obtener quote que incluye datos de volatilidad
-        response = client.get_quote(symbol)
-        
-        if response.status_code != 200:
-            return None
-        
-        quote_data = response.json()
-        
-        if symbol not in quote_data:
-            return None
-        
-        ticker_data = quote_data[symbol]
-        
-        # Extraer datos de volatilidad desde la sección 'fundamental'
-        # La estructura puede variar, pero típicamente está en 'fundamental'
-        fundamental = ticker_data.get('fundamental', {})
-        
-        # IV actual puede estar en varios campos
-        current_iv = None
-        iv_current_fields = [
-            'vol1DayAvg',
-            'volatility', 
-            'impliedVolatility',
-            'ivol'
-        ]
-        
-        for field in iv_current_fields:
-            if field in fundamental and fundamental[field] is not None:
-                current_iv = float(fundamental[field])
-                break
-        
-        # Si no encontramos IV en fundamental, intentar en quote
-        if current_iv is None:
-            quote = ticker_data.get('quote', {})
-            for field in iv_current_fields:
-                if field in quote and quote[field] is not None:
-                    current_iv = float(quote[field])
-                    break
-        
-        if current_iv is None:
-            return None
-        
-        # Intentar obtener 52-week high/low volatility
-        iv_52w_high = None
-        iv_52w_low = None
-        
-        # Campos posibles para high/low de 52 semanas
-        high_fields = ['vol52WeekHigh', 'volatility52WeekHigh', 'htVolatility']
-        low_fields = ['vol52WeekLow', 'volatility52WeekLow', 'lwVolatility']
-        
-        for field in high_fields:
-            if field in fundamental and fundamental[field] is not None:
-                iv_52w_high = float(fundamental[field])
-                break
-        
-        for field in low_fields:
-            if field in fundamental and fundamental[field] is not None:
-                iv_52w_low = float(fundamental[field])
-                break
-        
-        # Si no hay datos de 52w en fundamental, buscar en quote
-        if iv_52w_high is None or iv_52w_low is None:
-            quote = ticker_data.get('quote', {})
-            
-            if iv_52w_high is None:
-                for field in high_fields:
-                    if field in quote and quote[field] is not None:
-                        iv_52w_high = float(quote[field])
-                        break
-            
-            if iv_52w_low is None:
-                for field in low_fields:
-                    if field in quote and quote[field] is not None:
-                        iv_52w_low = float(quote[field])
-                        break
-        
-        # Validar que tenemos todos los datos necesarios
-        if iv_52w_high is None or iv_52w_low is None:
-            return None
-        
-        # Evitar división por cero
-        if iv_52w_high == iv_52w_low:
-            return None
-        
-        # Calcular IV Rank
-        iv_rank = ((current_iv - iv_52w_low) / (iv_52w_high - iv_52w_low)) * 100
-        
-        # Asegurar que esté en el rango 0-100
-        iv_rank = max(0, min(100, iv_rank))
-        
-        return round(iv_rank, 2)
         
     except Exception as e:
-        # Retornar None silenciosamente en caso de error
-        return None
-
-
-def get_iv_percentile_schwab(client, ticker):
-    """
-    Obtiene el IV Percentile como alternativa/complemento al IV Rank.
-
-    Esta función es un fallback si IV Rank no está disponible.
-    IV Percentile indica el porcentaje de días en los últimos 52 semanas
-    donde la IV fue menor que la IV actual.
-
-    Args:
-        client: Cliente autenticado de Schwab
-        ticker (str): Símbolo del ticker
-
-    Returns:
-        float: IV Percentile como porcentaje (0-100), None si no disponible
-    """
-    try:
-        if client is None:
-            return None
-
-        symbol = normalize_ticker(ticker)
-        response = client.get_quote(symbol)
-
-        if response.status_code != 200:
-            return None
-
-        quote_data = response.json()
-
-        if symbol not in quote_data:
-            return None
-
-        ticker_data = quote_data[symbol]
-        fundamental = ticker_data.get('fundamental', {})
-        quote = ticker_data.get('quote', {})
-
-        # Buscar IV Percentile directamente
-        percentile_fields = ['ivPercentile', 'volPercentile', 'impliedVolPercentile']
-
-        for field in percentile_fields:
-            if field in fundamental and fundamental[field] is not None:
-                return round(float(fundamental[field]), 2)
-            if field in quote and quote[field] is not None:
-                return round(float(quote[field]), 2)
-
-        return None
-
-    except Exception:
         return None
