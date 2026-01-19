@@ -491,50 +491,47 @@ def get_iv_rank_schwab(client, ticker):
 def get_iv_percentile_schwab(client, ticker):
     """
     Obtiene el IV Percentile como alternativa/complemento al IV Rank.
-    
+
     Esta función es un fallback si IV Rank no está disponible.
     IV Percentile indica el porcentaje de días en los últimos 52 semanas
     donde la IV fue menor que la IV actual.
-    
+
     Args:
         client: Cliente autenticado de Schwab
         ticker (str): Símbolo del ticker
-    
+
     Returns:
         float: IV Percentile como porcentaje (0-100), None si no disponible
     """
     try:
         if client is None:
             return None
-        
+
         symbol = normalize_ticker(ticker)
         response = client.get_quote(symbol)
-        
+
         if response.status_code != 200:
             return None
-        
+
         quote_data = response.json()
-        
+
         if symbol not in quote_data:
             return None
-        
+
         ticker_data = quote_data[symbol]
         fundamental = ticker_data.get('fundamental', {})
         quote = ticker_data.get('quote', {})
-        
+
         # Buscar IV Percentile directamente
         percentile_fields = ['ivPercentile', 'volPercentile', 'impliedVolPercentile']
-        
+
         for field in percentile_fields:
             if field in fundamental and fundamental[field] is not None:
                 return round(float(fundamental[field]), 2)
             if field in quote and quote[field] is not None:
                 return round(float(quote[field]), 2)
-        
+
         return None
-        
+
     except Exception:
-        return None
-        
-    except Exception as e:
         return None
