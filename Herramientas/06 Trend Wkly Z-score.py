@@ -12,8 +12,8 @@ from utils.utils import check_password
 warnings.filterwarnings('ignore')
 
 REGIME_COLORS_ZSCORE = {
-    'RIESGO_ALCISTA': '#FF6B6B',
-    'RIESGO_BAJISTA': '#9D4EDD',
+    'SOBRECOMPRA': '#FF6B6B',
+    'SOBREVENTA': '#9D4EDD',
     'ALCISTA': '#4ECDC4',
     'BAJISTA': '#EE5A6F',
     'RANGO': '#FFD93D'
@@ -89,14 +89,14 @@ def classify_regime_zscore(df):
         
         if trend_up:
             if z > 2.0:
-                regime = 'RIESGO_ALCISTA'
+                regime = 'SOBRECOMPRA'
             elif z > 0.75:
                 regime = 'ALCISTA'
             else:
                 regime = 'RANGO'
         elif trend_down:
             if z < -2.0:
-                regime = 'RIESGO_BAJISTA'
+                regime = 'SOBREVENTA'
             elif z < -0.75:
                 regime = 'BAJISTA'
             else:
@@ -109,8 +109,19 @@ def classify_regime_zscore(df):
     return regimes
 
 @st.cache_data(ttl=timedelta(hours=1))
-def download_weekly_data(ticker, start_date='2018-01-01'):
+def download_weekly_data(ticker, start_date=None, years_back=None):
     try:
+        if start_date is None and years_back is None:
+            years_back = 7
+        
+        if start_date is None:
+            if years_back is None:
+                start_date = '1990-01-01'
+            else:
+                start_date = (datetime.now() - timedelta(days=365*years_back)).strftime('%Y-%m-%d')
+        else:
+            start_date = start_date if isinstance(start_date, str) else start_date.strftime('%Y-%m-%d')
+        
         data = yf.download(ticker, start=start_date, interval='1wk', progress=False, auto_adjust=True, actions=False, timeout=10)
         
         if data is None or data.empty:
@@ -283,7 +294,7 @@ def plot_zscore_dashboard(df_recent, ticker):
     ax5 = fig.add_subplot(gs[4], sharex=ax1)
     ax5.set_facecolor('#1A1D29')
     
-    regime_order = ['RIESGO_BAJISTA', 'BAJISTA', 'RANGO', 'ALCISTA', 'RIESGO_ALCISTA']
+    regime_order = ['SOBREVENTA', 'BAJISTA', 'RANGO', 'ALCISTA', 'SOBRECOMPRA']
     
     for regime_name in regime_order:
         mask = df_recent['Regime_ZScore'] == regime_name
@@ -318,7 +329,7 @@ def zscore_analyzer_page():
     st.markdown("### *Statistical Momentum with Kurtosis Adjustment (20w)*")
     st.markdown("---")
     
-    col_cfg1, col_cfg2, col_cfg3 = st.columns([2, 2, 2])
+    col_cfg1, col_cfg2, col_cfg3, col_cfg4 = st.columns([2, 2, 2, 2])
     
     with col_cfg1:
         ticker = st.text_input("🎯 Ticker Symbol", value="AAPL").upper()
@@ -328,7 +339,22 @@ def zscore_analyzer_page():
         lookback_weeks = int(lookback_months * 4.33)
     
     with col_cfg3:
-        start_date = st.date_input("📆 Fecha Inicio", value=datetime(2018, 1, 1))
+        years_options = {
+            "3 años": 3,
+            "5 años": 5,
+            "7 años": 7,
+            "10 años": 10,
+            "Máximo disponible": None
+        }
+        years_label = st.selectbox("📊 Histórico", list(years_options.keys()), index=2)
+        years_back = years_options[years_label]
+    
+    with col_cfg4:
+        use_custom = st.checkbox("📆 Fecha custom", value=False)
+        if use_custom:
+            start_date = st.date_input("Inicio", value=datetime(2018, 1, 1))
+        else:
+            start_date = None
     
     st.markdown("---")
     
@@ -342,7 +368,10 @@ def zscore_analyzer_page():
                 st.error("❌ Ticker inválido")
                 st.stop()
             
-            df_weekly = download_weekly_data(ticker, start_date.strftime('%Y-%m-%d'))
+            if use_custom and start_date:
+                df_weekly = download_weekly_data(ticker, start_date=start_date)
+            else:
+                df_weekly = download_weekly_data(ticker, years_back=years_back)
             
             if df_weekly is None:
                 st.error(f"❌ Error con {ticker}")
@@ -355,7 +384,20 @@ def zscore_analyzer_page():
             st.session_state['lookback_months'] = lookback_months
             
             st.success(f"✅ {ticker} cargado")
-            st.info(f"📊 {len(df_weekly)} semanas")
+            
+            first_date = df_weekly.index[0].strftime('%Y-%m-%d')
+            last_date = df_weekly.index[-1].strftime('%Y-%m-%d')
+            total_weeks = len(df_weekly)
+            total_years = round(total_weeks / 52, 1)
+            
+            if total_weeks >= 260:
+                quality = "🟢 Excelente"
+            elif total_weeks >= 156:
+                quality = "🟡 Buena"
+            else:
+                quality = "🟠 Limitada"
+            
+            st.info(f"📊 **{total_weeks} semanas** ({total_years} años) | {first_date} → {last_date} | Calidad: {quality}")
     
     if 'df_weekly' in st.session_state:
         df_weekly = st.session_state['df_weekly']
@@ -369,7 +411,7 @@ def zscore_analyzer_page():
         
         col1, col2, col3, col4, col5, col6 = st.columns(6)
         
-        regime_emoji = {'ALCISTA': '🟢', 'BAJISTA': '🔴', 'RANGO': '🟡', 'RIESGO_ALCISTA': '🔴', 'RIESGO_BAJISTA': '🟣'}
+        regime_emoji = {'ALCISTA': '🟢', 'BAJISTA': '🔴', 'RANGO': '🟡', 'SOBRECOMPRA': '🔴', 'SOBREVENTA': '🟣'}
         
         with col1:
             st.metric("RÉGIMEN", f"{regime_emoji[current['Regime_ZScore']]} {current['Regime_ZScore'].replace('_', ' ')}")
@@ -403,7 +445,7 @@ def zscore_analyzer_page():
             st.markdown("#### Estado Actual")
             
             if current['Z_Score_Adjusted'] > 2.0:
-                st.markdown("🔴 **RIESGO ALCISTA** - Sobrecompra extrema")
+                st.markdown("🔴 **SOBRECOMPRA** - Agotamiento alcista, probable corrección")
             elif current['Z_Score_Adjusted'] > 0.75:
                 st.markdown("🟢 **ALCISTA** - Momentum saludable")
             elif current['Z_Score_Adjusted'] > -0.75:
@@ -411,11 +453,12 @@ def zscore_analyzer_page():
             elif current['Z_Score_Adjusted'] > -2.0:
                 st.markdown("🔴 **BAJISTA** - Presión vendedora")
             else:
-                st.markdown("🟣 **RIESGO BAJISTA** - Sobreventa extrema")
+                st.markdown("🟣 **SOBREVENTA** - Agotamiento bajista, posible rebote")
         
         with col2:
             st.markdown("#### Metodología")
-            st.markdown("- **Ventana:** 20 semanas (~5 meses)")
+            st.markdown(f"- **Ventana Z-Score:** 20 semanas (~5 meses)")
+            st.markdown(f"- **Datos históricos:** {total_years} años")
             st.markdown("- **Filtro:** SMA50 confirma tendencia")
             st.markdown("- **Ajuste:** Curtosis para fat tails")
             st.markdown("- **Umbrales:** ±0.75σ y ±2.0σ")
