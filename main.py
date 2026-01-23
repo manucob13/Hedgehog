@@ -58,6 +58,11 @@ trend_keltner = st.Page(
     title="Trend Wkly Keltner", 
     icon="📉"
 )
+trend_Zscore = st.Page(
+    "Herramientas/04 Trend Wkly Z-score.py", 
+    title="Trend Wkly Zscore", 
+    icon="📉"
+)
 gex_analyzer = st.Page(
     "Herramientas/04 GEX Analyzer.py", 
     title="GEX Analyzer", 
@@ -76,7 +81,8 @@ pg = st.navigation({
     "HERRAMIENTAS": [
         vix_term, 
         trend_donchian, 
-        trend_keltner, 
+        trend_keltner,
+        trend_Zscore,
         gex_analyzer,
         screener_risk
     ]
