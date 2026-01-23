@@ -59,7 +59,7 @@ trend_keltner = st.Page(
     icon="📉"
 )
 trend_Zscore = st.Page(
-    "Herramientas/04 Trend Wkly Z-score.py", 
+    "Herramientas/06 Trend Wkly Z-score.py", 
     title="Trend Wkly Zscore", 
     icon="📉"
 )
