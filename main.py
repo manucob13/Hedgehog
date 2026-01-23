@@ -48,28 +48,18 @@ vix_term = st.Page(
     title="VIX Term Structure", 
     icon="🐣"
 )
-trend_donchian = st.Page(
-    "Herramientas/02 Trend Wkly Donchian.py", 
-    title="Trend Wkly Donchian", 
-    icon="📉"
-)
-trend_keltner = st.Page(
-    "Herramientas/03 Trend Wkly Keltner.py", 
-    title="Trend Wkly Keltner", 
-    icon="📉"
-)
 trend_Zscore = st.Page(
-    "Herramientas/06 Trend Wkly Z-score.py", 
+    "Herramientas/02 Trend Wkly Z-score.py", 
     title="Trend Wkly Zscore", 
     icon="📉"
 )
 gex_analyzer = st.Page(
-    "Herramientas/04 GEX Analyzer.py", 
+    "Herramientas/03 GEX Analyzer.py", 
     title="GEX Analyzer", 
     icon="🧪"
 )
 screener_risk = st.Page(
-    "Herramientas/05 Screener Ext. Risk.py", 
+    "Herramientas/04 Screener Ext. Risk.py", 
     title="Screener Ext. Risk", 
     icon="🚨"
 )
@@ -80,8 +70,6 @@ pg = st.navigation({
     "ESTRATEGIAS TC": [tc_signals, tc_calculos],
     "HERRAMIENTAS": [
         vix_term, 
-        trend_donchian, 
-        trend_keltner,
         trend_Zscore,
         gex_analyzer,
         screener_risk
