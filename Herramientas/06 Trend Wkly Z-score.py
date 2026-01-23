@@ -358,9 +358,18 @@ def zscore_analyzer_page():
     
     st.markdown("---")
     
-    col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
+    col_btn1, col_btn2, col_btn3, col_btn4 = st.columns([1, 2, 1, 1])
     with col_btn2:
         analizar_btn = st.button("🚀 ANALIZAR", type="primary", use_container_width=True)
+    with col_btn4:
+        if st.button("🔄 Limpiar Caché", use_container_width=True):
+            st.cache_data.clear()
+            if 'df_weekly' in st.session_state:
+                del st.session_state['df_weekly']
+            if 'ticker' in st.session_state:
+                del st.session_state['ticker']
+            st.success("✅ Caché limpiada")
+            st.rerun()
     
     if analizar_btn:
         with st.spinner(f"⏳ Descargando {ticker}..."):
@@ -403,6 +412,9 @@ def zscore_analyzer_page():
         df_weekly = st.session_state['df_weekly']
         ticker = st.session_state['ticker']
         
+        # RECLASIFICAR REGÍMENES (por si hay datos antiguos en cache)
+        df_weekly['Regime_ZScore'] = classify_regime_zscore(df_weekly)
+        
         df_weekly_recent = df_weekly.tail(lookback_weeks)
         current = df_weekly.iloc[-1]
         
@@ -416,11 +428,17 @@ def zscore_analyzer_page():
             'ALCISTA': '🟢',
             'RANGO': '🟡',
             'BAJISTA': '🔴',
-            'SOBREVENTA': '🟣'
+            'SOBREVENTA': '🟣',
+            # Compatibilidad con nombres antiguos (por si acaso)
+            'RIESGO_ALCISTA': '🔴',
+            'RIESGO_BAJISTA': '🟣'
         }
         
         with col1:
-            st.metric("RÉGIMEN", f"{regime_emoji[current['Regime_ZScore']]} {current['Regime_ZScore'].replace('_', ' ')}")
+            regime_name = current['Regime_ZScore']
+            emoji = regime_emoji.get(regime_name, '⚪')
+            display_name = regime_name.replace('_', ' ')
+            st.metric("RÉGIMEN", f"{emoji} {display_name}")
         
         with col2:
             price_chg = ((current['Close'] - df_weekly['Close'].iloc[-5]) / df_weekly['Close'].iloc[-5] * 100)
