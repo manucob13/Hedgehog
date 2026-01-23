@@ -236,11 +236,11 @@ def plot_zscore_dashboard(df_recent, ticker):
             
             ax2.plot([x1, x2], [y1, y2], color=color, linewidth=width, alpha=0.95, zorder=5)
     
-    ax2.axhline(y=2.0, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8, label='Riesgo Alcista > 2.0σ', zorder=2)
+    ax2.axhline(y=2.0, color='#FF6B6B', linestyle='--', linewidth=2, alpha=0.8, label='Sobrecompra > 2.0σ', zorder=2)
     ax2.axhline(y=0.75, color='#4ECDC4', linestyle=':', linewidth=1.5, alpha=0.7, label='Alcista > 0.75σ', zorder=2)
     ax2.axhline(y=0, color='#8E93A1', linestyle='-', linewidth=1.5, alpha=0.7, zorder=2)
     ax2.axhline(y=-0.75, color='#EE5A6F', linestyle=':', linewidth=1.5, alpha=0.7, label='Bajista < -0.75σ', zorder=2)
-    ax2.axhline(y=-2.0, color='#9D4EDD', linestyle='--', linewidth=2, alpha=0.8, label='Riesgo Bajista < -2.0σ', zorder=2)
+    ax2.axhline(y=-2.0, color='#9D4EDD', linestyle='--', linewidth=2, alpha=0.8, label='Sobreventa < -2.0σ', zorder=2)
     
     ax2.fill_between(df_recent.index, 2.0, 4, alpha=0.12, color='#FF6B6B', zorder=0)
     ax2.fill_between(df_recent.index, -4, -2.0, alpha=0.12, color='#9D4EDD', zorder=0)
@@ -411,7 +411,13 @@ def zscore_analyzer_page():
         
         col1, col2, col3, col4, col5, col6 = st.columns(6)
         
-        regime_emoji = {'ALCISTA': '🟢', 'BAJISTA': '🔴', 'RANGO': '🟡', 'SOBRECOMPRA': '🔴', 'SOBREVENTA': '🟣'}
+        regime_emoji = {
+            'SOBRECOMPRA': '🔴',
+            'ALCISTA': '🟢',
+            'RANGO': '🟡',
+            'BAJISTA': '🔴',
+            'SOBREVENTA': '🟣'
+        }
         
         with col1:
             st.metric("RÉGIMEN", f"{regime_emoji[current['Regime_ZScore']]} {current['Regime_ZScore'].replace('_', ' ')}")
