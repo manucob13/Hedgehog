@@ -13,8 +13,8 @@ from utils.utils_schwab import (
 )
 
 st.set_page_config(
-    page_title="🔧 Schwab Debug",
-    page_icon="🔧",
+    page_title="🔌 Broker test",
+    page_icon="🔌",
     layout="wide"
 )
 
