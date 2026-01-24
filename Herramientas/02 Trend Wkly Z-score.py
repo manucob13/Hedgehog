@@ -24,6 +24,18 @@ REGIME_COLORS = {
     "RANGO_EXTREMO": "#E74C3C",
 }
 
+# Nombres cortos para display
+REGIME_NAMES = {
+    "ALCISTA_FUERTE": "🟢 ALCISTA+",
+    "ALCISTA": "🟢 ALCISTA",
+    "ALCISTA_EXTREMO_RIESGO": "🟠 ALC RIESGO",
+    "BAJISTA_FUERTE": "🔵 BAJISTA+",
+    "BAJISTA": "🔵 BAJISTA",
+    "BAJISTA_EXTREMO_RIESGO": "🟣 BAJ RIESGO",
+    "RANGO": "⚪ RANGO",
+    "RANGO_EXTREMO": "🔴 RANGO EXT",
+}
+
 # ============================================================================
 # INDICADORES
 # ============================================================================
@@ -188,7 +200,7 @@ def download_weekly_data(ticker, years_back):
 
     # Resetear índice para evitar problemas con MultiIndex
     df = df.reset_index()
-    df = df[["Date", "Open", "High", "Low", "Close", "Volume"]].copy()
+    df = df[["Date", "Open", "High", "Low", "Close"]].copy()
     df.set_index("Date", inplace=True)
     
     df["SMA_50"] = df["Close"].rolling(50).mean()
@@ -220,17 +232,17 @@ if st.button("🚀 ANALIZAR", use_container_width=True):
         current = df.iloc[-1]
 
         # ================= MÉTRICAS =================
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1, c2, c3, c4, c5 = st.columns(5)
         
-        # Convertir régimen a string legible
-        regime_name = str(current["Regime"]).replace("_", " ")
+        # Convertir régimen a nombre corto
+        regime_key = str(current["Regime"])
+        regime_display = REGIME_NAMES.get(regime_key, regime_key)
         
-        c1.metric("RÉGIMEN", regime_name)
+        c1.metric("RÉGIMEN", regime_display)
         c2.metric("PRECIO", f"${float(current['Close']):.2f}")
         c3.metric("Z-SCORE", f"{float(current['Z_Score_Adjusted']):.2f}")
         c4.metric("MACD-V", f"{float(current['MACD_V']):.2f}")
         c5.metric("HISTOGRAM", f"{float(current['MACD_V_Histogram']):.2f}")
-        c6.metric("KURTOSIS", f"{float(current['Kurtosis']):.2f}")
 
         # ================= GRÁFICOS =================
         plt.style.use("dark_background")
@@ -280,10 +292,15 @@ if st.button("🚀 ANALIZAR", use_container_width=True):
         # ================= TABLA DE REGÍMENES RECIENTES =================
         st.subheader("📋 Últimos 10 Regímenes")
         recent = df[["Close", "SMA_50", "Z_Score_Adjusted", "MACD_V_Histogram", "Regime"]].tail(10).copy()
-        recent["Close"] = recent["Close"].apply(lambda x: f"${float(x):.2f}")
-        recent["SMA_50"] = recent["SMA_50"].apply(lambda x: f"${float(x):.2f}")
-        recent["Z_Score_Adjusted"] = recent["Z_Score_Adjusted"].apply(lambda x: f"{float(x):.2f}")
-        recent["MACD_V_Histogram"] = recent["MACD_V_Histogram"].apply(lambda x: f"{float(x):.2f}")
+        
+        # Formatear valores correctamente
+        for idx in recent.index:
+            recent.loc[idx, "Close"] = f"${float(recent.loc[idx, 'Close']):.2f}"
+            recent.loc[idx, "SMA_50"] = f"${float(recent.loc[idx, 'SMA_50']):.2f}"
+            recent.loc[idx, "Z_Score_Adjusted"] = f"{float(recent.loc[idx, 'Z_Score_Adjusted']):.2f}"
+            recent.loc[idx, "MACD_V_Histogram"] = f"{float(recent.loc[idx, 'MACD_V_Histogram']):.2f}"
+            recent.loc[idx, "Regime"] = REGIME_NAMES.get(recent.loc[idx, "Regime"], recent.loc[idx, "Regime"])
+        
         st.dataframe(recent, use_container_width=True)
 
     else:
