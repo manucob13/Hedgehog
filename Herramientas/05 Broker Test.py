@@ -1,19 +1,4 @@
-# Mostrar resumen
-            secrets_ok = all([
-                results['has_api_key'],
-                results['has_app_secret'],
-                results['has_redirect_uri'],
-                results['redirect_uri_valid'],
-                results['has_token']
-            ])
-            
-            if secrets_ok:
-                st.success("✅ Todos los secrets están configurados correctamente")
-            else:
-                st.error("❌ Faltan algunos secrets críticos o tienen formato incorrecto")
-            
-            # Detalles
-            col_# pages/schwab_debug.py
+# pages/schwab_debug.py
 import streamlit as st
 import os
 import json
@@ -67,7 +52,7 @@ def display_log():
         
         log_container = st.container()
         with log_container:
-            for entry in reversed(st.session_state.connection_log[-50:]):  # Últimos 50 mensajes
+            for entry in reversed(st.session_state.connection_log[-50:]):
                 timestamp = entry['timestamp']
                 level = entry['level']
                 message = entry['message']
@@ -78,7 +63,7 @@ def display_log():
                     st.markdown(f"🟡 `{timestamp}` **[WARNING]** {message}")
                 elif level == "SUCCESS":
                     st.markdown(f"🟢 `{timestamp}` **[SUCCESS]** {message}")
-                else:  # INFO
+                else:
                     st.markdown(f"ℹ️ `{timestamp}` **[INFO]** {message}")
 
 
@@ -93,14 +78,11 @@ def check_secrets_configuration():
         'has_api_key': False,
         'has_app_secret': False,
         'has_redirect_uri': False,
-        'redirect_uri_valid': False,
-        'redirect_uri_value': None,
         'has_token': False,
         'token_fields': []
     }
     
     try:
-        # Verificar credenciales principales
         if 'schwab' in st.secrets:
             log_message("✅ Sección 'schwab' encontrada en secrets", "SUCCESS")
             
@@ -120,23 +102,13 @@ def check_secrets_configuration():
             if 'redirect_uri' in st.secrets['schwab']:
                 results['has_redirect_uri'] = True
                 redirect_uri = st.secrets['schwab']['redirect_uri']
-                results['redirect_uri_value'] = redirect_uri
-                log_message(f"✅ Redirect URI encontrada: {redirect_uri}", "SUCCESS")
+                log_message(f"✅ Redirect URI: {redirect_uri}", "SUCCESS")
                 
-                # Validar formato del redirect_uri
-                if ':' in redirect_uri and redirect_uri.count(':') >= 2:
-                    # Tiene el formato correcto con puerto (ej: https://127.0.0.1:8182)
-                    results['redirect_uri_valid'] = True
-                    log_message("✅ Redirect URI tiene formato válido (incluye puerto)", "SUCCESS")
-                else:
-                    results['redirect_uri_valid'] = False
-                    log_message("❌ Redirect URI SIN PUERTO - debe incluir puerto (ej: https://127.0.0.1:8182)", "ERROR")
-                    log_message(f"  ℹ️ Formato actual: {redirect_uri}", "WARNING")
-                    log_message("  ℹ️ Formato correcto: https://127.0.0.1:8182", "INFO")
+                if ':' not in redirect_uri or redirect_uri.count(':') < 2:
+                    log_message("⚠️ WARNING: Redirect URI debe incluir puerto (ej: https://127.0.0.1:8182)", "WARNING")
             else:
                 log_message("❌ Redirect URI NO encontrada en secrets", "ERROR")
             
-            # Verificar token
             if 'token' in st.secrets['schwab']:
                 results['has_token'] = True
                 log_message("✅ Sección 'token' encontrada", "SUCCESS")
@@ -238,7 +210,6 @@ def test_schwab_connection():
     log_message("🚀 Iniciando prueba de conexión con Schwab...", "INFO")
     
     try:
-        # 1. Verificar credenciales
         log_message("1️⃣ Obteniendo credenciales...", "INFO")
         api_key, app_secret, redirect_uri = get_schwab_credentials()
         
@@ -249,7 +220,6 @@ def test_schwab_connection():
         log_message(f"✅ Credenciales obtenidas: API Key: {api_key[:8]}...", "SUCCESS")
         log_message(f"✅ Redirect URI: {redirect_uri}", "SUCCESS")
         
-        # 2. Verificar/crear archivo token
         log_message("2️⃣ Verificando archivo token...", "INFO")
         token_setup = setup_token_from_secrets()
         
@@ -259,11 +229,9 @@ def test_schwab_connection():
         
         log_message("✅ Archivo token configurado", "SUCCESS")
         
-        # 3. Intentar conexión con timeout
         log_message("3️⃣ Conectando con Schwab API...", "INFO")
         log_message("  ⏳ Esperando respuesta del servidor (timeout: 30s)...", "INFO")
         
-        # Variable para almacenar resultado
         result_container = {'client': None, 'error': None, 'completed': False}
         
         def connect_with_timeout():
@@ -278,12 +246,10 @@ def test_schwab_connection():
                 result_container['completed'] = True
                 log_message(f"  ❌ Error en connect_to_schwab(): {str(e)}", "ERROR")
         
-        # Ejecutar conexión en thread separado
         thread = threading.Thread(target=connect_with_timeout)
         thread.daemon = True
         thread.start()
         
-        # Esperar con timeout
         timeout = 30
         start_time = time.time()
         while time.time() - start_time < timeout:
@@ -310,7 +276,6 @@ def test_schwab_connection():
         log_message("✅ Cliente de Schwab creado exitosamente", "SUCCESS")
         st.session_state.schwab_debug_client = client
         
-        # 4. Prueba básica - obtener precio de SPX
         log_message("4️⃣ Probando API con ticker SPX...", "INFO")
         test_ticker = "SPX"
         
@@ -320,7 +285,7 @@ def test_schwab_connection():
             if price is None:
                 log_message(f"⚠️ No se pudo obtener precio de {test_ticker}", "WARNING")
                 log_message("  ℹ️ La conexión funciona pero puede haber problemas con permisos de mercado", "INFO")
-                return True  # Conexión OK aunque no se pudo obtener precio
+                return True
             
             log_message(f"✅ Precio de {test_ticker}: ${price:.2f}", "SUCCESS")
             log_message("🎉 CONEXIÓN EXITOSA - Todos los tests pasaron", "SUCCESS")
@@ -329,7 +294,7 @@ def test_schwab_connection():
         except Exception as e:
             log_message(f"❌ Error obteniendo precio: {str(e)}", "ERROR")
             log_message("  ℹ️ La conexión puede estar OK, pero hay un problema con la API", "WARNING")
-            return True  # Cliente creado OK
+            return True
         
     except Exception as e:
         log_message(f"❌ Error durante la conexión: {str(e)}", "ERROR")
@@ -368,14 +333,13 @@ if check_password():
     Diagnóstico completo de conexión con Schwab API.
     """)
     
-    # Verificación de Configuración
     st.subheader("⚙️ Verificación de Configuración")
     
     col1, col2 = st.columns(2)
     
     with col1:
         if st.button("🔍 Verificar Secrets", use_container_width=True, key="verify_secrets_schwab"):
-            st.session_state.connection_log = []  # Limpiar log
+            st.session_state.connection_log = []
             log_message("=" * 60, "INFO")
             log_message("VERIFICACIÓN DE SECRETS DE SCHWAB", "INFO")
             log_message("=" * 60, "INFO")
@@ -384,7 +348,6 @@ if check_password():
             
             st.markdown("### 📋 Resultados de Secrets")
             
-            # Mostrar resumen
             secrets_ok = all([
                 results['has_api_key'],
                 results['has_app_secret'],
@@ -397,7 +360,6 @@ if check_password():
             else:
                 st.error("❌ Faltan algunos secrets críticos")
             
-            # Detalles
             col_a, col_b = st.columns(2)
             
             with col_a:
@@ -413,7 +375,7 @@ if check_password():
     
     with col2:
         if st.button("📄 Verificar Archivo Token", use_container_width=True, key="verify_token_schwab"):
-            st.session_state.connection_log = []  # Limpiar log
+            st.session_state.connection_log = []
             log_message("=" * 60, "INFO")
             log_message("VERIFICACIÓN DE ARCHIVO TOKEN", "INFO")
             log_message("=" * 60, "INFO")
@@ -428,7 +390,6 @@ if check_password():
                     
                     if results['token_data']:
                         with st.expander("📊 Ver Detalles del Token"):
-                            # Mostrar solo información no sensible
                             safe_data = {
                                 'creation_timestamp': results['token_data'].get('creation_timestamp', 'N/A'),
                                 'expires_in': results['token_data']['token'].get('expires_in', 'N/A'),
@@ -443,7 +404,6 @@ if check_password():
     
     st.markdown("---")
     
-    # Test de Conexión
     st.subheader("🚀 Test de Conexión")
     
     st.markdown("""
@@ -458,7 +418,7 @@ if check_password():
     
     with col1:
         if st.button("🔌 CONECTAR A SCHWAB", type="primary", use_container_width=True, key="connect_schwab"):
-            st.session_state.connection_log = []  # Limpiar log anterior
+            st.session_state.connection_log = []
             st.session_state.last_test_time = datetime.now()
             
             with st.spinner("Probando conexión..."):
@@ -478,17 +438,14 @@ if check_password():
         if st.button("🔄 Refrescar", use_container_width=True, key="refresh_schwab"):
             st.rerun()
     
-    # Mostrar última vez que se ejecutó el test
     if st.session_state.last_test_time:
         st.caption(f"Último test: {st.session_state.last_test_time.strftime('%H:%M:%S')}")
     
     st.markdown("---")
     
-    # Log de Conexión
     if st.session_state.connection_log:
         display_log()
         
-        # Botón para descargar log
         log_text = "\n".join([
             f"[{entry['timestamp']}] [{entry['level']}] {entry['message']}"
             for entry in st.session_state.connection_log
@@ -506,7 +463,6 @@ if check_password():
     
     st.markdown("---")
     
-    # Información de Ayuda
     with st.expander("❓ Ayuda - Problemas Comunes"):
         st.markdown("""
         ### Problemas Comunes y Soluciones
@@ -524,6 +480,11 @@ if check_password():
         - Verifica que `redirect_uri` coincida con la configuración de Schwab
         - Asegúrate de que la app esté activa en Schwab Developer Portal
         
+        #### ⏳ "TIMEOUT: La conexión tardó más de 30 segundos"
+        - El redirect_uri debe incluir puerto (ej: https://127.0.0.1:8182)
+        - El token puede haber expirado y necesita renovación
+        - Elimina schwab_token.json y vuelve a intentar
+        
         #### ⚠️ "No se pudo obtener precio"
         - Verifica que el ticker exista
         - Algunos tickers requieren permisos especiales (ej: índices)
@@ -534,7 +495,7 @@ if check_password():
         [schwab]
         api_key = "tu_api_key"
         app_secret = "tu_app_secret"
-        redirect_uri = "https://127.0.0.1"
+        redirect_uri = "https://127.0.0.1:8182"
         
         [schwab.token]
         creation_timestamp = 1234567890
