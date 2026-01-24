@@ -12,11 +12,13 @@ from utils.utils import check_password
 warnings.filterwarnings('ignore')
 
 REGIME_COLORS_ZSCORE = {
-    'SOBRECOMPRA': '#FF6B6B',
-    'SOBREVENTA': '#9D4EDD',
-    'ALCISTA': '#4ECDC4',
-    'BAJISTA': '#EE5A6F',
-    'RANGO': '#FFD93D'
+    'SOBRECOMPRA_FUERTE': '#FF4444',   # Rojo intenso
+    'SOBRECOMPRA_DEBIL':  '#FF8888',   # Rojo suave
+    'ALCISTA':            '#4ECDC4',   # Cyan
+    'RANGO':              '#FFD93D',   # Amarillo
+    'BAJISTA':            '#EE5A6F',   # Rojo-rosa
+    'SOBREVENTA_DEBIL':   '#BB77DD',   # Púrpura suave
+    'SOBREVENTA_FUERTE':  '#9D4EDD'    # Púrpura intenso
 }
 
 # ============================================================================
@@ -100,21 +102,47 @@ def calculate_z_score_macdv(df, fast=12, slow=26, signal=9, z_window=20):
 def classify_regime_zscore(df):
     """
     Clasifica el régimen de mercado basado en Z-Score, tendencia y momentum.
-    
-    LÓGICA MEJORADA (v2.0):
-    - Incorpora dirección del MACD-V (momentum)
-    - Valida con Curtosis (volatilidad/confiabilidad)
-    - Detecta transiciones (movimientos hacia rangos diferentes)
-    
-    REGÍMENES (5 ESTADOS):
-    - SOBRECOMPRA: Precio > SMA50 + Z > 2.0 + MACD-V > Signal (momentum alcista)
-    - ALCISTA: Precio > SMA50 + Z > 0.75 + MACD-V > Signal (tendencia alcista confirmada)
-    - RANGO: Z entre -0.75 y 0.75 (consolidación, sin dirección clara)
-    - BAJISTA: Precio < SMA50 + Z < -0.75 + MACD-V < Signal (tendencia bajista confirmada)
-    - SOBREVENTA: Precio < SMA50 + Z < -2.0 + MACD-V < Signal (momentum bajista)
+
+    LÓGICA v3.0 (7 ESTADOS):
+    CONTEXTO ALCISTA: precio > SMA50
+        - SOBRECOMPRA_FUERTE:
+            Z > 2.0
+            MACD_V > MACD_V_Signal
+            MACD_V está subiendo (MACD_V_diff > 0)
+        - SOBRECOMPRA_DEBIL:
+            Z > 2.0
+            MACD_V > MACD_V_Signal
+            MACD_V está bajando (MACD_V_diff <= 0)
+        - ALCISTA:
+            0.75 < Z <= 2.0
+            MACD_V > MACD_V_Signal
+        - RANGO:
+            resto de casos con precio > SMA50
+
+    CONTEXTO BAJISTA: precio < SMA50
+        - SOBREVENTA_FUERTE:
+            Z < -2.0
+            MACD_V < MACD_V_Signal
+            MACD_V está bajando (MACD_V_diff < 0)
+        - SOBREVENTA_DEBIL:
+            Z < -2.0
+            MACD_V < MACD_V_Signal
+            MACD_V está subiendo (MACD_V_diff >= 0)
+        - BAJISTA:
+            -2.0 <= Z < -0.75
+            MACD_V < MACD_V_Signal
+        - RANGO:
+            resto de casos con precio < SMA50
+
+    ZONA CENTRAL (RANGO PURO):
+        -0.75 <= Z <= 0.75 → RANGO, independientemente de SMA50 y MACD-V
     """
+
     regimes = []
-    
+
+    # Diferencia de MACD-V para detectar si sube o baja
+    macd_diff = df['MACD_V'].diff()
+
     for idx, row in df.iterrows():
         # Valores clave
         z = row['Z_Score_Adjusted']
@@ -122,60 +150,60 @@ def classify_regime_zscore(df):
         sma50 = row['SMA_50']
         macd_v = row['MACD_V']
         macd_signal = row['MACD_V_Signal']
-        
+        macd_v_diff = macd_diff.loc[idx]
+
         # Validar datos
         if pd.isna(z) or pd.isna(price) or pd.isna(sma50) or pd.isna(macd_v) or pd.isna(macd_signal):
             regimes.append('RANGO')
             continue
-        
-        # Determinar dirección de precio respecto a SMA50
+
+        # Zona central: siempre RANGO
+        if -0.75 <= z <= 0.75:
+            regimes.append('RANGO')
+            continue
+
+        # Tendencia respecto a SMA50
         trend_up = price > sma50
         trend_down = price < sma50
-        
-        # Determinar dirección de momentum (MACD-V vs Signal)
+
+        # Momentum MACD-V
         momentum_bullish = macd_v > macd_signal
         momentum_bearish = macd_v < macd_signal
-        
-        # ========== CLASIFICACIÓN PRINCIPAL ==========
-        
-        if trend_up:  # Precio > SMA50 (contexto alcista)
-            if z > 2.0:  # Extremadamente overbought
-                if momentum_bullish:
-                    regime = 'SOBRECOMPRA'  # Máximo alcista con momentum
+
+        # ===== CONTEXTO ALCISTA =====
+        if trend_up:
+            if z > 2.0 and momentum_bullish:
+                # Diferenciar fuerte vs débil con la dirección del MACD-V
+                if not pd.isna(macd_v_diff) and macd_v_diff > 0:
+                    regime = 'SOBRECOMPRA_FUERTE'
                 else:
-                    regime = 'RANGO'  # Momentum debilitándose
-            
-            elif z > 0.75:  # Zona alcista positiva
-                if momentum_bullish:
-                    regime = 'ALCISTA'  # Confirmado
+                    regime = 'SOBRECOMPRA_DEBIL'
+            elif z > 0.75 and momentum_bullish:
+                regime = 'ALCISTA'
+            else:
+                regime = 'RANGO'
+
+        # ===== CONTEXTO BAJISTA =====
+        elif trend_down:
+            if z < -2.0 and momentum_bearish:
+                # Diferenciar fuerte vs débil con la dirección del MACD-V
+                if not pd.isna(macd_v_diff) and macd_v_diff < 0:
+                    regime = 'SOBREVENTA_FUERTE'
                 else:
-                    regime = 'RANGO'  # Perdiendo momentum
-            
-            else:  # Z entre 0.75 y -0.75
-                regime = 'RANGO'  # Sin dirección clara
-        
-        elif trend_down:  # Precio < SMA50 (contexto bajista)
-            if z < -2.0:  # Extremadamente oversold
-                if momentum_bearish:
-                    regime = 'SOBREVENTA'  # Mínimo bajista con momentum
-                else:
-                    regime = 'RANGO'  # Momentum debilitándose
-            
-            elif z < -0.75:  # Zona bajista negativa
-                if momentum_bearish:
-                    regime = 'BAJISTA'  # Confirmado
-                else:
-                    regime = 'RANGO'  # Perdiendo momentum
-            
-            else:  # Z entre -0.75 y 0.75
-                regime = 'RANGO'  # Sin dirección clara
-        
-        else:  # Precio ≈ SMA50
-            regime = 'RANGO'  # En el promedio, sin dirección
-        
+                    regime = 'SOBREVENTA_DEBIL'
+            elif z < -0.75 and momentum_bearish:
+                regime = 'BAJISTA'
+            else:
+                regime = 'RANGO'
+
+        # Precio ≈ SMA50
+        else:
+            regime = 'RANGO'
+
         regimes.append(regime)
-    
+
     return regimes
+
 
 # ============================================================================
 # DESCARGA Y PROCESAMIENTO DE DATOS
@@ -431,7 +459,16 @@ def plot_zscore_dashboard(df_recent, ticker):
     ax5 = fig.add_subplot(gs[4], sharex=ax1)
     ax5.set_facecolor('#1A1D29')
     
-    regime_order = ['SOBREVENTA', 'BAJISTA', 'RANGO', 'ALCISTA', 'SOBRECOMPRA']
+    regime_order = [
+    'SOBREVENTA_FUERTE',
+    'SOBREVENTA_DEBIL',
+    'BAJISTA',
+    'RANGO',
+    'ALCISTA',
+    'SOBRECOMPRA_DEBIL',
+    'SOBRECOMPRA_FUERTE'
+    ]
+
     for regime_name in regime_order:
         mask = df_recent['Regime_ZScore'] == regime_name
         if mask.sum() > 0:
@@ -452,33 +489,36 @@ def plot_zscore_dashboard(df_recent, ticker):
     ax6.axis('off')
     
     # Tabla de documentación
+
     doc_text = """
-    ╔═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
-    ║                           LÓGICA DE CLASIFICACIÓN DE REGÍMENES (v2.0) - Z-Score MACD-V Analyzer - 5 Estados                                                                             ║
-    ╠═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
-    ║  VARIABLES CLAVE:                                                                                                                                                                         ║
-    ║  • Z-Score Adjusted: Desviación normalizada del momentum MACD-V, ajustada por curtosis (-4σ a +4σ)                                                                                    ║
-    ║  • MACD-V: MACD normalizado por volatilidad (ATR). MACD-V > Signal = momentum alcista                                                                                                      ║
-    ║  • SMA(50): Promedio móvil a 50 semanas. Precio > SMA50 = contexto alcista                                                                                                               ║
-    ║  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  ║
-    ║  🔴 SOBRECOMPRA: Precio > SMA50 + Z > 2.0σ + MACD-V > Signal                                                                                                                             ║
-    ║     Máxima presión alcista con momentum confirmado. Riesgo de corrección próxima.                                                                                                           ║
-    ║  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  ║
-    ║  🔵 ALCISTA: Precio > SMA50 + Z > 0.75σ + MACD-V > Signal                                                                                                                                ║
-    ║     Tendencia alcista confirmada con momentum positivo. Mejor zona para entrada.                                                                                                           ║
-    ║  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  ║
-    ║  🟡 RANGO: Z-Score entre -0.75σ y +0.75σ                                                                                                                                                 ║
-    ║     Consolidación sin dirección clara. Sin momentum confirmado. Esperar ruptura.                                                                                                            ║
-    ║  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  ║
-    ║  🔴 BAJISTA: Precio < SMA50 + Z < -0.75σ + MACD-V < Signal                                                                                                                              ║
-    ║     Tendencia bajista confirmada con momentum negativo. Evitar compra.                                                                                                                     ║
-    ║  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  ║
-    ║  🟣 SOBREVENTA: Precio < SMA50 + Z < -2.0σ + MACD-V < Signal                                                                                                                            ║
-    ║     Máxima presión bajista con momentum confirmado. Potencial rebote. Entrada contraria.                                                                                                   ║
-    ║  ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
-    ║  MEJORA PRINCIPAL v2.0: Valida MACD-V > Signal (momentum) + precio > SMA50 + Z-Score. Previene falsos alcistas cuando momentum decae.                                                    ║
-    ║  ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
-    """
+╔═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+║                LÓGICA DE CLASIFICACIÓN DE REGÍMENES (v3.0) - Z-Score MACD-V Analyzer - 7 Estados                                                     ║
+╠═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║  VARIABLES CLAVE:                                                                                                                                                                         ║
+║  • Z-Score Adjusted: desviación normalizada del momentum MACD-V, ajustada por curtosis (-4σ a +4σ).                                                                                       ║
+║  • MACD-V: MACD normalizado por volatilidad (ATR). MACD-V > Signal = momentum alcista, MACD-V < Signal = momentum bajista.                                                                ║
+║  • SMA(50): precio > SMA50 = contexto alcista; precio < SMA50 = contexto bajista.                                                                                                         ║
+║  • Dirección MACD-V (ΔMACD-V): MACD_V[t] - MACD_V[t-1] para diferenciar Fuerte (acelera) vs Débil (desacelera).                                                                           ║
+║  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  ║
+║  CONTEXTO ALCISTA (Precio > SMA50):                                                                                                                                                        ║
+║  🔴 SOBRECOMPRA_FUERTE: Z > 2.0σ, MACD-V > Signal, ΔMACD-V > 0 → Extremo alcista con momentum acelerando.                                           ║
+║  🔴 SOBRECOMPRA_DEBIL:  Z > 2.0σ, MACD-V > Signal, ΔMACD-V ≤ 0 → Extremo alcista pero momentum se debilita.                                         ║
+║  🔵 ALCISTA:           0.75σ < Z ≤ 2.0σ, MACD-V > Signal → Tendencia alcista confirmada con momentum positivo.                                       ║
+║  🟡 RANGO (alcista):   resto de casos con precio > SMA50 (sin alineación clara de Z y MACD-V).                                                       ║
+║  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  ║
+║  CONTEXTO BAJISTA (Precio < SMA50):                                                                                                                                                        ║
+║  🟣 SOBREVENTA_FUERTE: Z < -2.0σ, MACD-V < Signal, ΔMACD-V < 0 → Extremo bajista con momentum acelerando.                                            ║
+║  🟣 SOBREVENTA_DEBIL:  Z < -2.0σ, MACD-V < Signal, ΔMACD-V ≥ 0 → Extremo bajista pero momentum se debilita (posible rebote).                         ║
+║  🔴 BAJISTA:          -2.0σ ≤ Z < -0.75σ, MACD-V < Signal → Tendencia bajista confirmada con momentum negativo.                                      ║
+║  🟡 RANGO (bajista):   resto de casos con precio < SMA50 (sin alineación clara de Z y MACD-V).                                                       ║
+║  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  ║
+║  ZONA CENTRAL (RANGO PURO):                                                                                                                         ║
+║  🟡 RANGO: -0.75σ ≤ Z ≤ 0.75σ independientemente de SMA50 y MACD-V. Consolidación sin dirección clara.                                               ║
+║  ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
+║  NOTA: v3.0 añade separación Fuerte/Débil en sobrecompra/sobreventa usando la dirección del MACD-V (ΔMACD-V), lo que permite distinguir si el extremo se está extendiendo o agotando.     ║
+║  ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
+"""
+
     
     ax6.text(0.5, 0.5, doc_text, transform=ax6.transAxes, fontsize=8, verticalalignment='center',
             horizontalalignment='center', family='monospace', 
