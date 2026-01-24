@@ -101,8 +101,6 @@ def calculate_indicators(df, fast=12, slow=26, signal=9, z_window=20, z_price_wi
 
 def classify_by_macdv(df):
     regimes = []
-    prev_regime = "RANGO"
-    confirm = 0
 
     for i in range(len(df)):
         try:
@@ -111,15 +109,15 @@ def classify_by_macdv(df):
             z_macd = float(df["Z_Score_MACD"].iloc[i])
             macd_v = float(df["MACD_V"].iloc[i])
         except (ValueError, TypeError):
-            regimes.append(prev_regime)
+            regimes.append("RANGO")
             continue
 
         if any(pd.isna(x) for x in [price, sma50, z_macd, macd_v]):
-            regimes.append(prev_regime)
+            regimes.append("RANGO")
             continue
 
         if i < 10:
-            regimes.append(prev_regime)
+            regimes.append("RANGO")
             continue
 
         # FILTRO 1: Lado del mercado (Precio vs SMA50)
@@ -129,36 +127,27 @@ def classify_by_macdv(df):
         macd_extreme = abs(macd_v) > 150
         z_extreme = abs(z_macd) > 2.0
 
-        # Evaluar RIESGO primero (máxima prioridad) - SOLO si hay extremos
+        # Evaluar RIESGO primero (máxima prioridad)
         if macd_extreme and z_extreme:
-            new_regime = "RIESGO+"
+            regime = "RIESGO+"
         elif macd_extreme or z_extreme:
-            new_regime = "RIESGO-"
+            regime = "RIESGO-"
         # FILTRO 3: Clasificación por MACD-V
         elif -50 <= macd_v <= 50:
             # Si MACD-V está en rango, SIEMPRE es RANGO
-            new_regime = "RANGO"
+            regime = "RANGO"
         elif above_sma:  # Precio > SMA50
             if 50 < macd_v <= 150:
-                new_regime = "ALCISTA"
+                regime = "ALCISTA"
             else:
-                new_regime = "RANGO"
+                regime = "RANGO"
         else:  # Precio < SMA50
             if -150 <= macd_v < -50:
-                new_regime = "BAJISTA"
+                regime = "BAJISTA"
             else:
-                new_regime = "RANGO"
+                regime = "RANGO"
 
-        # Histeresis
-        if new_regime != prev_regime:
-            confirm += 1
-            if confirm < 2:
-                new_regime = prev_regime
-        else:
-            confirm = 0
-
-        prev_regime = new_regime
-        regimes.append(new_regime)
+        regimes.append(regime)
 
     return regimes
 
@@ -168,8 +157,6 @@ def classify_by_macdv(df):
 
 def classify_by_zscore(df):
     regimes = []
-    prev_regime = "RANGO"
-    confirm = 0
 
     for i in range(len(df)):
         try:
@@ -179,15 +166,15 @@ def classify_by_zscore(df):
             z_price = float(df["Z_Score_Price"].iloc[i])
             macd_v = float(df["MACD_V"].iloc[i])
         except (ValueError, TypeError):
-            regimes.append(prev_regime)
+            regimes.append("RANGO")
             continue
 
         if any(pd.isna(x) for x in [price, sma50, z_macd, z_price, macd_v]):
-            regimes.append(prev_regime)
+            regimes.append("RANGO")
             continue
 
         if i < 10:
-            regimes.append(prev_regime)
+            regimes.append("RANGO")
             continue
 
         # FILTRO 1: Lado del mercado (Precio vs SMA50)
@@ -197,36 +184,27 @@ def classify_by_zscore(df):
         macd_extreme = abs(macd_v) > 150
         z_extreme = abs(z_macd) > 2.0
 
-        # Evaluar RIESGO primero (máxima prioridad) - SOLO si hay extremos
+        # Evaluar RIESGO primero (máxima prioridad)
         if macd_extreme and z_extreme:
-            new_regime = "RIESGO+"
+            regime = "RIESGO+"
         elif macd_extreme or z_extreme:
-            new_regime = "RIESGO-"
+            regime = "RIESGO-"
         # FILTRO 3: Clasificación por Z-Score Precio
         elif -0.5 <= z_price <= 0.5:
             # Si Z-Score Precio está en rango, SIEMPRE es RANGO
-            new_regime = "RANGO"
+            regime = "RANGO"
         elif above_sma:  # Precio > SMA50
             if z_price > 0.5:
-                new_regime = "ALCISTA"
+                regime = "ALCISTA"
             else:
-                new_regime = "RANGO"
+                regime = "RANGO"
         else:  # Precio < SMA50
             if z_price < -0.5:
-                new_regime = "BAJISTA"
+                regime = "BAJISTA"
             else:
-                new_regime = "RANGO"
+                regime = "RANGO"
 
-        # Histeresis
-        if new_regime != prev_regime:
-            confirm += 1
-            if confirm < 2:
-                new_regime = prev_regime
-        else:
-            confirm = 0
-
-        prev_regime = new_regime
-        regimes.append(new_regime)
+        regimes.append(regime)
 
     return regimes
 
@@ -505,7 +483,7 @@ if st.session_state.analyzed and st.session_state.df is not None:
         - Solo |MACD-V| > 150 O solo |Z-Score| > 2 → **RIESGO-**
         - |MACD-V| > 150 Y |Z-Score| > 2 (ambas) → **RIESGO+**
         
-        **Confirmación:** 2 períodos consecutivos
+        **Nota:** Sin histéresis - respuesta inmediata
         """)
     
     with col_logic2:
@@ -524,7 +502,7 @@ if st.session_state.analyzed and st.session_state.df is not None:
         - Solo |MACD-V| > 150 O solo |Z-Score| > 2 → **RIESGO-**
         - |MACD-V| > 150 Y |Z-Score| > 2 (ambas) → **RIESGO+**
         
-        **Confirmación:** 2 períodos consecutivos
+        **Nota:** Sin histéresis - respuesta inmediata
         """)
 
 elif st.session_state.analyzed and st.session_state.df is None:
