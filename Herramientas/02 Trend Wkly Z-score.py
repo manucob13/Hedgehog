@@ -10,41 +10,45 @@ import warnings
 warnings.filterwarnings("ignore")
 
 # ============================================================================
-# AUTENTICACIÓN
+# AUTENTICACIÓN - Importar desde utils
 # ============================================================================
 
-def check_password():
-    """Verifica si el usuario tiene credenciales correctas."""
-    
-    def login_form():
-        """Formulario de login en el sidebar."""
-        with st.sidebar:
-            st.markdown("### 🔑 Iniciar Sesión")
-            username = st.text_input("Usuario", key="username_input")
-            password = st.text_input("Contraseña", type="password", key="password_input")
-            
-            if st.button("Login", use_container_width=True):
-                if username in st.secrets.get("passwords", {}) and password == st.secrets["passwords"][username]:
-                    st.session_state["password_correct"] = True
-                    st.session_state["username"] = username
+try:
+    from utils.utils import check_password
+except ImportError:
+    # Fallback si no existe el módulo utils
+    def check_password():
+        """Verifica si el usuario tiene credenciales correctas."""
+        
+        def login_form():
+            """Formulario de login en el sidebar."""
+            with st.sidebar:
+                st.markdown("### 🔑 Iniciar Sesión")
+                username = st.text_input("Usuario", key="username_input")
+                password = st.text_input("Contraseña", type="password", key="password_input")
+                
+                if st.button("Login", use_container_width=True):
+                    if username in st.secrets.get("passwords", {}) and password == st.secrets["passwords"][username]:
+                        st.session_state["password_correct"] = True
+                        st.session_state["username"] = username
+                        st.rerun()
+                    else:
+                        st.error("❌ Usuario o contraseña incorrectos")
+        
+        # Si ya está autenticado, mostrar usuario en sidebar
+        if st.session_state.get("password_correct", False):
+            with st.sidebar:
+                st.success(f"✅ Sesión activa: {st.session_state.get('username', 'Usuario')}")
+                if st.button("🚪 Cerrar Sesión", use_container_width=True):
+                    st.session_state["password_correct"] = False
+                    if "username" in st.session_state:
+                        del st.session_state["username"]
                     st.rerun()
-                else:
-                    st.error("❌ Usuario o contraseña incorrectos")
-    
-    # Si ya está autenticado, mostrar usuario en sidebar
-    if st.session_state.get("password_correct", False):
-        with st.sidebar:
-            st.success(f"✅ Sesión activa: {st.session_state.get('username', 'Usuario')}")
-            if st.button("🚪 Cerrar Sesión", use_container_width=True):
-                st.session_state["password_correct"] = False
-                if "username" in st.session_state:
-                    del st.session_state["username"]
-                st.rerun()
-        return True
-    
-    # Mostrar formulario de login
-    login_form()
-    return False
+            return True
+        
+        # Mostrar formulario de login
+        login_form()
+        return False
 
 # ============================================================================
 # COLORES DE REGÍMENES
@@ -550,14 +554,5 @@ if __name__ == "__main__":
     if check_password():
         main()
     else:
-        st.markdown(
-            """
-            <div style='text-align: center; padding: 60px 20px;'>
-                <h1 style='color: #FF6B6B; font-size: 48px;'>🔒 Acceso Restringido</h1>
-                <p style='color: #B0B0B0; font-size: 20px; margin-top: 20px;'>
-                    Introduce tus credenciales en el menú lateral para acceder.
-                </p>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+        st.title("🔒 Acceso Restringido")
+        st.info("Por favor, introduce tus credenciales en el menú lateral (sidebar) para acceder.")
