@@ -64,6 +64,12 @@ screener_risk = st.Page(
     icon="🚨"
 )
 
+broker_test = st.Page(
+    "Herramientas/05 Testing Broker connectivity.py", 
+    title="Broker test", 
+    icon="🚨"
+)
+
 # 3. CREACIÓN DE LA NAVEGACIÓN JERÁRQUICA
 pg = st.navigation({
     "ESTRATEGIAS TE": [te_signals, te_calculos],
@@ -72,7 +78,8 @@ pg = st.navigation({
         vix_term, 
         trend_Zscore,
         gex_analyzer,
-        screener_risk
+        screener_risk,
+        broker_test
     ]
 })
 
