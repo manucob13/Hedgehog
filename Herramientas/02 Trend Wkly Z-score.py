@@ -14,24 +14,20 @@ warnings.filterwarnings("ignore")
 # ============================================================================
 
 REGIME_COLORS = {
-    "ALCISTA": "#00FF00",             # Verde brillante
-    "ALCISTA_RIESGO-": "#9370DB",     # Morado medio
-    "ALCISTA_RIESGO+": "#4B0082",     # Índigo oscuro
-    "BAJISTA": "#FF0000",             # Rojo brillante
-    "BAJISTA_RIESGO-": "#9370DB",     # Morado medio (mismo que alcista)
-    "BAJISTA_RIESGO+": "#4B0082",     # Índigo oscuro (mismo que alcista)
-    "RANGO": "#FFD700",               # Dorado
+    "ALCISTA": "#00FF00",      # Verde brillante
+    "BAJISTA": "#FF0000",      # Rojo brillante
+    "RANGO": "#FFD700",        # Dorado
+    "RIESGO-": "#9370DB",      # Morado medio
+    "RIESGO+": "#4B0082",      # Índigo oscuro
 }
 
-# Nombres simplificados para tabla - CORREGIDO
+# Nombres simplificados para tabla
 REGIME_SIMPLE = {
     "ALCISTA": "ALCISTA",
-    "ALCISTA_RIESGO-": "RIESGO-",
-    "ALCISTA_RIESGO+": "RIESGO+",
     "BAJISTA": "BAJISTA",
-    "BAJISTA_RIESGO-": "RIESGO-",
-    "BAJISTA_RIESGO+": "RIESGO+",
     "RANGO": "RANGO",
+    "RIESGO-": "RIESGO-",
+    "RIESGO+": "RIESGO+",
 }
 
 # Leyenda consolidada (solo 5 colores únicos)
@@ -129,33 +125,22 @@ def classify_by_macdv(df):
         # Lado del mercado
         above_sma = price > sma50
 
-        # Detectar RIESGO primero (prioridad)
-        if z_macd > 2.0:  # Sobrecompra
-            if macd_v < 150:
-                new_regime = "ALCISTA_RIESGO-"
-            else:
-                new_regime = "ALCISTA_RIESGO+"
-        elif z_macd < -2.0:  # Sobreventa
-            if macd_v > -150:
-                new_regime = "BAJISTA_RIESGO-"
-            else:
-                new_regime = "BAJISTA_RIESGO+"
-        # Clasificación por MACD-V
+        # Detectar condiciones extremas
+        macd_extreme = abs(macd_v) > 150
+        z_extreme = abs(z_macd) > 2.0
+
+        # RIESGO+ (ambas condiciones extremas)
+        if macd_extreme and z_extreme:
+            new_regime = "RIESGO+"
+        # RIESGO- (solo una condición extrema)
+        elif macd_extreme or z_extreme:
+            new_regime = "RIESGO-"
+        # Clasificación normal por MACD-V
         elif -50 <= macd_v <= 50:
             new_regime = "RANGO"
         elif 50 < macd_v <= 150:
-            if above_sma:
-                new_regime = "ALCISTA"
-            else:
-                new_regime = "RANGO"  # Conflicto
-        elif -150 <= macd_v < -50:
-            if not above_sma:
-                new_regime = "BAJISTA"
-            else:
-                new_regime = "RANGO"  # Conflicto
-        elif macd_v > 150:
             new_regime = "ALCISTA" if above_sma else "RANGO"
-        elif macd_v < -150:
+        elif -150 <= macd_v < -50:
             new_regime = "BAJISTA" if not above_sma else "RANGO"
         else:
             new_regime = "RANGO"
@@ -203,28 +188,21 @@ def classify_by_zscore(df):
 
         above_sma = price > sma50
 
-        # Detectar RIESGO primero (igual que MACD-V)
-        if z_macd > 2.0:
-            if macd_v < 150:
-                new_regime = "ALCISTA_RIESGO-"
-            else:
-                new_regime = "ALCISTA_RIESGO+"
-        elif z_macd < -2.0:
-            if macd_v > -150:
-                new_regime = "BAJISTA_RIESGO-"
-            else:
-                new_regime = "BAJISTA_RIESGO+"
+        # Detectar condiciones extremas
+        macd_extreme = abs(macd_v) > 150
+        z_extreme = abs(z_macd) > 2.0
+
+        # RIESGO+ (ambas condiciones extremas)
+        if macd_extreme and z_extreme:
+            new_regime = "RIESGO+"
+        # RIESGO- (solo una condición extrema)
+        elif macd_extreme or z_extreme:
+            new_regime = "RIESGO-"
         # Clasificación por Z-Score de PRECIO
         elif z_price > 0.5:
-            if above_sma:
-                new_regime = "ALCISTA"
-            else:
-                new_regime = "RANGO"
+            new_regime = "ALCISTA" if above_sma else "RANGO"
         elif z_price < -0.5:
-            if not above_sma:
-                new_regime = "BAJISTA"
-            else:
-                new_regime = "RANGO"
+            new_regime = "BAJISTA" if not above_sma else "RANGO"
         else:
             new_regime = "RANGO"
 
@@ -463,11 +441,9 @@ if st.session_state.analyzed and st.session_state.df is not None:
         - MACD-V entre 50 y 150 (y precio > SMA50) → **ALCISTA**
         - MACD-V entre -50 y -150 (y precio < SMA50) → **BAJISTA**
         
-        **Filtro 3: Z-Score MACD (extremos)**
-        - Z-Score > +2 y MACD-V < 150 → **RIESGO-**
-        - Z-Score > +2 y MACD-V ≥ 150 → **RIESGO+**
-        - Z-Score < -2 y MACD-V > -150 → **RIESGO-**
-        - Z-Score < -2 y MACD-V ≤ -150 → **RIESGO+**
+        **Filtro 3: Condiciones extremas**
+        - Solo |MACD-V| > 150 O solo |Z-Score| > 2 → **RIESGO-**
+        - |MACD-V| > 150 Y |Z-Score| > 2 (ambas) → **RIESGO+**
         
         **Confirmación:** 2 períodos consecutivos
         """)
@@ -484,11 +460,9 @@ if st.session_state.analyzed and st.session_state.df is not None:
         - Z-Score Precio < -0.5 (y precio < SMA50) → **BAJISTA**
         - Z-Score Precio entre -0.5 y +0.5 → **RANGO**
         
-        **Filtro 3: Z-Score MACD (extremos)**
-        - Z-Score MACD > +2 y MACD-V < 150 → **RIESGO-**
-        - Z-Score MACD > +2 y MACD-V ≥ 150 → **RIESGO+**
-        - Z-Score MACD < -2 y MACD-V > -150 → **RIESGO-**
-        - Z-Score MACD < -2 y MACD-V ≤ -150 → **RIESGO+**
+        **Filtro 3: Condiciones extremas**
+        - Solo |MACD-V| > 150 O solo |Z-Score| > 2 → **RIESGO-**
+        - |MACD-V| > 150 Y |Z-Score| > 2 (ambas) → **RIESGO+**
         
         **Confirmación:** 2 períodos consecutivos
         """)
