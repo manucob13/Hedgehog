@@ -232,19 +232,19 @@ def test_schwab_connection():
         log_message("3️⃣ Conectando con Schwab API...", "INFO")
         log_message("  ⏳ Esperando respuesta del servidor (timeout: 30s)...", "INFO")
         
-        result_container = {'client': None, 'error': None, 'completed': False}
+        result_container = {'client': None, 'error': None, 'completed': False, 'log_messages': []}
         
         def connect_with_timeout():
             try:
-                log_message("  🔄 Llamando a connect_to_schwab()...", "INFO")
+                result_container['log_messages'].append(("  🔄 Llamando a connect_to_schwab()...", "INFO"))
                 client = connect_to_schwab()
                 result_container['client'] = client
                 result_container['completed'] = True
-                log_message("  ✅ connect_to_schwab() completado", "SUCCESS")
+                result_container['log_messages'].append(("  ✅ connect_to_schwab() completado", "SUCCESS"))
             except Exception as e:
                 result_container['error'] = e
                 result_container['completed'] = True
-                log_message(f"  ❌ Error en connect_to_schwab(): {str(e)}", "ERROR")
+                result_container['log_messages'].append((f"  ❌ Error en connect_to_schwab(): {str(e)}", "ERROR"))
         
         thread = threading.Thread(target=connect_with_timeout)
         thread.daemon = True
@@ -256,6 +256,10 @@ def test_schwab_connection():
             if result_container['completed']:
                 break
             time.sleep(0.5)
+        
+        # Procesar mensajes del thread
+        for msg, level in result_container['log_messages']:
+            log_message(msg, level)
         
         if not result_container['completed']:
             log_message("❌ TIMEOUT: La conexión tardó más de 30 segundos", "ERROR")
