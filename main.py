@@ -65,7 +65,7 @@ screener_risk = st.Page(
 )
 
 broker_test = st.Page(
-    "Herramientas/05 Testing Broker connectivity.py", 
+    "Herramientas/05 Broker Test.py", 
     title="Broker test", 
     icon="🔌"
 )
