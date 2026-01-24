@@ -304,8 +304,16 @@ if st.session_state.analyzed and st.session_state.df is not None:
     current = df.iloc[-1]
 
     # ================= TABLA COMPARATIVA - CORREGIDA =================
-    regime_macdv_full = str(current["Regime_MACDV"])
-    regime_zscore_full = str(current["Regime_ZScore"])
+    # Extraer correctamente el valor del régimen
+    if isinstance(current["Regime_MACDV"], str):
+        regime_macdv_full = current["Regime_MACDV"]
+    else:
+        regime_macdv_full = current["Regime_MACDV"].iloc[0] if hasattr(current["Regime_MACDV"], 'iloc') else str(current["Regime_MACDV"])
+    
+    if isinstance(current["Regime_ZScore"], str):
+        regime_zscore_full = current["Regime_ZScore"]
+    else:
+        regime_zscore_full = current["Regime_ZScore"].iloc[0] if hasattr(current["Regime_ZScore"], 'iloc') else str(current["Regime_ZScore"])
     
     # Simplificar los nombres usando el diccionario
     regime_macdv_simple = REGIME_SIMPLE.get(regime_macdv_full, regime_macdv_full)
