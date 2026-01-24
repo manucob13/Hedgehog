@@ -71,7 +71,7 @@ def calculate_z_score_macdv(df, fast=12, slow=26, signal=9, z_window=20):
     return df
 
 # ============================================================================
-# CLASIFICACIÓN DE REGÍMENES
+# CLASIFICACIÓN DE REGÍMENES (ROBUSTA)
 # ============================================================================
 
 def classify_regime(df):
@@ -89,14 +89,25 @@ def classify_regime(df):
         z = df["Z_Score_Adjusted"].iloc[i]
         m_trend = macd_trend.iloc[i]
 
-        if np.isnan(price) or np.isnan(sma50) or np.isnan(z):
+        # Protección NaN
+        if (
+            pd.isna(price)
+            or pd.isna(sma50)
+            or pd.isna(z)
+            or pd.isna(m_trend)
+        ):
             regimes.append(prev_regime)
             continue
 
-        # 1️⃣ ESTRUCTURA
-        if i >= 3 and price > sma50 and sma50 > df["SMA_50"].iloc[i - 3]:
+        # Evitar índices negativos
+        if i < 3:
+            regimes.append(prev_regime)
+            continue
+
+        # 1️⃣ RÉGIMEN ESTRUCTURAL
+        if price > sma50 and sma50 > df["SMA_50"].iloc[i - 3]:
             structural = "ALCISTA"
-        elif i >= 3 and price < sma50 and sma50 < df["SMA_50"].iloc[i - 3]:
+        elif price < sma50 and sma50 < df["SMA_50"].iloc[i - 3]:
             structural = "BAJISTA"
         else:
             structural = "RANGO"
@@ -109,7 +120,7 @@ def classify_regime(df):
         else:
             momentum = "NEUTRO"
 
-        # 3️⃣ EXTREMOS
+        # 3️⃣ EXTREMOS (Z-SCORE)
         if z > 2:
             extreme = "SOBRECOMPRA"
         elif z < -2:
@@ -117,7 +128,7 @@ def classify_regime(df):
         else:
             extreme = "NORMAL"
 
-        # 4️⃣ COMPOSICIÓN
+        # 4️⃣ COMPOSICIÓN FINAL
         if structural == "ALCISTA":
             if extreme == "SOBRECOMPRA" and momentum == "DESACELERANDO":
                 new_regime = "ALCISTA_EXTREMO_RIESGO"
@@ -151,7 +162,7 @@ def classify_regime(df):
     return regimes
 
 # ============================================================================
-# DESCARGA
+# DESCARGA DE DATOS
 # ============================================================================
 
 @st.cache_data(ttl=3600)
@@ -172,7 +183,7 @@ def download_weekly_data(ticker, years_back):
     return df
 
 # ============================================================================
-# UI
+# UI STREAMLIT
 # ============================================================================
 
 st.set_page_config(layout="wide", page_title="Weekly Z-Score MACD-V")
@@ -192,6 +203,7 @@ if st.button("🚀 ANALIZAR", use_container_width=True):
         df_plot = df.tail(int(lookback_months * 4.33))
         current = df.iloc[-1]
 
+        # ================= MÉTRICAS =================
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("RÉGIMEN", current["Regime"])
         c2.metric("PRECIO", f"${current['Close']:.2f}")
@@ -199,9 +211,11 @@ if st.button("🚀 ANALIZAR", use_container_width=True):
         c4.metric("MACD-V", f"{current['MACD_V']:.2f}")
         c5.metric("KURTOSIS", f"{current['Kurtosis']:.2f}")
 
+        # ================= GRÁFICOS =================
         plt.style.use("dark_background")
         fig, axs = plt.subplots(3, 1, figsize=(18, 18), sharex=True)
 
+        # PRECIO
         axs[0].plot(df_plot.index, df_plot["Close"], color="white", alpha=0.4)
         axs[0].plot(df_plot.index, df_plot["SMA_50"], color="violet")
 
@@ -211,12 +225,16 @@ if st.button("🚀 ANALIZAR", use_container_width=True):
 
         axs[0].set_title(f"{ticker} — Precio y Regímenes")
 
+        # Z-SCORE
         axs[1].plot(df_plot.index, df_plot["Z_Score_Adjusted"], color="cyan")
         axs[1].axhline(2, color="red", linestyle="--")
         axs[1].axhline(-2, color="purple", linestyle="--")
+        axs[1].set_title("Z-Score Ajustado")
 
+        # MACD-V
         axs[2].plot(df_plot.index, df_plot["MACD_V"], label="MACD-V")
         axs[2].plot(df_plot.index, df_plot["MACD_V_Signal"], linestyle="--", label="Signal")
         axs[2].legend()
+        axs[2].set_title("MACD-V")
 
         st.pyplot(fig)
