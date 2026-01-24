@@ -23,7 +23,7 @@ REGIME_COLORS = {
     "RANGO": "#FFD700",               # Dorado
 }
 
-# Nombres simplificados para tabla
+# Nombres simplificados para tabla - CORREGIDO
 REGIME_SIMPLE = {
     "ALCISTA": "ALCISTA",
     "ALCISTA_RIESGO-": "RIESGO-",
@@ -303,13 +303,17 @@ if st.session_state.analyzed and st.session_state.df is not None:
     df_plot = df.tail(int(lookback_months * 4.33))
     current = df.iloc[-1]
 
-    # ================= TABLA COMPARATIVA =================
-    regime_macdv = REGIME_SIMPLE.get(str(current["Regime_MACDV"]), str(current["Regime_MACDV"]))
-    regime_zscore = REGIME_SIMPLE.get(str(current["Regime_ZScore"]), str(current["Regime_ZScore"]))
+    # ================= TABLA COMPARATIVA - CORREGIDA =================
+    regime_macdv_full = str(current["Regime_MACDV"])
+    regime_zscore_full = str(current["Regime_ZScore"])
+    
+    # Simplificar los nombres usando el diccionario
+    regime_macdv_simple = REGIME_SIMPLE.get(regime_macdv_full, regime_macdv_full)
+    regime_zscore_simple = REGIME_SIMPLE.get(regime_zscore_full, regime_zscore_full)
     
     comparison_data = {
         "Método": ["MACD-V", "Z-Score Precio"],
-        "Régimen": [regime_macdv, regime_zscore],
+        "Régimen": [regime_macdv_simple, regime_zscore_simple],
         "Precio": [f"${float(current['Close']):.2f}", f"${float(current['Close']):.2f}"],
         "MACD-V": [f"{float(current['MACD_V']):.2f}", f"{float(current['MACD_V']):.2f}"],
         "Z-Score MACD": [f"{float(current['Z_Score_MACD']):.2f}", f"{float(current['Z_Score_MACD']):.2f}"],
