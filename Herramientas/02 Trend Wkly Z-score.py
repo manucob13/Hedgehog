@@ -485,7 +485,7 @@ def plot_zscore_dashboard(df_recent, ticker):
     ax5.tick_params(labelsize=11, colors='#B0B0B0')
     
        # ===== GRÁFICO 6: DOCUMENTACIÓN DE LÓGICA =====
-    ax6 = fig.add_subplot(gs[5])
+    ax6 = fig.add_subplot(gs[5],sharex=None)
     ax6.axis('off')
     
     # Tabla de documentación (más compacta y legible)
