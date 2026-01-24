@@ -17,7 +17,8 @@ st.set_page_config(
 )
 
 # 2. DEFINICIÓN DE LAS PÁGINAS
-# --- Sección ESTRATEGIAS TE ---
+
+# --- Sección ESTRATEGIAS → Time Edge ---
 te_signals = st.Page(
     "Estrategias/TE/00 TE Signals.py", 
     title="Signals", 
@@ -30,7 +31,7 @@ te_calculos = st.Page(
     icon="🦔"
 )
 
-# --- Sección ESTRATEGIAS TC ---
+# --- Sección ESTRATEGIAS → Triple Calendar ---
 tc_signals = st.Page(
     "Estrategias/TC/00 TC Signals.py", 
     title="Signals", 
@@ -63,7 +64,6 @@ screener_risk = st.Page(
     title="Screener Ext. Risk", 
     icon="🚨"
 )
-
 broker_test = st.Page(
     "Herramientas/05 Broker Test.py", 
     title="Broker Test", 
@@ -72,8 +72,10 @@ broker_test = st.Page(
 
 # 3. CREACIÓN DE LA NAVEGACIÓN JERÁRQUICA
 pg = st.navigation({
-    "ESTRATEGIAS TE": [te_signals, te_calculos],
-    "ESTRATEGIAS TC": [tc_signals, tc_calculos],
+    "ESTRATEGIAS": {
+        "Time Edge": [te_signals, te_calculos],
+        "Triple Calendar": [tc_signals, tc_calculos]
+    },
     "HERRAMIENTAS": [
         vix_term, 
         trend_Zscore,
