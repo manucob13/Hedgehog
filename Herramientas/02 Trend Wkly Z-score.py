@@ -478,9 +478,9 @@ def plot_zscore_dashboard(df_recent, ticker):
                        s=110, edgecolors='white', linewidth=1.8, zorder=4)
     
     ax5.set_ylabel('Regime', fontsize=14, fontweight='700', color='#FFFFFF')
-    ax5.set_yticks(range(5))
-    ax5.set_yticklabels([r.replace('_', '\n') for r in regime_order], fontsize=10, 
-                        fontweight='700', color='#E0E0E0')
+    ax5.set_yticks(range(7))  # ← 7 estados ahora
+    ax5.set_yticklabels([r.replace('_', '\n') for r in regime_order], fontsize=10,
+                    fontweight='700', color='#E0E0E0')
     ax5.grid(True, alpha=0.08, linestyle='-', linewidth=1, color='#FFFFFF', axis='x')
     ax5.tick_params(labelsize=11, colors='#B0B0B0')
     
