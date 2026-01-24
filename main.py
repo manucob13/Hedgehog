@@ -67,7 +67,7 @@ screener_risk = st.Page(
 broker_test = st.Page(
     "Herramientas/05 Testing Broker connectivity.py", 
     title="Broker test", 
-    icon="🚨"
+    icon="🔌"
 )
 
 # 3. CREACIÓN DE LA NAVEGACIÓN JERÁRQUICA
