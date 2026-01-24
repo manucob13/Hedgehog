@@ -23,13 +23,14 @@ REGIME_COLORS = {
     "RANGO": "#FFD700",               # Dorado
 }
 
-REGIME_NAMES = {
+# Nombres simplificados para tabla
+REGIME_SIMPLE = {
     "ALCISTA": "ALCISTA",
-    "ALCISTA_RIESGO-": "ALC RISK-",
-    "ALCISTA_RIESGO+": "ALC RISK+",
+    "ALCISTA_RIESGO-": "RIESGO-",
+    "ALCISTA_RIESGO+": "RIESGO+",
     "BAJISTA": "BAJISTA",
-    "BAJISTA_RIESGO-": "BAJ RISK-",
-    "BAJISTA_RIESGO+": "BAJ RISK+",
+    "BAJISTA_RIESGO-": "RIESGO-",
+    "BAJISTA_RIESGO+": "RIESGO+",
     "RANGO": "RANGO",
 }
 
@@ -244,7 +245,7 @@ def classify_by_zscore(df):
 # DESCARGA DE DATOS
 # ============================================================================
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, show_spinner=False)
 def download_weekly_data(ticker, years_back):
     start = (datetime.now() - timedelta(days=365 * years_back)).strftime("%Y-%m-%d")
     df = yf.download(ticker, start=start, interval="1wk", progress=False)
@@ -269,189 +270,216 @@ def download_weekly_data(ticker, years_back):
 st.set_page_config(layout="wide", page_title="Weekly Z-Score MACD-V")
 st.title("📊 Weekly Z-Score MACD-V Regime Analyzer")
 
+# Mantener estado en session_state para evitar que desaparezca
+if 'analyzed' not in st.session_state:
+    st.session_state.analyzed = False
+if 'df' not in st.session_state:
+    st.session_state.df = None
+if 'ticker' not in st.session_state:
+    st.session_state.ticker = "AAPL"
+
 col_input1, col_input2, col_input3 = st.columns([2, 1, 1])
 with col_input1:
-    ticker = st.text_input("Ticker", "AAPL").upper()
+    ticker = st.text_input("Ticker", st.session_state.ticker).upper()
 with col_input2:
     years_back = st.slider("Histórico (años)", 3, 12, 5)
 with col_input3:
     lookback_months = st.slider("Meses a visualizar", 1, 36, 12)
 
 if st.button("🚀 ANALIZAR", use_container_width=True):
+    st.session_state.ticker = ticker
+    st.session_state.df = download_weekly_data(ticker, years_back)
+    st.session_state.analyzed = True
 
-    df = download_weekly_data(ticker, years_back)
-
-    if df is not None:
-
+if st.session_state.analyzed and st.session_state.df is not None:
+    
+    df = st.session_state.df
+    
+    if "Regime_MACDV" not in df.columns:
         df["Regime_MACDV"] = classify_by_macdv(df)
         df["Regime_ZScore"] = classify_by_zscore(df)
-        df_plot = df.tail(int(lookback_months * 4.33))
-        current = df.iloc[-1]
+        st.session_state.df = df
+    
+    df_plot = df.tail(int(lookback_months * 4.33))
+    current = df.iloc[-1]
 
-        # ================= TABLA COMPARATIVA =================
-        regime_macdv = REGIME_NAMES.get(str(current["Regime_MACDV"]), str(current["Regime_MACDV"]))
-        regime_zscore = REGIME_NAMES.get(str(current["Regime_ZScore"]), str(current["Regime_ZScore"]))
-        
-        comparison_data = {
-            "Método": ["MACD-V", "Z-Score Precio"],
-            "Régimen": [regime_macdv, regime_zscore],
-            "Precio": [f"${float(current['Close']):.2f}", f"${float(current['Close']):.2f}"],
-            "MACD-V": [f"{float(current['MACD_V']):.2f}", f"{float(current['MACD_V']):.2f}"],
-            "Z-Score MACD": [f"{float(current['Z_Score_MACD']):.2f}", f"{float(current['Z_Score_MACD']):.2f}"],
-            "Z-Score Precio": [f"{float(current['Z_Score_Price']):.2f}", f"{float(current['Z_Score_Price']):.2f}"],
-        }
-        
-        comparison_df = pd.DataFrame(comparison_data)
-        st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+    # ================= TABLA COMPARATIVA =================
+    regime_macdv = REGIME_SIMPLE.get(str(current["Regime_MACDV"]), str(current["Regime_MACDV"]))
+    regime_zscore = REGIME_SIMPLE.get(str(current["Regime_ZScore"]), str(current["Regime_ZScore"]))
+    
+    comparison_data = {
+        "Método": ["MACD-V", "Z-Score Precio"],
+        "Régimen": [regime_macdv, regime_zscore],
+        "Precio": [f"${float(current['Close']):.2f}", f"${float(current['Close']):.2f}"],
+        "MACD-V": [f"{float(current['MACD_V']):.2f}", f"{float(current['MACD_V']):.2f}"],
+        "Z-Score MACD": [f"{float(current['Z_Score_MACD']):.2f}", f"{float(current['Z_Score_MACD']):.2f}"],
+        "Z-Score Precio": [f"{float(current['Z_Score_Price']):.2f}", f"{float(current['Z_Score_Price']):.2f}"],
+    }
+    
+    comparison_df = pd.DataFrame(comparison_data)
+    st.dataframe(comparison_df, use_container_width=True, hide_index=True)
 
-        # ================= LEYENDA CONSOLIDADA =================
-        st.markdown("### 🎨 Leyenda")
-        cols = st.columns(5)
-        for idx, (regime, color) in enumerate(LEGEND_COLORS.items()):
-            with cols[idx]:
-                st.markdown(
-                    f'<div style="background-color:{color};padding:4px;border-radius:3px;text-align:center;font-weight:bold;color:white;font-size:10px;">'
-                    f'{regime}</div>',
-                    unsafe_allow_html=True
-                )
+    # ================= LEYENDA CONSOLIDADA =================
+    st.markdown("### 🎨 Leyenda")
+    cols = st.columns(5)
+    for idx, (regime, color) in enumerate(LEGEND_COLORS.items()):
+        with cols[idx]:
+            st.markdown(
+                f'<div style="background-color:{color};padding:4px;border-radius:3px;text-align:center;font-weight:bold;color:white;font-size:10px;">'
+                f'{regime}</div>',
+                unsafe_allow_html=True
+            )
 
-        # ================= GRÁFICOS =================
-        plt.style.use("dark_background")
-        fig, axs = plt.subplots(3, 1, figsize=(14, 8), sharex=True)
+    # ================= GRÁFICOS =================
+    plt.style.use("dark_background")
+    fig, axs = plt.subplots(3, 1, figsize=(14, 8), sharex=True)
 
-        # ========== GRÁFICO 1: PRECIO + MACD-V ==========
-        axs[0].plot(df_plot.index, df_plot["Close"], color="white", alpha=0.5, linewidth=1.5)
-        axs[0].plot(df_plot.index, df_plot["SMA_50"], color="cyan", linewidth=2, alpha=0.7)
+    # ========== GRÁFICO 1: PRECIO + MACD-V ==========
+    axs[0].plot(df_plot.index, df_plot["Close"], color="white", alpha=0.5, linewidth=1.5)
+    axs[0].plot(df_plot.index, df_plot["SMA_50"], color="cyan", linewidth=2, alpha=0.7)
 
-        for r, c in REGIME_COLORS.items():
-            m = df_plot["Regime_MACDV"] == r
-            if m.any():
-                axs[0].scatter(df_plot[m].index, df_plot[m]["Close"], c=c, s=90, alpha=0.95, 
-                             edgecolors='black', linewidths=1.5, zorder=5)
+    for r, c in REGIME_COLORS.items():
+        m = df_plot["Regime_MACDV"] == r
+        if m.any():
+            axs[0].scatter(df_plot[m].index, df_plot[m]["Close"], c=c, s=90, alpha=0.95, 
+                         edgecolors='black', linewidths=1.5, zorder=5)
 
-        last_price = float(df_plot["Close"].iloc[-1])
-        axs[0].text(1.01, last_price, f'${last_price:.2f}', 
-                   transform=axs[0].get_yaxis_transform(), 
-                   fontsize=9, color='white', va='center', fontweight='bold')
-        
-        axs[0].set_title(f"{ticker} — Método MACD-V", fontsize=11, fontweight='bold', pad=8)
-        axs[0].grid(alpha=0.25, linestyle='--')
-        axs[0].set_ylabel("Precio ($)", fontsize=9)
-        axs[0].yaxis.tick_right()
-        axs[0].yaxis.set_label_position("right")
-        axs[0].tick_params(labelsize=8)
+    last_price = float(df_plot["Close"].iloc[-1])
+    axs[0].text(1.01, last_price, f'${last_price:.2f}', 
+               transform=axs[0].get_yaxis_transform(), 
+               fontsize=9, color='white', va='center', fontweight='bold')
+    
+    axs[0].set_title(f"{ticker} — Método MACD-V", fontsize=11, fontweight='bold', pad=8)
+    axs[0].grid(alpha=0.25, linestyle='--')
+    axs[0].set_ylabel("Precio ($)", fontsize=9)
+    axs[0].yaxis.tick_right()
+    axs[0].yaxis.set_label_position("right")
+    axs[0].tick_params(labelsize=8)
 
-        # ========== GRÁFICO 2: PRECIO + Z-SCORE ==========
-        axs[1].plot(df_plot.index, df_plot["Close"], color="white", alpha=0.5, linewidth=1.5)
-        axs[1].plot(df_plot.index, df_plot["SMA_50"], color="cyan", linewidth=2, alpha=0.7)
+    # ========== GRÁFICO 2: PRECIO + Z-SCORE ==========
+    axs[1].plot(df_plot.index, df_plot["Close"], color="white", alpha=0.5, linewidth=1.5)
+    axs[1].plot(df_plot.index, df_plot["SMA_50"], color="cyan", linewidth=2, alpha=0.7)
 
-        for r, c in REGIME_COLORS.items():
-            m = df_plot["Regime_ZScore"] == r
-            if m.any():
-                axs[1].scatter(df_plot[m].index, df_plot[m]["Close"], c=c, s=90, alpha=0.95, 
-                             edgecolors='black', linewidths=1.5, zorder=5)
+    for r, c in REGIME_COLORS.items():
+        m = df_plot["Regime_ZScore"] == r
+        if m.any():
+            axs[1].scatter(df_plot[m].index, df_plot[m]["Close"], c=c, s=90, alpha=0.95, 
+                         edgecolors='black', linewidths=1.5, zorder=5)
 
-        axs[1].text(1.01, last_price, f'${last_price:.2f}', 
-                   transform=axs[1].get_yaxis_transform(), 
-                   fontsize=9, color='white', va='center', fontweight='bold')
-        
-        axs[1].set_title(f"{ticker} — Método Z-Score Precio", fontsize=11, fontweight='bold', pad=8)
-        axs[1].grid(alpha=0.25, linestyle='--')
-        axs[1].set_ylabel("Precio ($)", fontsize=9)
-        axs[1].yaxis.tick_right()
-        axs[1].yaxis.set_label_position("right")
-        axs[1].tick_params(labelsize=8)
+    axs[1].text(1.01, last_price, f'${last_price:.2f}', 
+               transform=axs[1].get_yaxis_transform(), 
+               fontsize=9, color='white', va='center', fontweight='bold')
+    
+    axs[1].set_title(f"{ticker} — Método Z-Score Precio", fontsize=11, fontweight='bold', pad=8)
+    axs[1].grid(alpha=0.25, linestyle='--')
+    axs[1].set_ylabel("Precio ($)", fontsize=9)
+    axs[1].yaxis.tick_right()
+    axs[1].yaxis.set_label_position("right")
+    axs[1].tick_params(labelsize=8)
 
-        # ========== GRÁFICO 3: Z-SCORE MACD (izq) y MACD-V (der) ==========
-        ax3_left = axs[2]
-        ax3_right = ax3_left.twinx()
-        
-        ax3_left.plot(df_plot.index, df_plot["Z_Score_MACD"], color="lime", linewidth=2)
-        ax3_left.axhline(2, color="red", linestyle="--", alpha=0.6, linewidth=1.5)
-        ax3_left.axhline(-2, color="magenta", linestyle="--", alpha=0.6, linewidth=1.5)
-        ax3_left.axhline(0, color="gray", linestyle="-", alpha=0.4)
-        ax3_left.fill_between(df_plot.index, 2, df_plot["Z_Score_MACD"], 
-                             where=(df_plot["Z_Score_MACD"]>2), color="red", alpha=0.15)
-        ax3_left.fill_between(df_plot.index, -2, df_plot["Z_Score_MACD"], 
-                             where=(df_plot["Z_Score_MACD"]<-2), color="magenta", alpha=0.15)
-        
-        ax3_right.plot(df_plot.index, df_plot["MACD_V"], color="yellow", linewidth=2)
-        ax3_right.axhline(0, color="gray", linestyle="-", alpha=0.4)
-        ax3_right.axhline(50, color="green", linestyle=":", alpha=0.4, linewidth=1)
-        ax3_right.axhline(-50, color="red", linestyle=":", alpha=0.4, linewidth=1)
-        ax3_right.axhline(150, color="green", linestyle=":", alpha=0.6, linewidth=1)
-        ax3_right.axhline(-150, color="red", linestyle=":", alpha=0.6, linewidth=1)
-        
-        last_z = float(df_plot["Z_Score_MACD"].iloc[-1])
-        last_macd = float(df_plot["MACD_V"].iloc[-1])
-        
-        ax3_left.text(-0.01, last_z, f'{last_z:.2f}σ', 
-                     transform=ax3_left.get_yaxis_transform(), 
-                     fontsize=9, color='lime', va='center', fontweight='bold', ha='right')
-        
-        ax3_right.text(1.01, last_macd, f'{last_macd:.2f}', 
-                      transform=ax3_right.get_yaxis_transform(), 
-                      fontsize=9, color='yellow', va='center', fontweight='bold')
-        
-        ax3_left.set_title("Z-Score MACD (izq) y MACD-V (der)", fontsize=11, fontweight='bold', pad=8)
-        ax3_left.grid(alpha=0.25, linestyle='--')
-        ax3_left.set_ylabel("Z-Score MACD", fontsize=9, color='lime')
-        ax3_right.set_ylabel("MACD-V", fontsize=9, color='yellow')
-        ax3_left.set_xlabel("Fecha", fontsize=9)
-        ax3_left.tick_params(axis='y', labelcolor='lime', labelsize=8)
-        ax3_right.tick_params(axis='y', labelcolor='yellow', labelsize=8)
-        ax3_left.tick_params(axis='x', labelsize=8)
+    # ========== GRÁFICO 3: Z-SCORE MACD (izq) y MACD-V (der) CON COLORES CONDICIONALES ==========
+    ax3_left = axs[2]
+    ax3_right = ax3_left.twinx()
+    
+    # Z-Score MACD con colores condicionales
+    z_colors = ['#FF0000' if abs(z) > 2 else '#87CEEB' for z in df_plot["Z_Score_MACD"]]
+    for i in range(len(df_plot) - 1):
+        ax3_left.plot(df_plot.index[i:i+2], df_plot["Z_Score_MACD"].iloc[i:i+2], 
+                     color=z_colors[i], linewidth=2)
+    
+    ax3_left.axhline(2, color="red", linestyle="--", alpha=0.6, linewidth=1.5)
+    ax3_left.axhline(-2, color="red", linestyle="--", alpha=0.6, linewidth=1.5)
+    ax3_left.axhline(0, color="gray", linestyle="-", alpha=0.4)
+    ax3_left.fill_between(df_plot.index, 2, df_plot["Z_Score_MACD"], 
+                         where=(df_plot["Z_Score_MACD"]>2), color="red", alpha=0.15)
+    ax3_left.fill_between(df_plot.index, -2, df_plot["Z_Score_MACD"], 
+                         where=(df_plot["Z_Score_MACD"]<-2), color="red", alpha=0.15)
+    
+    # MACD-V con colores condicionales
+    macd_colors = ['#FF0000' if abs(m) > 150 else '#FFFFFF' for m in df_plot["MACD_V"]]
+    for i in range(len(df_plot) - 1):
+        ax3_right.plot(df_plot.index[i:i+2], df_plot["MACD_V"].iloc[i:i+2], 
+                      color=macd_colors[i], linewidth=2)
+    
+    ax3_right.axhline(0, color="gray", linestyle="-", alpha=0.4)
+    ax3_right.axhline(50, color="green", linestyle=":", alpha=0.4, linewidth=1)
+    ax3_right.axhline(-50, color="red", linestyle=":", alpha=0.4, linewidth=1)
+    ax3_right.axhline(150, color="red", linestyle="--", alpha=0.6, linewidth=1.5)
+    ax3_right.axhline(-150, color="red", linestyle="--", alpha=0.6, linewidth=1.5)
+    
+    last_z = float(df_plot["Z_Score_MACD"].iloc[-1])
+    last_macd = float(df_plot["MACD_V"].iloc[-1])
+    
+    z_color_final = '#FF0000' if abs(last_z) > 2 else '#87CEEB'
+    macd_color_final = '#FF0000' if abs(last_macd) > 150 else '#FFFFFF'
+    
+    ax3_left.text(-0.01, last_z, f'{last_z:.2f}σ', 
+                 transform=ax3_left.get_yaxis_transform(), 
+                 fontsize=9, color=z_color_final, va='center', fontweight='bold', ha='right')
+    
+    ax3_right.text(1.01, last_macd, f'{last_macd:.2f}', 
+                  transform=ax3_right.get_yaxis_transform(), 
+                  fontsize=9, color=macd_color_final, va='center', fontweight='bold')
+    
+    ax3_left.set_title("Z-Score MACD (izq) y MACD-V (der)", fontsize=11, fontweight='bold', pad=8)
+    ax3_left.grid(alpha=0.25, linestyle='--')
+    ax3_left.set_ylabel("Z-Score MACD", fontsize=9, color='#87CEEB')
+    ax3_right.set_ylabel("MACD-V", fontsize=9, color='#FFFFFF')
+    ax3_left.set_xlabel("Fecha", fontsize=9)
+    ax3_left.tick_params(axis='y', labelcolor='#87CEEB', labelsize=8)
+    ax3_right.tick_params(axis='y', labelcolor='#FFFFFF', labelsize=8)
+    ax3_left.tick_params(axis='x', labelsize=8)
 
-        plt.tight_layout()
-        st.pyplot(fig)
+    plt.tight_layout()
+    st.pyplot(fig)
 
-        # ================= LÓGICA DE CLASIFICACIÓN =================
-        st.markdown("---")
-        st.markdown("### 📖 Lógica de Clasificación")
+    # ================= LÓGICA DE CLASIFICACIÓN =================
+    st.markdown("---")
+    st.markdown("### 📖 Lógica de Clasificación")
+    
+    col_logic1, col_logic2 = st.columns(2)
+    
+    with col_logic1:
+        st.markdown("#### 🔹 Método MACD-V")
+        st.markdown("""
+        **Filtro 1: Precio vs SMA50**
+        - Precio > SMA50 → Lado alcista
+        - Precio < SMA50 → Lado bajista
         
-        col_logic1, col_logic2 = st.columns(2)
+        **Filtro 2: MACD-V (rango de valores)**
+        - MACD-V entre -50 y +50 → **RANGO**
+        - MACD-V entre 50 y 150 (y precio > SMA50) → **ALCISTA**
+        - MACD-V entre -50 y -150 (y precio < SMA50) → **BAJISTA**
         
-        with col_logic1:
-            st.markdown("#### 🔹 Método MACD-V")
-            st.markdown("""
-            **Filtro 1: Precio vs SMA50**
-            - Precio > SMA50 → Lado alcista
-            - Precio < SMA50 → Lado bajista
-            
-            **Filtro 2: MACD-V (rango de valores)**
-            - MACD-V entre -50 y +50 → **RANGO**
-            - MACD-V entre 50 y 150 (y precio > SMA50) → **ALCISTA**
-            - MACD-V entre -50 y -150 (y precio < SMA50) → **BAJISTA**
-            
-            **Filtro 3: Z-Score MACD (extremos)**
-            - Z-Score > +2 y MACD-V < 150 → **ALCISTA_RIESGO-**
-            - Z-Score > +2 y MACD-V ≥ 150 → **ALCISTA_RIESGO+**
-            - Z-Score < -2 y MACD-V > -150 → **BAJISTA_RIESGO-**
-            - Z-Score < -2 y MACD-V ≤ -150 → **BAJISTA_RIESGO+**
-            
-            **Confirmación:** 2 períodos consecutivos
-            """)
+        **Filtro 3: Z-Score MACD (extremos)**
+        - Z-Score > +2 y MACD-V < 150 → **RIESGO-**
+        - Z-Score > +2 y MACD-V ≥ 150 → **RIESGO+**
+        - Z-Score < -2 y MACD-V > -150 → **RIESGO-**
+        - Z-Score < -2 y MACD-V ≤ -150 → **RIESGO+**
         
-        with col_logic2:
-            st.markdown("#### 🔹 Método Z-Score Precio")
-            st.markdown("""
-            **Filtro 1: Precio vs SMA50**
-            - Precio > SMA50 → Lado alcista
-            - Precio < SMA50 → Lado bajista
-            
-            **Filtro 2: Z-Score Precio**
-            - Z-Score Precio > +0.5 (y precio > SMA50) → **ALCISTA**
-            - Z-Score Precio < -0.5 (y precio < SMA50) → **BAJISTA**
-            - Z-Score Precio entre -0.5 y +0.5 → **RANGO**
-            
-            **Filtro 3: Z-Score MACD (extremos)**
-            - Z-Score MACD > +2 y MACD-V < 150 → **ALCISTA_RIESGO-**
-            - Z-Score MACD > +2 y MACD-V ≥ 150 → **ALCISTA_RIESGO+**
-            - Z-Score MACD < -2 y MACD-V > -150 → **BAJISTA_RIESGO-**
-            - Z-Score MACD < -2 y MACD-V ≤ -150 → **BAJISTA_RIESGO+**
-            
-            **Confirmación:** 2 períodos consecutivos
-            """)
+        **Confirmación:** 2 períodos consecutivos
+        """)
+    
+    with col_logic2:
+        st.markdown("#### 🔹 Método Z-Score Precio")
+        st.markdown("""
+        **Filtro 1: Precio vs SMA50**
+        - Precio > SMA50 → Lado alcista
+        - Precio < SMA50 → Lado bajista
+        
+        **Filtro 2: Z-Score Precio**
+        - Z-Score Precio > +0.5 (y precio > SMA50) → **ALCISTA**
+        - Z-Score Precio < -0.5 (y precio < SMA50) → **BAJISTA**
+        - Z-Score Precio entre -0.5 y +0.5 → **RANGO**
+        
+        **Filtro 3: Z-Score MACD (extremos)**
+        - Z-Score MACD > +2 y MACD-V < 150 → **RIESGO-**
+        - Z-Score MACD > +2 y MACD-V ≥ 150 → **RIESGO+**
+        - Z-Score MACD < -2 y MACD-V > -150 → **RIESGO-**
+        - Z-Score MACD < -2 y MACD-V ≤ -150 → **RIESGO+**
+        
+        **Confirmación:** 2 períodos consecutivos
+        """)
 
-    else:
-        st.error("❌ No se pudo descargar data. Verifica el ticker.")
+elif st.session_state.analyzed and st.session_state.df is None:
+    st.error("❌ No se pudo descargar data. Verifica el ticker.")
