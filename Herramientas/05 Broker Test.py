@@ -13,7 +13,7 @@ from utils.utils_schwab import (
 )
 
 st.set_page_config(
-    page_title="🔌 Broker test",
+    page_title="🔌 Broker Debug",
     page_icon="🔌",
     layout="wide"
 )
@@ -267,47 +267,34 @@ if check_password():
     initialize_session_state()
     
     st.markdown(
-        "<h1><span style='font-size: 1.5em;'>🔧</span> Schwab Connection Debug</h1>", 
+        "<h1><span style='font-size: 1.5em;'>🔌</span> Broker Connection Debug</h1>", 
         unsafe_allow_html=True
     )
     
     st.markdown("""
-    Esta herramienta te permite diagnosticar problemas de conexión con la API de Schwab.
+    Herramienta de diagnóstico para verificar la conexión con diferentes brokers.
     Verifica configuración de secrets, archivos token y realiza pruebas de conexión completas.
     """)
     
     st.markdown("---")
     
     # ==============================================================================
-    # SECCIÓN 1: INFORMACIÓN DEL SISTEMA
+    # SECCIÓN 1: BROKER SCHWAB
     # ==============================================================================
     
-    st.header("📊 Información del Sistema")
+    st.header("1. 🔌 Broker Schwab")
     
-    col1, col2, col3 = st.columns(3)
+    st.markdown("""
+    Diagnóstico completo de conexión con Schwab API.
+    """)
     
-    with col1:
-        st.metric("Python Version", f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}")
-    
-    with col2:
-        st.metric("Directorio de Trabajo", os.getcwd().split('/')[-1])
-    
-    with col3:
-        token_exists = os.path.exists("schwab_token.json")
-        st.metric("Token File", "✅ Existe" if token_exists else "❌ No existe")
-    
-    st.markdown("---")
-    
-    # ==============================================================================
-    # SECCIÓN 2: VERIFICACIÓN DE CONFIGURACIÓN
-    # ==============================================================================
-    
-    st.header("⚙️ Verificación de Configuración")
+    # Verificación de Configuración
+    st.subheader("⚙️ Verificación de Configuración")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("🔍 Verificar Secrets", use_container_width=True):
+        if st.button("🔍 Verificar Secrets", use_container_width=True, key="verify_secrets_schwab"):
             st.session_state.connection_log = []  # Limpiar log
             log_message("=" * 60, "INFO")
             log_message("VERIFICACIÓN DE SECRETS DE SCHWAB", "INFO")
@@ -345,7 +332,7 @@ if check_password():
                 st.write(f"Campos: {len(results['token_fields'])}/8")
     
     with col2:
-        if st.button("📄 Verificar Archivo Token", use_container_width=True):
+        if st.button("📄 Verificar Archivo Token", use_container_width=True, key="verify_token_schwab"):
             st.session_state.connection_log = []  # Limpiar log
             log_message("=" * 60, "INFO")
             log_message("VERIFICACIÓN DE ARCHIVO TOKEN", "INFO")
@@ -376,11 +363,8 @@ if check_password():
     
     st.markdown("---")
     
-    # ==============================================================================
-    # SECCIÓN 3: TEST DE CONEXIÓN
-    # ==============================================================================
-    
-    st.header("🚀 Test de Conexión")
+    # Test de Conexión
+    st.subheader("🚀 Test de Conexión")
     
     st.markdown("""
     Ejecuta un test completo de conexión que incluye:
@@ -393,7 +377,7 @@ if check_password():
     col1, col2, col3 = st.columns([2, 1, 1])
     
     with col1:
-        if st.button("🔌 CONECTAR A SCHWAB", type="primary", use_container_width=True):
+        if st.button("🔌 CONECTAR A SCHWAB", type="primary", use_container_width=True, key="connect_schwab"):
             st.session_state.connection_log = []  # Limpiar log anterior
             st.session_state.last_test_time = datetime.now()
             
@@ -406,12 +390,12 @@ if check_password():
                 st.error("❌ Fallo en la conexión - revisa el log abajo")
     
     with col2:
-        if st.button("🧹 Limpiar Log", use_container_width=True):
+        if st.button("🧹 Limpiar Log", use_container_width=True, key="clear_log_schwab"):
             st.session_state.connection_log = []
             st.rerun()
     
     with col3:
-        if st.button("🔄 Refrescar", use_container_width=True):
+        if st.button("🔄 Refrescar", use_container_width=True, key="refresh_schwab"):
             st.rerun()
     
     # Mostrar última vez que se ejecutó el test
@@ -420,10 +404,7 @@ if check_password():
     
     st.markdown("---")
     
-    # ==============================================================================
-    # SECCIÓN 4: LOG DE CONEXIÓN
-    # ==============================================================================
-    
+    # Log de Conexión
     if st.session_state.connection_log:
         display_log()
         
@@ -437,63 +418,15 @@ if check_password():
             label="📥 Descargar Log Completo",
             data=log_text,
             file_name=f"schwab_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-            mime="text/plain"
+            mime="text/plain",
+            key="download_log_schwab"
         )
     else:
         st.info("ℹ️ No hay logs disponibles. Ejecuta una verificación para ver resultados.")
     
     st.markdown("---")
     
-    # ==============================================================================
-    # SECCIÓN 5: PRUEBA MANUAL DE PRECIO
-    # ==============================================================================
-    
-    st.header("🎯 Prueba Manual de Precios")
-    
-    st.markdown("Si la conexión es exitosa, puedes probar obtener precios de diferentes tickers:")
-    
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        test_ticker = st.text_input(
-            "Ticker a probar",
-            value="SPX",
-            help="Introduce un ticker para probar (ej: SPX, SPY, AAPL)"
-        )
-    
-    with col2:
-        st.write("")  # Espaciado
-        st.write("")  # Espaciado
-        test_price_btn = st.button("💰 Obtener Precio", use_container_width=True)
-    
-    if test_price_btn:
-        if st.session_state.schwab_debug_client is None:
-            st.warning("⚠️ Primero debes conectar con Schwab usando el botón de arriba")
-        else:
-            with st.spinner(f"Obteniendo precio de {test_ticker}..."):
-                log_message(f"🔍 Solicitando precio de {test_ticker}", "INFO")
-                price = get_current_price_schwab(st.session_state.schwab_debug_client, test_ticker)
-                
-                if price is not None:
-                    st.success(f"✅ Precio de {test_ticker}: **${price:.2f}**")
-                    log_message(f"✅ Precio obtenido: ${price:.2f}", "SUCCESS")
-                else:
-                    st.error(f"❌ No se pudo obtener el precio de {test_ticker}")
-                    log_message(f"❌ Fallo al obtener precio de {test_ticker}", "ERROR")
-                    st.info("""
-                    **Posibles causas:**
-                    - El ticker no existe o está mal escrito
-                    - No tienes permisos de mercado para ese símbolo
-                    - El mercado está cerrado
-                    - Límite de API alcanzado
-                    """)
-    
-    st.markdown("---")
-    
-    # ==============================================================================
-    # SECCIÓN 6: INFORMACIÓN DE AYUDA
-    # ==============================================================================
-    
+    # Información de Ayuda
     with st.expander("❓ Ayuda - Problemas Comunes"):
         st.markdown("""
         ### Problemas Comunes y Soluciones
@@ -543,12 +476,12 @@ else:
     st.title("🔒 Acceso Restringido")
     st.info("Por favor, introduce tus credenciales en el menú lateral (sidebar) para acceder.")
     st.markdown("""
-    ### 🔧 Schwab Connection Debug Tool
+    ### 🔌 Broker Connection Debug Tool
     
     Esta herramienta te permite:
     - ✅ Verificar la configuración de secrets
     - ✅ Diagnosticar problemas de conexión
-    - ✅ Probar la API de Schwab
+    - ✅ Probar la API de diferentes brokers
     - ✅ Ver logs detallados de debugging
     
     **Inicia sesión para comenzar.**
