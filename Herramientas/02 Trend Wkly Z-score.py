@@ -129,23 +129,22 @@ def classify_by_macdv(df):
         macd_extreme = abs(macd_v) > 150
         z_extreme = abs(z_macd) > 2.0
 
-        # Evaluar RIESGO primero (máxima prioridad)
+        # Evaluar RIESGO primero (máxima prioridad) - SOLO si hay extremos
         if macd_extreme and z_extreme:
             new_regime = "RIESGO+"
         elif macd_extreme or z_extreme:
             new_regime = "RIESGO-"
-        # FILTRO 3: Clasificación por MACD-V según lado del mercado
+        # FILTRO 3: Clasificación por MACD-V
+        elif -50 <= macd_v <= 50:
+            # Si MACD-V está en rango, SIEMPRE es RANGO
+            new_regime = "RANGO"
         elif above_sma:  # Precio > SMA50
-            if -50 <= macd_v <= 50:
-                new_regime = "RANGO"
-            elif 50 < macd_v <= 150:
+            if 50 < macd_v <= 150:
                 new_regime = "ALCISTA"
             else:
                 new_regime = "RANGO"
         else:  # Precio < SMA50
-            if -50 <= macd_v <= 50:
-                new_regime = "RANGO"
-            elif -150 <= macd_v < -50:
+            if -150 <= macd_v < -50:
                 new_regime = "BAJISTA"
             else:
                 new_regime = "RANGO"
@@ -198,23 +197,22 @@ def classify_by_zscore(df):
         macd_extreme = abs(macd_v) > 150
         z_extreme = abs(z_macd) > 2.0
 
-        # Evaluar RIESGO primero (máxima prioridad)
+        # Evaluar RIESGO primero (máxima prioridad) - SOLO si hay extremos
         if macd_extreme and z_extreme:
             new_regime = "RIESGO+"
         elif macd_extreme or z_extreme:
             new_regime = "RIESGO-"
-        # FILTRO 3: Clasificación por Z-Score Precio según lado del mercado
+        # FILTRO 3: Clasificación por Z-Score Precio
+        elif -0.5 <= z_price <= 0.5:
+            # Si Z-Score Precio está en rango, SIEMPRE es RANGO
+            new_regime = "RANGO"
         elif above_sma:  # Precio > SMA50
-            if -0.5 <= z_price <= 0.5:
-                new_regime = "RANGO"
-            elif z_price > 0.5:
+            if z_price > 0.5:
                 new_regime = "ALCISTA"
             else:
                 new_regime = "RANGO"
         else:  # Precio < SMA50
-            if -0.5 <= z_price <= 0.5:
-                new_regime = "RANGO"
-            elif z_price < -0.5:
+            if z_price < -0.5:
                 new_regime = "BAJISTA"
             else:
                 new_regime = "RANGO"
@@ -287,6 +285,12 @@ if st.session_state.analyzed and st.session_state.df is not None:
     df = st.session_state.df
     
     if "Regime_MACDV" not in df.columns:
+        df["Regime_MACDV"] = classify_by_macdv(df)
+        df["Regime_ZScore"] = classify_by_zscore(df)
+        # Forzar recalculo eliminando las columnas cached
+        st.session_state.df = df
+    else:
+        # Recalcular siempre para asegurar valores actualizados
         df["Regime_MACDV"] = classify_by_macdv(df)
         df["Regime_ZScore"] = classify_by_zscore(df)
         st.session_state.df = df
