@@ -1,4 +1,19 @@
-# pages/schwab_debug.py
+# Mostrar resumen
+            secrets_ok = all([
+                results['has_api_key'],
+                results['has_app_secret'],
+                results['has_redirect_uri'],
+                results['redirect_uri_valid'],
+                results['has_token']
+            ])
+            
+            if secrets_ok:
+                st.success("✅ Todos los secrets están configurados correctamente")
+            else:
+                st.error("❌ Faltan algunos secrets críticos o tienen formato incorrecto")
+            
+            # Detalles
+            col_# pages/schwab_debug.py
 import streamlit as st
 import os
 import json
@@ -78,6 +93,8 @@ def check_secrets_configuration():
         'has_api_key': False,
         'has_app_secret': False,
         'has_redirect_uri': False,
+        'redirect_uri_valid': False,
+        'redirect_uri_value': None,
         'has_token': False,
         'token_fields': []
     }
@@ -102,7 +119,20 @@ def check_secrets_configuration():
             
             if 'redirect_uri' in st.secrets['schwab']:
                 results['has_redirect_uri'] = True
-                log_message(f"✅ Redirect URI: {st.secrets['schwab']['redirect_uri']}", "SUCCESS")
+                redirect_uri = st.secrets['schwab']['redirect_uri']
+                results['redirect_uri_value'] = redirect_uri
+                log_message(f"✅ Redirect URI encontrada: {redirect_uri}", "SUCCESS")
+                
+                # Validar formato del redirect_uri
+                if ':' in redirect_uri and redirect_uri.count(':') >= 2:
+                    # Tiene el formato correcto con puerto (ej: https://127.0.0.1:8182)
+                    results['redirect_uri_valid'] = True
+                    log_message("✅ Redirect URI tiene formato válido (incluye puerto)", "SUCCESS")
+                else:
+                    results['redirect_uri_valid'] = False
+                    log_message("❌ Redirect URI SIN PUERTO - debe incluir puerto (ej: https://127.0.0.1:8182)", "ERROR")
+                    log_message(f"  ℹ️ Formato actual: {redirect_uri}", "WARNING")
+                    log_message("  ℹ️ Formato correcto: https://127.0.0.1:8182", "INFO")
             else:
                 log_message("❌ Redirect URI NO encontrada en secrets", "ERROR")
             
@@ -202,6 +232,9 @@ def test_schwab_connection():
     Returns:
         bool: True si la conexión fue exitosa
     """
+    import threading
+    import time
+    
     log_message("🚀 Iniciando prueba de conexión con Schwab...", "INFO")
     
     try:
@@ -213,7 +246,8 @@ def test_schwab_connection():
             log_message("❌ Credenciales incompletas", "ERROR")
             return False
         
-        log_message("✅ Credenciales obtenidas correctamente", "SUCCESS")
+        log_message(f"✅ Credenciales obtenidas: API Key: {api_key[:8]}...", "SUCCESS")
+        log_message(f"✅ Redirect URI: {redirect_uri}", "SUCCESS")
         
         # 2. Verificar/crear archivo token
         log_message("2️⃣ Verificando archivo token...", "INFO")
@@ -225,12 +259,52 @@ def test_schwab_connection():
         
         log_message("✅ Archivo token configurado", "SUCCESS")
         
-        # 3. Intentar conexión
+        # 3. Intentar conexión con timeout
         log_message("3️⃣ Conectando con Schwab API...", "INFO")
-        client = connect_to_schwab()
+        log_message("  ⏳ Esperando respuesta del servidor (timeout: 30s)...", "INFO")
+        
+        # Variable para almacenar resultado
+        result_container = {'client': None, 'error': None, 'completed': False}
+        
+        def connect_with_timeout():
+            try:
+                log_message("  🔄 Llamando a connect_to_schwab()...", "INFO")
+                client = connect_to_schwab()
+                result_container['client'] = client
+                result_container['completed'] = True
+                log_message("  ✅ connect_to_schwab() completado", "SUCCESS")
+            except Exception as e:
+                result_container['error'] = e
+                result_container['completed'] = True
+                log_message(f"  ❌ Error en connect_to_schwab(): {str(e)}", "ERROR")
+        
+        # Ejecutar conexión en thread separado
+        thread = threading.Thread(target=connect_with_timeout)
+        thread.daemon = True
+        thread.start()
+        
+        # Esperar con timeout
+        timeout = 30
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            if result_container['completed']:
+                break
+            time.sleep(0.5)
+        
+        if not result_container['completed']:
+            log_message("❌ TIMEOUT: La conexión tardó más de 30 segundos", "ERROR")
+            log_message("  ℹ️ Esto puede indicar que el redirect_uri está mal configurado", "WARNING")
+            log_message("  ℹ️ O que el token ha expirado y necesita renovación manual", "WARNING")
+            return False
+        
+        if result_container['error']:
+            log_message(f"❌ Error durante la conexión: {str(result_container['error'])}", "ERROR")
+            return False
+        
+        client = result_container['client']
         
         if client is None:
-            log_message("❌ Fallo al crear cliente de Schwab", "ERROR")
+            log_message("❌ Fallo al crear cliente de Schwab (retornó None)", "ERROR")
             return False
         
         log_message("✅ Cliente de Schwab creado exitosamente", "SUCCESS")
@@ -239,17 +313,23 @@ def test_schwab_connection():
         # 4. Prueba básica - obtener precio de SPX
         log_message("4️⃣ Probando API con ticker SPX...", "INFO")
         test_ticker = "SPX"
-        price = get_current_price_schwab(client, test_ticker)
         
-        if price is None:
-            log_message(f"⚠️ No se pudo obtener precio de {test_ticker}", "WARNING")
-            log_message("  ℹ️ La conexión funciona pero puede haber problemas con permisos de mercado", "INFO")
-            return True  # Conexión OK aunque no se pudo obtener precio
-        
-        log_message(f"✅ Precio de {test_ticker}: ${price:.2f}", "SUCCESS")
-        log_message("🎉 CONEXIÓN EXITOSA - Todos los tests pasaron", "SUCCESS")
-        
-        return True
+        try:
+            price = get_current_price_schwab(client, test_ticker)
+            
+            if price is None:
+                log_message(f"⚠️ No se pudo obtener precio de {test_ticker}", "WARNING")
+                log_message("  ℹ️ La conexión funciona pero puede haber problemas con permisos de mercado", "INFO")
+                return True  # Conexión OK aunque no se pudo obtener precio
+            
+            log_message(f"✅ Precio de {test_ticker}: ${price:.2f}", "SUCCESS")
+            log_message("🎉 CONEXIÓN EXITOSA - Todos los tests pasaron", "SUCCESS")
+            
+            return True
+        except Exception as e:
+            log_message(f"❌ Error obteniendo precio: {str(e)}", "ERROR")
+            log_message("  ℹ️ La conexión puede estar OK, pero hay un problema con la API", "WARNING")
+            return True  # Cliente creado OK
         
     except Exception as e:
         log_message(f"❌ Error durante la conexión: {str(e)}", "ERROR")
