@@ -72,10 +72,8 @@ broker_test = st.Page(
 
 # 3. CREACIÓN DE LA NAVEGACIÓN JERÁRQUICA
 pg = st.navigation({
-    "ESTRATEGIAS": {
-        "Time Edge": [te_signals, te_calculos],
-        "Triple Calendar": [tc_signals, tc_calculos]
-    },
+    "Time Edge": [te_signals, te_calculos],
+    "Triple Calendar": [tc_signals, tc_calculos],
     "HERRAMIENTAS": [
         vix_term, 
         trend_Zscore,
