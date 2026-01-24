@@ -140,63 +140,6 @@ def check_secrets_configuration():
     return results
 
 
-def check_token_file():
-    """
-    Verifica la existencia y contenido del archivo schwab_token.json.
-    
-    Returns:
-        dict: Información sobre el archivo token
-    """
-    token_path = "schwab_token.json"
-    results = {
-        'exists': False,
-        'readable': False,
-        'valid_json': False,
-        'has_token_field': False,
-        'token_data': None
-    }
-    
-    try:
-        if os.path.exists(token_path):
-            results['exists'] = True
-            log_message(f"✅ Archivo {token_path} existe", "SUCCESS")
-            
-            try:
-                with open(token_path, 'r') as f:
-                    token_data = json.load(f)
-                    results['readable'] = True
-                    results['valid_json'] = True
-                    results['token_data'] = token_data
-                    log_message("✅ Archivo token es JSON válido", "SUCCESS")
-                    
-                    if 'token' in token_data:
-                        results['has_token_field'] = True
-                        log_message("✅ Campo 'token' encontrado en archivo", "SUCCESS")
-                        
-                        if 'expires_at' in token_data['token']:
-                            expires_at = token_data['token']['expires_at']
-                            log_message(f"  📅 Token expira en: {expires_at}", "INFO")
-                        
-                        if 'creation_timestamp' in token_data:
-                            creation = token_data['creation_timestamp']
-                            log_message(f"  📅 Token creado en: {creation}", "INFO")
-                    else:
-                        log_message("❌ Campo 'token' NO encontrado en archivo", "ERROR")
-                        
-            except json.JSONDecodeError as e:
-                log_message(f"❌ Error leyendo JSON: {str(e)}", "ERROR")
-            except Exception as e:
-                log_message(f"❌ Error leyendo archivo: {str(e)}", "ERROR")
-        else:
-            log_message(f"⚠️ Archivo {token_path} NO existe", "WARNING")
-            log_message("  ℹ️ Se creará automáticamente desde secrets al conectar", "INFO")
-    
-    except Exception as e:
-        log_message(f"❌ Error verificando archivo token: {str(e)}", "ERROR")
-    
-    return results
-
-
 def test_schwab_connection():
     """
     Prueba la conexión completa con Schwab y reporta detalles.
@@ -339,72 +282,40 @@ if check_password():
     
     st.subheader("⚙️ Verificación de Configuración")
     
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if st.button("🔍 Verificar Secrets", use_container_width=True, key="verify_secrets_schwab"):
-            st.session_state.connection_log = []
-            log_message("=" * 60, "INFO")
-            log_message("VERIFICACIÓN DE SECRETS DE SCHWAB", "INFO")
-            log_message("=" * 60, "INFO")
-            
-            results = check_secrets_configuration()
-            
-            st.markdown("### 📋 Resultados de Secrets")
-            
-            secrets_ok = all([
-                results['has_api_key'],
-                results['has_app_secret'],
-                results['has_redirect_uri'],
-                results['has_token']
-            ])
-            
-            if secrets_ok:
-                st.success("✅ Todos los secrets están configurados correctamente")
-            else:
-                st.error("❌ Faltan algunos secrets críticos")
-            
-            col_a, col_b = st.columns(2)
-            
-            with col_a:
-                st.markdown("**Credenciales:**")
-                st.write(f"{'✅' if results['has_api_key'] else '❌'} API Key")
-                st.write(f"{'✅' if results['has_app_secret'] else '❌'} App Secret")
-                st.write(f"{'✅' if results['has_redirect_uri'] else '❌'} Redirect URI")
-            
-            with col_b:
-                st.markdown("**Token:**")
-                st.write(f"{'✅' if results['has_token'] else '❌'} Sección Token")
-                st.write(f"Campos: {len(results['token_fields'])}/8")
-    
-    with col2:
-        if st.button("📄 Verificar Archivo Token", use_container_width=True, key="verify_token_schwab"):
-            st.session_state.connection_log = []
-            log_message("=" * 60, "INFO")
-            log_message("VERIFICACIÓN DE ARCHIVO TOKEN", "INFO")
-            log_message("=" * 60, "INFO")
-            
-            results = check_token_file()
-            
-            st.markdown("### 📋 Resultados del Archivo")
-            
-            if results['exists']:
-                if results['has_token_field']:
-                    st.success("✅ Archivo token correcto y completo")
-                    
-                    if results['token_data']:
-                        with st.expander("📊 Ver Detalles del Token"):
-                            safe_data = {
-                                'creation_timestamp': results['token_data'].get('creation_timestamp', 'N/A'),
-                                'expires_in': results['token_data']['token'].get('expires_in', 'N/A'),
-                                'token_type': results['token_data']['token'].get('token_type', 'N/A'),
-                                'expires_at': results['token_data']['token'].get('expires_at', 'N/A')
-                            }
-                            st.json(safe_data)
-                else:
-                    st.warning("⚠️ Archivo existe pero estructura incorrecta")
-            else:
-                st.info("ℹ️ Archivo no existe - se creará al conectar")
+    if st.button("🔍 Verificar Secrets de Schwab", use_container_width=True, key="verify_secrets_schwab"):
+        st.session_state.connection_log = []
+        log_message("=" * 60, "INFO")
+        log_message("VERIFICACIÓN DE SECRETS DE SCHWAB", "INFO")
+        log_message("=" * 60, "INFO")
+        
+        results = check_secrets_configuration()
+        
+        st.markdown("### 📋 Resultados de Secrets")
+        
+        secrets_ok = all([
+            results['has_api_key'],
+            results['has_app_secret'],
+            results['has_redirect_uri'],
+            results['has_token']
+        ])
+        
+        if secrets_ok:
+            st.success("✅ Todos los secrets están configurados correctamente")
+        else:
+            st.error("❌ Faltan algunos secrets críticos")
+        
+        col_a, col_b = st.columns(2)
+        
+        with col_a:
+            st.markdown("**Credenciales:**")
+            st.write(f"{'✅' if results['has_api_key'] else '❌'} API Key")
+            st.write(f"{'✅' if results['has_app_secret'] else '❌'} App Secret")
+            st.write(f"{'✅' if results['has_redirect_uri'] else '❌'} Redirect URI")
+        
+        with col_b:
+            st.markdown("**Token:**")
+            st.write(f"{'✅' if results['has_token'] else '❌'} Sección Token")
+            st.write(f"Campos: {len(results['token_fields'])}/8")
     
     st.markdown("---")
     
