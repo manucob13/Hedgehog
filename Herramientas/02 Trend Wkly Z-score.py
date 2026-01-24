@@ -221,7 +221,11 @@ if st.button("🚀 ANALIZAR", use_container_width=True):
 
         # ================= MÉTRICAS =================
         c1, c2, c3, c4, c5, c6 = st.columns(6)
-        c1.metric("RÉGIMEN", current["Regime"].replace("_", " "))
+        
+        # Convertir régimen a string legible
+        regime_name = str(current["Regime"]).replace("_", " ")
+        
+        c1.metric("RÉGIMEN", regime_name)
         c2.metric("PRECIO", f"${float(current['Close']):.2f}")
         c3.metric("Z-SCORE", f"{float(current['Z_Score_Adjusted']):.2f}")
         c4.metric("MACD-V", f"{float(current['MACD_V']):.2f}")
