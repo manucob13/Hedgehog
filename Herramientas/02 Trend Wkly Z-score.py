@@ -65,58 +65,70 @@ def calculate_z_score_macdv(df, fast=12, slow=26, signal=9, z_window=20):
 
     df["MACD_V"] = macd_v
     df["MACD_V_Signal"] = signal_line
+    df["MACD_V_Histogram"] = macd_v - signal_line
     df["Z_Score_Adjusted"] = z / adj_factor
     df["Kurtosis"] = kurt
 
     return df
 
 # ============================================================================
-# CLASIFICACIÓN DE REGÍMENES (ROBUSTA)
+# CLASIFICACIÓN DE REGÍMENES (OPTIMIZADA PARA SWING TRADING)
 # ============================================================================
 
 def classify_regime(df):
 
     regimes = []
-    macd_trend = df["MACD_V"].diff().rolling(3).mean()
+    
+    # Tendencia del histograma MACD-V (más reactivo)
+    hist_trend = df["MACD_V_Histogram"].diff().rolling(2).mean()
+    
+    # Pendiente de SMA50
+    sma_slope = (df["SMA_50"] - df["SMA_50"].shift(3)) / df["SMA_50"].shift(3) * 100
 
     prev_regime = "RANGO"
     confirm = 0
 
     for i in range(len(df)):
 
-        price = df["Close"].iloc[i]
-        sma50 = df["SMA_50"].iloc[i]
-        z = df["Z_Score_Adjusted"].iloc[i]
-        m_trend = macd_trend.iloc[i]
+        # Extracción segura de valores escalares
+        try:
+            price = float(df["Close"].iloc[i])
+            sma50 = float(df["SMA_50"].iloc[i])
+            z = float(df["Z_Score_Adjusted"].iloc[i])
+            histogram = float(df["MACD_V_Histogram"].iloc[i])
+            h_trend = float(hist_trend.iloc[i])
+            slope = float(sma_slope.iloc[i])
+        except (ValueError, TypeError):
+            regimes.append(prev_regime)
+            continue
 
         # Protección NaN
-        if (
-            pd.isna(price)
-            or pd.isna(sma50)
-            or pd.isna(z)
-            or pd.isna(m_trend)
-        ):
+        if pd.isna(price) or pd.isna(sma50) or pd.isna(z) or pd.isna(h_trend) or pd.isna(slope):
             regimes.append(prev_regime)
             continue
 
         # Evitar índices negativos
-        if i < 3:
+        if i < 5:
             regimes.append(prev_regime)
             continue
 
-        # 1️⃣ RÉGIMEN ESTRUCTURAL
-        if price > sma50 and sma50 > df["SMA_50"].iloc[i - 3]:
+        # 1️⃣ RÉGIMEN ESTRUCTURAL (con pendiente de SMA)
+        if price > sma50 and slope > 0.3:  # Tendencia alcista clara
             structural = "ALCISTA"
-        elif price < sma50 and sma50 < df["SMA_50"].iloc[i - 3]:
+        elif price < sma50 and slope < -0.3:  # Tendencia bajista clara
             structural = "BAJISTA"
         else:
             structural = "RANGO"
 
-        # 2️⃣ MOMENTUM
-        if m_trend > 0:
+        # 2️⃣ MOMENTUM (basado en histograma MACD-V)
+        if h_trend > 0 and histogram > 0:
             momentum = "ACELERANDO"
-        elif m_trend < 0:
+        elif h_trend < 0 and histogram < 0:
             momentum = "DESACELERANDO"
+        elif h_trend > 0 and histogram < 0:
+            momentum = "RECUPERANDO"
+        elif h_trend < 0 and histogram > 0:
+            momentum = "DEBILITANDO"
         else:
             momentum = "NEUTRO"
 
@@ -130,28 +142,28 @@ def classify_regime(df):
 
         # 4️⃣ COMPOSICIÓN FINAL
         if structural == "ALCISTA":
-            if extreme == "SOBRECOMPRA" and momentum == "DESACELERANDO":
+            if extreme == "SOBRECOMPRA" and momentum in ["DESACELERANDO", "DEBILITANDO"]:
                 new_regime = "ALCISTA_EXTREMO_RIESGO"
-            elif momentum == "ACELERANDO":
+            elif momentum in ["ACELERANDO", "RECUPERANDO"]:
                 new_regime = "ALCISTA_FUERTE"
             else:
                 new_regime = "ALCISTA"
 
         elif structural == "BAJISTA":
-            if extreme == "SOBREVENTA" and momentum == "DESACELERANDO":
+            if extreme == "SOBREVENTA" and momentum in ["DESACELERANDO", "DEBILITANDO"]:
                 new_regime = "BAJISTA_EXTREMO_RIESGO"
-            elif momentum == "ACELERANDO":
+            elif momentum in ["ACELERANDO", "RECUPERANDO"]:
                 new_regime = "BAJISTA_FUERTE"
             else:
                 new_regime = "BAJISTA"
 
-        else:
+        else:  # RANGO
             new_regime = "RANGO_EXTREMO" if extreme != "NORMAL" else "RANGO"
 
-        # 5️⃣ HISTERESIS
+        # 5️⃣ HISTERESIS (reducida para swing trading de 15 días)
         if new_regime != prev_regime:
             confirm += 1
-            if confirm < 2:
+            if confirm < 2:  # Solo 2 semanas de confirmación
                 new_regime = prev_regime
         else:
             confirm = 0
@@ -174,7 +186,11 @@ def download_weekly_data(ticker, years_back):
     if df.empty:
         return None
 
-    df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
+    # Resetear índice para evitar problemas con MultiIndex
+    df = df.reset_index()
+    df = df[["Date", "Open", "High", "Low", "Close", "Volume"]].copy()
+    df.set_index("Date", inplace=True)
+    
     df["SMA_50"] = df["Close"].rolling(50).mean()
 
     df = calculate_z_score_macdv(df)
@@ -187,7 +203,7 @@ def download_weekly_data(ticker, years_back):
 # ============================================================================
 
 st.set_page_config(layout="wide", page_title="Weekly Z-Score MACD-V")
-st.title("📊 Weekly Z-Score MACD-V Regime Analyzer")
+st.title("📊 Weekly Z-Score MACD-V Regime Analyzer (Swing Trading)")
 
 ticker = st.text_input("Ticker", "AAPL").upper()
 years_back = st.slider("Histórico descargado (años)", 3, 12, 7)
@@ -204,37 +220,67 @@ if st.button("🚀 ANALIZAR", use_container_width=True):
         current = df.iloc[-1]
 
         # ================= MÉTRICAS =================
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("RÉGIMEN", current["Regime"])
-        c2.metric("PRECIO", f"${current['Close']:.2f}")
-        c3.metric("Z-SCORE", f"{current['Z_Score_Adjusted']:.2f}")
-        c4.metric("MACD-V", f"{current['MACD_V']:.2f}")
-        c5.metric("KURTOSIS", f"{current['Kurtosis']:.2f}")
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("RÉGIMEN", current["Regime"].replace("_", " "))
+        c2.metric("PRECIO", f"${float(current['Close']):.2f}")
+        c3.metric("Z-SCORE", f"{float(current['Z_Score_Adjusted']):.2f}")
+        c4.metric("MACD-V", f"{float(current['MACD_V']):.2f}")
+        c5.metric("HISTOGRAM", f"{float(current['MACD_V_Histogram']):.2f}")
+        c6.metric("KURTOSIS", f"{float(current['Kurtosis']):.2f}")
 
         # ================= GRÁFICOS =================
         plt.style.use("dark_background")
-        fig, axs = plt.subplots(3, 1, figsize=(18, 18), sharex=True)
+        fig, axs = plt.subplots(4, 1, figsize=(18, 20), sharex=True)
 
         # PRECIO
-        axs[0].plot(df_plot.index, df_plot["Close"], color="white", alpha=0.4)
-        axs[0].plot(df_plot.index, df_plot["SMA_50"], color="violet")
+        axs[0].plot(df_plot.index, df_plot["Close"], color="white", alpha=0.4, linewidth=1.5)
+        axs[0].plot(df_plot.index, df_plot["SMA_50"], color="violet", linewidth=2, label="SMA 50")
 
         for r, c in REGIME_COLORS.items():
             m = df_plot["Regime"] == r
-            axs[0].scatter(df_plot[m].index, df_plot[m]["Close"], c=c, s=60)
+            axs[0].scatter(df_plot[m].index, df_plot[m]["Close"], c=c, s=80, alpha=0.8, edgecolors='white', linewidths=0.5)
 
-        axs[0].set_title(f"{ticker} — Precio y Regímenes")
+        axs[0].set_title(f"{ticker} — Precio y Regímenes", fontsize=14, fontweight='bold')
+        axs[0].legend()
+        axs[0].grid(alpha=0.3)
 
         # Z-SCORE
-        axs[1].plot(df_plot.index, df_plot["Z_Score_Adjusted"], color="cyan")
-        axs[1].axhline(2, color="red", linestyle="--")
-        axs[1].axhline(-2, color="purple", linestyle="--")
-        axs[1].set_title("Z-Score Ajustado")
+        axs[1].plot(df_plot.index, df_plot["Z_Score_Adjusted"], color="cyan", linewidth=2)
+        axs[1].axhline(2, color="red", linestyle="--", alpha=0.7, label="Sobrecompra")
+        axs[1].axhline(-2, color="purple", linestyle="--", alpha=0.7, label="Sobreventa")
+        axs[1].axhline(0, color="gray", linestyle="-", alpha=0.3)
+        axs[1].fill_between(df_plot.index, 2, df_plot["Z_Score_Adjusted"], where=(df_plot["Z_Score_Adjusted"]>2), color="red", alpha=0.2)
+        axs[1].fill_between(df_plot.index, -2, df_plot["Z_Score_Adjusted"], where=(df_plot["Z_Score_Adjusted"]<-2), color="purple", alpha=0.2)
+        axs[1].set_title("Z-Score Ajustado por Curtosis", fontsize=14, fontweight='bold')
+        axs[1].legend()
+        axs[1].grid(alpha=0.3)
 
         # MACD-V
-        axs[2].plot(df_plot.index, df_plot["MACD_V"], label="MACD-V")
-        axs[2].plot(df_plot.index, df_plot["MACD_V_Signal"], linestyle="--", label="Signal")
+        axs[2].plot(df_plot.index, df_plot["MACD_V"], label="MACD-V", color="lime", linewidth=2)
+        axs[2].plot(df_plot.index, df_plot["MACD_V_Signal"], linestyle="--", label="Signal", color="orange", linewidth=2)
+        axs[2].axhline(0, color="gray", linestyle="-", alpha=0.3)
         axs[2].legend()
-        axs[2].set_title("MACD-V")
+        axs[2].set_title("MACD-V Normalizado por ATR", fontsize=14, fontweight='bold')
+        axs[2].grid(alpha=0.3)
 
+        # HISTOGRAMA MACD-V
+        colors = ['green' if x > 0 else 'red' for x in df_plot["MACD_V_Histogram"]]
+        axs[3].bar(df_plot.index, df_plot["MACD_V_Histogram"], color=colors, alpha=0.6, width=5)
+        axs[3].axhline(0, color="white", linestyle="-", alpha=0.5)
+        axs[3].set_title("Histograma MACD-V (Momentum Puro)", fontsize=14, fontweight='bold')
+        axs[3].grid(alpha=0.3)
+
+        plt.tight_layout()
         st.pyplot(fig)
+        
+        # ================= TABLA DE REGÍMENES RECIENTES =================
+        st.subheader("📋 Últimos 10 Regímenes")
+        recent = df[["Close", "SMA_50", "Z_Score_Adjusted", "MACD_V_Histogram", "Regime"]].tail(10).copy()
+        recent["Close"] = recent["Close"].apply(lambda x: f"${float(x):.2f}")
+        recent["SMA_50"] = recent["SMA_50"].apply(lambda x: f"${float(x):.2f}")
+        recent["Z_Score_Adjusted"] = recent["Z_Score_Adjusted"].apply(lambda x: f"{float(x):.2f}")
+        recent["MACD_V_Histogram"] = recent["MACD_V_Histogram"].apply(lambda x: f"{float(x):.2f}")
+        st.dataframe(recent, use_container_width=True)
+
+    else:
+        st.error("❌ No se pudo descargar data. Verifica el ticker.")
