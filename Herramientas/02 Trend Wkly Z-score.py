@@ -1,5 +1,3 @@
-# pages/ZScore_MACDV_Analyzer.py
-
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -11,15 +9,19 @@ import warnings
 
 warnings.filterwarnings('ignore')
 
-# 1. PALETA DE ALTO CONTRASTE (7 ESTADOS)
-REGIME_COLORS_ZSCORE = {
-    'SOBRECOMPRA_FUERTE': '#FF0000', # Rojo
-    'SOBRECOMPRA_DEBIL':  '#FFA500', # Naranja
-    'ALCISTA':            '#00FF00', # Verde
-    'RANGO':              '#808080', # Gris
-    'BAJISTA':            '#4169E1', # Azul
-    'SOBREVENTA_DEBIL':   '#DA70D6', # Orquídea
-    'SOBREVENTA_FUERTE':  '#8B008B'  # Magenta
+# ============================================================================
+# PALETA DE COLORES (REGÍMENES FINALES)
+# ============================================================================
+
+REGIME_COLORS = {
+    'ALCISTA_FUERTE': '#00FF00',
+    'ALCISTA': '#2ECC71',
+    'ALCISTA_EXTREMO_RIESGO': '#FFA500',
+    'BAJISTA_FUERTE': '#4169E1',
+    'BAJISTA': '#3498DB',
+    'BAJISTA_EXTREMO_RIESGO': '#9B59B6',
+    'RANGO': '#7F8C8D',
+    'RANGO_EXTREMO': '#E74C3C'
 }
 
 # ============================================================================
@@ -29,200 +31,209 @@ REGIME_COLORS_ZSCORE = {
 def calculate_sma(data, period):
     return data.rolling(window=period).mean()
 
-def calculate_donchian(df, period=20):
-    upper = df['High'].rolling(window=period).max()
-    lower = df['Low'].rolling(window=period).min()
-    middle = (upper + lower) / 2
-    return upper, middle, lower
-
 def calculate_z_score_macdv(df, fast=12, slow=26, signal=9, z_window=20):
-    """Calcula el Z-Score del MACD-V con ajuste por curtosis"""
-    h_l = df['High'] - df['Low']
-    h_pc = np.abs(df['High'] - df['Close'].shift(1))
-    l_pc = np.abs(df['Low'] - df['Close'].shift(1))
-    tr = pd.concat([h_l, h_pc, l_pc], axis=1).max(axis=1)
-    atr = tr.rolling(window=slow).mean()
-    
+
+    tr = pd.concat([
+        df['High'] - df['Low'],
+        (df['High'] - df['Close'].shift()).abs(),
+        (df['Low'] - df['Close'].shift()).abs()
+    ], axis=1).max(axis=1)
+
+    atr = tr.rolling(slow).mean()
+
     ema_fast = df['Close'].ewm(span=fast, adjust=False).mean()
     ema_slow = df['Close'].ewm(span=slow, adjust=False).mean()
+
     macd_v = ((ema_fast - ema_slow) / atr) * 100
-    
     signal_line = macd_v.ewm(span=signal, adjust=False).mean()
-    momentum_dist = macd_v - signal_line
-    
-    m_mean = momentum_dist.rolling(window=z_window).mean()
-    m_std = momentum_dist.rolling(window=z_window).std()
-    z_score = (momentum_dist - m_mean) / m_std
-    
-    def rolling_kurtosis(series, window):
-        return series.rolling(window).apply(lambda x: stats.kurtosis(x, fisher=True, nan_policy='omit'), raw=False)
-    
-    kurt = rolling_kurtosis(momentum_dist, z_window)
-    kurtosis_factor = 1 + (kurt / 10).clip(-0.5, 0.5)
-    
+    momentum = macd_v - signal_line
+
+    mean = momentum.rolling(z_window).mean()
+    std = momentum.rolling(z_window).std()
+    z = (momentum - mean) / std
+
+    kurt = momentum.rolling(z_window).apply(
+        lambda x: stats.kurtosis(x, fisher=True, nan_policy='omit'),
+        raw=False
+    )
+
+    adj_factor = 1 + (kurt / 10).clip(-0.5, 0.5)
+
     df['MACD_V'] = macd_v
     df['MACD_V_Signal'] = signal_line
-    df['Z_Score_Adjusted'] = z_score / kurtosis_factor
+    df['Z_Score_Adjusted'] = z / adj_factor
     df['Kurtosis'] = kurt
+
     return df
 
 # ============================================================================
-# LÓGICA DE TRANSICIÓN (RESTAURADA Y MEJORADA)
+# CLASIFICACIÓN DE REGÍMENES (LÓGICA ROBUSTA)
 # ============================================================================
 
-def classify_regime_zscore(df):
-    regimes = []
-    # Suavizado de 3 semanas para el diferencial de momentum
-    macd_v_trend = df['MACD_V'].diff().rolling(window=3).mean() 
-    
-    for idx, row in df.iterrows():
-        z = row['Z_Score_Adjusted']
-        price = row['Close']
-        sma50 = row['SMA_50']
-        diff = macd_v_trend.loc[idx]
-        
-        if pd.isna(z) or pd.isna(price) or pd.isna(sma50):
-            regimes.append('RANGO'); continue
+def classify_regime(df):
 
-        # Zona Neutral
-        if -0.75 <= z <= 0.75:
-            regimes.append('RANGO'); continue
-        
-        # ALCISTA (Precio > SMA50)
-        if price > sma50:
-            if z > 2.0:
-                # Transición: solo fuerte si el momentum sigue acelerando
-                regime = 'SOBRECOMPRA_FUERTE' if diff > 0 else 'SOBRECOMPRA_DEBIL'
-            elif 1.5 < z <= 2.0:
-                regime = 'SOBRECOMPRA_DEBIL'
-            elif 0.75 < z <= 1.5:
-                regime = 'ALCISTA'
-            else:
-                regime = 'RANGO'
-        
-        # BAJISTA (Precio < SMA50)
-        elif price < sma50:
-            if z < -2.0:
-                regime = 'SOBREVENTA_FUERTE' if diff < 0 else 'SOBREVENTA_DEBIL'
-            elif -2.0 <= z < -1.5:
-                regime = 'SOBREVENTA_DEBIL'
-            elif -1.5 <= z < -0.75:
-                regime = 'BAJISTA'
-            else:
-                regime = 'RANGO'
+    regimes = []
+    macd_trend = df['MACD_V'].diff().rolling(3).mean()
+
+    prev_regime = 'RANGO'
+    confirm = 0
+
+    for i in range(len(df)):
+
+        price = df['Close'].iloc[i]
+        sma50 = df['SMA_50'].iloc[i]
+        z = df['Z_Score_Adjusted'].iloc[i]
+        m_trend = macd_trend.iloc[i]
+
+        if np.isnan(price) or np.isnan(sma50) or np.isnan(z):
+            regimes.append(prev_regime)
+            continue
+
+        # 1️⃣ RÉGIMEN ESTRUCTURAL
+        if price > sma50 and sma50 > df['SMA_50'].iloc[i-3]:
+            structural = 'ALCISTA'
+        elif price < sma50 and sma50 < df['SMA_50'].iloc[i-3]:
+            structural = 'BAJISTA'
         else:
-            regime = 'RANGO'
-            
-        regimes.append(regime)
+            structural = 'RANGO'
+
+        # 2️⃣ MOMENTUM
+        if m_trend > 0:
+            momentum = 'ACELERANDO'
+        elif m_trend < 0:
+            momentum = 'DESACELERANDO'
+        else:
+            momentum = 'NEUTRO'
+
+        # 3️⃣ EXTREMOS
+        if z > 2:
+            extreme = 'SOBRECOMPRA_FUERTE'
+        elif z > 1.5:
+            extreme = 'SOBRECOMPRA'
+        elif z < -2:
+            extreme = 'SOBREVENTA_FUERTE'
+        elif z < -1.5:
+            extreme = 'SOBREVENTA'
+        else:
+            extreme = 'NORMAL'
+
+        # 4️⃣ COMPOSICIÓN FINAL
+        if structural == 'ALCISTA':
+            if extreme.startswith('SOBRECOMPRA') and momentum == 'DESACELERANDO':
+                new_regime = 'ALCISTA_EXTREMO_RIESGO'
+            elif momentum == 'ACELERANDO':
+                new_regime = 'ALCISTA_FUERTE'
+            else:
+                new_regime = 'ALCISTA'
+
+        elif structural == 'BAJISTA':
+            if extreme.startswith('SOBREVENTA') and momentum == 'DESACELERANDO':
+                new_regime = 'BAJISTA_EXTREMO_RIESGO'
+            elif momentum == 'ACELERANDO':
+                new_regime = 'BAJISTA_FUERTE'
+            else:
+                new_regime = 'BAJISTA'
+
+        else:
+            new_regime = 'RANGO_EXTREMO' if extreme != 'NORMAL' else 'RANGO'
+
+        # 5️⃣ HISTERESIS (CONFIRMACIÓN)
+        if new_regime != prev_regime:
+            confirm += 1
+            if confirm < 2:
+                new_regime = prev_regime
+        else:
+            confirm = 0
+
+        prev_regime = new_regime
+        regimes.append(new_regime)
+
     return regimes
 
 # ============================================================================
-# DASHBOARD
+# DESCARGA DE DATOS
 # ============================================================================
 
 @st.cache_data(ttl=3600)
-def download_weekly_data(ticker, start_date=None, years_back=None):
-    if start_date is None:
-        start_date = (datetime.now() - timedelta(days=365*(years_back if years_back else 7))).strftime('%Y-%m-%d')
-    else:
-        start_date = start_date.strftime('%Y-%m-%d')
-        
-    data = yf.download(ticker, start=start_date, interval='1wk', progress=False)
-    if data.empty: return None
-    if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
-    
-    df = data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
-    df['SMA_20'] = calculate_sma(df['Close'], 20)
+def download_weekly_data(ticker, years_back=7):
+
+    start = (datetime.now() - timedelta(days=365 * years_back)).strftime('%Y-%m-%d')
+    df = yf.download(ticker, start=start, interval='1wk', progress=False)
+
+    if df.empty:
+        return None
+
+    df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
     df['SMA_50'] = calculate_sma(df['Close'], 50)
-    df['Donchian_Upper'], df['Donchian_Middle'], df['Donchian_Lower'] = calculate_donchian(df, period=20)
+
     df = calculate_z_score_macdv(df)
-    return df.dropna()
+    df.dropna(inplace=True)
+
+    return df
+
+# ============================================================================
+# STREAMLIT UI
+# ============================================================================
 
 st.set_page_config(layout="wide", page_title="Z-Score MACD-V Analyzer")
-st.title("📊 Z-Score MACD-V Analyzer Pro")
+st.title("📊 Z-Score MACD-V Regime Analyzer (Pro)")
 
-# Mantenemos los controles en la página principal
-col_cfg1, col_cfg2, col_cfg3, col_cfg4 = st.columns([2, 2, 2, 2])
+ticker = st.text_input("Ticker", "AAPL").upper()
+years_back = st.slider("Histórico (años)", 3, 12, 7)
 
-with col_cfg1:
-    ticker = st.text_input("🎯 Ticker Symbol", value="AAPL").upper()
-with col_cfg2:
-    lookback_months = st.slider("📅 Meses a visualizar", 1, 24, 6)
-with col_cfg3:
-    years_options = {"3 años": 3, "5 años": 5, "7 años": 7, "10 años": 10}
-    years_label = st.selectbox("📊 Histórico de descarga", list(years_options.keys()), index=2)
-    years_back = years_options[years_label]
-with col_cfg4:
-    use_custom = st.checkbox("📆 Fecha custom", value=False)
-    start_custom = st.date_input("Inicio", value=datetime(2018, 1, 1)) if use_custom else None
+if st.button("🚀 ANALIZAR", use_container_width=True):
 
-if st.button("🚀 ANALIZAR", type="primary", use_container_width=True):
-    with st.spinner(f"Analizando {ticker}..."):
-        df = download_weekly_data(ticker, start_date=start_custom if use_custom else None, years_back=years_back)
-        if df is not None:
-            df['Regime_ZScore'] = classify_regime_zscore(df)
-            st.session_state['df'] = df
-            st.session_state['ticker_name'] = ticker
+    df = download_weekly_data(ticker, years_back)
 
-if 'df' in st.session_state:
-    df = st.session_state['df']
-    tk = st.session_state['ticker_name']
-    df_recent = df.tail(int(lookback_months * 4.33))
-    current = df.iloc[-1]
+    if df is not None:
 
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("RÉGIMEN", current['Regime_ZScore'])
-    m2.metric("PRECIO", f"${current['Close']:.2f}")
-    m3.metric("Z-SCORE", f"{current['Z_Score_Adjusted']:.2f}σ")
-    m4.metric("KURTOSIS", f"{current['Kurtosis']:.2f}")
-    m5.metric("FECHA", df.index[-1].strftime('%Y-%m-%d'))
+        df['Regime'] = classify_regime(df)
+        current = df.iloc[-1]
 
-    plt.style.use('dark_background')
-    fig = plt.figure(figsize=(20, 22), facecolor='#0E1117')
-    gs = fig.add_gridspec(4, 1, height_ratios=[3, 1, 1, 1], hspace=0.35)
+        # ================= METRICS =================
+        c1, c2, c3, c4, c5 = st.columns(5)
 
-    # 1. PRECIO
-    ax1 = fig.add_subplot(gs[0])
-    ax1.set_facecolor('#1A1D29')
-    ax1.plot(df_recent.index, df_recent['Close'], color='white', alpha=0.3)
-    ax1.plot(df_recent.index, df_recent['SMA_50'], color='#BD93F9', label='SMA 50', linewidth=2)
-    for reg, color in REGIME_COLORS_ZSCORE.items():
-        mask = df_recent['Regime_ZScore'] == reg
-        if mask.any():
-            ax1.scatter(df_recent[mask].index, df_recent[mask]['Close'], c=color, label=reg, s=100, edgecolors='black', zorder=5)
-    ax1.legend(loc='upper left', ncol=3)
-    ax1.set_title(f"Análisis {tk} - Tendencia y Regímenes", fontsize=18)
+        c1.metric("RÉGIMEN", current['Regime'])
+        c2.metric("PRECIO", f"${current['Close']:.2f}")
+        c3.metric("Z-SCORE", f"{current['Z_Score_Adjusted']:.2f}")
+        c4.metric("MACD-V", f"{current['MACD_V']:.2f}")
+        c5.metric("KURTOSIS", f"{current['Kurtosis']:.2f}")
 
-    # 2. Z-SCORE (Añadida zona de transición 1.5 - 2.0)
-    ax2 = fig.add_subplot(gs[1], sharex=ax1)
-    ax2.set_facecolor('#1A1D29')
-    ax2.plot(df_recent.index, df_recent['Z_Score_Adjusted'], color='cyan', linewidth=2)
-    ax2.axhline(2.0, color='red', linestyle='--')
-    ax2.axhline(1.5, color='orange', linestyle=':')
-    ax2.axhline(-1.5, color='orchid', linestyle=':')
-    ax2.axhline(-2.0, color='purple', linestyle='--')
-    ax2.set_ylabel("Z-Score Adj")
+        # ================= CHART =================
+        plt.style.use('dark_background')
+        fig, axs = plt.subplots(3, 1, figsize=(18, 18), sharex=True)
 
-    # 3. MACD-V (RESTAURADO)
-    ax3 = fig.add_subplot(gs[2], sharex=ax1)
-    ax3.set_facecolor('#1A1D29')
-    ax3.plot(df_recent.index, df_recent['MACD_V'], color='#4ECDC4', label='MACD-V', linewidth=2)
-    ax3.plot(df_recent.index, df_recent['MACD_V_Signal'], color='#FFB86C', linestyle='--', label='Signal')
-    ax3.fill_between(df_recent.index, df_recent['MACD_V'], df_recent['MACD_V_Signal'], 
-                     where=(df_recent['MACD_V'] >= df_recent['MACD_V_Signal']), color='#00FF00', alpha=0.1)
-    ax3.fill_between(df_recent.index, df_recent['MACD_V'], df_recent['MACD_V_Signal'], 
-                     where=(df_recent['MACD_V'] < df_recent['MACD_V_Signal']), color='#FF0000', alpha=0.1)
-    ax3.set_ylabel("MACD-V")
-    ax3.legend()
+        # PRECIO
+        axs[0].plot(df.index, df['Close'], color='white', alpha=0.4)
+        axs[0].plot(df.index, df['SMA_50'], color='violet')
 
-    # 4. TIMELINE
-    ax4 = fig.add_subplot(gs[3], sharex=ax1)
-    ax4.set_facecolor('#1A1D29')
-    order = list(REGIME_COLORS_ZSCORE.keys())
-    y_vals = [order.index(r) for r in df_recent['Regime_ZScore']]
-    ax4.scatter(df_recent.index, y_vals, c=[REGIME_COLORS_ZSCORE[r] for r in df_recent['Regime_ZScore']], s=80, marker='s')
-    ax4.set_yticks(range(len(order)))
-    ax4.set_yticklabels(order)
-    ax4.grid(True, alpha=0.1)
+        for r, c in REGIME_COLORS.items():
+            m = df['Regime'] == r
+            axs[0].scatter(df[m].index, df[m]['Close'], c=c, s=70, label=r)
 
-    st.pyplot(fig)
+        axs[0].legend(ncol=3)
+        axs[0].set_title(f"{ticker} — Precio y Regímenes")
+
+        # Z-SCORE
+        axs[1].plot(df.index, df['Z_Score_Adjusted'], color='cyan')
+        axs[1].axhline(2, color='red', linestyle='--')
+        axs[1].axhline(-2, color='purple', linestyle='--')
+        axs[1].set_title("Z-Score Ajustado")
+
+        # MACD-V
+        axs[2].plot(df.index, df['MACD_V'], label='MACD-V', color='#4ECDC4')
+        axs[2].plot(df.index, df['MACD_V_Signal'], label='Signal', linestyle='--')
+
+        axs[2].annotate(
+            f"Último MACD-V: {current['MACD_V']:.2f}",
+            xy=(df.index[-1], current['MACD_V']),
+            xytext=(-120, 30),
+            textcoords='offset points',
+            arrowprops=dict(arrowstyle="->"),
+            fontsize=10
+        )
+
+        axs[2].legend()
+        axs[2].set_title("MACD-V")
+
+        st.pyplot(fig)
