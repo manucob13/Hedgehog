@@ -359,6 +359,14 @@ def main_tp_calculos():
         
         with st.spinner(f"Conectando con Schwab y obteniendo datos de {selected_ticker}..."):
             
+            # Detectar cambio de ticker y resetear valores previos
+            if st.session_state.selected_ticker != selected_ticker:
+                st.session_state.strike_atm_p6 = None
+                st.session_state.strike_up_p6 = None
+                st.session_state.strike_down_p6 = None
+                st.session_state.order_preview_tc = False
+                st.session_state.order_preview_adj = False
+            
             # Conectar con Schwab
             schwab_client = connect_to_schwab()
             
@@ -415,6 +423,10 @@ def main_tp_calculos():
         selected_ticker = st.session_state.selected_ticker
         expiration_date = st.session_state.expiration_date
         std_multiplier = st.session_state.std_multiplier
+        
+        # CALCULAR INCREMENTO DINÁMICO SEGÚN TICKER
+        strike_increment = 1.0 if selected_ticker == 'QQQ' else 5.0
+        round_to = 1 if selected_ticker == 'QQQ' else 5
         
         st.markdown("---")
         
@@ -689,7 +701,7 @@ def main_tp_calculos():
         
         st.markdown("---")
         
-        st.markdown("""
+        st.markdown(f"""
         ### 📚 Fuentes de Datos
         - **Precios de Opciones:** Schwab API
         - **Precios del Activo:** Schwab API
@@ -709,6 +721,9 @@ def main_tp_calculos():
         - **1σ** ≈ 68% de probabilidad (rango más conservador)
         - **1.5σ** ≈ 87% de probabilidad (rango intermedio)
         - **2σ** ≈ 95% de probabilidad (rango más amplio)
+        
+        ### 🎯 Configuración de Strikes
+        - **{selected_ticker}**: Incremento de **{strike_increment:.0f}** por strike
         """)
         
         st.markdown("---")
@@ -728,10 +743,10 @@ def main_tp_calculos():
         upper_range_1std = current_price + expected_move_1std
         lower_range_1std = current_price - expected_move_1std
         
-        # Redondear strikes para los valores por defecto
-        atm_rounded = round(details['atm_strike'] / 5) * 5
-        strike_up_default = round(upper_range_1std / 5) * 5
-        strike_down_default = round(lower_range_1std / 5) * 5
+        # Redondear strikes para los valores por defecto CON INCREMENTO DINÁMICO
+        atm_rounded = round(details['atm_strike'] / round_to) * round_to
+        strike_up_default = round(upper_range_1std / round_to) * round_to
+        strike_down_default = round(lower_range_1std / round_to) * round_to
         
         col1, col2 = st.columns(2)
         
@@ -746,6 +761,7 @@ def main_tp_calculos():
             - Rango Inferior: **${lower_range_1std:.2f}**
             - Strike UP Sugerido: **${strike_up_default:.0f}**
             - Strike DOWN Sugerido: **${strike_down_default:.0f}**
+            - Incremento de Strike: **{strike_increment:.0f}**
             """)
             
             st.markdown("---")
@@ -755,8 +771,8 @@ def main_tp_calculos():
                 "Strike ATM",
                 min_value=0.0,
                 value=float(atm_rounded),
-                step=5.0,
-                key='strike_atm_tc',
+                step=strike_increment,
+                key=f'strike_atm_tc_{selected_ticker}',
                 help="Strike al dinero (ATM)",
                 label_visibility="collapsed"
             )
@@ -765,7 +781,7 @@ def main_tp_calculos():
                 "Tipo de Opción ATM",
                 ["PUT", "CALL"],
                 index=0,
-                key='option_type_atm_tc'
+                key=f'option_type_atm_tc_{selected_ticker}'
             )
             
             st.markdown("---")
@@ -775,8 +791,8 @@ def main_tp_calculos():
                 "Strike DOWN (debajo ATM)",
                 min_value=0.0,
                 value=float(strike_down_default),
-                step=5.0,
-                key='strike_down_tc',
+                step=strike_increment,
+                key=f'strike_down_tc_{selected_ticker}',
                 help="Strike por debajo del ATM basado en Expected Move",
                 label_visibility="collapsed"
             )
@@ -785,7 +801,7 @@ def main_tp_calculos():
                 "Tipo de Opción DOWN",
                 ["PUT", "CALL"],
                 index=0,
-                key='option_type_down_tc'
+                key=f'option_type_down_tc_{selected_ticker}'
             )
             
             st.markdown("---")
@@ -795,8 +811,8 @@ def main_tp_calculos():
                 "Strike UP (arriba ATM)",
                 min_value=0.0,
                 value=float(strike_up_default),
-                step=5.0,
-                key='strike_up_tc',
+                step=strike_increment,
+                key=f'strike_up_tc_{selected_ticker}',
                 help="Strike por arriba del ATM basado en Expected Move",
                 label_visibility="collapsed"
             )
@@ -805,7 +821,7 @@ def main_tp_calculos():
                 "Tipo de Opción UP",
                 ["CALL", "PUT"],
                 index=0,
-                key='option_type_up_tc'
+                key=f'option_type_up_tc_{selected_ticker}'
             )
         
         with col2:
@@ -816,7 +832,7 @@ def main_tp_calculos():
                 value=expiration_date,
                 min_value=date.today() + timedelta(days=1),
                 max_value=date.today() + timedelta(days=365),
-                key='dte_front_tc',
+                key=f'dte_front_tc_{selected_ticker}',
                 help="Fecha de expiración de las opciones vendidas"
             )
             
@@ -827,7 +843,7 @@ def main_tp_calculos():
                 value=default_back,
                 min_value=dte_front_input + timedelta(days=1),
                 max_value=date.today() + timedelta(days=365),
-                key='dte_back_tc',
+                key=f'dte_back_tc_{selected_ticker}',
                 help="Fecha de expiración de las opciones compradas"
             )
             
@@ -843,7 +859,7 @@ def main_tp_calculos():
                 min_value=1,
                 value=1,
                 step=1,
-                key='quantity_tc',
+                key=f'quantity_tc_{selected_ticker}',
                 help="Número de contratos por cada pierna del calendario"
             )
             
@@ -853,7 +869,7 @@ def main_tp_calculos():
                 value=1.0,
                 step=0.05,
                 format="%.2f",
-                key='limit_price_tc',
+                key=f'limit_price_tc_{selected_ticker}',
                 help="Precio límite total para la estrategia (crédito o débito)"
             )
             
@@ -867,13 +883,13 @@ def main_tp_calculos():
             
             st.markdown("#### 📌 Configuración IBKR")
             
-            ibkr_host = st.text_input("Host IBKR", value="127.0.0.1", key='ibkr_host_tc')
-            ibkr_port = st.number_input("Puerto IBKR", min_value=1, max_value=65535, value=5000, step=1, key='ibkr_port_tc')
-            ibkr_client_id = st.number_input("Client ID", min_value=1, value=1, step=1, key='ibkr_client_id_tc')
+            ibkr_host = st.text_input("Host IBKR", value="127.0.0.1", key=f'ibkr_host_tc_{selected_ticker}')
+            ibkr_port = st.number_input("Puerto IBKR", min_value=1, max_value=65535, value=5000, step=1, key=f'ibkr_port_tc_{selected_ticker}')
+            ibkr_client_id = st.number_input("Client ID", min_value=1, value=1, step=1, key=f'ibkr_client_id_tc_{selected_ticker}')
         
         st.markdown("---")
         
-        if st.button("📝 Generar Vista Previa de Orden", type="primary", use_container_width=True):
+        if st.button("📝 Generar Vista Previa de Orden", type="primary", use_container_width=True, key=f'btn_preview_tc_{selected_ticker}'):
             
             # Guardar strikes y DTEs en session_state para el punto 7
             st.session_state.strike_atm_p6 = strike_atm_input
@@ -949,7 +965,7 @@ def main_tp_calculos():
             
             st.warning("⚠️ **IMPORTANTE:** Asegúrate de que TWS/Gateway esté ejecutándose y la configuración sea correcta.")
             
-            if st.button("🚀 ENVIAR ORDEN A IBKR", type="primary", use_container_width=True):
+            if st.button("🚀 ENVIAR ORDEN A IBKR", type="primary", use_container_width=True, key=f'btn_send_tc_{selected_ticker}'):
                 try:
                     from utils.utils_ibkr import send_strategy_order_ibkr
                 except ImportError:
@@ -1012,9 +1028,10 @@ def main_tp_calculos():
         strike_adj_down_calc = current_price_adj - expected_move_1std_adj
         strike_adj_atm_calc = current_price_adj
         
-        strike_adj_up_rounded = round(strike_adj_up_calc / 5) * 5
-        strike_adj_down_rounded = round(strike_adj_down_calc / 5) * 5
-        strike_adj_atm_rounded = round(strike_adj_atm_calc / 5) * 5
+        # USAR REDONDEO DINÁMICO
+        strike_adj_up_rounded = round(strike_adj_up_calc / round_to) * round_to
+        strike_adj_down_rounded = round(strike_adj_down_calc / round_to) * round_to
+        strike_adj_atm_rounded = round(strike_adj_atm_calc / round_to) * round_to
         
         st.info(f"""
         💡 **Cálculos de Ajuste (1σ):**
@@ -1023,6 +1040,7 @@ def main_tp_calculos():
         - Strike UP: **${strike_adj_up_calc:.2f}** → **${strike_adj_up_rounded:.0f}**
         - Strike ATM: **${strike_adj_atm_calc:.2f}** → **${strike_adj_atm_rounded:.0f}**
         - Strike DOWN: **${strike_adj_down_calc:.2f}** → **${strike_adj_down_rounded:.0f}**
+        - Incremento: **{strike_increment:.0f}**
         """)
         
         st.markdown("---")
@@ -1038,9 +1056,27 @@ def main_tp_calculos():
             
             st.markdown("**Strikes de Referencia (Punto 6)**")
             
-            strike_ref_atm = st.number_input("Strike ATM ref", min_value=0.0, value=float(default_atm), step=5.0, key='strike_ref_atm_adj')
-            strike_ref_up = st.number_input("Strike UP ref", min_value=0.0, value=float(default_up), step=5.0, key='strike_ref_up_adj')
-            strike_ref_down = st.number_input("Strike DOWN ref", min_value=0.0, value=float(default_down), step=5.0, key='strike_ref_down_adj')
+            strike_ref_atm = st.number_input(
+                "Strike ATM ref", 
+                min_value=0.0, 
+                value=float(default_atm), 
+                step=strike_increment, 
+                key=f'strike_ref_atm_adj_{selected_ticker}'
+            )
+            strike_ref_up = st.number_input(
+                "Strike UP ref", 
+                min_value=0.0, 
+                value=float(default_up), 
+                step=strike_increment, 
+                key=f'strike_ref_up_adj_{selected_ticker}'
+            )
+            strike_ref_down = st.number_input(
+                "Strike DOWN ref", 
+                min_value=0.0, 
+                value=float(default_down), 
+                step=strike_increment, 
+                key=f'strike_ref_down_adj_{selected_ticker}'
+            )
             
             st.markdown("---")
             st.markdown("**Selecciona el Strike de Referencia**")
@@ -1051,7 +1087,11 @@ def main_tp_calculos():
                 f"DOWN (${strike_ref_down:.0f})": strike_ref_down
             }
             
-            selected_strike_ref_label = st.selectbox("Strike de referencia", list(strike_comparison_options.keys()), key='strike_ref_comparison_adj')
+            selected_strike_ref_label = st.selectbox(
+                "Strike de referencia", 
+                list(strike_comparison_options.keys()), 
+                key=f'strike_ref_comparison_adj_{selected_ticker}'
+            )
             strike_ref_selected = strike_comparison_options[selected_strike_ref_label]
             
             if current_price_adj < strike_ref_selected:
@@ -1063,7 +1103,7 @@ def main_tp_calculos():
                 suggested_strike_calc = current_price_adj + expected_move_1std_adj
                 direction = "arriba"
             
-            suggested_strike_rounded = round(suggested_strike_calc / 5) * 5
+            suggested_strike_rounded = round(suggested_strike_calc / round_to) * round_to
             
             st.info(f"""
             📊 **Análisis:**
@@ -1076,8 +1116,19 @@ def main_tp_calculos():
             
             st.markdown("---")
             st.markdown("**Strike Final del Ajuste**")
-            strike_adjustment = st.number_input("Strike para el Calendar", min_value=0.0, value=float(suggested_strike_rounded), step=5.0, key='strike_adjustment')
-            option_type_adjustment = st.selectbox("Tipo de Opción", ["PUT", "CALL"], index=0 if suggested_option_type == "PUT" else 1, key='option_type_adjustment')
+            strike_adjustment = st.number_input(
+                "Strike para el Calendar", 
+                min_value=0.0, 
+                value=float(suggested_strike_rounded), 
+                step=strike_increment, 
+                key=f'strike_adjustment_{selected_ticker}'
+            )
+            option_type_adjustment = st.selectbox(
+                "Tipo de Opción", 
+                ["PUT", "CALL"], 
+                index=0 if suggested_option_type == "PUT" else 1, 
+                key=f'option_type_adjustment_{selected_ticker}'
+            )
         
         with col2:
             st.markdown("#### 📅 Fechas de Expiración")
@@ -1098,7 +1149,7 @@ def main_tp_calculos():
                 value=default_front, 
                 min_value=date.today() + timedelta(days=1),
                 max_value=date.today() + timedelta(days=365),
-                key='dte_front_adj'
+                key=f'dte_front_adj_{selected_ticker}'
             )
             
             # Asegurar que default_back sea siempre mayor que dte_front_adj
@@ -1110,8 +1161,8 @@ def main_tp_calculos():
                 "DTE BACK (Compra)", 
                 value=default_back, 
                 min_value=min_back_date,
-                max_value=date.today() + timedelta(days=365),
-                key='dte_back_adj'
+                max_date=date.today() + timedelta(days=365),
+                key=f'dte_back_adj_{selected_ticker}'
             )
             
             days_diff_adj = (dte_back_adj - dte_front_adj).days
@@ -1120,21 +1171,34 @@ def main_tp_calculos():
             st.markdown("---")
             st.markdown("#### 💰 Configuración de Orden")
             
-            quantity_adj = st.number_input("Cantidad de Contratos", min_value=1, value=1, step=1, key='quantity_adj')
-            limit_price_adj = st.number_input("Precio Límite", min_value=0.0, value=1.0, step=0.05, format="%.2f", key='limit_price_adj')
+            quantity_adj = st.number_input(
+                "Cantidad de Contratos", 
+                min_value=1, 
+                value=1, 
+                step=1, 
+                key=f'quantity_adj_{selected_ticker}'
+            )
+            limit_price_adj = st.number_input(
+                "Precio Límite", 
+                min_value=0.0, 
+                value=1.0, 
+                step=0.05, 
+                format="%.2f", 
+                key=f'limit_price_adj_{selected_ticker}'
+            )
             
             st.info(f"💡 Por contrato: **${limit_price_adj / quantity_adj if quantity_adj > 0 else 0:.2f}**")
             
             st.markdown("---")
             st.markdown("#### 📌 Configuración IBKR")
             
-            ibkr_host_adj = st.text_input("Host", value="127.0.0.1", key='ibkr_host_adj')
-            ibkr_port_adj = st.number_input("Puerto", min_value=1, max_value=65535, value=5000, step=1, key='ibkr_port_adj')
-            ibkr_client_id_adj = st.number_input("Client ID", min_value=1, value=1, step=1, key='ibkr_client_id_adj')
+            ibkr_host_adj = st.text_input("Host", value="127.0.0.1", key=f'ibkr_host_adj_{selected_ticker}')
+            ibkr_port_adj = st.number_input("Puerto", min_value=1, max_value=65535, value=5000, step=1, key=f'ibkr_port_adj_{selected_ticker}')
+            ibkr_client_id_adj = st.number_input("Client ID", min_value=1, value=1, step=1, key=f'ibkr_client_id_adj_{selected_ticker}')
         
         st.markdown("---")
         
-        if st.button("📝 Generar Vista Previa de Ajuste", type="primary", use_container_width=True):
+        if st.button("📝 Generar Vista Previa de Ajuste", type="primary", use_container_width=True, key=f'btn_preview_adj_{selected_ticker}'):
             
             strikes_config_adj = [{'strike': strike_adjustment, 'type': option_type_adjustment, 'label': 'Adjustment'}]
             
@@ -1184,7 +1248,7 @@ def main_tp_calculos():
             st.markdown("---")
             st.warning("⚠️ Asegúrate de que TWS/Gateway esté ejecutándose")
             
-            if st.button("🚀 ENVIAR AJUSTE A IBKR", type="primary", use_container_width=True):
+            if st.button("🚀 ENVIAR AJUSTE A IBKR", type="primary", use_container_width=True, key=f'btn_send_adj_{selected_ticker}'):
                 try:
                     from utils.utils_ibkr import send_strategy_order_ibkr
                 except ImportError:
