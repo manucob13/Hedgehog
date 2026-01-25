@@ -1161,7 +1161,7 @@ def main_tp_calculos():
                 "DTE BACK (Compra)", 
                 value=default_back, 
                 min_value=min_back_date,
-                max_date=date.today() + timedelta(days=365),
+                max_value=date.today() + timedelta(days=365),
                 key=f'dte_back_adj_{selected_ticker}'
             )
             
