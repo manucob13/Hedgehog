@@ -45,6 +45,18 @@ def send_strategy_order_ibkr(
     """
     Envía una orden de estrategia multi-leg a IBKR TWS/Gateway.
     
+    Args:
+        df_strategy: DataFrame con columnas: Action, Symbol, SecType, Expiry, Strike, Right, Exchange, Currency
+                     NOTA: La columna 'Quantity' en df_strategy ya no se usa - el ratio es siempre 1
+        limit_price: Precio límite total para la estrategia combo
+        quantity: Cantidad total de combos a ejecutar (totalQuantity)
+        host: Dirección IP de TWS/Gateway
+        port: Puerto de conexión
+        client_id: ID del cliente para la conexión
+        tif: Time In Force ('DAY', 'GTC', etc.)
+        action: 'BUY' o 'SELL'
+        timeout: Timeout de conexión en segundos
+    
     ⚠️ IMPORTANTE: Esta función importa ib_insync localmente para evitar
     problemas con event loops en Streamlit Cloud.
     """
@@ -75,7 +87,7 @@ def send_strategy_order_ibkr(
     
     try:
         # Validación del DataFrame
-        required_columns = ['Action', 'Quantity', 'Symbol', 'SecType', 'Expiry', 
+        required_columns = ['Action', 'Symbol', 'SecType', 'Expiry', 
                           'Strike', 'Right', 'Exchange', 'Currency']
         missing_cols = [col for col in required_columns if col not in df_strategy.columns]
         
@@ -189,17 +201,19 @@ def send_strategy_order_ibkr(
                 return result
             
             leg_action = str(row['Action']).upper()
-            leg_quantity = int(row['Quantity'])
             
+            # ✅ CORRECCIÓN CRÍTICA: ratio siempre es 1 para calendar spreads estándar
+            # La cantidad total se controla con totalQuantity en la Order
+            # Esto permite que quantity > 1 funcione correctamente
             combo_leg = ComboLeg(
                 conId=matching_contract.conId,
-                ratio=leg_quantity,
+                ratio=1,  # ← Siempre 1 para cada pierna del combo
                 action=leg_action,
                 exchange=str(row['Exchange'])
             )
             combo.comboLegs.append(combo_leg)
             
-            print(f"   ✓ {leg_action} {leg_quantity}x conId={matching_contract.conId}")
+            print(f"   ✓ {leg_action} 1x (ratio) conId={matching_contract.conId}")
         
         print(f"\n✅ Combo creado con {len(combo.comboLegs)} piernas")
         
@@ -209,7 +223,7 @@ def send_strategy_order_ibkr(
         order = Order(
             action=action,
             orderType='LMT',
-            totalQuantity=quantity,
+            totalQuantity=quantity,  # ← La cantidad total se aplica aquí
             lmtPrice=round(limit_price, 2),
             transmit=True,
             tif=tif
@@ -220,9 +234,10 @@ def send_strategy_order_ibkr(
         print(f"{'='*60}")
         print(f"   Estrategia: {base_symbol} BAG ({len(combo.comboLegs)} piernas)")
         print(f"   Acción: {action}")
-        print(f"   Cantidad: {quantity}")
+        print(f"   Cantidad Total: {quantity} combos")
         print(f"   Tipo: LIMIT @ ${limit_price:.2f}")
         print(f"   TIF: {tif}")
+        print(f"   Ratio por pierna: 1:1 (estándar)")
         print(f"{'='*60}\n")
         
         print(f"🚀 Enviando orden a IBKR...")
