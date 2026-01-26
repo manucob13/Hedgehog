@@ -48,6 +48,10 @@ def initialize_session_state():
         st.session_state.order_preview_adj = False
     if 'schwab_client' not in st.session_state:
         st.session_state.schwab_client = None
+    if 'current_ticker_adj' not in st.session_state:
+        st.session_state.current_ticker_adj = None
+    if 'current_price' not in st.session_state:
+        st.session_state.current_price = None
 
 def main_adjustments():
     initialize_session_state()
@@ -74,6 +78,14 @@ def main_adjustments():
             index=0,
             key='ticker_adj'
         )
+        
+        # Resetear datos cuando cambia el ticker
+        if st.session_state.current_ticker_adj != selected_ticker:
+            st.session_state.current_ticker_adj = selected_ticker
+            st.session_state.current_price = None
+            st.session_state.order_preview_adj = False
+            st.session_state.df_strategy_adj = None
+        
         st.info(f"📊 Ticker: **{selected_ticker}**")
     
     with col2:
@@ -147,19 +159,24 @@ def main_adjustments():
         with col1:
             st.markdown("#### 🎯 Strike y Tipo")
             
+            # Forzar recálculo del strike cuando cambia el precio o ticker
+            strike_key = f'strike_adjustment_{selected_ticker}_{current_price}'
+            
             strike_adjustment = st.number_input(
                 "Strike para el Calendar",
                 min_value=0.0,
                 value=float(strike_atm_calc),
                 step=strike_increment,
-                key='strike_adjustment'
+                key=strike_key
             )
+            
+            option_type_key = f'option_type_adjustment_{selected_ticker}'
             
             option_type_adjustment = st.selectbox(
                 "Tipo de Opción",
                 ["CALL", "PUT"],
                 index=0,
-                key='option_type_adjustment'
+                key=option_type_key
             )
             
             st.info(f"""
