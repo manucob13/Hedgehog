@@ -231,16 +231,8 @@ def initialize_session_state():
         'selected_ticker': None,
         'expiration_date': None,
         'std_multiplier': None,
-        'strike_atm_p6': None,
-        'strike_up_p6': None,
-        'strike_down_p6': None,
-        'dte_front_p6': None,
-        'dte_back_p6': None,
-        'df_strategy_tc': None,
-        'order_preview_tc': False,
-        'df_strategy_adj': None,
-        'order_preview_adj': False,
-        'schwab_client': None
+        'schwab_client': None,
+        'calendar_strikes_df': None
     }
     
     for var, default_value in state_vars.items():
@@ -248,41 +240,36 @@ def initialize_session_state():
             st.session_state[var] = default_value
 
 
-def create_strategy_orders(strikes_config, front_date, back_date, quantity, ticker):
-    """Crea las órdenes para una estrategia de opciones."""
-    orders = []
+def create_calendar_pair_order(strike, option_type, front_date, back_date, quantity, ticker):
+    """Crea un par de órdenes (SELL front + BUY back) para un calendar spread."""
+    right_letter = "C" if option_type == "CALL" else "P"
     
-    for config in strikes_config:
-        strike_int = int(config['strike'])
-        right_letter = "C" if config['type'] == "CALL" else "P"
-        
-        # SELL en DTE FRONT
-        orders.append({
+    orders = [
+        {
             'Action': 'SELL',
             'Quantity': quantity,
             'Symbol': ticker,
             'SecType': 'OPT',
             'Expiry': front_date,
-            'Strike': strike_int,
+            'Strike': int(strike),
             'Right': right_letter,
             'Exchange': 'SMART',
             'Currency': 'USD',
-            'Label': f'{config["label"]} Front'
-        })
-        
-        # BUY en DTE BACK
-        orders.append({
+            'Label': 'Front'
+        },
+        {
             'Action': 'BUY',
             'Quantity': quantity,
             'Symbol': ticker,
             'SecType': 'OPT',
             'Expiry': back_date,
-            'Strike': strike_int,
+            'Strike': int(strike),
             'Right': right_letter,
             'Exchange': 'SMART',
             'Currency': 'USD',
-            'Label': f'{config["label"]} Back'
-        })
+            'Label': 'Back'
+        }
+    ]
     
     return pd.DataFrame(orders)
 
@@ -359,14 +346,6 @@ def main_tp_calculos():
         
         with st.spinner(f"Conectando con Schwab y obteniendo datos de {selected_ticker}..."):
             
-            # Detectar cambio de ticker y resetear valores previos
-            if st.session_state.selected_ticker != selected_ticker:
-                st.session_state.strike_atm_p6 = None
-                st.session_state.strike_up_p6 = None
-                st.session_state.strike_down_p6 = None
-                st.session_state.order_preview_tc = False
-                st.session_state.order_preview_adj = False
-            
             # Conectar con Schwab
             schwab_client = connect_to_schwab()
             
@@ -410,6 +389,7 @@ def main_tp_calculos():
             st.session_state.expiration_date = expiration_date
             st.session_state.std_multiplier = std_multiplier
             st.session_state.calculation_done = True
+            st.session_state.calendar_strikes_df = None  # Reset tabla
     
     # ==============================================================================
     # MOSTRAR RESULTADOS
@@ -673,69 +653,12 @@ def main_tp_calculos():
         st.markdown("---")
         
         # ==============================================================================
-        # SECCIÓN 5: INFORMACIÓN ADICIONAL
+        # SECCIÓN 5: GENERADOR DE CALENDARS EN PARES (NUEVO)
         # ==============================================================================
-        st.header("5. Información Adicional")
-        
-        prob_text = {1.0: "68%", 1.5: "87%", 2.0: "95%"}.get(std_multiplier, "N/A")
-        
-        st.info(f"""
-        📌 **Interpretación del Expected Move:**
-        
-        - El **Expected Move** representa el rango de precio esperado ({std_multiplier} desviación estándar) 
-          que el mercado anticipa para la fecha de expiración.
-        
-        - Este cálculo se basa en el precio del **straddle ATM** (comprar un call y un put 
-          al mismo strike más cercano al precio actual).
-        
-        - Con **{std_multiplier}σ**, aproximadamente el **{prob_text}** de las veces, el precio debería 
-          permanecer dentro de este rango.
-        
-        - **Ticker:** {selected_ticker}
-        - **Precio Actual:** ${current_price:.2f}
-        - **Straddle Price:** ${details['straddle_price']:.2f}
-        - **Expected Move ({std_multiplier}σ):** ±${expected_move:.2f} (±{move_pct:.2f}%)
-        - **Rango Esperado:** ${lower_range:.2f} - ${upper_range:.2f}
-        - **Días hasta Expiración:** {days_to_exp}
-        """)
-        
-        st.markdown("---")
-        
-        st.markdown(f"""
-        ### 📚 Fuentes de Datos
-        - **Precios de Opciones:** Schwab API
-        - **Precios del Activo:** Schwab API
-        - **Datos Históricos:** Yahoo Finance
-        
-        ### 🧮 Fórmula del Expected Move
-        ```
-        Expected Move = Straddle Price × 1.25 × σ
-        ```
-        
-        Donde:
-        - **Straddle Price** = Call Mid + Put Mid (ATM)
-        - **1.25** = Factor de ajuste para 1 desviación estándar completa
-        - **σ** = Multiplicador de desviaciones estándar (1.0, 1.5, o 2.0)
-        
-        ### 📊 Niveles de Confianza
-        - **1σ** ≈ 68% de probabilidad (rango más conservador)
-        - **1.5σ** ≈ 87% de probabilidad (rango intermedio)
-        - **2σ** ≈ 95% de probabilidad (rango más amplio)
-        
-        ### 🎯 Configuración de Strikes
-        - **{selected_ticker}**: Incremento de **{strike_increment:.0f}** por strike
-        """)
-        
-        st.markdown("---")
-        
-        # ==============================================================================
-        # SECCIÓN 6: GENERADOR DE ESTRUCTURA TRIPLE CALENDAR - ENVÍO A IBKR
-        # ==============================================================================
-        st.header("6. Generador de Estructura - Triple Calendar (Envío a IBKR)")
+        st.header("5. Generador de Calendar Spreads (Por Pares)")
         
         st.markdown("""
-        Configura los strikes y fechas de expiración para generar una orden **Triple Calendar** 
-        que se enviará directamente a **Interactive Brokers** a través de TWS/Gateway.
+        Configura los strikes para los **Calendar Spreads**. Cada strike seleccionado se enviará como un **par independiente** (SELL front + BUY back) a IBKR.
         """)
         
         # Calcular Expected Move de 1 desviación estándar
@@ -743,99 +666,27 @@ def main_tp_calculos():
         upper_range_1std = current_price + expected_move_1std
         lower_range_1std = current_price - expected_move_1std
         
-        # Redondear strikes para los valores por defecto CON INCREMENTO DINÁMICO
+        # Redondear strikes para los valores por defecto
         atm_rounded = round(details['atm_strike'] / round_to) * round_to
         strike_up_default = round(upper_range_1std / round_to) * round_to
         strike_down_default = round(lower_range_1std / round_to) * round_to
         
-        col1, col2 = st.columns(2)
+        # Configuración global
+        st.markdown("### ⚙️ Configuración Global")
+        
+        col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.markdown("#### 🎯 Configuración de Strikes")
-            
-            st.info(f"""
-            💡 **Rangos de Referencia (1σ):**
-            - Precio Actual: **${current_price:.2f}**
-            - Expected Move: **±${expected_move_1std:.2f}**
-            - Rango Superior: **${upper_range_1std:.2f}**
-            - Rango Inferior: **${lower_range_1std:.2f}**
-            - Strike UP Sugerido: **${strike_up_default:.0f}**
-            - Strike DOWN Sugerido: **${strike_down_default:.0f}**
-            - Incremento de Strike: **{strike_increment:.0f}**
-            """)
-            
-            st.markdown("---")
-            
-            st.markdown(f"**Strike ATM** (Precio actual: ${current_price:.0f})")
-            strike_atm_input = st.number_input(
-                "Strike ATM",
-                min_value=0.0,
-                value=float(atm_rounded),
-                step=strike_increment,
-                key=f'strike_atm_tc_{selected_ticker}',
-                help="Strike al dinero (ATM)",
-                label_visibility="collapsed"
-            )
-            
-            option_type_atm = st.selectbox(
-                "Tipo de Opción ATM",
-                ["PUT", "CALL"],
-                index=0,
-                key=f'option_type_atm_tc_{selected_ticker}'
-            )
-            
-            st.markdown("---")
-            
-            st.markdown(f"**Strike DOWN** (Calculado: ${lower_range_1std:.2f})")
-            strike_down_input = st.number_input(
-                "Strike DOWN (debajo ATM)",
-                min_value=0.0,
-                value=float(strike_down_default),
-                step=strike_increment,
-                key=f'strike_down_tc_{selected_ticker}',
-                help="Strike por debajo del ATM basado en Expected Move",
-                label_visibility="collapsed"
-            )
-            
-            option_type_down = st.selectbox(
-                "Tipo de Opción DOWN",
-                ["PUT", "CALL"],
-                index=0,
-                key=f'option_type_down_tc_{selected_ticker}'
-            )
-            
-            st.markdown("---")
-            
-            st.markdown(f"**Strike UP** (Calculado: ${upper_range_1std:.2f})")
-            strike_up_input = st.number_input(
-                "Strike UP (arriba ATM)",
-                min_value=0.0,
-                value=float(strike_up_default),
-                step=strike_increment,
-                key=f'strike_up_tc_{selected_ticker}',
-                help="Strike por arriba del ATM basado en Expected Move",
-                label_visibility="collapsed"
-            )
-            
-            option_type_up = st.selectbox(
-                "Tipo de Opción UP",
-                ["CALL", "PUT"],
-                index=0,
-                key=f'option_type_up_tc_{selected_ticker}'
-            )
-        
-        with col2:
-            st.markdown("#### 📅 Fechas de Expiración")
-            
             dte_front_input = st.date_input(
                 "DTE FRONT (Venta)",
                 value=expiration_date,
                 min_value=date.today() + timedelta(days=1),
                 max_value=date.today() + timedelta(days=365),
-                key=f'dte_front_tc_{selected_ticker}',
+                key='dte_front_global',
                 help="Fecha de expiración de las opciones vendidas"
             )
-            
+        
+        with col2:
             default_back = dte_front_input + timedelta(days=7)
             
             dte_back_input = st.date_input(
@@ -843,453 +694,229 @@ def main_tp_calculos():
                 value=default_back,
                 min_value=dte_front_input + timedelta(days=1),
                 max_value=date.today() + timedelta(days=365),
-                key=f'dte_back_tc_{selected_ticker}',
+                key='dte_back_global',
                 help="Fecha de expiración de las opciones compradas"
             )
-            
-            days_diff = (dte_back_input - dte_front_input).days
-            st.success(f"📅 Diferencia: **{days_diff} días**")
-            
-            st.markdown("---")
-            
-            st.markdown("#### 💰 Configuración de Orden")
-            
-            quantity_input = st.number_input(
+        
+        with col3:
+            quantity_global = st.number_input(
                 "Cantidad de Contratos",
                 min_value=1,
                 value=1,
                 step=1,
-                key=f'quantity_tc_{selected_ticker}',
-                help="Número de contratos por cada pierna del calendario"
+                key='quantity_global',
+                help="Número de contratos por cada calendar"
             )
-            
-            limit_price_input = st.number_input(
-                "Precio Límite (Total)",
+        
+        with col4:
+            limit_price_global = st.number_input(
+                "Precio Límite por Par",
                 min_value=0.0,
                 value=1.0,
                 step=0.05,
                 format="%.2f",
-                key=f'limit_price_tc_{selected_ticker}',
-                help="Precio límite total para la estrategia (crédito o débito)"
+                key='limit_price_global',
+                help="Precio límite por cada calendar spread"
             )
-            
-            st.info(f"""
-            💡 **Configuración de Precio:**
-            - Precio Límite: **${limit_price_input:.2f}**
-            - Por contrato: **${limit_price_input / quantity_input if quantity_input > 0 else 0:.2f}**
-            """)
-            
-            st.markdown("---")
-            
-            st.markdown("#### 📌 Configuración IBKR")
-            
-            ibkr_host = st.text_input("Host IBKR", value="127.0.0.1", key=f'ibkr_host_tc_{selected_ticker}')
-            ibkr_port = st.number_input("Puerto IBKR", min_value=1, max_value=65535, value=5000, step=1, key=f'ibkr_port_tc_{selected_ticker}')
-            ibkr_client_id = st.number_input("Client ID", min_value=1, value=1, step=1, key=f'ibkr_client_id_tc_{selected_ticker}')
+        
+        days_diff = (dte_back_input - dte_front_input).days
+        st.success(f"📅 Diferencia entre fechas: **{days_diff} días**")
         
         st.markdown("---")
         
-        if st.button("📝 Generar Vista Previa de Orden", type="primary", use_container_width=True, key=f'btn_preview_tc_{selected_ticker}'):
-            
-            # Guardar strikes y DTEs en session_state para el punto 7
-            st.session_state.strike_atm_p6 = strike_atm_input
-            st.session_state.strike_up_p6 = strike_up_input
-            st.session_state.strike_down_p6 = strike_down_input
-            st.session_state.dte_front_p6 = dte_front_input
-            st.session_state.dte_back_p6 = dte_back_input
-            
-            # Crear la estructura de órdenes
-            strikes_config = [
-                {'strike': strike_down_input, 'type': option_type_down, 'label': 'DOWN'},
-                {'strike': strike_atm_input, 'type': option_type_atm, 'label': 'ATM'},
-                {'strike': strike_up_input, 'type': option_type_up, 'label': 'UP'}
-            ]
-            
-            df_strategy = create_strategy_orders(
-                strikes_config,
-                dte_front_input.strftime("%Y-%m-%d"),
-                dte_back_input.strftime("%Y-%m-%d"),
-                quantity_input,
-                selected_ticker
-            )
-            
-            st.session_state.df_strategy_tc = df_strategy
-            st.session_state.order_preview_tc = True
-            
-            st.success("✅ Vista previa de orden generada exitosamente!")
+        # Configuración IBKR
+        st.markdown("### 📌 Configuración IBKR")
         
-        # Mostrar vista previa si está disponible
-        if st.session_state.order_preview_tc and st.session_state.df_strategy_tc is not None:
-            
-            df_strategy = st.session_state.df_strategy_tc
-            
-            st.markdown("---")
-            st.markdown("### 📋 Vista Previa - Orden Triple Calendar")
-            
-            st.dataframe(df_strategy, hide_index=True, use_container_width=True)
-            
-            st.markdown("---")
-            st.markdown("### 📊 Resumen de la Orden")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Piernas", len(df_strategy))
-            with col2:
-                st.metric("Cantidad por Pierna", quantity_input)
-            with col3:
-                st.metric("Precio Límite", f"${limit_price_input:.2f}")
-            with col4:
-                st.metric("Spread (días)", days_diff)
-            
-            st.markdown("---")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**🎯 Strikes Configurados**")
-                st.write(f"- DOWN: ${strike_down_input:.0f} ({option_type_down})")
-                st.write(f"- ATM: ${strike_atm_input:.0f} ({option_type_atm})")
-                st.write(f"- UP: ${strike_up_input:.0f} ({option_type_up})")
-            
-            with col2:
-                st.markdown("**📅 Fechas de Expiración**")
-                st.write(f"- FRONT (SELL): {dte_front_input.strftime('%Y-%m-%d')}")
-                st.write(f"- BACK (BUY): {dte_back_input.strftime('%Y-%m-%d')}")
-                st.write(f"- Diferencia: {days_diff} días")
-            
-            st.markdown("---")
-            
-            st.markdown("**📌 Configuración de Conexión IBKR**")
-            st.write(f"- Host: {ibkr_host} | Puerto: {ibkr_port} | Client ID: {ibkr_client_id}")
-            
-            st.markdown("---")
-            
-            st.warning("⚠️ **IMPORTANTE:** Asegúrate de que TWS/Gateway esté ejecutándose y la configuración sea correcta.")
-            
-            if st.button("🚀 ENVIAR ORDEN A IBKR", type="primary", use_container_width=True, key=f'btn_send_tc_{selected_ticker}'):
-                try:
-                    from utils.utils_ibkr import send_strategy_order_ibkr
-                except ImportError:
-                    st.error("❌ Error: No se pudo importar send_strategy_order_ibkr")
-                    st.stop()
-                
-                if limit_price_input <= 0:
-                    st.error("❌ El precio límite debe ser mayor a 0")
-                    st.stop()
-                
-                with st.spinner("📡 Enviando orden a IBKR..."):
-                    result = send_strategy_order_ibkr(
-                        df_strategy=df_strategy,
-                        limit_price=limit_price_input,
-                        host=ibkr_host,
-                        port=int(ibkr_port),
-                        client_id=int(ibkr_client_id),
-                        quantity=quantity_input,
-                        tif='DAY',
-                        action='BUY',
-                        timeout=10
-                    )
-                
-                if result['success']:
-                    st.success(f"✅ {result['message']}")
-                    if result.get('order_id'):
-                        st.info(f"📋 Order ID: {result['order_id']}")
-                    if result.get('contracts'):
-                        st.markdown("**✅ Contratos Calificados:**")
-                        for i, c in enumerate(result['contracts'], 1):
-                            st.write(f"{i}. {c.symbol} {c.lastTradeDateOrContractMonth} {c.strike} {c.right}")
-                else:
-                    st.error(f"❌ {result['message']}")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            ibkr_host = st.text_input("Host IBKR", value="127.0.0.1", key='ibkr_host_global')
+        with col2:
+            ibkr_port = st.number_input("Puerto IBKR", min_value=1, max_value=65535, value=5000, step=1, key='ibkr_port_global')
+        with col3:
+            ibkr_client_id = st.number_input("Client ID", min_value=1, value=1, step=1, key='ibkr_client_id_global')
         
         st.markdown("---")
         
-        # ==============================================================================
-        # SECCIÓN 7: AJUSTES
-        # ==============================================================================
-        st.header("7. Ajustes - Generador de Calendar Individual")
-        
-        st.markdown("Esta sección te permite generar un **Calendar Spread individual** basado en el precio actual del mercado y el Expected Move (1σ).")
-        
-        # Actualizar precio actual
-        schwab_client = st.session_state.schwab_client
-        if schwab_client is None:
-            st.warning("⚠️ No hay conexión activa con Schwab. Reconecta para actualizar el precio.")
-            current_price_adj = current_price
-        else:
-            current_price_adj = get_current_price_schwab(schwab_client, selected_ticker)
-            if current_price_adj is None:
-                st.warning("⚠️ No se pudo obtener el precio actual actualizado. Usando precio anterior.")
-                current_price_adj = current_price
-        
-        st.success(f"✅ Precio actual actualizado: **${current_price_adj:.2f}**")
-        
-        expected_move_1std_adj = details['straddle_price'] * 1.25
-        
-        strike_adj_up_calc = current_price_adj + expected_move_1std_adj
-        strike_adj_down_calc = current_price_adj - expected_move_1std_adj
-        strike_adj_atm_calc = current_price_adj
-        
-        # USAR REDONDEO DINÁMICO
-        strike_adj_up_rounded = round(strike_adj_up_calc / round_to) * round_to
-        strike_adj_down_rounded = round(strike_adj_down_calc / round_to) * round_to
-        strike_adj_atm_rounded = round(strike_adj_atm_calc / round_to) * round_to
+        # Tabla de strikes editable
+        st.markdown("### 🎯 Tabla de Strikes para Calendars")
         
         st.info(f"""
-        💡 **Cálculos de Ajuste (1σ):**
-        - Precio Actual: **${current_price_adj:.2f}**
-        - Expected Move: **±${expected_move_1std_adj:.2f}**
-        - Strike UP: **${strike_adj_up_calc:.2f}** → **${strike_adj_up_rounded:.0f}**
-        - Strike ATM: **${strike_adj_atm_calc:.2f}** → **${strike_adj_atm_rounded:.0f}**
-        - Strike DOWN: **${strike_adj_down_calc:.2f}** → **${strike_adj_down_rounded:.0f}**
-        - Incremento: **{strike_increment:.0f}**
+        💡 **Rangos de Referencia (1σ):**
+        - Precio Actual: **${current_price:.2f}**
+        - Expected Move: **±${expected_move_1std:.2f}**
+        - Rango Superior: **${upper_range_1std:.2f}**
+        - Rango Inferior: **${lower_range_1std:.2f}**
+        - Strike UP Sugerido: **${strike_up_default:.0f}**
+        - Strike DOWN Sugerido: **${strike_down_default:.0f}**
+        - Incremento de Strike: **{strike_increment:.0f}**
+        """)
+        
+        # Crear DataFrame editable con 3 strikes sugeridos
+        if st.session_state.calendar_strikes_df is None or st.button("🔄 Resetear Strikes", key='reset_strikes'):
+            st.session_state.calendar_strikes_df = pd.DataFrame({
+                'Nombre': ['DOWN', 'ATM', 'UP'],
+                'Strike': [strike_down_default, atm_rounded, strike_up_default],
+                'Tipo': ['PUT', 'PUT', 'CALL'],
+                'Enviar': [True, True, True]
+            })
+        
+        # Editor de datos interactivo
+        edited_df = st.data_editor(
+            st.session_state.calendar_strikes_df,
+            column_config={
+                'Nombre': st.column_config.TextColumn('Nombre', width='small', help='Etiqueta identificativa'),
+                'Strike': st.column_config.NumberColumn('Strike', min_value=0.0, step=strike_increment, format="%.0f"),
+                'Tipo': st.column_config.SelectboxColumn('Tipo', options=['CALL', 'PUT']),
+                'Enviar': st.column_config.CheckboxColumn('Enviar', default=True, help='Marcar para enviar este calendar')
+            },
+            hide_index=True,
+            use_container_width=True,
+            num_rows='dynamic',
+            key='strikes_editor'
+        )
+        
+        # Guardar cambios
+        st.session_state.calendar_strikes_df = edited_df
+        
+        st.markdown("""
+        **💡 Instrucciones:**
+        - ✅ Marca/desmarca "Enviar" para seleccionar qué calendars enviar a IBKR
+        - ✏️ Puedes editar strikes, tipos de opción y nombres directamente en la tabla
+        - ➕ Añade nuevas filas o ➖ elimina las existentes según necesites
+        - 📤 Cada fila seleccionada se enviará como un par independiente (SELL front + BUY back)
         """)
         
         st.markdown("---")
         
-        col1, col2 = st.columns(2)
+        # Filtrar strikes seleccionados para enviar
+        strikes_to_send = edited_df[edited_df['Enviar'] == True]
         
-        with col1:
-            st.markdown("#### 🎯 Configuración del Strike de Ajuste")
+        if len(strikes_to_send) > 0:
+            st.success(f"📋 **Calendars seleccionados para enviar: {len(strikes_to_send)}**")
             
-            default_atm = st.session_state.strike_atm_p6 if st.session_state.strike_atm_p6 else strike_adj_atm_rounded
-            default_up = st.session_state.strike_up_p6 if st.session_state.strike_up_p6 else strike_adj_up_rounded
-            default_down = st.session_state.strike_down_p6 if st.session_state.strike_down_p6 else strike_adj_down_rounded
+            # Mostrar resumen de lo que se enviará
+            st.markdown("**Vista Previa de Calendars a Enviar:**")
+            preview_data = []
+            for idx, row in strikes_to_send.iterrows():
+                preview_data.append({
+                    'Nombre': row['Nombre'],
+                    'Strike': f"${row['Strike']:.0f}",
+                    'Tipo': row['Tipo'],
+                    'FRONT': dte_front_input.strftime('%Y-%m-%d'),
+                    'BACK': dte_back_input.strftime('%Y-%m-%d'),
+                    'Cantidad': quantity_global,
+                    'Precio Límite': f"${limit_price_global:.2f}"
+                })
             
-            st.markdown("**Strikes de Referencia (Punto 6)**")
-            
-            strike_ref_atm = st.number_input(
-                "Strike ATM ref", 
-                min_value=0.0, 
-                value=float(default_atm), 
-                step=strike_increment, 
-                key=f'strike_ref_atm_adj_{selected_ticker}'
-            )
-            strike_ref_up = st.number_input(
-                "Strike UP ref", 
-                min_value=0.0, 
-                value=float(default_up), 
-                step=strike_increment, 
-                key=f'strike_ref_up_adj_{selected_ticker}'
-            )
-            strike_ref_down = st.number_input(
-                "Strike DOWN ref", 
-                min_value=0.0, 
-                value=float(default_down), 
-                step=strike_increment, 
-                key=f'strike_ref_down_adj_{selected_ticker}'
-            )
+            df_preview = pd.DataFrame(preview_data)
+            st.dataframe(df_preview, hide_index=True, use_container_width=True)
             
             st.markdown("---")
-            st.markdown("**Selecciona el Strike de Referencia**")
             
-            strike_comparison_options = {
-                f"ATM (${strike_ref_atm:.0f})": strike_ref_atm,
-                f"UP (${strike_ref_up:.0f})": strike_ref_up,
-                f"DOWN (${strike_ref_down:.0f})": strike_ref_down
-            }
+            st.warning("⚠️ **IMPORTANTE:** Asegúrate de que TWS/Gateway esté ejecutándose y la configuración de IBKR sea correcta antes de enviar.")
             
-            selected_strike_ref_label = st.selectbox(
-                "Strike de referencia", 
-                list(strike_comparison_options.keys()), 
-                key=f'strike_ref_comparison_adj_{selected_ticker}'
-            )
-            strike_ref_selected = strike_comparison_options[selected_strike_ref_label]
-            
-            if current_price_adj < strike_ref_selected:
-                suggested_option_type = "PUT"
-                suggested_strike_calc = current_price_adj - expected_move_1std_adj
-                direction = "debajo"
-            else:
-                suggested_option_type = "CALL"
-                suggested_strike_calc = current_price_adj + expected_move_1std_adj
-                direction = "arriba"
-            
-            suggested_strike_rounded = round(suggested_strike_calc / round_to) * round_to
-            
-            st.info(f"""
-            📊 **Análisis:**
-            - Precio: **${current_price_adj:.2f}**
-            - Strike Ref: **${strike_ref_selected:.0f}**
-            - Posición: **{direction}**
-            - Tipo Sugerido: **{suggested_option_type}**
-            - Strike Sugerido: **${suggested_strike_rounded:.0f}**
-            """)
-            
-            st.markdown("---")
-            st.markdown("**Strike Final del Ajuste**")
-            strike_adjustment = st.number_input(
-                "Strike para el Calendar", 
-                min_value=0.0, 
-                value=float(suggested_strike_rounded), 
-                step=strike_increment, 
-                key=f'strike_adjustment_{selected_ticker}'
-            )
-            option_type_adjustment = st.selectbox(
-                "Tipo de Opción", 
-                ["PUT", "CALL"], 
-                index=0 if suggested_option_type == "PUT" else 1, 
-                key=f'option_type_adjustment_{selected_ticker}'
-            )
-        
-        with col2:
-            st.markdown("#### 📅 Fechas de Expiración")
-            
-            # Valores por defecto seguros para las fechas
-            if st.session_state.dte_front_p6 and isinstance(st.session_state.dte_front_p6, date):
-                default_front = st.session_state.dte_front_p6
-            else:
-                default_front = expiration_date
-            
-            if st.session_state.dte_back_p6 and isinstance(st.session_state.dte_back_p6, date):
-                default_back = st.session_state.dte_back_p6
-            else:
-                default_back = default_front + timedelta(days=7)
-            
-            dte_front_adj = st.date_input(
-                "DTE FRONT (Venta)", 
-                value=default_front, 
-                min_value=date.today() + timedelta(days=1),
-                max_value=date.today() + timedelta(days=365),
-                key=f'dte_front_adj_{selected_ticker}'
-            )
-            
-            # Asegurar que default_back sea siempre mayor que dte_front_adj
-            min_back_date = dte_front_adj + timedelta(days=1)
-            if default_back <= dte_front_adj:
-                default_back = min_back_date
-            
-            dte_back_adj = st.date_input(
-                "DTE BACK (Compra)", 
-                value=default_back, 
-                min_value=min_back_date,
-                max_value=date.today() + timedelta(days=365),
-                key=f'dte_back_adj_{selected_ticker}'
-            )
-            
-            days_diff_adj = (dte_back_adj - dte_front_adj).days
-            st.success(f"📅 Diferencia: **{days_diff_adj} días**")
-            
-            st.markdown("---")
-            st.markdown("#### 💰 Configuración de Orden")
-            
-            quantity_adj = st.number_input(
-                "Cantidad de Contratos", 
-                min_value=1, 
-                value=1, 
-                step=1, 
-                key=f'quantity_adj_{selected_ticker}'
-            )
-            limit_price_adj = st.number_input(
-                "Precio Límite", 
-                min_value=0.0, 
-                value=1.0, 
-                step=0.05, 
-                format="%.2f", 
-                key=f'limit_price_adj_{selected_ticker}'
-            )
-            
-            st.info(f"💡 Por contrato: **${limit_price_adj / quantity_adj if quantity_adj > 0 else 0:.2f}**")
-            
-            st.markdown("---")
-            st.markdown("#### 📌 Configuración IBKR")
-            
-            ibkr_host_adj = st.text_input("Host", value="127.0.0.1", key=f'ibkr_host_adj_{selected_ticker}')
-            ibkr_port_adj = st.number_input("Puerto", min_value=1, max_value=65535, value=5000, step=1, key=f'ibkr_port_adj_{selected_ticker}')
-            ibkr_client_id_adj = st.number_input("Client ID", min_value=1, value=1, step=1, key=f'ibkr_client_id_adj_{selected_ticker}')
-        
-        st.markdown("---")
-        
-        if st.button("📝 Generar Vista Previa de Ajuste", type="primary", use_container_width=True, key=f'btn_preview_adj_{selected_ticker}'):
-            
-            strikes_config_adj = [{'strike': strike_adjustment, 'type': option_type_adjustment, 'label': 'Adjustment'}]
-            
-            df_strategy_adj = create_strategy_orders(
-                strikes_config_adj,
-                dte_front_adj.strftime("%Y-%m-%d"),
-                dte_back_adj.strftime("%Y-%m-%d"),
-                quantity_adj,
-                selected_ticker
-            )
-            
-            st.session_state.df_strategy_adj = df_strategy_adj
-            st.session_state.order_preview_adj = True
-            
-            st.success("✅ Vista previa de ajuste generada!")
-        
-        if st.session_state.order_preview_adj and st.session_state.df_strategy_adj is not None:
-            
-            df_strategy_adj = st.session_state.df_strategy_adj
-            
-            st.markdown("---")
-            st.markdown("### 📋 Vista Previa - Ajuste Calendar")
-            st.dataframe(df_strategy_adj, hide_index=True, use_container_width=True)
-            
-            st.markdown("---")
-            st.markdown("### 📊 Resumen del Ajuste")
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.markdown("**🎯 Configuración**")
-                st.write(f"Strike: ${strike_adjustment:.0f}")
-                st.write(f"Tipo: {option_type_adjustment}")
-                st.write(f"Cantidad: {quantity_adj}")
-            
-            with col2:
-                st.markdown("**📅 Fechas**")
-                st.write(f"SELL: {dte_front_adj.strftime('%Y-%m-%d')}")
-                st.write(f"BUY: {dte_back_adj.strftime('%Y-%m-%d')}")
-                st.write(f"Spread: {days_diff_adj} días")
-            
-            with col3:
-                st.markdown("**⚙️ Datos**")
-                st.write(f"Ticker: {selected_ticker}")
-                st.write(f"Precio: ${limit_price_adj:.2f}")
-                st.write(f"Órdenes: {len(df_strategy_adj)}")
-            
-            st.markdown("---")
-            st.warning("⚠️ Asegúrate de que TWS/Gateway esté ejecutándose")
-            
-            if st.button("🚀 ENVIAR AJUSTE A IBKR", type="primary", use_container_width=True, key=f'btn_send_adj_{selected_ticker}'):
+            # Botón para enviar calendars
+            if st.button("🚀 ENVIAR CALENDARS SELECCIONADOS A IBKR", type="primary", use_container_width=True, key='send_calendars'):
+                
                 try:
                     from utils.utils_ibkr import send_strategy_order_ibkr
                 except ImportError:
                     st.error("❌ Error: No se pudo importar send_strategy_order_ibkr")
                     st.stop()
                 
-                if limit_price_adj <= 0:
+                if limit_price_global <= 0:
                     st.error("❌ El precio límite debe ser mayor a 0")
                     st.stop()
                 
-                with st.spinner("📡 Enviando ajuste..."):
-                    result = send_strategy_order_ibkr(
-                        df_strategy=df_strategy_adj,
-                        limit_price=limit_price_adj,
-                        host=ibkr_host_adj,
-                        port=int(ibkr_port_adj),
-                        client_id=int(ibkr_client_id_adj),
-                        quantity=quantity_adj,
-                        tif='DAY',
-                        action='BUY',
-                        timeout=10
-                    )
+                # Enviar cada calendar como par independiente
+                results = []
                 
-                if result['success']:
-                    st.success(f"✅ {result['message']}")
-                    if result.get('order_id'):
-                        st.info(f"📋 Order ID: {result['order_id']}")
+                for idx, row in strikes_to_send.iterrows():
+                    with st.spinner(f"📡 Enviando calendar {row['Nombre']} (Strike: ${row['Strike']:.0f} {row['Tipo']})..."):
+                        
+                        # Crear orden para este calendar
+                        df_order = create_calendar_pair_order(
+                            strike=row['Strike'],
+                            option_type=row['Tipo'],
+                            front_date=dte_front_input.strftime("%Y-%m-%d"),
+                            back_date=dte_back_input.strftime("%Y-%m-%d"),
+                            quantity=quantity_global,
+                            ticker=selected_ticker
+                        )
+                        
+                        # Enviar a IBKR
+                        result = send_strategy_order_ibkr(
+                            df_strategy=df_order,
+                            limit_price=limit_price_global,
+                            host=ibkr_host,
+                            port=int(ibkr_port),
+                            client_id=int(ibkr_client_id),
+                            quantity=quantity_global,
+                            tif='DAY',
+                            action='BUY',
+                            timeout=10
+                        )
+                        
+                        # Guardar resultado
+                        results.append({
+                            'nombre': row['Nombre'],
+                            'strike': row['Strike'],
+                            'tipo': row['Tipo'],
+                            'success': result['success'],
+                            'message': result['message'],
+                            'order_id': result.get('order_id'),
+                            'contracts': result.get('contracts')
+                        })
+                
+                # Mostrar resultados
+                st.markdown("---")
+                st.markdown("### 📊 Resumen de Envíos a IBKR")
+                
+                success_count = sum(1 for r in results if r['success'])
+                error_count = len(results) - success_count
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Enviados", len(results))
+                with col2:
+                    st.metric("Exitosos", success_count, delta=None if success_count == 0 else success_count)
+                with col3:
+                    st.metric("Fallidos", error_count, delta=None if error_count == 0 else -error_count)
+                
+                st.markdown("---")
+                
+                # Mostrar detalles de cada envío
+                for r in results:
+                    if r['success']:
+                        st.success(f"""
+                        ✅ **{r['nombre']}** (${r['strike']:.0f} {r['tipo']})
+                        - {r['message']}
+                        {f"- Order ID: {r['order_id']}" if r['order_id'] else ""}
+                        """)
+                        
+                        if r.get('contracts'):
+                            with st.expander(f"Ver contratos calificados - {r['nombre']}"):
+                                for i, c in enumerate(r['contracts'], 1):
+                                    st.write(f"{i}. {c.symbol} {c.lastTradeDateOrContractMonth} {c.strike} {c.right}")
+                    else:
+                        st.error(f"""
+                        ❌ **{r['nombre']}** (${r['strike']:.0f} {r['tipo']})
+                        - {r['message']}
+                        """)
+                
+                st.markdown("---")
+                
+                if success_count == len(results):
+                    st.balloons()
+                    st.success(f"🎉 Todos los calendars ({len(results)}) se enviaron exitosamente a IBKR!")
+                elif success_count > 0:
+                    st.warning(f"⚠️ Se enviaron {success_count} de {len(results)} calendars. Revisa los errores arriba.")
                 else:
-                    st.error(f"❌ {result['message']}")
-            
-            st.markdown("---")
-            st.info("""
-            **Sobre el Ajuste:**
-            - Propósito: Añadir un calendar spread individual
-            - Tipo: LIMIT | Acción: BUY | TIF: DAY
-            
-            **Cuándo Ajustar:**
-            - El precio se ha movido significativamente
-            - Necesitas rebalancear tu delta
-            - Quieres añadir exposición en un nuevo strike
-            """)
+                    st.error("❌ No se pudo enviar ningún calendar. Verifica la conexión con IBKR.")
+        
+        else:
+            st.warning("⚠️ No hay calendars seleccionados para enviar. Marca la columna 'Enviar' en la tabla.")
 
 
 # ==============================================================================
