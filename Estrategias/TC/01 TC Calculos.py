@@ -739,6 +739,20 @@ def main_tp_calculos():
         # Crear 3 columnas para los 3 strikes
         col_down, col_atm, col_up = st.columns(3)
         
+        # Calcular valores sugeridos si no existen
+        if st.session_state.strike_down is None:
+            expected_move_1std = details['straddle_price'] * 1.25
+            lower_range_1std = current_price - expected_move_1std
+            st.session_state.strike_down = round(lower_range_1std / round_to) * round_to
+        
+        if st.session_state.strike_atm is None:
+            st.session_state.strike_atm = round(details['atm_strike'] / round_to) * round_to
+        
+        if st.session_state.strike_up is None:
+            expected_move_1std = details['straddle_price'] * 1.25
+            upper_range_1std = current_price + expected_move_1std
+            st.session_state.strike_up = round(upper_range_1std / round_to) * round_to
+        
         # STRIKE DOWN
         with col_down:
             st.markdown("#### 📉 STRIKE DOWN")
