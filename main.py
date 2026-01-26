@@ -42,6 +42,11 @@ tc_calculos = st.Page(
     title="Cálculos", 
     icon="🦉"
 )
+tc_ajustes = st.Page(
+    "Estrategias/TC/02 TC Ajustes.py", 
+    title="Ajustes", 
+    icon="🦉"
+)
 
 # --- Sección HERRAMIENTAS ---
 vix_term = st.Page(
@@ -73,7 +78,7 @@ broker_test = st.Page(
 # 3. CREACIÓN DE LA NAVEGACIÓN JERÁRQUICA
 pg = st.navigation({
     "Time Edge": [te_signals, te_calculos],
-    "Triple Calendar": [tc_signals, tc_calculos],
+    "Triple Calendar": [tc_signals, tc_calculos,tc_ajustes],
     "HERRAMIENTAS": [
         vix_term, 
         trend_Zscore,
