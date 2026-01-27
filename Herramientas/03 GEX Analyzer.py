@@ -60,74 +60,6 @@ except ImportError:
         login_form()
         return False
 
-# CSS personalizado para tema oscuro
-st.markdown("""
-<style>
-    /* Tema oscuro personalizado */
-    .stApp {
-        background-color: #0E1117;
-    }
-    
-    /* Headers con gradiente */
-    h1, h2, h3 {
-        background: linear-gradient(90deg, #00D9FF, #FE53BB);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-weight: bold;
-    }
-    
-    /* Métricas personalizadas */
-    [data-testid="metric-container"] {
-        background: linear-gradient(135deg, rgba(0,217,255,0.1), rgba(254,83,187,0.1));
-        padding: 15px;
-        border-radius: 10px;
-        border: 1px solid rgba(255,255,255,0.1);
-        backdrop-filter: blur(10px);
-    }
-    
-    /* Info boxes */
-    .info-box {
-        background: linear-gradient(135deg, rgba(0,217,255,0.05), rgba(254,83,187,0.05));
-        padding: 20px;
-        border-radius: 15px;
-        border: 1px solid rgba(255,255,255,0.1);
-        margin: 20px 0;
-        backdrop-filter: blur(5px);
-    }
-    
-    /* Botones personalizados */
-    .stButton > button {
-        background: linear-gradient(90deg, #00D9FF, #FE53BB);
-        color: white;
-        font-weight: bold;
-        border: none;
-        padding: 10px 20px;
-        border-radius: 25px;
-        transition: all 0.3s ease;
-    }
-    
-    .stButton > button:hover {
-        transform: scale(1.05);
-        box-shadow: 0 5px 20px rgba(254,83,187,0.4);
-    }
-    
-    /* Loading animation */
-    .loading {
-        display: inline-block;
-        width: 20px;
-        height: 20px;
-        border: 3px solid rgba(0,217,255,0.3);
-        border-radius: 50%;
-        border-top-color: #00D9FF;
-        animation: spin 1s ease-in-out infinite;
-    }
-    
-    @keyframes spin {
-        to { transform: rotate(360deg); }
-    }
-</style>
-""", unsafe_allow_html=True)
-
 # Constantes
 CONTRACT_SIZE = 100
 CACHE_DIR = "data"
@@ -1008,16 +940,9 @@ def main():
     )
     
     # Header
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.markdown("""
-        <div style='text-align: center;'>
-            <h1 style='font-size: 48px;'>🎯 GEX ANALYZER + MAX PAIN</h1>
-            <p style='font-size: 18px; color: #00D9FF;'>Análisis Profesional de Exposición Gamma y Max Pain</p>
-            <p style='font-size: 14px; color: #FE53BB;'>Desarrollado por @Gsnchez | bquantfinance.com</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
+    st.title("🎯 GEX ANALYZER + MAX PAIN")
+    st.markdown("### Análisis Profesional de Exposición Gamma y Max Pain")
+    st.markdown("*Desarrollado por @Gsnchez | bquantfinance.com*")
     st.markdown("---")
     
     # Sidebar
@@ -1480,11 +1405,8 @@ def display_results(ticker, spot_price, option_data, strike_range, max_expiratio
 
 def show_educational_content():
     """Contenido educativo"""
-    st.markdown("""
-    <div class='info-box'>
-    <h2>📚 GEX + Max Pain + Gamma Profile: La Trinidad del Trading</h2>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown("## 📚 GEX + Max Pain + Gamma Profile: La Trinidad del Trading")
+    st.markdown("---")
     
     col1, col2, col3 = st.columns(3)
     
@@ -1558,15 +1480,10 @@ def show_educational_content():
     """)
     
     # Footer
-    st.markdown("""
-    <div style='margin-top: 50px; padding: 20px; background: linear-gradient(135deg, rgba(0,217,255,0.1), rgba(254,83,187,0.1)); border-radius: 15px;'>
-        <h4 style='text-align: center;'>🚀 Desarrollado para la comunidad de trading cuantitativo</h4>
-        <p style='text-align: center;'>
-            <a href='https://bquantfinance.com' style='color: #00D9FF;'>bquantfinance.com</a> | 
-            <a href='https://twitter.com/Gsnchez' style='color: #FE53BB;'>@Gsnchez</a>
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown("---")
+    st.markdown("### 🚀 Desarrollado para la comunidad de trading cuantitativo")
+    st.markdown("**[bquantfinance.com](https://bquantfinance.com)** | **[@Gsnchez](https://twitter.com/Gsnchez)**")
+
 
 if __name__ == "__main__":
     if check_password():
