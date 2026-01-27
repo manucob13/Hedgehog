@@ -355,11 +355,11 @@ def run_screener(tickers, params, progress_bar, status_text):
     """Ejecuta el screener en paralelo"""
     
     # Descargar benchmark (SPY)
-    status_text.text("📊 Descargando datos del benchmark (^GSPC)...")
-    benchmark_data_full = download_weekly_data("^GSPC", period="5y")
+    status_text.text("📊 Descargando datos del benchmark (SPY)...")
+    benchmark_data_full = download_weekly_data("SPY", period="5y")
     
     if benchmark_data_full is None:
-        st.error("❌ Error descargando datos del benchmark ^GSPC")
+        st.error("❌ Error descargando datos del benchmark SPY")
         return pd.DataFrame()
     
     benchmark_data = benchmark_data_full['Close']
@@ -419,7 +419,7 @@ def main():
     )
     
     st.title("📈 Trend Stocks Screener")
-    st.markdown("**Detecta acciones con tendencias fuertes y sostenibles (Timeframe Semanal)**")
+    st.markdown("**Detecta acciones con tendencias fuertes y sostenibles (Timeframe Semanal vs SPY)**")
     st.markdown("---")
     
     # ============= PASO 1: UNIVERSO DE TICKERS =============
