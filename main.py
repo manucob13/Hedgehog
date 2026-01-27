@@ -69,8 +69,14 @@ screener_risk = st.Page(
     title="Screener Ext. Risk", 
     icon="🚨"
 )
+screener_trend = st.Page(
+    "Herramientas/05 Screener Trend.py", 
+    title="Screener Trend", 
+    icon="🚀"
+)
+
 broker_test = st.Page(
-    "Herramientas/05 Broker Test.py", 
+    "Herramientas/06 Broker Test.py", 
     title="Broker Test", 
     icon="🔌"
 )
@@ -84,6 +90,7 @@ pg = st.navigation({
         trend_Zscore,
         gex_analyzer,
         screener_risk,
+        screener_trend,
         broker_test
     ]
 })
