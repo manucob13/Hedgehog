@@ -261,27 +261,37 @@ def calculate_sharpe_ratio(prices, period=50):
     except:
         return None
 
-def calculate_macd_v(prices):
-    """Calcula MACD-V normalizado por ATR"""
+def calculate_macd_v(data):
+    """Calcula MACD-V normalizado por ATR - VERSIÓN CORREGIDA"""
     try:
-        if len(prices) < 26:
+        if len(data) < 26:
             return None
         
-        ema_12 = prices.ewm(span=12, adjust=False).mean()
-        ema_26 = prices.ewm(span=26, adjust=False).mean()
+        close = data['Close']
+        high = data['High']
+        low = data['Low']
         
-        # ATR aproximado
-        high = prices
-        low = prices
-        tr = (high - low).rolling(window=14).mean()
+        # Calcular True Range correctamente
+        tr = pd.concat([
+            high - low,
+            (high - close.shift()).abs(),
+            (low - close.shift()).abs()
+        ], axis=1).max(axis=1)
+        
+        # ATR con período 26
         atr = tr.rolling(window=26).mean()
         
+        # EMAs
+        ema_12 = close.ewm(span=12, adjust=False).mean()
+        ema_26 = close.ewm(span=26, adjust=False).mean()
+        
+        # MACD-V normalizado por ATR
         if atr.iloc[-1] == 0 or pd.isna(atr.iloc[-1]):
             return None
         
-        macd_line = ((ema_12.iloc[-1] - ema_26.iloc[-1]) / atr.iloc[-1]) * 100
+        macd_v = ((ema_12.iloc[-1] - ema_26.iloc[-1]) / atr.iloc[-1]) * 100
         
-        return macd_line
+        return macd_v
     except:
         return None
 
@@ -362,8 +372,8 @@ def analyze_ticker(ticker, params, benchmark_data, sector_etfs_data):
             if sharpe is None or sharpe < 1.5:
                 return None
         
-        # MACD-V
-        macd_v = calculate_macd_v(close)
+        # MACD-V - AHORA USA LA FUNCIÓN CORREGIDA
+        macd_v = calculate_macd_v(data)
         if params['apply_macd']:
             if macd_v is None or macd_v < 50:
                 return None
