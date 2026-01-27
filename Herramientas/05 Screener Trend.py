@@ -35,21 +35,62 @@ SECTOR_ETFS = {
 
 # ============= FUNCIONES DE CÁLCULO =============
 
-def download_weekly_data(ticker, period="5y"):
-    """Descarga datos semanales para un ticker"""
+def download_weekly_data(ticker, period="5y", use_lock=True):
+    """Descarga datos semanales para un ticker - Versión robusta basada en fetch_data_with_ticker"""
     try:
-        with _yfinance_lock:
-            data = yf.download(ticker, period=period, interval="1wk", progress=False, show_errors=False)
+        # Calcular fechas basadas en el período
+        end = datetime.now() + timedelta(days=1)
         
-        if data.empty or len(data) < 52:
+        period_days = {
+            '1y': 365,
+            '2y': 730,
+            '3y': 1095,
+            '5y': 1825,
+            '10y': 3650
+        }
+        
+        days = period_days.get(period, 1825)
+        start = end - timedelta(days=days)
+        
+        # Descargar datos
+        if use_lock:
+            with _yfinance_lock:
+                data = yf.download(
+                    ticker, 
+                    start=start, 
+                    end=end, 
+                    interval="1wk", 
+                    auto_adjust=False, 
+                    multi_level_index=False, 
+                    progress=False
+                )
+        else:
+            data = yf.download(
+                ticker, 
+                start=start, 
+                end=end, 
+                interval="1wk", 
+                auto_adjust=False, 
+                multi_level_index=False, 
+                progress=False
+            )
+        
+        # Validar datos
+        if data is None or data.empty:
+            print(f"Warning: No data returned for {ticker}")
+            return None
+            
+        if len(data) < 52:
+            print(f"Warning: Insufficient data for {ticker} - only {len(data)} weeks")
             return None
         
-        # Asegurar que tenemos las columnas necesarias
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
+        # Procesar índice
+        data.index = pd.to_datetime(data.index)
         
         return data
+        
     except Exception as e:
+        print(f"Error downloading {ticker}: {str(e)}")
         return None
 
 def get_sector_info(ticker):
@@ -356,10 +397,10 @@ def run_screener(tickers, params, progress_bar, status_text):
     
     # Descargar benchmark (SPY)
     status_text.text("📊 Descargando datos del benchmark (SPY)...")
-    benchmark_data_full = download_weekly_data("SPY", period="5y")
+    benchmark_data_full = download_weekly_data("SPY", period="5y", use_lock=False)
     
     if benchmark_data_full is None:
-        st.error("❌ Error descargando datos del benchmark SPY")
+        st.error("❌ Error descargando datos del benchmark SPY. Verifica tu conexión a internet.")
         return pd.DataFrame()
     
     benchmark_data = benchmark_data_full['Close']
@@ -370,7 +411,7 @@ def run_screener(tickers, params, progress_bar, status_text):
     unique_sector_etfs = list(set(SECTOR_ETFS.values()))
     
     for etf in unique_sector_etfs:
-        data = download_weekly_data(etf, period="5y")
+        data = download_weekly_data(etf, period="5y", use_lock=False)
         if data is not None:
             sector_etfs_data[etf] = data['Close']
     
