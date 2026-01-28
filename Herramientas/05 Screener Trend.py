@@ -744,17 +744,9 @@ def main():
         st.info("🚧 Los resultados aparecerán aquí una vez completado el escaneo")
 
 if __name__ == "__main__":
+
     if check_password():
         main()
     else:
-        st.markdown(
-            """
-            <div style='text-align: center; padding: 60px 20px;'>
-                <h1 style='color: #FF6B6B; font-size: 48px;'>🔒 Acceso Restringido</h1>
-                <p style='color: #B0B0B0; font-size: 20px; margin-top: 20px;'>
-                    Introduce tus credenciales en el menú lateral.
-                </p>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+        st.title("🔒 Acceso Restringido")
+        st.info("Por favor, introduce tus credenciales en el menú lateral (sidebar) para acceder.")
