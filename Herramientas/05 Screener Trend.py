@@ -98,60 +98,34 @@ def download_weekly_data(ticker, period="5y", use_lock=True):
         print(f"Error downloading {ticker}: {str(e)}")
         return None
 
-def get_sector_info(ticker):
-    """Obtiene información del sector del ticker con cache"""
-    global _sector_cache
-    
-    # Revisar cache primero
-    if ticker in _sector_cache:
-        return _sector_cache[ticker]
-    
+def get_sector_info_simple(ticker):
+    """Obtiene información del sector - versión simple y directa"""
     try:
-        # Crear objeto ticker
         stock = yf.Ticker(ticker)
         
-        # Intentar obtener info
-        try:
-            info = stock.info
-        except:
-            info = {}
+        # Obtener info del ticker
+        info = stock.info
         
-        # Si info está vacío o casi vacío, intentar de nuevo
-        if not info or len(info) < 5:
-            try:
-                # Segundo intento con un pequeño delay
-                time.sleep(0.1)
-                info = stock.info
-            except:
-                info = {}
+        # Verificar que info es un diccionario válido
+        if not isinstance(info, dict) or not info:
+            return None, None
         
-        sector = None
+        # Buscar el sector en el diccionario
+        sector = info.get('sector', None)
         
-        # Buscar sector en diferentes campos posibles
-        if info:
-            # Campo 'sector' es el más común
-            sector = info.get('sector')
-            
-            # Si no hay sector, intentar otros campos
-            if not sector:
-                sector = info.get('sectorDisp')
-            if not sector:
-                sector = info.get('sectorKey')
+        # Si no encuentra sector, buscar en campos alternativos
+        if not sector:
+            sector = info.get('sectorDisp', None)
         
-        # Buscar ETF correspondiente si hay sector
-        sector_etf = None
-        if sector:
-            sector_etf = SECTOR_ETFS.get(sector)
+        # Si tenemos un sector válido, buscar su ETF
+        if sector and isinstance(sector, str) and len(sector) > 0:
+            sector_etf = SECTOR_ETFS.get(sector, None)
+            return sector, sector_etf
         
-        # Guardar en cache
-        result = (sector, sector_etf)
-        _sector_cache[ticker] = result
-        
-        return result
+        return None, None
         
     except Exception as e:
-        # En caso de error, guardar None en cache y devolver
-        _sector_cache[ticker] = (None, None)
+        # Si hay cualquier error, simplemente devolver None
         return None, None
 
 def calculate_rsc_mansfield(prices, benchmark_prices, period=52):
@@ -399,7 +373,7 @@ def analyze_ticker(ticker, params, benchmark_data, sector_etfs_data):
             dist_to_wma = abs(current_price - wma30) / current_price * 100
         
         # ========== OBTENER SECTOR (después de filtros básicos) ==========
-        sector, sector_etf = get_sector_info(ticker)
+        sector, sector_etf = get_sector_info_simple(ticker)
         
         # ========== FILTRO 5: RSC Sectorial > 0 (OBLIGATORIO si hay sector) ==========
         rsc_sector = None
