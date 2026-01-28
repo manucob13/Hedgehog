@@ -98,13 +98,32 @@ def download_weekly_data(ticker, period="5y", use_lock=True):
         print(f"Error downloading {ticker}: {str(e)}")
         return None
 
-def get_sector_info_simple(ticker):
+def get_sector_info_simple(ticker, debug=False):
     """Obtiene información del sector - versión simple y directa"""
     try:
         stock = yf.Ticker(ticker)
         
         # Obtener info del ticker
         info = stock.info
+        
+        # DEBUG: Mostrar en Streamlit para ver qué está devolviendo
+        if debug:
+            st.write(f"**DEBUG {ticker}**")
+            st.write(f"- Info type: {type(info)}")
+            st.write(f"- Info is dict: {isinstance(info, dict)}")
+            if isinstance(info, dict):
+                st.write(f"- Info keys count: {len(info)}")
+                st.write(f"- Has 'sector': {'sector' in info}")
+                if 'sector' in info:
+                    st.write(f"- Sector value: `{info.get('sector')}`")
+                st.write(f"- Has 'sectorDisp': {'sectorDisp' in info}")
+                # Mostrar algunos keys relevantes
+                relevant_keys = [k for k in info.keys() if 'sector' in k.lower() or 'industry' in k.lower()]
+                st.write(f"- Relevant keys: {relevant_keys}")
+                if relevant_keys:
+                    for key in relevant_keys:
+                        st.write(f"  - {key}: `{info.get(key)}`")
+            st.write("---")
         
         # Verificar que info es un diccionario válido
         if not isinstance(info, dict) or not info:
@@ -125,6 +144,8 @@ def get_sector_info_simple(ticker):
         return None, None
         
     except Exception as e:
+        if debug:
+            st.error(f"Error getting sector for {ticker}: {str(e)}")
         # Si hay cualquier error, simplemente devolver None
         return None, None
 
@@ -510,6 +531,16 @@ def main():
     
     st.title("📈 Trend Stocks Screener")
     st.markdown("**Detecta acciones con tendencias fuertes y sostenibles (Timeframe Semanal vs SPY)**")
+    
+    # ============= SECCIÓN DEBUG (TEMPORAL) =============
+    with st.expander("🔧 DEBUG: Test Sector Info", expanded=False):
+        st.markdown("**Prueba la función de obtención de sectores**")
+        test_ticker = st.text_input("Ticker a probar:", value="AAPL")
+        if st.button("🔍 Probar Sector", use_container_width=True):
+            st.write(f"Probando ticker: **{test_ticker}**")
+            sector, sector_etf = get_sector_info_simple(test_ticker, debug=True)
+            st.success(f"Resultado: Sector=`{sector}`, ETF=`{sector_etf}`")
+    
     st.markdown("---")
     
     # ============= PASO 1: UNIVERSO DE TICKERS =============
