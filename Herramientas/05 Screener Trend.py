@@ -98,56 +98,80 @@ def download_weekly_data(ticker, period="5y", use_lock=True):
         print(f"Error downloading {ticker}: {str(e)}")
         return None
 
+def get_sector_info_safe(ticker, max_retries=3, delay=2):
+    """
+    NUEVA VERSIÓN: Obtiene sector con retry logic y manejo robusto de errores
+    Intenta múltiples veces con delays incrementales
+    """
+    for attempt in range(max_retries):
+        try:
+            # Agregar delay entre intentos (excepto el primero)
+            if attempt > 0:
+                time.sleep(delay * attempt)
+            
+            # Intentar obtener el ticker
+            stock = yf.Ticker(ticker)
+            
+            # Intentar obtener info - con timeout implícito
+            info = stock.info
+            
+            # Verificar que info es válido
+            if not isinstance(info, dict):
+                continue
+            
+            # Si el dict está vacío o solo tiene 'trailingPegRatio', es señal de rate limit
+            if len(info) <= 1:
+                continue
+            
+            # Buscar sector en diferentes campos posibles
+            sector = None
+            for field in ['sector', 'sectorDisp', 'sectorKey']:
+                if field in info and info[field]:
+                    sector = info[field]
+                    break
+            
+            # Si encontramos sector, mapear a ETF
+            if sector and isinstance(sector, str) and len(sector) > 0:
+                sector_etf = SECTOR_ETFS.get(sector, None)
+                # Guardar en cache
+                _sector_cache[ticker] = (sector, sector_etf)
+                return sector, sector_etf
+            
+            # Si no encontramos sector pero info es válido, devolver None
+            # (es un ticker sin sector, no un error)
+            if len(info) > 5:
+                _sector_cache[ticker] = (None, None)
+                return None, None
+                
+        except Exception as e:
+            error_msg = str(e).lower()
+            # Si es rate limit explícito, esperamos más
+            if 'rate' in error_msg or 'limit' in error_msg or 'too many' in error_msg:
+                if attempt < max_retries - 1:
+                    time.sleep(delay * (attempt + 2))
+                    continue
+            # Otros errores
+            continue
+    
+    # Si agotamos los intentos, devolver None
+    return None, None
+
 def get_sector_info_simple(ticker, debug=False):
-    """Obtiene información del sector - versión simple y directa"""
-    try:
-        stock = yf.Ticker(ticker)
-        
-        # Obtener info del ticker
-        info = stock.info
-        
-        # DEBUG: Mostrar en Streamlit para ver qué está devolviendo
-        if debug:
-            st.write(f"**DEBUG {ticker}**")
-            st.write(f"- Info type: {type(info)}")
-            st.write(f"- Info is dict: {isinstance(info, dict)}")
-            if isinstance(info, dict):
-                st.write(f"- Info keys count: {len(info)}")
-                st.write(f"- Has 'sector': {'sector' in info}")
-                if 'sector' in info:
-                    st.write(f"- Sector value: `{info.get('sector')}`")
-                st.write(f"- Has 'sectorDisp': {'sectorDisp' in info}")
-                # Mostrar algunos keys relevantes
-                relevant_keys = [k for k in info.keys() if 'sector' in k.lower() or 'industry' in k.lower()]
-                st.write(f"- Relevant keys: {relevant_keys}")
-                if relevant_keys:
-                    for key in relevant_keys:
-                        st.write(f"  - {key}: `{info.get(key)}`")
-            st.write("---")
-        
-        # Verificar que info es un diccionario válido
-        if not isinstance(info, dict) or not info:
-            return None, None
-        
-        # Buscar el sector en el diccionario
-        sector = info.get('sector', None)
-        
-        # Si no encuentra sector, buscar en campos alternativos
-        if not sector:
-            sector = info.get('sectorDisp', None)
-        
-        # Si tenemos un sector válido, buscar su ETF
-        if sector and isinstance(sector, str) and len(sector) > 0:
-            sector_etf = SECTOR_ETFS.get(sector, None)
-            return sector, sector_etf
-        
-        return None, None
-        
-    except Exception as e:
-        if debug:
-            st.error(f"Error getting sector for {ticker}: {str(e)}")
-        # Si hay cualquier error, simplemente devolver None
-        return None, None
+    """Wrapper para mantener compatibilidad - USA LA VERSIÓN SAFE"""
+    # Verificar si ya está en cache
+    if ticker in _sector_cache:
+        return _sector_cache[ticker]
+    
+    # Obtener con la versión safe
+    sector, sector_etf = get_sector_info_safe(ticker)
+    
+    if debug:
+        st.write(f"**DEBUG {ticker}**")
+        st.write(f"- Sector: `{sector}`")
+        st.write(f"- ETF: `{sector_etf}`")
+        st.write("---")
+    
+    return sector, sector_etf
 
 def calculate_rsc_mansfield(prices, benchmark_prices, period=52):
     """
@@ -394,6 +418,8 @@ def analyze_ticker(ticker, params, benchmark_data, sector_etfs_data):
             dist_to_wma = abs(current_price - wma30) / current_price * 100
         
         # ========== OBTENER SECTOR (después de filtros básicos) ==========
+        # CAMBIO: Agregamos pequeño delay aleatorio para evitar rate limits
+        time.sleep(random.uniform(0.1, 0.3))
         sector, sector_etf = get_sector_info_simple(ticker)
         
         # ========== FILTRO 5: RSC Sectorial > 0 (OBLIGATORIO si hay sector) ==========
@@ -485,13 +511,13 @@ def run_screener(tickers, params, progress_bar, status_text):
         if data is not None:
             sector_etfs_data[etf] = data['Close']
     
-    # Procesar tickers en paralelo
+    # Procesar tickers en paralelo - REDUCIMOS workers para evitar rate limits
     results = []
     total = len(tickers)
     
     status_text.text(f"🔍 Analizando {total} tickers...")
     
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:  # REDUCIDO de 10 a 5
         futures = {
             executor.submit(analyze_ticker, ticker, params, benchmark_data, sector_etfs_data): ticker 
             for ticker in tickers
@@ -538,7 +564,8 @@ def main():
         test_ticker = st.text_input("Ticker a probar:", value="AAPL")
         if st.button("🔍 Probar Sector", use_container_width=True):
             st.write(f"Probando ticker: **{test_ticker}**")
-            sector, sector_etf = get_sector_info_simple(test_ticker, debug=True)
+            with st.spinner("Obteniendo sector..."):
+                sector, sector_etf = get_sector_info_simple(test_ticker, debug=True)
             st.success(f"Resultado: Sector=`{sector}`, ETF=`{sector_etf}`")
     
     st.markdown("---")
