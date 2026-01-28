@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 import random
 import pandas_ta as ta
-import time
+import plotly.graph_objects as go
 from utils.utils import check_password
 from utils.tickers import create_tickers_universe
 
@@ -17,33 +17,11 @@ warnings.filterwarnings('ignore')
 # Lock global para sincronizar descargas de yfinance
 _yfinance_lock = Lock()
 
-# Cache global para sectores
-_sector_cache = {}
-
-# ============= MAPEO DE SECTORES A ETFs =============
-SECTOR_ETFS = {
-    'Technology': 'XLK',
-    'Healthcare': 'XLV',
-    'Financial Services': 'XLF',
-    'Financials': 'XLF',
-    'Consumer Cyclical': 'XLY',
-    'Consumer Defensive': 'XLP',
-    'Industrials': 'XLI',
-    'Energy': 'XLE',
-    'Utilities': 'XLU',
-    'Real Estate': 'XLRE',
-    'Basic Materials': 'XLB',
-    'Materials': 'XLB',
-    'Communication Services': 'XLC',
-    'Consumer Discretionary': 'XLY'
-}
-
 # ============= FUNCIONES DE CÁLCULO =============
 
 def download_weekly_data(ticker, period="5y", use_lock=True):
-    """Descarga datos semanales para un ticker - Versión robusta basada en fetch_data_with_ticker"""
+    """Descarga datos semanales para un ticker"""
     try:
-        # Calcular fechas basadas en el período
         end = datetime.now() + timedelta(days=1)
         
         period_days = {
@@ -57,7 +35,6 @@ def download_weekly_data(ticker, period="5y", use_lock=True):
         days = period_days.get(period, 1825)
         start = end - timedelta(days=days)
         
-        # Descargar datos
         if use_lock:
             with _yfinance_lock:
                 data = yf.download(
@@ -80,98 +57,14 @@ def download_weekly_data(ticker, period="5y", use_lock=True):
                 progress=False
             )
         
-        # Validar datos
-        if data is None or data.empty:
-            print(f"Warning: No data returned for {ticker}")
-            return None
-            
-        if len(data) < 52:
-            print(f"Warning: Insufficient data for {ticker} - only {len(data)} weeks")
+        if data is None or data.empty or len(data) < 52:
             return None
         
-        # Procesar índice
         data.index = pd.to_datetime(data.index)
-        
         return data
         
-    except Exception as e:
-        print(f"Error downloading {ticker}: {str(e)}")
+    except:
         return None
-
-def get_sector_info_safe(ticker, max_retries=3, delay=2):
-    """
-    NUEVA VERSIÓN: Obtiene sector con retry logic y manejo robusto de errores
-    Intenta múltiples veces con delays incrementales
-    """
-    for attempt in range(max_retries):
-        try:
-            # Agregar delay entre intentos (excepto el primero)
-            if attempt > 0:
-                time.sleep(delay * attempt)
-            
-            # Intentar obtener el ticker
-            stock = yf.Ticker(ticker)
-            
-            # Intentar obtener info - con timeout implícito
-            info = stock.info
-            
-            # Verificar que info es válido
-            if not isinstance(info, dict):
-                continue
-            
-            # Si el dict está vacío o solo tiene 'trailingPegRatio', es señal de rate limit
-            if len(info) <= 1:
-                continue
-            
-            # Buscar sector en diferentes campos posibles
-            sector = None
-            for field in ['sector', 'sectorDisp', 'sectorKey']:
-                if field in info and info[field]:
-                    sector = info[field]
-                    break
-            
-            # Si encontramos sector, mapear a ETF
-            if sector and isinstance(sector, str) and len(sector) > 0:
-                sector_etf = SECTOR_ETFS.get(sector, None)
-                # Guardar en cache
-                _sector_cache[ticker] = (sector, sector_etf)
-                return sector, sector_etf
-            
-            # Si no encontramos sector pero info es válido, devolver None
-            # (es un ticker sin sector, no un error)
-            if len(info) > 5:
-                _sector_cache[ticker] = (None, None)
-                return None, None
-                
-        except Exception as e:
-            error_msg = str(e).lower()
-            # Si es rate limit explícito, esperamos más
-            if 'rate' in error_msg or 'limit' in error_msg or 'too many' in error_msg:
-                if attempt < max_retries - 1:
-                    time.sleep(delay * (attempt + 2))
-                    continue
-            # Otros errores
-            continue
-    
-    # Si agotamos los intentos, devolver None
-    return None, None
-
-def get_sector_info_simple(ticker, debug=False):
-    """Wrapper para mantener compatibilidad - USA LA VERSIÓN SAFE"""
-    # Verificar si ya está en cache
-    if ticker in _sector_cache:
-        return _sector_cache[ticker]
-    
-    # Obtener con la versión safe
-    sector, sector_etf = get_sector_info_safe(ticker)
-    
-    if debug:
-        st.write(f"**DEBUG {ticker}**")
-        st.write(f"- Sector: `{sector}`")
-        st.write(f"- ETF: `{sector_etf}`")
-        st.write("---")
-    
-    return sector, sector_etf
 
 def calculate_rsc_mansfield(prices, benchmark_prices, period=52):
     """
@@ -182,7 +75,6 @@ def calculate_rsc_mansfield(prices, benchmark_prices, period=52):
         if len(prices) < period or len(benchmark_prices) < period:
             return None
         
-        # Alinear índices
         common_index = prices.index.intersection(benchmark_prices.index)
         if len(common_index) < period:
             return None
@@ -221,23 +113,18 @@ def calculate_linear_regression(prices, period=30):
         y = prices.values[-period:]
         x = np.arange(len(y))
         
-        # Regresión lineal
         coeffs = np.polyfit(x, y, 1)
         slope = coeffs[0]
         
-        # Línea de regresión
         lin_reg = np.polyval(coeffs, x)
         
-        # R-squared
         y_mean = np.mean(y)
         ss_tot = np.sum((y - y_mean) ** 2)
         ss_res = np.sum((y - lin_reg) ** 2)
         r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
         
-        # Error estándar
         se_regression = np.sqrt(ss_res / (period - 2)) if period > 2 else 0
         
-        # Distancia normalizada
         distance = abs(y[-1] - lin_reg[-1])
         normalized_distance = distance / se_regression if se_regression > 0 else 0
         
@@ -251,7 +138,6 @@ def calculate_atlas(prices, period_bb=20, period_ema=120):
         if len(prices) < max(period_bb, period_ema):
             return 0
         
-        # Bandas de Bollinger usando pandas_ta
         bbands = ta.bbands(prices, length=period_bb, std=2)
         
         if bbands is None or bbands.empty:
@@ -260,7 +146,6 @@ def calculate_atlas(prices, period_bb=20, period_ema=120):
         bb_top = bbands[f'BBU_{period_bb}_2.0']
         bb_bot = bbands[f'BBL_{period_bb}_2.0']
         
-        # DBB
         dbb = np.sqrt((bb_top - bb_bot) / bb_top) * 20
         dbb_med = dbb.ewm(span=period_ema, adjust=False).mean()
         
@@ -282,7 +167,6 @@ def calculate_mic_value(data):
         high = data['High']
         low = data['Low']
         
-        # ROC usando pandas_ta
         roc18 = ta.roc(close, length=18)
         roc50 = ta.roc(close, length=50)
         
@@ -292,13 +176,6 @@ def calculate_mic_value(data):
         roc18_val = roc18.iloc[-1] if not pd.isna(roc18.iloc[-1]) else 0
         roc50_val = roc50.iloc[-1] if not pd.isna(roc50.iloc[-1]) else 0
         
-        # ATR usando pandas_ta
-        atr = ta.atr(high=high, low=low, close=close, length=14)
-        
-        if atr is None:
-            return None
-        
-        # NATR (Normalized ATR)
         natr18 = ta.natr(high=high, low=low, close=close, length=18)
         natr50 = ta.natr(high=high, low=low, close=close, length=50)
         
@@ -308,7 +185,6 @@ def calculate_mic_value(data):
         natr18_val = natr18.iloc[-1] if not pd.isna(natr18.iloc[-1]) else 1
         natr50_val = natr50.iloc[-1] if not pd.isna(natr50.iloc[-1]) else 1
         
-        # Evitar división por cero
         if natr18_val == 0:
             natr18_val = 1
         if natr50_val == 0:
@@ -317,8 +193,7 @@ def calculate_mic_value(data):
         mic_value = (roc18_val / natr18_val) * 0.6 + (roc50_val / natr50_val) * 0.4
         
         return mic_value
-    except Exception as e:
-        print(f"Error calculating MIC: {e}")
+    except:
         return None
 
 def calculate_sharpe_ratio(prices, period=50):
@@ -338,7 +213,7 @@ def calculate_sharpe_ratio(prices, period=50):
         if std_return == 0 or pd.isna(std_return):
             return None
         
-        sharpe = (mean_return / std_return) * np.sqrt(50)  # Anualizado (52 semanas)
+        sharpe = (mean_return / std_return) * np.sqrt(50)
         
         return sharpe
     except:
@@ -354,13 +229,11 @@ def calculate_macd_v(data):
         high = data['High']
         low = data['Low']
         
-        # ATR usando pandas_ta
         atr = ta.atr(high=high, low=low, close=close, length=26)
         
         if atr is None or pd.isna(atr.iloc[-1]) or atr.iloc[-1] == 0:
             return None
         
-        # MACD usando pandas_ta
         macd = ta.macd(close, fast=12, slow=26, signal=9)
         
         if macd is None or macd.empty:
@@ -371,20 +244,17 @@ def calculate_macd_v(data):
         if pd.isna(macd_line.iloc[-1]):
             return None
         
-        # MACD-V normalizado por ATR
         macd_v = (macd_line.iloc[-1] / atr.iloc[-1]) * 100
         
         return macd_v
-    except Exception as e:
-        print(f"Error calculating MACD-V: {e}")
+    except:
         return None
 
-def analyze_ticker(ticker, params, benchmark_data, sector_etfs_data):
+def analyze_ticker(ticker, params, benchmark_data):
     """Analiza un ticker individual con todos los filtros"""
     try:
-        # Descargar datos
         data = download_weekly_data(ticker, period="5y")
-        if data is None or len(data) < 156:  # Mínimo 3 años
+        if data is None or len(data) < 156:
             return None
         
         close = data['Close']
@@ -410,27 +280,9 @@ def analyze_ticker(ticker, params, benchmark_data, sector_etfs_data):
             return None
         
         # ========== FILTRO 4: Distancia a WMA30 <= % ==========
-        if params['apply_wma_dist']:
-            dist_to_wma = abs(current_price - wma30) / current_price * 100
-            if dist_to_wma > params['dist_to_wma']:
-                return None
-        else:
-            dist_to_wma = abs(current_price - wma30) / current_price * 100
-        
-        # ========== OBTENER SECTOR (después de filtros básicos) ==========
-        # CAMBIO: Agregamos pequeño delay aleatorio para evitar rate limits
-        time.sleep(random.uniform(0.1, 0.3))
-        sector, sector_etf = get_sector_info_simple(ticker)
-        
-        # ========== FILTRO 5: RSC Sectorial > 0 (OBLIGATORIO si hay sector) ==========
-        rsc_sector = None
-        if sector_etf and sector_etf in sector_etfs_data:
-            sector_data = sector_etfs_data[sector_etf]
-            rsc_sector = calculate_rsc_mansfield(sector_data, benchmark_data, period=52)
-            
-            # Si hay sector, es OBLIGATORIO que RSC_Sector > 0
-            if rsc_sector is not None and rsc_sector <= 0:
-                return None
+        dist_to_wma = abs(current_price - wma30) / current_price * 100
+        if params['apply_wma_dist'] and dist_to_wma > params['dist_to_wma']:
+            return None
         
         # ========== FILTROS OPCIONALES ==========
         
@@ -468,9 +320,7 @@ def analyze_ticker(ticker, params, benchmark_data, sector_etfs_data):
         result = {
             'Ticker': ticker,
             'Price': round(current_price, 2),
-            'Sector': sector if sector else 'N/A',
             'RSC': round(rsc, 2) if rsc else None,
-            'RSC_Sector': round(rsc_sector, 2) if rsc_sector else None,
             'Dist_Max_%': round(dist_to_max, 2),
             'WMA30': round(wma30, 2) if wma30 else None,
             'Dist_WMA_%': round(dist_to_wma, 2),
@@ -485,13 +335,12 @@ def analyze_ticker(ticker, params, benchmark_data, sector_etfs_data):
         
         return result
         
-    except Exception as e:
+    except:
         return None
 
 def run_screener(tickers, params, progress_bar, status_text):
     """Ejecuta el screener en paralelo"""
     
-    # Descargar benchmark (SPY)
     status_text.text("📊 Descargando datos del benchmark (SPY)...")
     benchmark_data_full = download_weekly_data("SPY", period="5y", use_lock=False)
     
@@ -501,25 +350,14 @@ def run_screener(tickers, params, progress_bar, status_text):
     
     benchmark_data = benchmark_data_full['Close']
     
-    # Descargar ETFs sectoriales
-    status_text.text("📊 Descargando ETFs sectoriales...")
-    sector_etfs_data = {}
-    unique_sector_etfs = list(set(SECTOR_ETFS.values()))
-    
-    for etf in unique_sector_etfs:
-        data = download_weekly_data(etf, period="5y", use_lock=False)
-        if data is not None:
-            sector_etfs_data[etf] = data['Close']
-    
-    # Procesar tickers en paralelo - REDUCIMOS workers para evitar rate limits
     results = []
     total = len(tickers)
     
     status_text.text(f"🔍 Analizando {total} tickers...")
     
-    with ThreadPoolExecutor(max_workers=5) as executor:  # REDUCIDO de 10 a 5
+    with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {
-            executor.submit(analyze_ticker, ticker, params, benchmark_data, sector_etfs_data): ticker 
+            executor.submit(analyze_ticker, ticker, params, benchmark_data): ticker 
             for ticker in tickers
         }
         
@@ -541,11 +379,62 @@ def run_screener(tickers, params, progress_bar, status_text):
         return pd.DataFrame()
     
     df_results = pd.DataFrame(results)
-    
-    # Ordenar por RSC descendente
     df_results = df_results.sort_values('RSC', ascending=False).reset_index(drop=True)
     
     return df_results
+
+def plot_candlestick_chart(ticker, period="1y"):
+    """Crea un gráfico de velas para un ticker"""
+    try:
+        data = download_weekly_data(ticker, period=period, use_lock=False)
+        
+        if data is None or data.empty:
+            st.error(f"No se pudieron cargar datos para {ticker}")
+            return
+        
+        # Calcular WMA30
+        wma30 = ta.wma(data['Close'], length=30)
+        
+        # Crear gráfico
+        fig = go.Figure()
+        
+        # Velas japonesas
+        fig.add_trace(go.Candlestick(
+            x=data.index,
+            open=data['Open'],
+            high=data['High'],
+            low=data['Low'],
+            close=data['Close'],
+            name=ticker,
+            increasing_line_color='#26a69a',
+            decreasing_line_color='#ef5350'
+        ))
+        
+        # WMA30
+        if wma30 is not None:
+            fig.add_trace(go.Scatter(
+                x=data.index,
+                y=wma30,
+                mode='lines',
+                name='WMA30',
+                line=dict(color='#FFA726', width=2)
+            ))
+        
+        # Layout
+        fig.update_layout(
+            title=f'{ticker} - Gráfico Semanal',
+            yaxis_title='Precio ($)',
+            xaxis_title='Fecha',
+            template='plotly_dark',
+            height=500,
+            xaxis_rangeslider_visible=False,
+            hovermode='x unified'
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+    except Exception as e:
+        st.error(f"Error al crear gráfico para {ticker}: {str(e)}")
 
 # ============= INTERFAZ PRINCIPAL =============
 def main():
@@ -557,16 +446,6 @@ def main():
     
     st.title("📈 Trend Stocks Screener")
     st.markdown("**Detecta acciones con tendencias fuertes y sostenibles (Timeframe Semanal vs SPY)**")
-    
-    # ============= SECCIÓN DEBUG (TEMPORAL) =============
-    with st.expander("🔧 DEBUG: Test Sector Info", expanded=False):
-        st.markdown("**Prueba la función de obtención de sectores**")
-        test_ticker = st.text_input("Ticker a probar:", value="AAPL")
-        if st.button("🔍 Probar Sector", use_container_width=True):
-            st.write(f"Probando ticker: **{test_ticker}**")
-            with st.spinner("Obteniendo sector..."):
-                sector, sector_etf = get_sector_info_simple(test_ticker, debug=True)
-            st.success(f"Resultado: Sector=`{sector}`, ETF=`{sector_etf}`")
     
     st.markdown("---")
     
@@ -685,7 +564,6 @@ def main():
             True,  # Distancia a máximos (siempre)
             True,  # Close > WMA30 (siempre)
             apply_wma_dist,
-            True,  # RSC Sectorial (siempre si aplica)
             apply_lr,
             apply_mic,
             apply_sharpe,
@@ -766,13 +644,11 @@ def main():
         st.dataframe(
             df_display,
             use_container_width=True,
-            height=600,
+            height=400,
             column_config={
                 "Ticker": st.column_config.TextColumn("Ticker", width="small"),
                 "Price": st.column_config.NumberColumn("Precio", format="$%.2f"),
-                "Sector": st.column_config.TextColumn("Sector", width="medium"),
                 "RSC": st.column_config.NumberColumn("RSC", format="%.2f"),
-                "RSC_Sector": st.column_config.NumberColumn("RSC Sector", format="%.2f"),
                 "Dist_Max_%": st.column_config.NumberColumn("Dist Max %", format="%.2f%%"),
                 "WMA30": st.column_config.NumberColumn("WMA30", format="%.2f"),
                 "Dist_WMA_%": st.column_config.NumberColumn("Dist WMA %", format="%.2f%%"),
@@ -795,6 +671,74 @@ def main():
             mime="text/csv",
             use_container_width=True
         )
+        
+        st.markdown("---")
+        
+        # ============= PASO 5: GRÁFICOS =============
+        st.markdown("### 📊 PASO 5: Gráficos de Velas")
+        
+        st.info("📌 Selecciona el período de tiempo y los tickers que deseas visualizar")
+        
+        col1, col2 = st.columns([1, 3])
+        
+        with col1:
+            chart_period = st.selectbox(
+                "Período del gráfico:",
+                options=['1y', '2y', '3y', '5y'],
+                index=0,
+                format_func=lambda x: {
+                    '1y': '1 Año',
+                    '2y': '2 Años',
+                    '3y': '3 Años',
+                    '5y': '5 Años'
+                }[x]
+            )
+            
+            st.markdown("---")
+            
+            show_all = st.checkbox("Mostrar todos los gráficos", value=False)
+            
+            if not show_all:
+                num_charts = st.slider(
+                    "Número de gráficos:",
+                    min_value=1,
+                    max_value=min(20, len(df_display)),
+                    value=min(5, len(df_display)),
+                    step=1
+                )
+        
+        with col2:
+            if show_all:
+                tickers_to_plot = df_display['Ticker'].tolist()
+                st.warning(f"⚠️ Se mostrarán {len(tickers_to_plot)} gráficos. Esto puede tardar un momento...")
+            else:
+                tickers_to_plot = df_display['Ticker'].head(num_charts).tolist()
+            
+            if st.button("📊 GENERAR GRÁFICOS", type="primary", use_container_width=True):
+                st.markdown("---")
+                
+                for i, ticker in enumerate(tickers_to_plot, 1):
+                    st.markdown(f"#### {i}. {ticker}")
+                    
+                    # Mostrar métricas del ticker
+                    ticker_data = df_display[df_display['Ticker'] == ticker].iloc[0]
+                    
+                    col_a, col_b, col_c, col_d = st.columns(4)
+                    with col_a:
+                        st.metric("Precio", f"${ticker_data['Price']:.2f}")
+                    with col_b:
+                        st.metric("RSC", f"{ticker_data['RSC']:.2f}")
+                    with col_c:
+                        st.metric("R²", f"{ticker_data['R2']:.3f}" if pd.notna(ticker_data['R2']) else "N/A")
+                    with col_d:
+                        st.metric("Sharpe", f"{ticker_data['Sharpe']:.2f}" if pd.notna(ticker_data['Sharpe']) else "N/A")
+                    
+                    # Generar gráfico
+                    plot_candlestick_chart(ticker, period=chart_period)
+                    
+                    st.markdown("---")
+                
+                st.success(f"✅ {len(tickers_to_plot)} gráficos generados correctamente")
         
     else:
         st.info("🚧 Los resultados aparecerán aquí una vez completado el escaneo")
