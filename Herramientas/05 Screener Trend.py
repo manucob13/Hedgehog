@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 import random
 import pandas_ta as ta
+import time
 from utils.utils import check_password
 from utils.tickers import create_tickers_universe
 
@@ -15,6 +16,9 @@ warnings.filterwarnings('ignore')
 
 # Lock global para sincronizar descargas de yfinance
 _yfinance_lock = Lock()
+
+# Cache global para sectores
+_sector_cache = {}
 
 # ============= MAPEO DE SECTORES A ETFs =============
 SECTOR_ETFS = {
@@ -95,29 +99,59 @@ def download_weekly_data(ticker, period="5y", use_lock=True):
         return None
 
 def get_sector_info(ticker):
-    """Obtiene información del sector del ticker"""
+    """Obtiene información del sector del ticker con cache"""
+    global _sector_cache
+    
+    # Revisar cache primero
+    if ticker in _sector_cache:
+        return _sector_cache[ticker]
+    
     try:
-        with _yfinance_lock:
-            stock = yf.Ticker(ticker)
+        # Crear objeto ticker
+        stock = yf.Ticker(ticker)
+        
+        # Intentar obtener info
+        try:
             info = stock.info
+        except:
+            info = {}
         
-        # Intentar obtener el sector
-        sector = info.get('sector', None)
+        # Si info está vacío o casi vacío, intentar de nuevo
+        if not info or len(info) < 5:
+            try:
+                # Segundo intento con un pequeño delay
+                time.sleep(0.1)
+                info = stock.info
+            except:
+                info = {}
         
-        # Si no hay sector, intentar obtener industry
-        if not sector:
-            sector = info.get('industry', None)
+        sector = None
         
-        # Si tenemos sector, buscar el ETF correspondiente
+        # Buscar sector en diferentes campos posibles
+        if info:
+            # Campo 'sector' es el más común
+            sector = info.get('sector')
+            
+            # Si no hay sector, intentar otros campos
+            if not sector:
+                sector = info.get('sectorDisp')
+            if not sector:
+                sector = info.get('sectorKey')
+        
+        # Buscar ETF correspondiente si hay sector
+        sector_etf = None
         if sector:
-            sector_etf = SECTOR_ETFS.get(sector, None)
-            return sector, sector_etf
+            sector_etf = SECTOR_ETFS.get(sector)
         
-        return None, None
+        # Guardar en cache
+        result = (sector, sector_etf)
+        _sector_cache[ticker] = result
+        
+        return result
         
     except Exception as e:
-        # En caso de error, imprimir para debug pero no fallar
-        print(f"Error getting sector info for {ticker}: {str(e)}")
+        # En caso de error, guardar None en cache y devolver
+        _sector_cache[ticker] = (None, None)
         return None, None
 
 def calculate_rsc_mansfield(prices, benchmark_prices, period=52):
@@ -337,9 +371,6 @@ def analyze_ticker(ticker, params, benchmark_data, sector_etfs_data):
         close = data['Close']
         current_price = close.iloc[-1]
         
-        # Obtener sector
-        sector, sector_etf = get_sector_info(ticker)
-        
         # ========== FILTRO 1: RSC Mansfield vs SPY > 0 ==========
         rsc = calculate_rsc_mansfield(close, benchmark_data, period=52)
         if rsc is None or rsc <= 0:
@@ -366,6 +397,9 @@ def analyze_ticker(ticker, params, benchmark_data, sector_etfs_data):
                 return None
         else:
             dist_to_wma = abs(current_price - wma30) / current_price * 100
+        
+        # ========== OBTENER SECTOR (después de filtros básicos) ==========
+        sector, sector_etf = get_sector_info(ticker)
         
         # ========== FILTRO 5: RSC Sectorial > 0 (OBLIGATORIO si hay sector) ==========
         rsc_sector = None
