@@ -16,6 +16,8 @@ hmmlearn
 bs4
 nest-asyncio
 ib_insync
+pandas_ta
+
 
 
 
