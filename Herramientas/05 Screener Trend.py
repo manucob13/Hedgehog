@@ -7,6 +7,7 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 import random
+import pandas_ta as ta
 from utils.utils import check_password
 from utils.tickers import create_tickers_universe
 
@@ -132,15 +133,12 @@ def calculate_rsc_mansfield(prices, benchmark_prices, period=52):
         return None
 
 def calculate_wma(prices, period=30):
-    """Calcula la media móvil ponderada"""
+    """Calcula la media móvil ponderada usando pandas_ta"""
     try:
         if len(prices) < period:
             return None
         
-        weights = np.arange(1, period + 1)
-        wma = prices.rolling(window=period).apply(
-            lambda x: np.dot(x, weights) / weights.sum(), raw=True
-        )
+        wma = ta.wma(prices, length=period)
         return wma.iloc[-1] if not pd.isna(wma.iloc[-1]) else None
     except:
         return None
@@ -182,16 +180,19 @@ def calculate_linear_regression(prices, period=30):
         return None, None, None
 
 def calculate_atlas(prices, period_bb=20, period_ema=120):
-    """Calcula el indicador Atlas"""
+    """Calcula el indicador Atlas usando pandas_ta"""
     try:
         if len(prices) < max(period_bb, period_ema):
             return 0
         
-        # Bandas de Bollinger
-        sma = prices.rolling(window=period_bb).mean()
-        std = prices.rolling(window=period_bb).std()
-        bb_top = sma + (2 * std)
-        bb_bot = sma - (2 * std)
+        # Bandas de Bollinger usando pandas_ta
+        bbands = ta.bbands(prices, length=period_bb, std=2)
+        
+        if bbands is None or bbands.empty:
+            return 0
+        
+        bb_top = bbands[f'BBU_{period_bb}_2.0']
+        bb_bot = bbands[f'BBL_{period_bb}_2.0']
         
         # DBB
         dbb = np.sqrt((bb_top - bb_bot) / bb_top) * 20
@@ -205,37 +206,53 @@ def calculate_atlas(prices, period_bb=20, period_ema=120):
     except:
         return 0
 
-def calculate_mic_value(prices):
-    """Calcula el MIC Value: (ROC18/NATR18)*0.6 + (ROC50/NATR50)*0.4"""
+def calculate_mic_value(data):
+    """Calcula el MIC Value: (ROC18/NATR18)*0.6 + (ROC50/NATR50)*0.4 usando pandas_ta"""
     try:
-        if len(prices) < 50:
+        if len(data) < 50:
             return None
         
-        close = prices
+        close = data['Close']
+        high = data['High']
+        low = data['Low']
         
-        # ROC
-        roc18 = ((close.iloc[-1] - close.iloc[-19]) / close.iloc[-19]) * 100 if len(close) > 18 else 0
-        roc50 = ((close.iloc[-1] - close.iloc[-51]) / close.iloc[-51]) * 100 if len(close) > 50 else 0
+        # ROC usando pandas_ta
+        roc18 = ta.roc(close, length=18)
+        roc50 = ta.roc(close, length=50)
         
-        # ATR
-        high = close  # Aproximación con close
-        low = close
+        if roc18 is None or roc50 is None:
+            return None
         
-        tr1 = high - low
-        tr = tr1.rolling(window=14).mean()
+        roc18_val = roc18.iloc[-1] if not pd.isna(roc18.iloc[-1]) else 0
+        roc50_val = roc50.iloc[-1] if not pd.isna(roc50.iloc[-1]) else 0
         
-        natr18 = (tr.rolling(window=18).mean().iloc[-1] / close.iloc[-1]) * 100 if len(tr) > 18 else 1
-        natr50 = (tr.rolling(window=50).mean().iloc[-1] / close.iloc[-1]) * 100 if len(tr) > 50 else 1
+        # ATR usando pandas_ta
+        atr = ta.atr(high=high, low=low, close=close, length=14)
         
-        if natr18 == 0:
-            natr18 = 1
-        if natr50 == 0:
-            natr50 = 1
+        if atr is None:
+            return None
         
-        mic_value = (roc18 / natr18) * 0.6 + (roc50 / natr50) * 0.4
+        # NATR (Normalized ATR)
+        natr18 = ta.natr(high=high, low=low, close=close, length=18)
+        natr50 = ta.natr(high=high, low=low, close=close, length=50)
+        
+        if natr18 is None or natr50 is None:
+            return None
+        
+        natr18_val = natr18.iloc[-1] if not pd.isna(natr18.iloc[-1]) else 1
+        natr50_val = natr50.iloc[-1] if not pd.isna(natr50.iloc[-1]) else 1
+        
+        # Evitar división por cero
+        if natr18_val == 0:
+            natr18_val = 1
+        if natr50_val == 0:
+            natr50_val = 1
+        
+        mic_value = (roc18_val / natr18_val) * 0.6 + (roc50_val / natr50_val) * 0.4
         
         return mic_value
-    except:
+    except Exception as e:
+        print(f"Error calculating MIC: {e}")
         return None
 
 def calculate_sharpe_ratio(prices, period=50):
@@ -262,7 +279,7 @@ def calculate_sharpe_ratio(prices, period=50):
         return None
 
 def calculate_macd_v(data):
-    """Calcula MACD-V normalizado por ATR - VERSIÓN CORREGIDA"""
+    """Calcula MACD-V normalizado por ATR usando pandas_ta"""
     try:
         if len(data) < 26:
             return None
@@ -271,28 +288,29 @@ def calculate_macd_v(data):
         high = data['High']
         low = data['Low']
         
-        # Calcular True Range correctamente
-        tr = pd.concat([
-            high - low,
-            (high - close.shift()).abs(),
-            (low - close.shift()).abs()
-        ], axis=1).max(axis=1)
+        # ATR usando pandas_ta
+        atr = ta.atr(high=high, low=low, close=close, length=26)
         
-        # ATR con período 26
-        atr = tr.rolling(window=26).mean()
-        
-        # EMAs
-        ema_12 = close.ewm(span=12, adjust=False).mean()
-        ema_26 = close.ewm(span=26, adjust=False).mean()
-        
-        # MACD-V normalizado por ATR
-        if atr.iloc[-1] == 0 or pd.isna(atr.iloc[-1]):
+        if atr is None or pd.isna(atr.iloc[-1]) or atr.iloc[-1] == 0:
             return None
         
-        macd_v = ((ema_12.iloc[-1] - ema_26.iloc[-1]) / atr.iloc[-1]) * 100
+        # MACD usando pandas_ta
+        macd = ta.macd(close, fast=12, slow=26, signal=9)
+        
+        if macd is None or macd.empty:
+            return None
+        
+        macd_line = macd['MACD_12_26_9']
+        
+        if pd.isna(macd_line.iloc[-1]):
+            return None
+        
+        # MACD-V normalizado por ATR
+        macd_v = (macd_line.iloc[-1] / atr.iloc[-1]) * 100
         
         return macd_v
-    except:
+    except Exception as e:
+        print(f"Error calculating MACD-V: {e}")
         return None
 
 def analyze_ticker(ticker, params, benchmark_data, sector_etfs_data):
@@ -361,7 +379,7 @@ def analyze_ticker(ticker, params, benchmark_data, sector_etfs_data):
                 return None
         
         # MIC Ranking
-        mic_value = calculate_mic_value(close)
+        mic_value = calculate_mic_value(data)
         if params['apply_mic']:
             if mic_value is None or mic_value < 5:
                 return None
@@ -372,7 +390,7 @@ def analyze_ticker(ticker, params, benchmark_data, sector_etfs_data):
             if sharpe is None or sharpe < 1.5:
                 return None
         
-        # MACD-V - AHORA USA LA FUNCIÓN CORREGIDA
+        # MACD-V
         macd_v = calculate_macd_v(data)
         if params['apply_macd']:
             if macd_v is None or macd_v < 50:
