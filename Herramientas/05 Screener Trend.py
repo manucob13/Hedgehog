@@ -97,14 +97,27 @@ def download_weekly_data(ticker, period="5y", use_lock=True):
 def get_sector_info(ticker):
     """Obtiene información del sector del ticker"""
     try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
+        with _yfinance_lock:
+            stock = yf.Ticker(ticker)
+            info = stock.info
+        
+        # Intentar obtener el sector
         sector = info.get('sector', None)
         
-        if sector and sector in SECTOR_ETFS:
-            return sector, SECTOR_ETFS[sector]
+        # Si no hay sector, intentar obtener industry
+        if not sector:
+            sector = info.get('industry', None)
+        
+        # Si tenemos sector, buscar el ETF correspondiente
+        if sector:
+            sector_etf = SECTOR_ETFS.get(sector, None)
+            return sector, sector_etf
+        
         return None, None
-    except:
+        
+    except Exception as e:
+        # En caso de error, imprimir para debug pero no fallar
+        print(f"Error getting sector info for {ticker}: {str(e)}")
         return None, None
 
 def calculate_rsc_mansfield(prices, benchmark_prices, period=52):
