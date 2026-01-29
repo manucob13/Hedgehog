@@ -497,7 +497,7 @@ def plot_candlestick_chart(ticker, ticker_name, period="1y"):
 def main():
     st.set_page_config(
         page_title="Trend Stocks Screener",
-        page_icon="📈",
+        page_icon="🚀",
         layout="wide"
     )
     
