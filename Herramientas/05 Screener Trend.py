@@ -25,25 +25,11 @@ def get_ticker_name_and_marketcap(ticker):
         stock = yf.Ticker(ticker)
         info = stock.info
         
-        # Intentar obtener el nombre con múltiples fallbacks
-        name = None
-        
-        # Intentar longName primero
-        if info.get('longName'):
-            name = info.get('longName')
-        # Luego shortName
-        elif info.get('shortName'):
-            name = info.get('shortName')
-        # Finalmente usar el ticker
-        else:
-            name = ticker
-        
-        # Obtener market cap
+        name = info.get('longName', info.get('shortName', ticker))
         market_cap = info.get('marketCap', None)
         
         return name, market_cap
-    except Exception as e:
-        # Si hay cualquier error, devolver el ticker como nombre
+    except:
         return ticker, None
 
 def download_weekly_data(ticker, period="5y", use_lock=True):
@@ -351,38 +337,26 @@ def analyze_ticker(ticker, params, benchmark_data):
             if sharpe is None or sharpe < 1.5:
                 return None
         
-        # MACD-V - Filtro configurable con radio button
+        # MACD-V - Dos filtros independientes
         macd_v = calculate_macd_v(data)
-        macd_filter = params['macd_filter']
         
-        if macd_filter == "MACD-V ≥ 50":
-            # Filtrar por MACD-V >= 50
+        # Filtro MACD-V >= 50
+        if params['apply_macd_50']:
             if macd_v is None or macd_v < 50:
                 return None
         
-        elif macd_filter == "MACD-V entre 50-150":
-            # Filtrar por MACD-V >= 50 y < 150
-            if macd_v is None or macd_v < 50 or macd_v >= 150:
-                return None
-        
-        elif macd_filter == "MACD-V ≥ 150":
-            # Filtrar por MACD-V >= 150
+        # Filtro MACD-V >= 150
+        if params['apply_macd_150']:
             if macd_v is None or macd_v < 150:
                 return None
         
-        # Si es "Sin filtro", no aplica ningún filtro MACD-V
-        
-        # Obtener nombre y market cap (con manejo de errores)
-        try:
-            name, market_cap = get_ticker_name_and_marketcap(ticker)
-        except:
-            name = ticker
-            market_cap = None
+        # Obtener nombre y market cap
+        name, market_cap = get_ticker_name_and_marketcap(ticker)
         
         # ========== RESULTADO ==========
         result = {
             'Ticker': ticker,
-            'Name': name if name else ticker,
+            'Name': name,
             'Price': round(current_price, 2),
             'Market_Cap': market_cap,
             'RSC': round(rsc, 2) if rsc else None,
@@ -400,8 +374,7 @@ def analyze_ticker(ticker, params, benchmark_data):
         
         return result
         
-    except Exception as e:
-        # Si hay cualquier error, simplemente retornar None sin romper el proceso
+    except:
         return None
 
 def run_screener(tickers, params, progress_bar, status_text):
@@ -607,13 +580,16 @@ def main():
             help="Sharpe ratio anualizado"
         )
         
-        st.markdown("**📊 Filtros MACD-V**")
+        apply_macd_50 = st.checkbox(
+            "MACD-V (≥50)",
+            value=True,
+            help="MACD normalizado por ATR mayor o igual a 50"
+        )
         
-        macd_filter = st.radio(
-            "Selecciona filtro MACD-V:",
-            options=["Sin filtro", "MACD-V ≥ 50", "MACD-V entre 50-150", "MACD-V ≥ 150"],
-            index=1,
-            help="Filtra por valores de MACD-V normalizado por ATR"
+        apply_macd_150 = st.checkbox(
+            "MACD-V (≥150)",
+            value=False,
+            help="MACD normalizado por ATR mayor o igual a 150"
         )
     
     with col3:
@@ -636,13 +612,19 @@ def main():
             apply_lr,
             apply_mic,
             apply_sharpe,
-            1 if macd_filter != "Sin filtro" else 0,
+            apply_macd_50,
+            apply_macd_150,
             apply_atlas
         ])
         
         st.info(f"**{filters_count}** filtros activos")
-        if macd_filter != "Sin filtro":
-            st.success(f"MACD-V: {macd_filter.replace('MACD-V ', '')}")
+        if apply_macd_50 or apply_macd_150:
+            macd_info = []
+            if apply_macd_50:
+                macd_info.append("≥50")
+            if apply_macd_150:
+                macd_info.append("≥150")
+            st.success(f"MACD-V: {' y '.join(macd_info)}")
     
     st.markdown("---")
     
@@ -665,7 +647,8 @@ def main():
             'apply_lr': apply_lr,
             'apply_mic': apply_mic,
             'apply_sharpe': apply_sharpe,
-            'macd_filter': macd_filter,
+            'apply_macd_50': apply_macd_50,
+            'apply_macd_150': apply_macd_150,
             'apply_atlas': apply_atlas
         }
         
