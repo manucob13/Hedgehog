@@ -337,10 +337,17 @@ def analyze_ticker(ticker, params, benchmark_data):
             if sharpe is None or sharpe < 1.5:
                 return None
         
-        # MACD-V con threshold configurable
+        # MACD-V - Dos filtros independientes
         macd_v = calculate_macd_v(data)
-        if params['apply_macd']:
-            if macd_v is None or macd_v < params['macd_threshold']:
+        
+        # Filtro MACD-V >= 50
+        if params['apply_macd_50']:
+            if macd_v is None or macd_v < 50:
+                return None
+        
+        # Filtro MACD-V >= 150
+        if params['apply_macd_150']:
+            if macd_v is None or macd_v < 150:
                 return None
         
         # Obtener nombre y market cap
@@ -573,20 +580,16 @@ def main():
             help="Sharpe ratio anualizado"
         )
         
-        apply_macd = st.checkbox(
-            "Filtrar por MACD-V",
+        apply_macd_50 = st.checkbox(
+            "MACD-V (≥50)",
             value=True,
-            help="MACD normalizado por ATR"
+            help="MACD normalizado por ATR mayor o igual a 50"
         )
         
-        macd_threshold = st.number_input(
-            "Umbral mínimo MACD-V",
-            min_value=0,
-            max_value=500,
-            value=150,
-            step=10,
-            help="Valor mínimo de MACD-V para filtrar",
-            disabled=not apply_macd
+        apply_macd_150 = st.checkbox(
+            "MACD-V (≥150)",
+            value=False,
+            help="MACD normalizado por ATR mayor o igual a 150"
         )
     
     with col3:
@@ -609,13 +612,19 @@ def main():
             apply_lr,
             apply_mic,
             apply_sharpe,
-            apply_macd,
+            apply_macd_50,
+            apply_macd_150,
             apply_atlas
         ])
         
         st.info(f"**{filters_count}** filtros activos")
-        if apply_macd:
-            st.success(f"MACD-V ≥ {macd_threshold}")
+        if apply_macd_50 or apply_macd_150:
+            macd_info = []
+            if apply_macd_50:
+                macd_info.append("≥50")
+            if apply_macd_150:
+                macd_info.append("≥150")
+            st.success(f"MACD-V: {' y '.join(macd_info)}")
     
     st.markdown("---")
     
@@ -638,8 +647,8 @@ def main():
             'apply_lr': apply_lr,
             'apply_mic': apply_mic,
             'apply_sharpe': apply_sharpe,
-            'apply_macd': apply_macd,
-            'macd_threshold': macd_threshold,
+            'apply_macd_50': apply_macd_50,
+            'apply_macd_150': apply_macd_150,
             'apply_atlas': apply_atlas
         }
         
