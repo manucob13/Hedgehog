@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
@@ -17,6 +17,7 @@ from utils.tickers import (
     get_index_name,
     get_etf_name
 )
+from utils.utils_schwab import connect_to_schwab, get_current_price_schwab, obtener_datos_opcion, get_atm_strike_schwab
 
 warnings.filterwarnings('ignore')
 
@@ -866,6 +867,223 @@ def main():
                     st.markdown("---")
                 
                 st.success(f"✅ {len(tickers_to_plot)} gráfico(s) generado(s) correctamente")
+        
+        st.markdown("---")
+        
+        # ============= PASO 6: EXPECTED MOVE PARA FECHA ESPECÍFICA =============
+        st.markdown("### 🎯 PASO 6: Expected Move para Fecha Específica")
+        
+        st.info("📌 Calcula el Expected Move de una acción del screener para una fecha de expiración específica usando la fórmula: **Expected Move ≈ Straddle Price × 0.85**")
+        
+        col1, col2 = st.columns([1, 2])
+        
+        with col1:
+            st.markdown("#### ⚙️ Configuración")
+            
+            # Selector de ticker de los resultados
+            ticker_options_em = [f"{row['Ticker']} - {row['Name']}" for _, row in df_display.iterrows()]
+            ticker_map_em = {f"{row['Ticker']} - {row['Name']}": row['Ticker'] for _, row in df_display.iterrows()}
+            
+            selected_ticker_em_option = st.selectbox(
+                "Selecciona un ticker:",
+                options=ticker_options_em,
+                index=0,
+                key='ticker_em_selector'
+            )
+            
+            selected_ticker_em = ticker_map_em[selected_ticker_em_option]
+            
+            st.success(f"📊 Ticker: **{selected_ticker_em}**")
+            
+            # Selector de fecha
+            min_date_em = date.today() + timedelta(days=1)
+            max_date_em = date.today() + timedelta(days=365)
+            
+            expiration_date_em = st.date_input(
+                "Fecha de Expiración",
+                value=min_date_em,
+                min_value=min_date_em,
+                max_value=max_date_em,
+                key='expiration_em'
+            )
+            
+            st.info(f"📅 Expiración: **{expiration_date_em.strftime('%Y-%m-%d')}**")
+            
+            st.markdown("---")
+            
+            # Botón para calcular
+            calculate_em_button = st.button(
+                "🎯 Calcular Expected Move",
+                type="primary",
+                use_container_width=True,
+                key='calculate_em_button'
+            )
+        
+        with col2:
+            if calculate_em_button:
+                
+                with st.spinner(f"🔄 Conectando con Schwab y calculando Expected Move para {selected_ticker_em}..."):
+                    
+                    # Conectar con Schwab
+                    schwab_client_em = connect_to_schwab()
+                    
+                    if schwab_client_em is None:
+                        st.error("❌ No se pudo conectar con Schwab. Verifica la configuración.")
+                    else:
+                        st.success("✅ Conectado con Schwab")
+                        
+                        # Obtener precio actual
+                        current_price_em = get_current_price_schwab(schwab_client_em, selected_ticker_em)
+                        
+                        if current_price_em is None:
+                            st.error(f"❌ No se pudo obtener el precio actual de {selected_ticker_em} desde Schwab.")
+                        else:
+                            st.success(f"✅ Precio actual de {selected_ticker_em}: **${current_price_em:.2f}**")
+                            
+                            # Obtener strike ATM
+                            atm_strike_em = get_atm_strike_schwab(
+                                schwab_client_em,
+                                selected_ticker_em,
+                                current_price_em,
+                                expiration_date_em
+                            )
+                            
+                            if atm_strike_em is None:
+                                st.error(f"❌ No se pudo obtener el strike ATM para {selected_ticker_em}")
+                            else:
+                                st.success(f"✅ Strike ATM: **${atm_strike_em:.2f}**")
+                                
+                                # Obtener datos del CALL ATM
+                                call_mid_em, call_delta_em, call_theta_em = obtener_datos_opcion(
+                                    schwab_client_em,
+                                    selected_ticker_em,
+                                    atm_strike_em,
+                                    'CALL',
+                                    expiration_date_em
+                                )
+                                
+                                # Obtener datos del PUT ATM
+                                put_mid_em, put_delta_em, put_theta_em = obtener_datos_opcion(
+                                    schwab_client_em,
+                                    selected_ticker_em,
+                                    atm_strike_em,
+                                    'PUT',
+                                    expiration_date_em
+                                )
+                                
+                                if call_mid_em is None or put_mid_em is None:
+                                    st.error(f"❌ No se pudieron obtener los precios de las opciones ATM")
+                                else:
+                                    # Calcular Straddle Price
+                                    straddle_price_em = call_mid_em + put_mid_em
+                                    
+                                    # Calcular Expected Move usando multiplicador 0.85
+                                    expected_move_em = straddle_price_em * 0.85
+                                    
+                                    # Calcular rangos
+                                    upper_range_em = current_price_em + expected_move_em
+                                    lower_range_em = current_price_em - expected_move_em
+                                    
+                                    st.success("✅ Expected Move calculado exitosamente")
+                                    
+                                    st.markdown("---")
+                                    st.markdown("#### 📊 Resultados")
+                                    
+                                    # Métricas principales
+                                    col_a, col_b, col_c, col_d = st.columns(4)
+                                    
+                                    with col_a:
+                                        st.metric("Precio Actual", f"${current_price_em:.2f}")
+                                    with col_b:
+                                        st.metric("Expected Move", f"${expected_move_em:.2f}")
+                                    with col_c:
+                                        st.metric("Rango Superior", f"${upper_range_em:.2f}", f"+{expected_move_em:.2f}")
+                                    with col_d:
+                                        st.metric("Rango Inferior", f"${lower_range_em:.2f}", f"-{expected_move_em:.2f}")
+                                    
+                                    st.markdown("---")
+                                    
+                                    # Detalles del Straddle
+                                    st.markdown("#### 💰 Detalles del Straddle ATM")
+                                    
+                                    col_call, col_put = st.columns(2)
+                                    
+                                    with col_call:
+                                        st.markdown("**📞 CALL ATM**")
+                                        call_details = {
+                                            'Métrica': ['Strike', 'Mid Price', 'Delta', 'Theta'],
+                                            'Valor': [
+                                                f"${atm_strike_em:.2f}",
+                                                f"${call_mid_em:.2f}",
+                                                f"{call_delta_em:.4f}" if call_delta_em is not None else "N/A",
+                                                f"{call_theta_em:.4f}" if call_theta_em is not None else "N/A"
+                                            ]
+                                        }
+                                        df_call_em = pd.DataFrame(call_details)
+                                        st.dataframe(df_call_em, hide_index=True, use_container_width=True)
+                                    
+                                    with col_put:
+                                        st.markdown("**📉 PUT ATM**")
+                                        put_details = {
+                                            'Métrica': ['Strike', 'Mid Price', 'Delta', 'Theta'],
+                                            'Valor': [
+                                                f"${atm_strike_em:.2f}",
+                                                f"${put_mid_em:.2f}",
+                                                f"{put_delta_em:.4f}" if put_delta_em is not None else "N/A",
+                                                f"{put_theta_em:.4f}" if put_theta_em is not None else "N/A"
+                                            ]
+                                        }
+                                        df_put_em = pd.DataFrame(put_details)
+                                        st.dataframe(df_put_em, hide_index=True, use_container_width=True)
+                                    
+                                    st.markdown("---")
+                                    
+                                    # Tabla resumen
+                                    st.markdown("#### 📋 Resumen del Expected Move")
+                                    
+                                    days_to_exp_em = (expiration_date_em - date.today()).days
+                                    move_pct_em = (expected_move_em / current_price_em) * 100
+                                    
+                                    summary_data_em = {
+                                        'Métrica': [
+                                            'Ticker',
+                                            'Precio Actual',
+                                            'Strike ATM',
+                                            'Straddle Price (Mid)',
+                                            'Multiplicador',
+                                            'Expected Move (±)',
+                                            'Rango Superior',
+                                            'Rango Inferior',
+                                            'Movimiento (%)',
+                                            'Días hasta Expiración',
+                                            'Fecha de Expiración'
+                                        ],
+                                        'Valor': [
+                                            selected_ticker_em,
+                                            f"${current_price_em:.2f}",
+                                            f"${atm_strike_em:.2f}",
+                                            f"${straddle_price_em:.2f}",
+                                            "0.85",
+                                            f"${expected_move_em:.2f}",
+                                            f"${upper_range_em:.2f}",
+                                            f"${lower_range_em:.2f}",
+                                            f"±{move_pct_em:.2f}%",
+                                            f"{days_to_exp_em} días",
+                                            expiration_date_em.strftime('%Y-%m-%d')
+                                        ]
+                                    }
+                                    
+                                    df_summary_em = pd.DataFrame(summary_data_em)
+                                    st.dataframe(df_summary_em, hide_index=True, use_container_width=True)
+                                    
+                                    st.markdown("---")
+                                    
+                                    st.info("""
+                                    💡 **Interpretación:**
+                                    - El Expected Move representa el movimiento esperado del precio con una probabilidad del ~68% (1 desviación estándar)
+                                    - Hay aproximadamente 68% de probabilidad de que el precio se mantenga dentro del rango calculado
+                                    - Este cálculo utiliza el multiplicador 0.85 aplicado al precio del straddle ATM
+                                    """)
         
     else:
         st.info("🚧 Los resultados aparecerán aquí una vez completado el escaneo")
