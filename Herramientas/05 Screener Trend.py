@@ -19,19 +19,6 @@ _yfinance_lock = Lock()
 
 # ============= FUNCIONES DE CÁLCULO =============
 
-def get_ticker_name_and_marketcap(ticker):
-    """Obtiene el nombre y market cap del ticker"""
-    try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        
-        name = info.get('longName', info.get('shortName', ticker))
-        market_cap = info.get('marketCap', None)
-        
-        return name, market_cap
-    except:
-        return ticker, None
-
 def download_weekly_data(ticker, period="5y", use_lock=True):
     """Descarga datos semanales para un ticker"""
     try:
@@ -326,18 +313,13 @@ def analyze_ticker(ticker, params, benchmark_data):
         # MACD-V
         macd_v = calculate_macd_v(data)
         if params['apply_macd']:
-            if macd_v is None or macd_v < params['macd_threshold']:
+            if macd_v is None or macd_v < 50:
                 return None
-        
-        # Obtener nombre y market cap
-        name, market_cap = get_ticker_name_and_marketcap(ticker)
         
         # ========== RESULTADO ==========
         result = {
             'Ticker': ticker,
-            'Name': name,
             'Price': round(current_price, 2),
-            'Market_Cap': market_cap,
             'RSC': round(rsc, 2) if rsc else None,
             'Dist_Max_%': round(dist_to_max, 2),
             'WMA30': round(wma30, 2) if wma30 else None,
@@ -401,21 +383,7 @@ def run_screener(tickers, params, progress_bar, status_text):
     
     return df_results
 
-def format_market_cap(value):
-    """Formatea el market cap de forma legible"""
-    if value is None or pd.isna(value):
-        return "N/A"
-    
-    if value >= 1e12:
-        return f"${value/1e12:.2f}T"
-    elif value >= 1e9:
-        return f"${value/1e9:.2f}B"
-    elif value >= 1e6:
-        return f"${value/1e6:.2f}M"
-    else:
-        return f"${value:,.0f}"
-
-def plot_candlestick_chart(ticker, ticker_name, period="1y"):
+def plot_candlestick_chart(ticker, period="1y"):
     """Crea un gráfico de velas para un ticker"""
     try:
         data = download_weekly_data(ticker, period=period, use_lock=False)
@@ -454,7 +422,7 @@ def plot_candlestick_chart(ticker, ticker_name, period="1y"):
         
         # Layout
         fig.update_layout(
-            title=f'{ticker} - {ticker_name} - Gráfico Semanal',
+            title=f'{ticker} - Gráfico Semanal',
             yaxis_title='Precio ($)',
             xaxis_title='Fecha',
             template='plotly_dark',
@@ -574,19 +542,9 @@ def main():
         )
         
         apply_macd = st.checkbox(
-            "Filtrar por MACD-V",
+            "MACD-V (≥50)",
             value=True,
             help="MACD normalizado por ATR"
-        )
-        
-        macd_threshold = st.number_input(
-            "Umbral mínimo MACD-V",
-            min_value=0,
-            max_value=500,
-            value=150,
-            step=10,
-            help="Valor mínimo de MACD-V para filtrar",
-            disabled=not apply_macd
         )
     
     with col3:
@@ -614,8 +572,6 @@ def main():
         ])
         
         st.info(f"**{filters_count}** filtros activos")
-        if apply_macd:
-            st.success(f"MACD-V ≥ {macd_threshold}")
     
     st.markdown("---")
     
@@ -639,7 +595,6 @@ def main():
             'apply_mic': apply_mic,
             'apply_sharpe': apply_sharpe,
             'apply_macd': apply_macd,
-            'macd_threshold': macd_threshold,
             'apply_atlas': apply_atlas
         }
         
@@ -667,10 +622,7 @@ def main():
     st.markdown("### 📈 PASO 4: Resultados del Escaneo")
     
     if 'scan_results' in st.session_state and len(st.session_state['scan_results']) > 0:
-        df_display = st.session_state['scan_results'].copy()
-        
-        # Formatear Market Cap para display
-        df_display['Market_Cap_Formatted'] = df_display['Market_Cap'].apply(format_market_cap)
+        df_display = st.session_state['scan_results']
         
         # Métricas resumen
         col1, col2, col3, col4 = st.columns(4)
@@ -688,21 +640,14 @@ def main():
         
         st.markdown("---")
         
-        # Preparar dataframe para mostrar
-        df_table = df_display[['Ticker', 'Name', 'Price', 'Market_Cap_Formatted', 'RSC', 'Dist_Max_%', 
-                               'WMA30', 'Dist_WMA_%', 'Slope', 'R2', 'Norm_Dist', 'Atlas', 
-                               'MIC_Value', 'Sharpe', 'MACD_V']]
-        
         # Tabla de resultados
         st.dataframe(
-            df_table,
+            df_display,
             use_container_width=True,
             height=400,
             column_config={
                 "Ticker": st.column_config.TextColumn("Ticker", width="small"),
-                "Name": st.column_config.TextColumn("Nombre", width="medium"),
                 "Price": st.column_config.NumberColumn("Precio", format="$%.2f"),
-                "Market_Cap_Formatted": st.column_config.TextColumn("Market Cap", width="small"),
                 "RSC": st.column_config.NumberColumn("RSC", format="%.2f"),
                 "Dist_Max_%": st.column_config.NumberColumn("Dist Max %", format="%.2f%%"),
                 "WMA30": st.column_config.NumberColumn("WMA30", format="%.2f"),
@@ -718,7 +663,7 @@ def main():
         )
         
         # Botón de descarga
-        csv = df_display.drop('Market_Cap_Formatted', axis=1).to_csv(index=False)
+        csv = df_display.to_csv(index=False)
         st.download_button(
             label="📥 Descargar Resultados (CSV)",
             data=csv,
@@ -751,28 +696,9 @@ def main():
             
             st.markdown("---")
             
-            # Crear opciones para el selectbox con ticker y nombre
-            ticker_options = [f"{row['Ticker']} - {row['Name']}" for _, row in df_display.iterrows()]
-            ticker_map = {f"{row['Ticker']} - {row['Name']}": row['Ticker'] for _, row in df_display.iterrows()}
-            name_map = {row['Ticker']: row['Name'] for _, row in df_display.iterrows()}
-            
-            # Selector de ticker individual
-            selected_ticker_option = st.selectbox(
-                "Selecciona un ticker:",
-                options=["Ninguno"] + ticker_options,
-                index=0
-            )
-            
-            if selected_ticker_option != "Ninguno":
-                selected_ticker = ticker_map[selected_ticker_option]
-            else:
-                selected_ticker = None
-            
-            st.markdown("---")
-            
             show_all = st.checkbox("Mostrar todos los gráficos", value=False)
             
-            if not show_all and selected_ticker is None:
+            if not show_all:
                 num_charts = st.slider(
                     "Número de gráficos:",
                     min_value=1,
@@ -782,11 +708,7 @@ def main():
                 )
         
         with col2:
-            if selected_ticker is not None:
-                # Mostrar solo el ticker seleccionado
-                tickers_to_plot = [selected_ticker]
-                st.info(f"📊 Mostrando gráfico para: **{selected_ticker}**")
-            elif show_all:
+            if show_all:
                 tickers_to_plot = df_display['Ticker'].tolist()
                 st.warning(f"⚠️ Se mostrarán {len(tickers_to_plot)} gráficos. Esto puede tardar un momento...")
             else:
@@ -796,13 +718,12 @@ def main():
                 st.markdown("---")
                 
                 for i, ticker in enumerate(tickers_to_plot, 1):
-                    ticker_name = name_map.get(ticker, ticker)
-                    st.markdown(f"#### {i}. {ticker} - {ticker_name}")
+                    st.markdown(f"#### {i}. {ticker}")
                     
                     # Mostrar métricas del ticker
                     ticker_data = df_display[df_display['Ticker'] == ticker].iloc[0]
                     
-                    col_a, col_b, col_c, col_d, col_e = st.columns(5)
+                    col_a, col_b, col_c, col_d = st.columns(4)
                     with col_a:
                         st.metric("Precio", f"${ticker_data['Price']:.2f}")
                     with col_b:
@@ -811,20 +732,19 @@ def main():
                         st.metric("R²", f"{ticker_data['R2']:.3f}" if pd.notna(ticker_data['R2']) else "N/A")
                     with col_d:
                         st.metric("Sharpe", f"{ticker_data['Sharpe']:.2f}" if pd.notna(ticker_data['Sharpe']) else "N/A")
-                    with col_e:
-                        st.metric("MACD-V", f"{ticker_data['MACD_V']:.2f}" if pd.notna(ticker_data['MACD_V']) else "N/A")
                     
                     # Generar gráfico
-                    plot_candlestick_chart(ticker, ticker_name, period=chart_period)
+                    plot_candlestick_chart(ticker, period=chart_period)
                     
                     st.markdown("---")
                 
-                st.success(f"✅ {len(tickers_to_plot)} gráfico(s) generado(s) correctamente")
+                st.success(f"✅ {len(tickers_to_plot)} gráficos generados correctamente")
         
     else:
         st.info("🚧 Los resultados aparecerán aquí una vez completado el escaneo")
 
 if __name__ == "__main__":
+
     if check_password():
         main()
     else:
