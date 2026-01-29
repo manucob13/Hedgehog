@@ -10,119 +10,18 @@ import random
 import pandas_ta as ta
 import plotly.graph_objects as go
 from utils.utils import check_password
-from utils.tickers import create_tickers_universe
+from utils.tickers import (
+    create_tickers_universe,
+    get_all_index_names,
+    get_all_etf_names,
+    get_index_name,
+    get_etf_name
+)
 
 warnings.filterwarnings('ignore')
 
 # Lock global para sincronizar descargas de yfinance
 _yfinance_lock = Lock()
-
-# ============= DICCIONARIOS DE NOMBRES =============
-
-def get_all_index_names():
-    """Retorna diccionario completo con nombres de índices"""
-    index_names = {
-        "SPX": "S&P 500 Index",
-        "VIX": "CBOE Volatility Index",
-        "XSP": "Mini S&P 500",
-        "RUT": "Russell 2000",
-        "NDX": "Nasdaq 100",
-        "DJX": "Dow Jones",
-        "NANOS": "Nano S&P 500",
-        "OEX": "S&P 100",
-        "XEO": "S&P 100 European",
-        "MXEF": "MSCI Emerging Markets",
-        "MXEA": "MSCI EAFE",
-    }
-    return index_names
-
-def get_all_etf_names():
-    """Retorna diccionario completo con nombres de ETFs"""
-    etf_names = {
-        # MEGA CAPS
-        "SPY": "SPDR S&P 500",
-        "QQQ": "Invesco QQQ",
-        "IWM": "iShares Russell 2000",
-        # LEVERAGED/INVERSE
-        "TQQQ": "ProShares UltraPro QQQ 3x",
-        "SQQQ": "ProShares UltraPro Short QQQ -3x",
-        # FIXED INCOME & COMMODITIES
-        "TLT": "iShares 20+ Year Treasury",
-        "GLD": "SPDR Gold Shares",
-        "HYG": "iShares High Yield Corporate Bond",
-        "UNG": "United States Natural Gas Fund",
-        "USO": "United States Oil Fund",
-        "SLV": "iShares Silver Trust",
-        "LQD": "iShares Investment Grade Corporate",
-        # INTERNATIONAL
-        "EEM": "iShares MSCI Emerging Markets",
-        "FXI": "iShares China Large-Cap",
-        "EFA": "iShares MSCI EAFE",
-        "KWEB": "KraneShares CSI China Internet",
-        "EWZ": "iShares MSCI Brazil",
-        "EWJ": "iShares MSCI Japan",
-        "EWU": "iShares MSCI United Kingdom",
-        "EWG": "iShares MSCI Germany",
-        "EWC": "iShares MSCI Canada",
-        # SECTOR SPDR
-        "XLF": "Financial Select Sector",
-        "XLE": "Energy Select Sector",
-        "XLI": "Industrial Select Sector",
-        "XLK": "Technology Select Sector",
-        "XLV": "Health Care Select Sector",
-        "XLU": "Utilities Select Sector",
-        "XLP": "Consumer Staples Select Sector",
-        "XLY": "Consumer Discretionary Select Sector",
-        "XLB": "Materials Select Sector",
-        "XLRE": "Real Estate Select Sector",
-        "XLC": "Communication Services Select Sector",
-        # SPECIALIZED SECTORS
-        "GDX": "VanEck Gold Miners",
-        "XBI": "SPDR Biotech",
-        "SMH": "VanEck Semiconductor",
-        "XOP": "SPDR Oil & Gas Exploration",
-        "XRT": "SPDR Retail",
-        "XHB": "SPDR Homebuilders",
-        "XME": "SPDR Metals & Mining",
-        "GDXJ": "VanEck Junior Gold Miners",
-        "OIH": "VanEck Oil Services",
-        # VOLATILITY
-        "VXX": "iPath Series B S&P 500 VIX",
-        "UVXY": "ProShares Ultra VIX Short-Term",
-        "SVXY": "ProShares Short VIX Short-Term",
-        # THEMATIC & SPECIALIZED
-        "DIA": "SPDR Dow Jones Industrial Average",
-        "BITO": "ProShares Bitcoin Strategy",
-        "ARKK": "ARK Innovation ETF",
-        "JETS": "U.S. Global Jets",
-        "MSOS": "AdvisorShares Pure US Cannabis",
-        "SOXX": "iShares Semiconductor",
-        # LEVERAGED SPECIALIZED
-        "LABU": "Direxion Daily S&P Biotech Bull 3X",
-        "BOIL": "ProShares Ultra Bloomberg Natural Gas 2x",
-        "TNA": "Direxion Daily Small Cap Bull 3X",
-        "SPXS": "Direxion Daily S&P 500 Bear -3X",
-        "SPXU": "ProShares UltraPro Short S&P 500",
-        "SOXS": "Direxion Daily Semiconductor Bear 3X",
-        "TZA": "Direxion Daily Small Cap Bear 3X",
-        "TMF": "Direxion Daily 20+ Year Treasury Bull 3X",
-        "TSLL": "Direxion Daily TSLA Bull 1.5X",
-        # ADDITIONAL LIQUID ETFs
-        "IYR": "iShares U.S. Real Estate",
-        "ASHR": "Xtrackers Harvest CSI 300 China",
-        "UUP": "Invesco DB US Dollar Index Bullish",
-    }
-    return etf_names
-
-def get_index_name(ticker):
-    """Obtiene el nombre completo de un índice dado su ticker"""
-    index_names = get_all_index_names()
-    return index_names.get(ticker.upper())
-
-def get_etf_name(ticker):
-    """Obtiene el nombre completo de un ETF dado su ticker"""
-    etf_names = get_all_etf_names()
-    return etf_names.get(ticker.upper())
 
 # ============= FUNCIONES DE CÁLCULO =============
 
@@ -497,7 +396,8 @@ def analyze_ticker(ticker, params, benchmark_data):
         
         # Si es "Sin filtro", no aplica ningún filtro MACD-V
         
-        # Obtener nombre y market cap con prioridad: Índices -> ETFs -> Acciones
+        # ========== TODOS LOS FILTROS PASADOS - AHORA SÍ OBTENER NOMBRE Y MARKET CAP ==========
+        # Solo obtenemos el nombre y market cap para acciones que pasaron TODOS los filtros
         name, market_cap = get_ticker_name_and_marketcap(ticker)
         
         # ========== RESULTADO ==========
