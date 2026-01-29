@@ -25,21 +25,25 @@ def get_ticker_name_and_marketcap(ticker):
         stock = yf.Ticker(ticker)
         info = stock.info
         
-        # Intentar múltiples campos para el nombre
-        name = (info.get('longName') or 
-                info.get('shortName') or 
-                info.get('name') or
-                info.get('quoteType', '') + ' - ' + ticker if info.get('quoteType') else ticker)
+        # Intentar obtener el nombre con múltiples fallbacks
+        name = None
         
-        # Si aún no hay nombre, intentar con el ticker directamente
-        if name == ticker or not name:
-            # Para ETFs y otros instrumentos, usar shortName como fallback
-            name = info.get('shortName', ticker)
+        # Intentar longName primero
+        if info.get('longName'):
+            name = info.get('longName')
+        # Luego shortName
+        elif info.get('shortName'):
+            name = info.get('shortName')
+        # Finalmente usar el ticker
+        else:
+            name = ticker
         
+        # Obtener market cap
         market_cap = info.get('marketCap', None)
         
         return name, market_cap
-    except:
+    except Exception as e:
+        # Si hay cualquier error, devolver el ticker como nombre
         return ticker, None
 
 def download_weekly_data(ticker, period="5y", use_lock=True):
@@ -368,13 +372,17 @@ def analyze_ticker(ticker, params, benchmark_data):
         
         # Si es "Sin filtro", no aplica ningún filtro MACD-V
         
-        # Obtener nombre y market cap
-        name, market_cap = get_ticker_name_and_marketcap(ticker)
+        # Obtener nombre y market cap (con manejo de errores)
+        try:
+            name, market_cap = get_ticker_name_and_marketcap(ticker)
+        except:
+            name = ticker
+            market_cap = None
         
         # ========== RESULTADO ==========
         result = {
             'Ticker': ticker,
-            'Name': name,
+            'Name': name if name else ticker,
             'Price': round(current_price, 2),
             'Market_Cap': market_cap,
             'RSC': round(rsc, 2) if rsc else None,
@@ -392,7 +400,8 @@ def analyze_ticker(ticker, params, benchmark_data):
         
         return result
         
-    except:
+    except Exception as e:
+        # Si hay cualquier error, simplemente retornar None sin romper el proceso
         return None
 
 def run_screener(tickers, params, progress_bar, status_text):
@@ -497,7 +506,7 @@ def plot_candlestick_chart(ticker, ticker_name, period="1y"):
 def main():
     st.set_page_config(
         page_title="Trend Stocks Screener",
-        page_icon="🚀",
+        page_icon="📈",
         layout="wide"
     )
     
