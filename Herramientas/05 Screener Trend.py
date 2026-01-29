@@ -11,6 +11,7 @@ import pandas_ta as ta
 import plotly.graph_objects as go
 from utils.utils import check_password
 from utils.tickers import create_tickers_universe
+from download_tickers import get_etf_name, get_index_name
 
 warnings.filterwarnings('ignore')
 
@@ -20,8 +21,29 @@ _yfinance_lock = Lock()
 # ============= FUNCIONES DE CÁLCULO =============
 
 def get_ticker_name_and_marketcap(ticker):
-    """Obtiene el nombre y market cap del ticker"""
+    """
+    Obtiene el nombre y market cap del ticker
+    Prioridad: 1) Índices, 2) ETFs, 3) Acciones (yfinance)
+    """
     try:
+        # 1. Verificar si es un ÍNDICE
+        index_name = get_index_name(ticker)
+        if index_name is not None:
+            return index_name, None  # Los índices no tienen market cap
+        
+        # 2. Verificar si es un ETF
+        etf_name = get_etf_name(ticker)
+        if etf_name is not None:
+            # Para ETFs, intentar obtener market cap de yfinance
+            try:
+                stock = yf.Ticker(ticker)
+                info = stock.info
+                market_cap = info.get('marketCap', None)
+                return etf_name, market_cap
+            except:
+                return etf_name, None
+        
+        # 3. Si no es índice ni ETF, es una ACCIÓN - usar yfinance
         stock = yf.Ticker(ticker)
         info = stock.info
         
@@ -39,6 +61,7 @@ def get_ticker_name_and_marketcap(ticker):
         market_cap = info.get('marketCap', None)
         
         return name, market_cap
+        
     except:
         return ticker, None
 
@@ -368,7 +391,7 @@ def analyze_ticker(ticker, params, benchmark_data):
         
         # Si es "Sin filtro", no aplica ningún filtro MACD-V
         
-        # Obtener nombre y market cap
+        # Obtener nombre y market cap con prioridad: Índices -> ETFs -> Acciones
         name, market_cap = get_ticker_name_and_marketcap(ticker)
         
         # ========== RESULTADO ==========
