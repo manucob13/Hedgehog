@@ -7,6 +7,14 @@ Descarga y combina:
 - Top ETFs por volumen de opciones
 
 Guarda todo en Tks.csv en el directorio actual
+
+NUEVAS FUNCIONES PÚBLICAS:
+- get_all_etf_tickers(): Retorna lista de todos los tickers de ETFs
+- get_all_index_tickers(): Retorna lista de todos los tickers de índices
+- get_etf_name(ticker): Retorna el nombre de un ETF específico
+- get_index_name(ticker): Retorna el nombre de un índice específico
+- get_all_etf_names(): Retorna diccionario completo {ticker: nombre} de ETFs
+- get_all_index_names(): Retorna diccionario completo {ticker: nombre} de índices
 """
 
 import pandas as pd
@@ -98,6 +106,188 @@ def download_russell1000():
         return []
 
 
+def get_all_index_names():
+    """
+    Retorna diccionario completo con nombres de índices
+    
+    Returns:
+        dict: Diccionario {ticker: nombre_completo}
+    """
+    index_names = {
+        "SPX": "S&P 500 Index",
+        "VIX": "CBOE Volatility Index",
+        "XSP": "Mini S&P 500",
+        "RUT": "Russell 2000",
+        "NDX": "Nasdaq 100",
+        "DJX": "Dow Jones",
+        "NANOS": "Nano S&P 500",
+        "OEX": "S&P 100",
+        "XEO": "S&P 100 European",
+        "MXEF": "MSCI Emerging Markets",
+        "MXEA": "MSCI EAFE",
+    }
+    return index_names
+
+
+def get_all_etf_names():
+    """
+    Retorna diccionario completo con nombres de ETFs
+    
+    Returns:
+        dict: Diccionario {ticker: nombre_completo}
+    """
+    etf_names = {
+        # MEGA CAPS
+        "SPY": "SPDR S&P 500",
+        "QQQ": "Invesco QQQ",
+        "IWM": "iShares Russell 2000",
+        
+        # LEVERAGED/INVERSE
+        "TQQQ": "ProShares UltraPro QQQ 3x",
+        "SQQQ": "ProShares UltraPro Short QQQ -3x",
+        
+        # FIXED INCOME & COMMODITIES
+        "TLT": "iShares 20+ Year Treasury",
+        "GLD": "SPDR Gold Shares",
+        "HYG": "iShares High Yield Corporate Bond",
+        "UNG": "United States Natural Gas Fund",
+        "USO": "United States Oil Fund",
+        "SLV": "iShares Silver Trust",
+        "LQD": "iShares Investment Grade Corporate",
+        
+        # INTERNATIONAL
+        "EEM": "iShares MSCI Emerging Markets",
+        "FXI": "iShares China Large-Cap",
+        "EFA": "iShares MSCI EAFE",
+        "KWEB": "KraneShares CSI China Internet",
+        "EWZ": "iShares MSCI Brazil",
+        "EWJ": "iShares MSCI Japan",
+        "EWU": "iShares MSCI United Kingdom",
+        "EWG": "iShares MSCI Germany",
+        "EWC": "iShares MSCI Canada",
+        
+        # SECTOR SPDR
+        "XLF": "Financial Select Sector",
+        "XLE": "Energy Select Sector",
+        "XLI": "Industrial Select Sector",
+        "XLK": "Technology Select Sector",
+        "XLV": "Health Care Select Sector",
+        "XLU": "Utilities Select Sector",
+        "XLP": "Consumer Staples Select Sector",
+        "XLY": "Consumer Discretionary Select Sector",
+        "XLB": "Materials Select Sector",
+        "XLRE": "Real Estate Select Sector",
+        "XLC": "Communication Services Select Sector",
+        
+        # SPECIALIZED SECTORS
+        "GDX": "VanEck Gold Miners",
+        "XBI": "SPDR Biotech",
+        "SMH": "VanEck Semiconductor",
+        "XOP": "SPDR Oil & Gas Exploration",
+        "XRT": "SPDR Retail",
+        "XHB": "SPDR Homebuilders",
+        "XME": "SPDR Metals & Mining",
+        "GDXJ": "VanEck Junior Gold Miners",
+        "OIH": "VanEck Oil Services",
+        
+        # VOLATILITY
+        "VXX": "iPath Series B S&P 500 VIX",
+        "UVXY": "ProShares Ultra VIX Short-Term",
+        "SVXY": "ProShares Short VIX Short-Term",
+        
+        # THEMATIC & SPECIALIZED
+        "DIA": "SPDR Dow Jones Industrial Average",
+        "BITO": "ProShares Bitcoin Strategy",
+        "ARKK": "ARK Innovation ETF",
+        "JETS": "U.S. Global Jets",
+        "MSOS": "AdvisorShares Pure US Cannabis",
+        "SOXX": "iShares Semiconductor",
+        
+        # LEVERAGED SPECIALIZED
+        "LABU": "Direxion Daily S&P Biotech Bull 3X",
+        "BOIL": "ProShares Ultra Bloomberg Natural Gas 2x",
+        "TNA": "Direxion Daily Small Cap Bull 3X",
+        "SPXS": "Direxion Daily S&P 500 Bear -3X",
+        "SPXU": "ProShares UltraPro Short S&P 500",
+        "SOXS": "Direxion Daily Semiconductor Bear 3X",
+        "TZA": "Direxion Daily Small Cap Bear 3X",
+        "TMF": "Direxion Daily 20+ Year Treasury Bull 3X",
+        "TSLL": "Direxion Daily TSLA Bull 1.5X",
+        
+        # ADDITIONAL LIQUID ETFs
+        "IYR": "iShares U.S. Real Estate",
+        "ASHR": "Xtrackers Harvest CSI 300 China",
+        "UUP": "Invesco DB US Dollar Index Bullish",
+    }
+    return etf_names
+
+
+def get_index_name(ticker):
+    """
+    Obtiene el nombre completo de un índice dado su ticker
+    
+    Args:
+        ticker (str): Símbolo del índice (ej: 'SPX', 'VIX')
+    
+    Returns:
+        str: Nombre completo del índice, o None si no se encuentra
+    
+    Ejemplo:
+        >>> get_index_name('SPX')
+        'S&P 500 Index'
+    """
+    index_names = get_all_index_names()
+    return index_names.get(ticker.upper())
+
+
+def get_etf_name(ticker):
+    """
+    Obtiene el nombre completo de un ETF dado su ticker
+    
+    Args:
+        ticker (str): Símbolo del ETF (ej: 'SPY', 'QQQ')
+    
+    Returns:
+        str: Nombre completo del ETF, o None si no se encuentra
+    
+    Ejemplo:
+        >>> get_etf_name('SPY')
+        'SPDR S&P 500'
+    """
+    etf_names = get_all_etf_names()
+    return etf_names.get(ticker.upper())
+
+
+def get_all_index_tickers():
+    """
+    Retorna lista de todos los tickers de índices disponibles
+    
+    Returns:
+        list: Lista de símbolos de índices
+    
+    Ejemplo:
+        >>> tickers = get_all_index_tickers()
+        >>> print(tickers[:3])
+        ['SPX', 'VIX', 'XSP']
+    """
+    return list(get_all_index_names().keys())
+
+
+def get_all_etf_tickers():
+    """
+    Retorna lista de todos los tickers de ETFs disponibles
+    
+    Returns:
+        list: Lista de símbolos de ETFs
+    
+    Ejemplo:
+        >>> tickers = get_all_etf_tickers()
+        >>> print(len(tickers))
+        72
+    """
+    return list(get_all_etf_names().keys())
+
+
 def get_top_indices():
     """
     Retorna lista de índices con mayor volumen de opciones
@@ -106,20 +296,7 @@ def get_top_indices():
     Returns:
         list: Lista de símbolos de índices
     """
-    indices = [
-        "SPX",      # S&P 500 Index - 2.9M contratos/día
-        "VIX",      # CBOE Volatility Index - 742K contratos/día
-        "XSP",      # Mini S&P 500 - 64K contratos/día
-        "RUT",      # Russell 2000 - 62K contratos/día
-        "NDX",      # Nasdaq 100 - 7K contratos/día
-        "DJX",      # Dow Jones - 5K contratos/día
-        "NANOS",    # Nano S&P 500 - 2.4K contratos/día
-        "OEX",      # S&P 100 - 121 contratos/día
-        "XEO",      # S&P 100 European
-        "MXEF",     # MSCI Emerging Markets
-        "MXEA",     # MSCI EAFE
-    ]
-    
+    indices = get_all_index_tickers()
     print(f"✅ Índices: {len(indices)} símbolos agregados")
     return indices
 
@@ -132,90 +309,7 @@ def get_top_etfs():
     Returns:
         list: Lista de símbolos de ETFs
     """
-    etfs = [
-        # MEGA CAPS - Más de 100K contratos/día
-        "SPY",      # SPDR S&P 500 - 2.8M contratos/día
-        "QQQ",      # Invesco QQQ - 926K contratos/día
-        "IWM",      # iShares Russell 2000 - 262K contratos/día
-        
-        # LEVERAGED/INVERSE - 50K-100K contratos/día
-        "TQQQ",     # ProShares UltraPro QQQ 3x - 92K
-        "SQQQ",     # ProShares UltraPro Short QQQ -3x - 63K
-        
-        # FIXED INCOME & COMMODITIES - 20K-50K contratos/día
-        "TLT",      # iShares 20+ Year Treasury - 40K
-        "GLD",      # SPDR Gold Shares - 35K
-        "HYG",      # iShares High Yield Corporate Bond - 28K
-        "UNG",      # United States Natural Gas Fund - 18K
-        "USO",      # United States Oil Fund - 8K
-        "SLV",      # iShares Silver Trust - 15K
-        "LQD",      # iShares Investment Grade Corporate - 4K
-        
-        # INTERNATIONAL - 20K-50K contratos/día
-        "EEM",      # iShares MSCI Emerging Markets - 34K
-        "FXI",      # iShares China Large-Cap - 24K
-        "EFA",      # iShares MSCI EAFE - 21K
-        "KWEB",     # KraneShares CSI China Internet - 18K
-        "EWZ",      # iShares MSCI Brazil - 12K
-        "EWJ",      # iShares MSCI Japan - 10K
-        "EWU",      # iShares MSCI United Kingdom - 5K
-        "EWG",      # iShares MSCI Germany - 4K
-        "EWC",      # iShares MSCI Canada - 3K
-        
-        # SECTOR SPDR - 15K-30K contratos/día
-        "XLF",      # Financial Select Sector - 27K
-        "XLE",      # Energy Select Sector - 26K
-        "XLI",      # Industrial Select Sector - 17K
-        "XLK",      # Technology Select Sector - 3K
-        "XLV",      # Health Care Select Sector - 3K
-        "XLU",      # Utilities Select Sector - 8K
-        "XLP",      # Consumer Staples Select Sector - 4K
-        "XLY",      # Consumer Discretionary Select Sector - 5K
-        "XLB",      # Materials Select Sector - 2K
-        "XLRE",     # Real Estate Select Sector - 1K
-        "XLC",      # Communication Services Select Sector - 1K
-        
-        # SPECIALIZED SECTORS - 10K-20K contratos/día
-        "GDX",      # VanEck Gold Miners - 29K
-        "XBI",      # SPDR Biotech - 14K
-        "SMH",      # VanEck Semiconductor - 10K
-        "XOP",      # SPDR Oil & Gas Exploration - 7K
-        "XRT",      # SPDR Retail - 3K
-        "XHB",      # SPDR Homebuilders - 3K
-        "XME",      # SPDR Metals & Mining - 2K
-        "GDXJ",     # VanEck Junior Gold Miners - 3K
-        "OIH",      # VanEck Oil Services - 2K
-        
-        # VOLATILITY - 10K-20K contratos/día
-        "VXX",      # iPath Series B S&P 500 VIX - 20K
-        "UVXY",     # ProShares Ultra VIX Short-Term - 8K
-        "SVXY",     # ProShares Short VIX Short-Term - 6K
-        
-        # THEMATIC & SPECIALIZED - 5K-15K contratos/día
-        "DIA",      # SPDR Dow Jones Industrial Average - 15K
-        "BITO",     # ProShares Bitcoin Strategy - 10K
-        "ARKK",     # ARK Innovation ETF - 8K
-        "JETS",     # U.S. Global Jets - 3K
-        "MSOS",     # AdvisorShares Pure US Cannabis - 4K
-        "SOXX",     # iShares Semiconductor - 2K
-        
-        # LEVERAGED SPECIALIZED - 5K-10K contratos/día
-        "LABU",     # Direxion Daily S&P Biotech Bull 3X - 10K
-        "BOIL",     # ProShares Ultra Bloomberg Natural Gas 2x - 7K
-        "TNA",      # Direxion Daily Small Cap Bull 3X - 7K
-        "SPXS",     # Direxion Daily S&P 500 Bear -3X - 7K
-        "SPXU",     # ProShares UltraPro Short S&P 500 - 6K
-        "SOXS",     # Direxion Daily Semiconductor Bear 3X - 5K
-        "TZA",      # Direxion Daily Small Cap Bear 3X - 3K
-        "TMF",      # Direxion Daily 20+ Year Treasury Bull 3X - 2K
-        "TSLL",     # Direxion Daily TSLA Bull 1.5X - 3K
-        
-        # ADDITIONAL LIQUID ETFs - 2K-5K contratos/día
-        "IYR",      # iShares U.S. Real Estate - 3K
-        "ASHR",     # Xtrackers Harvest CSI 300 China - 3K
-        "UUP",      # Invesco DB US Dollar Index Bullish - 2K
-    ]
-    
+    etfs = get_all_etf_tickers()
     print(f"✅ ETFs: {len(etfs)} símbolos agregados")
     return etfs
 
