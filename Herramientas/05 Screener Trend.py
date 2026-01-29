@@ -25,7 +25,17 @@ def get_ticker_name_and_marketcap(ticker):
         stock = yf.Ticker(ticker)
         info = stock.info
         
-        name = info.get('longName', info.get('shortName', ticker))
+        # Intentar múltiples campos para el nombre
+        name = (info.get('longName') or 
+                info.get('shortName') or 
+                info.get('name') or
+                info.get('quoteType', '') + ' - ' + ticker if info.get('quoteType') else ticker)
+        
+        # Si aún no hay nombre, intentar con el ticker directamente
+        if name == ticker or not name:
+            # Para ETFs y otros instrumentos, usar shortName como fallback
+            name = info.get('shortName', ticker)
+        
         market_cap = info.get('marketCap', None)
         
         return name, market_cap
@@ -337,18 +347,26 @@ def analyze_ticker(ticker, params, benchmark_data):
             if sharpe is None or sharpe < 1.5:
                 return None
         
-        # MACD-V - Dos filtros independientes
+        # MACD-V - Filtro configurable con radio button
         macd_v = calculate_macd_v(data)
+        macd_filter = params['macd_filter']
         
-        # Filtro MACD-V >= 50
-        if params['apply_macd_50']:
+        if macd_filter == "MACD-V ≥ 50":
+            # Filtrar por MACD-V >= 50
             if macd_v is None or macd_v < 50:
                 return None
         
-        # Filtro MACD-V >= 150
-        if params['apply_macd_150']:
+        elif macd_filter == "MACD-V entre 50-150":
+            # Filtrar por MACD-V >= 50 y < 150
+            if macd_v is None or macd_v < 50 or macd_v >= 150:
+                return None
+        
+        elif macd_filter == "MACD-V ≥ 150":
+            # Filtrar por MACD-V >= 150
             if macd_v is None or macd_v < 150:
                 return None
+        
+        # Si es "Sin filtro", no aplica ningún filtro MACD-V
         
         # Obtener nombre y market cap
         name, market_cap = get_ticker_name_and_marketcap(ticker)
@@ -479,7 +497,7 @@ def plot_candlestick_chart(ticker, ticker_name, period="1y"):
 def main():
     st.set_page_config(
         page_title="Trend Stocks Screener",
-        page_icon="🚀",
+        page_icon="📈",
         layout="wide"
     )
     
@@ -580,16 +598,13 @@ def main():
             help="Sharpe ratio anualizado"
         )
         
-        apply_macd_50 = st.checkbox(
-            "MACD-V (≥50)",
-            value=True,
-            help="MACD normalizado por ATR mayor o igual a 50"
-        )
+        st.markdown("**📊 Filtros MACD-V**")
         
-        apply_macd_150 = st.checkbox(
-            "MACD-V (≥150)",
-            value=False,
-            help="MACD normalizado por ATR mayor o igual a 150"
+        macd_filter = st.radio(
+            "Selecciona filtro MACD-V:",
+            options=["Sin filtro", "MACD-V ≥ 50", "MACD-V entre 50-150", "MACD-V ≥ 150"],
+            index=1,
+            help="Filtra por valores de MACD-V normalizado por ATR"
         )
     
     with col3:
@@ -612,19 +627,13 @@ def main():
             apply_lr,
             apply_mic,
             apply_sharpe,
-            apply_macd_50,
-            apply_macd_150,
+            1 if macd_filter != "Sin filtro" else 0,
             apply_atlas
         ])
         
         st.info(f"**{filters_count}** filtros activos")
-        if apply_macd_50 or apply_macd_150:
-            macd_info = []
-            if apply_macd_50:
-                macd_info.append("≥50")
-            if apply_macd_150:
-                macd_info.append("≥150")
-            st.success(f"MACD-V: {' y '.join(macd_info)}")
+        if macd_filter != "Sin filtro":
+            st.success(f"MACD-V: {macd_filter.replace('MACD-V ', '')}")
     
     st.markdown("---")
     
@@ -647,8 +656,7 @@ def main():
             'apply_lr': apply_lr,
             'apply_mic': apply_mic,
             'apply_sharpe': apply_sharpe,
-            'apply_macd_50': apply_macd_50,
-            'apply_macd_150': apply_macd_150,
+            'macd_filter': macd_filter,
             'apply_atlas': apply_atlas
         }
         
