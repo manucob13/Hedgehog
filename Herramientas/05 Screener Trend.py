@@ -7,6 +7,7 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 import random
+import time
 import pandas_ta as ta
 import plotly.graph_objects as go
 from utils.utils import check_password
@@ -27,7 +28,7 @@ _yfinance_lock = Lock()
 
 def get_ticker_name_and_marketcap(ticker):
     """
-    Obtiene el nombre y market cap del ticker
+    Obtiene el nombre y market cap del ticker con retry logic
     Prioridad: 1) Índices, 2) ETFs, 3) Acciones (yfinance)
     """
     try:
@@ -41,33 +42,68 @@ def get_ticker_name_and_marketcap(ticker):
         if etf_name is not None:
             # Para ETFs, intentar obtener market cap de yfinance
             try:
-                stock = yf.Ticker(ticker)
-                info = stock.info
+                with _yfinance_lock:
+                    time.sleep(random.uniform(0.05, 0.15))  # Pequeño delay aleatorio
+                    stock = yf.Ticker(ticker)
+                    info = stock.info
                 market_cap = info.get('marketCap', None)
                 return etf_name, market_cap
             except:
                 return etf_name, None
         
-        # 3. Si no es índice ni ETF, es una ACCIÓN - usar yfinance
-        stock = yf.Ticker(ticker)
-        info = stock.info
+        # 3. Si no es índice ni ETF, es una ACCIÓN - usar yfinance con retry
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                with _yfinance_lock:
+                    # Pequeño delay aleatorio para evitar rate limiting
+                    time.sleep(random.uniform(0.05, 0.15))
+                    stock = yf.Ticker(ticker)
+                    info = stock.info
+                
+                # Verificar si el info está vacío o solo tiene error
+                if not info or len(info) <= 2:
+                    if attempt < max_retries - 1:
+                        time.sleep(0.5)  # Esperar antes de reintentar
+                        continue
+                    else:
+                        return ticker, None
+                
+                # Intentar múltiples campos para el nombre en orden de preferencia
+                name = None
+                
+                # 1. Intentar longName primero (más descriptivo)
+                if info.get('longName') and info.get('longName') != ticker:
+                    name = info.get('longName')
+                
+                # 2. Si no, intentar shortName
+                elif info.get('shortName') and info.get('shortName') != ticker:
+                    name = info.get('shortName')
+                
+                # 3. Si no, intentar name
+                elif info.get('name') and info.get('name') != ticker:
+                    name = info.get('name')
+                
+                # 4. Si aún no tenemos nombre, usar el ticker
+                if not name or name == ticker:
+                    name = ticker
+                
+                # Obtener market cap
+                market_cap = info.get('marketCap', None)
+                
+                return name, market_cap
+                
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)  # Esperar antes de reintentar
+                    continue
+                else:
+                    return ticker, None
         
-        # Intentar múltiples campos para el nombre
-        name = (info.get('longName') or 
-                info.get('shortName') or 
-                info.get('name') or
-                info.get('quoteType', '') + ' - ' + ticker if info.get('quoteType') else ticker)
+        return ticker, None
         
-        # Si aún no hay nombre, intentar con el ticker directamente
-        if name == ticker or not name:
-            # Para ETFs y otros instrumentos, usar shortName como fallback
-            name = info.get('shortName', ticker)
-        
-        market_cap = info.get('marketCap', None)
-        
-        return name, market_cap
-        
-    except:
+    except Exception as e:
+        # En caso de cualquier error, devolver el ticker como nombre
         return ticker, None
 
 def download_weekly_data(ticker, period="5y", use_lock=True):
