@@ -71,6 +71,73 @@ def get_ticker_name_and_marketcap(ticker):
     except:
         return ticker, None
 
+def get_next_dividend_date(ticker):
+    """
+    Obtiene la fecha del próximo dividendo para un ticker.
+    Retorna: fecha del próximo dividendo (str) o None
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        
+        # Obtener el calendario de dividendos
+        calendar = stock.calendar
+        
+        if calendar is not None and 'Ex-Dividend Date' in calendar:
+            ex_div_date = calendar['Ex-Dividend Date']
+            
+            # Si la fecha es futura, retornarla
+            if pd.notna(ex_div_date):
+                if isinstance(ex_div_date, str):
+                    ex_div_date = pd.to_datetime(ex_div_date)
+                
+                if ex_div_date > pd.Timestamp.now():
+                    return ex_div_date.strftime('%Y-%m-%d')
+        
+        # Si no hay en calendar, intentar con dividends
+        dividends = stock.dividends
+        
+        if dividends is not None and not dividends.empty:
+            # Obtener los últimos dividendos para estimar frecuencia
+            recent_divs = dividends.tail(4)
+            
+            if len(recent_divs) >= 2:
+                # Calcular la frecuencia promedio entre dividendos
+                dates = recent_divs.index
+                intervals = [(dates[i+1] - dates[i]).days for i in range(len(dates)-1)]
+                avg_interval = np.mean(intervals)
+                
+                # Estimar próxima fecha
+                last_div_date = dividends.index[-1]
+                next_div_estimate = last_div_date + pd.Timedelta(days=avg_interval)
+                
+                # Solo retornar si es futura
+                if next_div_estimate > pd.Timestamp.now():
+                    return next_div_estimate.strftime('%Y-%m-%d') + ' (Est.)'
+        
+        return "N/A"
+        
+    except Exception as e:
+        return "N/A"
+
+def get_dividend_yield(ticker):
+    """
+    Obtiene el dividend yield de un ticker
+    Retorna: yield en porcentaje (float) o None
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        
+        div_yield = info.get('dividendYield', None)
+        
+        if div_yield is not None and div_yield > 0:
+            return round(div_yield * 100, 2)  # Convertir a porcentaje
+        
+        return None
+        
+    except:
+        return None
+
 def download_weekly_data(ticker, period="5y", use_lock=True):
     """Descarga datos semanales para un ticker"""
     try:
@@ -397,9 +464,13 @@ def analyze_ticker(ticker, params, benchmark_data):
         
         # Si es "Sin filtro", no aplica ningún filtro MACD-V
         
-        # ========== TODOS LOS FILTROS PASADOS - AHORA SÍ OBTENER NOMBRE Y MARKET CAP ==========
-        # Solo obtenemos el nombre y market cap para acciones que pasaron TODOS los filtros
+        # ========== TODOS LOS FILTROS PASADOS - AHORA SÍ OBTENER NOMBRE, MARKET CAP Y DIVIDENDOS ==========
+        # Solo obtenemos el nombre, market cap y dividendos para acciones que pasaron TODOS los filtros
         name, market_cap = get_ticker_name_and_marketcap(ticker)
+        
+        # Obtener información de dividendos
+        next_dividend = get_next_dividend_date(ticker)
+        div_yield = get_dividend_yield(ticker)
         
         # ========== RESULTADO ==========
         result = {
@@ -407,6 +478,8 @@ def analyze_ticker(ticker, params, benchmark_data):
             'Name': name,
             'Price': round(current_price, 2),
             'Market_Cap': market_cap,
+            'Next_Dividend': next_dividend,
+            'Div_Yield_%': div_yield,
             'RSC': round(rsc, 2) if rsc else None,
             'Dist_Max_%': round(dist_to_max, 2),
             'WMA30': round(wma30, 2) if wma30 else None,
@@ -735,10 +808,10 @@ def main():
         
         st.markdown("---")
         
-        # Preparar dataframe para mostrar (con Name y Market Cap)
-        df_table = df_display[['Ticker', 'Name', 'Price', 'Market_Cap_Formatted', 'RSC', 'Dist_Max_%', 
-                               'WMA30', 'Dist_WMA_%', 'Slope', 'R2', 'Norm_Dist', 'Atlas', 
-                               'MIC_Value', 'Sharpe', 'MACD_V']]
+        # Preparar dataframe para mostrar (con Name, Market Cap y Dividendos)
+        df_table = df_display[['Ticker', 'Name', 'Price', 'Market_Cap_Formatted', 'Next_Dividend', 'Div_Yield_%',
+                               'RSC', 'Dist_Max_%', 'WMA30', 'Dist_WMA_%', 'Slope', 'R2', 'Norm_Dist', 
+                               'Atlas', 'MIC_Value', 'Sharpe', 'MACD_V']]
         
         # Tabla de resultados
         st.dataframe(
@@ -750,6 +823,8 @@ def main():
                 "Name": st.column_config.TextColumn("Nombre", width="medium"),
                 "Price": st.column_config.NumberColumn("Precio", format="$%.2f"),
                 "Market_Cap_Formatted": st.column_config.TextColumn("Market Cap", width="small"),
+                "Next_Dividend": st.column_config.TextColumn("Próx. Dividendo", width="medium"),
+                "Div_Yield_%": st.column_config.NumberColumn("Yield %", format="%.2f%%"),
                 "RSC": st.column_config.NumberColumn("RSC", format="%.2f"),
                 "Dist_Max_%": st.column_config.NumberColumn("Dist Max %", format="%.2f%%"),
                 "WMA30": st.column_config.NumberColumn("WMA30", format="%.2f"),
