@@ -371,227 +371,201 @@ def main():
             confluencia = f"⚠️ Discrepan ({regime_macdv} vs {regime_zscore})"
             confluencia_color = "#FFA500"
 
-        # ================= COLUMNAS PARA TABLAS MÁS COMPACTAS =================
-        col1, col2 = st.columns(2)
+        # ================= 3 TABLAS EN UNA FILA =================
+        col1, col2, col3 = st.columns(3)
         
         # ================= TABLA 1: MÉTODO MACD-V =================
         with col1:
-            st.markdown("### 📊 Método 1: MACD-V")
+            st.markdown("#### 📊 Método MACD-V")
             
             macdv_color = REGIME_COLORS.get(regime_macdv, "#FFFFFF")
             
             st.markdown(f"""
-            <table style="width:100%; border-collapse: collapse; margin-bottom: 20px;">
-                <tr style="background-color: #1e1e1e;">
-                    <th style="padding: 10px; text-align: left; border: 1px solid #444; font-size: 13px;">Indicador</th>
-                    <th style="padding: 10px; text-align: left; border: 1px solid #444; font-size: 13px;">Valor</th>
-                </tr>
+            <table style="width:100%; border-collapse: collapse; margin-bottom: 15px;">
                 <tr>
-                    <td style="padding: 10px; border: 1px solid #444; font-weight: bold; font-size: 12px;">Resultado</td>
-                    <td style="padding: 10px; border: 1px solid #444; background-color: {macdv_color}; color: black; font-weight: bold; text-align: center; font-size: 16px;">
+                    <td colspan="2" style="padding: 10px; border: 1px solid #444; background-color: {macdv_color}; color: black; font-weight: bold; text-align: center; font-size: 18px;">
                         {regime_macdv}
                     </td>
                 </tr>
                 <tr>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 12px;">Precio ({ticker})</td>
-                    <td style="padding: 8px; border: 1px solid #444; font-weight: bold; font-size: 14px;">${precio:.2f}</td>
+                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px; background-color: #2e2e2e;">Precio</td>
+                    <td style="padding: 6px; border: 1px solid #444; font-weight: bold; font-size: 13px;">${precio:.2f}</td>
                 </tr>
                 <tr>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 12px;">SMA 50</td>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 12px;">${sma50:.2f}</td>
+                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px; background-color: #2e2e2e;">SMA 50</td>
+                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">${sma50:.2f}</td>
                 </tr>
                 <tr>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 12px;">Precio > SMA50</td>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 12px;">{precio_above_sma}</td>
+                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px; background-color: #2e2e2e;">Precio > SMA50</td>
+                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">{precio_above_sma}</td>
                 </tr>
                 <tr>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 12px;">Valor MACD-V</td>
-                    <td style="padding: 8px; border: 1px solid #444; font-weight: bold; font-size: 12px;">{macd_v:.2f}</td>
-                </tr>
-                <tr>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 11px;">Rango MACD-V</td>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 11px;">[-50, +50] RANGO | [51, 150] ALCISTA | [-150, -51] BAJISTA</td>
+                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px; background-color: #2e2e2e;">MACD-V</td>
+                    <td style="padding: 6px; border: 1px solid #444; font-weight: bold; font-size: 11px;">{macd_v:.2f}</td>
                 </tr>
             </table>
             """, unsafe_allow_html=True)
 
-        # ================= TABLA 2: MÉTODO Z-SCORE PRECIO =================
+        # ================= TABLA 2: MÉTODO Z-SCORE =================
         with col2:
-            st.markdown("### 📊 Método 2: Z-Score Precio")
+            st.markdown("#### 📊 Método Z-Score")
             
             zscore_color = REGIME_COLORS.get(regime_zscore, "#FFFFFF")
             
             st.markdown(f"""
-            <table style="width:100%; border-collapse: collapse; margin-bottom: 20px;">
-                <tr style="background-color: #1e1e1e;">
-                    <th style="padding: 10px; text-align: left; border: 1px solid #444; font-size: 13px;">Indicador</th>
-                    <th style="padding: 10px; text-align: left; border: 1px solid #444; font-size: 13px;">Valor</th>
-                </tr>
+            <table style="width:100%; border-collapse: collapse; margin-bottom: 15px;">
                 <tr>
-                    <td style="padding: 10px; border: 1px solid #444; font-weight: bold; font-size: 12px;">Resultado</td>
-                    <td style="padding: 10px; border: 1px solid #444; background-color: {zscore_color}; color: black; font-weight: bold; text-align: center; font-size: 16px;">
+                    <td colspan="2" style="padding: 10px; border: 1px solid #444; background-color: {zscore_color}; color: black; font-weight: bold; text-align: center; font-size: 18px;">
                         {regime_zscore}
                     </td>
                 </tr>
                 <tr>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 12px;">Precio ({ticker})</td>
-                    <td style="padding: 8px; border: 1px solid #444; font-weight: bold; font-size: 14px;">${precio:.2f}</td>
+                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px; background-color: #2e2e2e;">Precio</td>
+                    <td style="padding: 6px; border: 1px solid #444; font-weight: bold; font-size: 13px;">${precio:.2f}</td>
                 </tr>
                 <tr>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 12px;">SMA 50</td>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 12px;">${sma50:.2f}</td>
+                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px; background-color: #2e2e2e;">SMA 50</td>
+                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">${sma50:.2f}</td>
                 </tr>
                 <tr>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 12px;">Precio > SMA50</td>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 12px;">{precio_above_sma}</td>
+                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px; background-color: #2e2e2e;">Precio > SMA50</td>
+                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">{precio_above_sma}</td>
                 </tr>
                 <tr>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 12px;">Valor Z-Score Precio</td>
-                    <td style="padding: 8px; border: 1px solid #444; font-weight: bold; font-size: 12px;">{z_price:.2f}</td>
-                </tr>
-                <tr>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 11px;">Rango Z-Score</td>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 11px;">[-0.5, +0.5] RANGO | > +0.5 ALCISTA | < -0.5 BAJISTA</td>
+                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px; background-color: #2e2e2e;">Z-Score Precio</td>
+                    <td style="padding: 6px; border: 1px solid #444; font-weight: bold; font-size: 11px;">{z_price:.2f}</td>
                 </tr>
             </table>
             """, unsafe_allow_html=True)
 
-        # ================= TABLA 3: CONFLUENCIA (CENTRADA Y MÁS PEQUEÑA) =================
-        st.markdown("### 🎯 Confluencia entre Métodos")
-        
-        col_conf1, col_conf2, col_conf3 = st.columns([1, 2, 1])
-        with col_conf2:
+        # ================= TABLA 3: CONFLUENCIA =================
+        with col3:
+            st.markdown("#### 🎯 Confluencia")
+            
             st.markdown(f"""
-            <div style="background-color:{confluencia_color}; padding: 15px; border-radius: 10px;
-                        text-align: center; font-weight: bold; color: black; font-size: 18px; margin-bottom: 20px;">
+            <div style="background-color:{confluencia_color}; padding: 15px; border-radius: 8px;
+                        text-align: center; font-weight: bold; color: black; font-size: 16px; margin-bottom: 15px; margin-top: 8px;">
                 {confluencia}
             </div>
             """, unsafe_allow_html=True)
 
-        # ================= TABLA 4: ANÁLISIS DE RIESGO (MÁS COMPACTA) =================
-        st.markdown("### ⚠️ Análisis de Riesgo (Compartido)")
+        # ================= ANÁLISIS DE RIESGO (COMPACTO) =================
+        st.markdown("### ⚠️ Análisis de Riesgo")
         
         macd_extreme = abs(macd_v) >= 151
         z_extreme = abs(z_macd) > 2.0
         
         # Interpretaciones
         if macd_extreme and z_extreme:
-            interpretacion = "⚠️⚠️ ALTA PRECAUCIÓN: Ambos indicadores en niveles extremos"
+            interpretacion = "⚠️⚠️ ALTA PRECAUCIÓN: Ambos indicadores extremos"
             interp_color = "#FF0000"
         elif macd_extreme:
             interpretacion = "⚠️ PRECAUCIÓN: MACD-V sobre-extendido"
             interp_color = "#FFA500"
         elif z_extreme:
-            interpretacion = "⚠️ PRECAUCIÓN: Momentum estadísticamente anormal"
+            interpretacion = "⚠️ PRECAUCIÓN: Momentum anormal"
             interp_color = "#FFA500"
         else:
-            interpretacion = "✅ Condiciones normales de mercado"
+            interpretacion = "✅ Condiciones normales"
             interp_color = "#00FF00"
         
         risk_color = RISK_COLORS.get(risk_level, "#FFFFFF")
         
-        # Centrar tabla de riesgo
-        col_risk1, col_risk2, col_risk3 = st.columns([0.5, 3, 0.5])
-        with col_risk2:
+        col_risk1, col_risk2 = st.columns([2, 1])
+        
+        with col_risk1:
             st.markdown(f"""
-            <table style="width:100%; border-collapse: collapse; margin-bottom: 20px;">
+            <table style="width:100%; border-collapse: collapse; margin-bottom: 15px;">
                 <tr style="background-color: #1e1e1e;">
-                    <th style="padding: 10px; text-align: left; border: 1px solid #444; font-size: 13px;">Indicador</th>
-                    <th style="padding: 10px; text-align: center; border: 1px solid #444; font-size: 13px;">Valor Actual</th>
-                    <th style="padding: 10px; text-align: center; border: 1px solid #444; font-size: 13px;">¿Extremo?</th>
-                    <th style="padding: 10px; text-align: left; border: 1px solid #444; font-size: 13px;">Umbral</th>
+                    <th style="padding: 8px; text-align: left; border: 1px solid #444; font-size: 12px;">Indicador</th>
+                    <th style="padding: 8px; text-align: center; border: 1px solid #444; font-size: 12px;">Valor</th>
+                    <th style="padding: 8px; text-align: center; border: 1px solid #444; font-size: 12px;">¿Extremo?</th>
                 </tr>
                 <tr>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 12px;">Z-Score MACD</td>
-                    <td style="padding: 8px; border: 1px solid #444; text-align: center; font-weight: bold; font-size: 12px;">{z_macd:.2f}</td>
-                    <td style="padding: 8px; border: 1px solid #444; text-align: center; font-size: 12px;">{"🔴 SÍ" if z_extreme else "🟢 NO"}</td>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 12px;">|Z| > 2.0</td>
+                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">Z-Score MACD</td>
+                    <td style="padding: 6px; border: 1px solid #444; text-align: center; font-weight: bold; font-size: 11px;">{z_macd:.2f}</td>
+                    <td style="padding: 6px; border: 1px solid #444; text-align: center; font-size: 11px;">{"🔴 SÍ" if z_extreme else "🟢 NO"}</td>
                 </tr>
                 <tr>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 12px;">MACD-V</td>
-                    <td style="padding: 8px; border: 1px solid #444; text-align: center; font-weight: bold; font-size: 12px;">{macd_v:.2f}</td>
-                    <td style="padding: 8px; border: 1px solid #444; text-align: center; font-size: 12px;">{"🔴 SÍ" if macd_extreme else "🟢 NO"}</td>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 12px;">|MACD-V| ≥ 151</td>
-                </tr>
-                <tr>
-                    <td style="padding: 10px; border: 1px solid #444; font-weight: bold; font-size: 12px;">Nivel de Riesgo</td>
-                    <td colspan="3" style="padding: 10px; border: 1px solid #444; background-color: {risk_color}; color: black; font-weight: bold; text-align: center; font-size: 16px;">
-                        {risk_level}
-                    </td>
-                </tr>
-                <tr>
-                    <td style="padding: 8px; border: 1px solid #444; font-size: 11px;">Criterio</td>
-                    <td colspan="3" style="padding: 8px; border: 1px solid #444; font-size: 11px;">
-                        Ambos extremos = RIESGO+ | Uno extremo = RIESGO- | Ninguno = Sin Riesgo
-                    </td>
-                </tr>
-                <tr>
-                    <td style="padding: 8px; border: 1px solid #444; font-weight: bold; font-size: 12px;">Interpretación</td>
-                    <td colspan="3" style="padding: 8px; border: 1px solid #444; background-color: {interp_color}; color: black; font-weight: bold; font-size: 12px;">
-                        {interpretacion}
-                    </td>
+                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">MACD-V</td>
+                    <td style="padding: 6px; border: 1px solid #444; text-align: center; font-weight: bold; font-size: 11px;">{macd_v:.2f}</td>
+                    <td style="padding: 6px; border: 1px solid #444; text-align: center; font-size: 11px;">{"🔴 SÍ" if macd_extreme else "🟢 NO"}</td>
                 </tr>
             </table>
             """, unsafe_allow_html=True)
+        
+        with col_risk2:
+            st.markdown(f"""
+            <div style="background-color: {risk_color}; padding: 15px; border-radius: 8px;
+                        text-align: center; font-weight: bold; color: black; font-size: 20px; margin-bottom: 10px; margin-top: 30px;">
+                {risk_level}
+            </div>
+            <div style="background-color: {interp_color}; padding: 10px; border-radius: 8px;
+                        text-align: center; font-weight: bold; color: black; font-size: 11px;">
+                {interpretacion}
+            </div>
+            """, unsafe_allow_html=True)
 
         # ================= LEYENDA =================
-        st.markdown("### 🎨 Leyenda de Regímenes")
+        st.markdown("### 🎨 Leyenda")
         cols = st.columns(4)
         for idx, (regime, color) in enumerate(REGIME_COLORS.items()):
             with cols[idx]:
                 st.markdown(
-                    f'<div style="background-color:{color};padding:8px;border-radius:5px;'
-                    f'text-align:center;font-weight:bold;color:black;border:2px solid white;font-size:13px;">{regime}</div>',
+                    f'<div style="background-color:{color};padding:6px;border-radius:5px;'
+                    f'text-align:center;font-weight:bold;color:black;border:2px solid white;font-size:12px;">{regime}</div>',
                     unsafe_allow_html=True
                 )
 
-        # ================= GRÁFICOS (MÁS PEQUEÑOS) =================
+        # ================= GRÁFICOS (MÁS COMPACTOS) =================
         st.markdown("---")
         plt.style.use("dark_background")
-        fig, axs = plt.subplots(3, 1, figsize=(12, 8), sharex=True)  # Reducido de (14, 10)
+        fig, axs = plt.subplots(3, 1, figsize=(11, 7), sharex=True)  # Reducido aún más
 
         # ========== GRÁFICO 1: PRECIO + MACD-V ==========
-        axs[0].plot(df_plot.index, df_plot["Close"], color="white", alpha=0.5, linewidth=1.5, label="Precio")
-        axs[0].plot(df_plot.index, df_plot["SMA_50"], color="cyan", linewidth=2, alpha=0.7, label="SMA 50")
+        axs[0].plot(df_plot.index, df_plot["Close"], color="white", alpha=0.5, linewidth=1.3, label="Precio")
+        axs[0].plot(df_plot.index, df_plot["SMA_50"], color="cyan", linewidth=1.8, alpha=0.7, label="SMA 50")
 
         for r, c in REGIME_COLORS.items():
             m = df_plot["Regime_MACDV"] == r
             if m.any():
-                axs[0].scatter(df_plot[m].index, df_plot[m]["Close"], c=c, s=80, alpha=0.95, 
-                             edgecolors='black', linewidths=1.5, zorder=5, label=f"{r}")
+                axs[0].scatter(df_plot[m].index, df_plot[m]["Close"], c=c, s=70, alpha=0.95, 
+                             edgecolors='black', linewidths=1.2, zorder=5, label=f"{r}")
 
         last_price = float(df_plot["Close"].iloc[-1])
         axs[0].text(1.01, last_price, f'${last_price:.2f}', 
                    transform=axs[0].get_yaxis_transform(), 
-                   fontsize=9, color='white', va='center', fontweight='bold')
+                   fontsize=8, color='white', va='center', fontweight='bold')
         
-        axs[0].set_title(f"{ticker} — Método MACD-V", fontsize=11, fontweight='bold', pad=8)
+        axs[0].set_title(f"{ticker} — Método MACD-V", fontsize=10, fontweight='bold', pad=6)
         axs[0].grid(alpha=0.25, linestyle='--')
-        axs[0].set_ylabel("Precio ($)", fontsize=9)
-        axs[0].legend(loc='upper left', fontsize=7, ncol=2)
+        axs[0].set_ylabel("Precio ($)", fontsize=8)
+        axs[0].legend(loc='upper left', fontsize=6.5, ncol=2)
         axs[0].yaxis.tick_right()
         axs[0].yaxis.set_label_position("right")
+        axs[0].tick_params(axis='both', labelsize=7)
 
         # ========== GRÁFICO 2: PRECIO + Z-SCORE ==========
-        axs[1].plot(df_plot.index, df_plot["Close"], color="white", alpha=0.5, linewidth=1.5, label="Precio")
-        axs[1].plot(df_plot.index, df_plot["SMA_50"], color="cyan", linewidth=2, alpha=0.7, label="SMA 50")
+        axs[1].plot(df_plot.index, df_plot["Close"], color="white", alpha=0.5, linewidth=1.3, label="Precio")
+        axs[1].plot(df_plot.index, df_plot["SMA_50"], color="cyan", linewidth=1.8, alpha=0.7, label="SMA 50")
 
         for r, c in REGIME_COLORS.items():
             m = df_plot["Regime_ZScore"] == r
             if m.any():
-                axs[1].scatter(df_plot[m].index, df_plot[m]["Close"], c=c, s=80, alpha=0.95, 
-                             edgecolors='black', linewidths=1.5, zorder=5, label=f"{r}")
+                axs[1].scatter(df_plot[m].index, df_plot[m]["Close"], c=c, s=70, alpha=0.95, 
+                             edgecolors='black', linewidths=1.2, zorder=5, label=f"{r}")
 
         axs[1].text(1.01, last_price, f'${last_price:.2f}', 
                    transform=axs[1].get_yaxis_transform(), 
-                   fontsize=9, color='white', va='center', fontweight='bold')
+                   fontsize=8, color='white', va='center', fontweight='bold')
         
-        axs[1].set_title(f"{ticker} — Método Z-Score Precio", fontsize=11, fontweight='bold', pad=8)
+        axs[1].set_title(f"{ticker} — Método Z-Score Precio", fontsize=10, fontweight='bold', pad=6)
         axs[1].grid(alpha=0.25, linestyle='--')
-        axs[1].set_ylabel("Precio ($)", fontsize=9)
-        axs[1].legend(loc='upper left', fontsize=7, ncol=2)
+        axs[1].set_ylabel("Precio ($)", fontsize=8)
+        axs[1].legend(loc='upper left', fontsize=6.5, ncol=2)
         axs[1].yaxis.tick_right()
         axs[1].yaxis.set_label_position("right")
+        axs[1].tick_params(axis='both', labelsize=7)
 
         # ========== GRÁFICO 3: INDICADORES DE RIESGO ==========
         ax3_left = axs[2]
@@ -601,10 +575,10 @@ def main():
         z_colors = ['#FF0000' if abs(z) > 2 else '#87CEEB' for z in df_plot["Z_Score_MACD"]]
         for i in range(len(df_plot) - 1):
             ax3_left.plot(df_plot.index[i:i+2], df_plot["Z_Score_MACD"].iloc[i:i+2], 
-                         color=z_colors[i], linewidth=2)
+                         color=z_colors[i], linewidth=1.8)
         
-        ax3_left.axhline(2, color="red", linestyle="--", alpha=0.6, linewidth=1.5, label="Umbral ±2.0")
-        ax3_left.axhline(-2, color="red", linestyle="--", alpha=0.6, linewidth=1.5)
+        ax3_left.axhline(2, color="red", linestyle="--", alpha=0.6, linewidth=1.3, label="Umbral ±2.0")
+        ax3_left.axhline(-2, color="red", linestyle="--", alpha=0.6, linewidth=1.3)
         ax3_left.axhline(0, color="gray", linestyle="-", alpha=0.4)
         ax3_left.fill_between(df_plot.index, 2, df_plot["Z_Score_MACD"], 
                              where=(df_plot["Z_Score_MACD"]>2), color="red", alpha=0.15)
@@ -615,13 +589,13 @@ def main():
         macd_colors = ['#FF0000' if abs(m) >= 151 else '#FFFFFF' for m in df_plot["MACD_V"]]
         for i in range(len(df_plot) - 1):
             ax3_right.plot(df_plot.index[i:i+2], df_plot["MACD_V"].iloc[i:i+2], 
-                          color=macd_colors[i], linewidth=2)
+                          color=macd_colors[i], linewidth=1.8)
         
         ax3_right.axhline(0, color="gray", linestyle="-", alpha=0.4)
         ax3_right.axhline(50, color="green", linestyle=":", alpha=0.4, linewidth=1, label="Zona ±50")
         ax3_right.axhline(-50, color="red", linestyle=":", alpha=0.4, linewidth=1)
-        ax3_right.axhline(151, color="red", linestyle="--", alpha=0.6, linewidth=1.5, label="Umbral ±151")
-        ax3_right.axhline(-151, color="red", linestyle="--", alpha=0.6, linewidth=1.5)
+        ax3_right.axhline(151, color="red", linestyle="--", alpha=0.6, linewidth=1.3, label="Umbral ±151")
+        ax3_right.axhline(-151, color="red", linestyle="--", alpha=0.6, linewidth=1.3)
         
         last_z = float(df_plot["Z_Score_MACD"].iloc[-1])
         last_macd = float(df_plot["MACD_V"].iloc[-1])
@@ -631,93 +605,63 @@ def main():
         
         ax3_left.text(-0.01, last_z, f'{last_z:.2f}σ', 
                      transform=ax3_left.get_yaxis_transform(), 
-                     fontsize=9, color=z_color_final, va='center', fontweight='bold', ha='right')
+                     fontsize=8, color=z_color_final, va='center', fontweight='bold', ha='right')
         
         ax3_right.text(1.01, last_macd, f'{last_macd:.2f}', 
                       transform=ax3_right.get_yaxis_transform(), 
-                      fontsize=9, color=macd_color_final, va='center', fontweight='bold')
+                      fontsize=8, color=macd_color_final, va='center', fontweight='bold')
         
         ax3_left.set_title("Indicadores de Riesgo: Z-Score MACD (izq) y MACD-V (der)", 
-                          fontsize=11, fontweight='bold', pad=8)
+                          fontsize=10, fontweight='bold', pad=6)
         ax3_left.grid(alpha=0.25, linestyle='--')
-        ax3_left.set_ylabel("Z-Score MACD", fontsize=9, color='#87CEEB')
-        ax3_right.set_ylabel("MACD-V", fontsize=9, color='#FFFFFF')
-        ax3_left.set_xlabel("Fecha", fontsize=9)
-        ax3_left.tick_params(axis='y', labelcolor='#87CEEB', labelsize=8)
-        ax3_right.tick_params(axis='y', labelcolor='#FFFFFF', labelsize=8)
-        ax3_left.legend(loc='upper left', fontsize=7)
-        ax3_right.legend(loc='upper right', fontsize=7)
+        ax3_left.set_ylabel("Z-Score MACD", fontsize=8, color='#87CEEB')
+        ax3_right.set_ylabel("MACD-V", fontsize=8, color='#FFFFFF')
+        ax3_left.set_xlabel("Fecha", fontsize=8)
+        ax3_left.tick_params(axis='y', labelcolor='#87CEEB', labelsize=7)
+        ax3_right.tick_params(axis='y', labelcolor='#FFFFFF', labelsize=7)
+        ax3_left.tick_params(axis='x', labelsize=7)
+        ax3_left.legend(loc='upper left', fontsize=6.5)
+        ax3_right.legend(loc='upper right', fontsize=6.5)
 
         plt.tight_layout()
         st.pyplot(fig)
 
-        # ================= DOCUMENTACIÓN =================
+        # ================= DOCUMENTACIÓN (COMPACTA) =================
         st.markdown("---")
-        st.markdown("### 📖 Lógica de Clasificación")
-        
-        col_logic1, col_logic2 = st.columns(2)
-        
-        with col_logic1:
-            st.markdown("#### 🔹 Método MACD-V")
-            st.markdown("""
-            **PASO 1: Detectar RIESGO (máxima prioridad)**
-            - Si |MACD-V| ≥ 151 **O** |Z-Score MACD| > 2.0 → **RIESGO** (morado)
+        with st.expander("📖 Ver Lógica de Clasificación"):
+            col_logic1, col_logic2 = st.columns(2)
             
-            **PASO 2: Determinar lado del mercado**
-            - Precio > SMA50 → Lado alcista
-            - Precio < SMA50 → Lado bajista
+            with col_logic1:
+                st.markdown("#### 🔹 Método MACD-V")
+                st.markdown("""
+                **PASO 1: Detectar RIESGO**
+                - |MACD-V| ≥ 151 **O** |Z-Score MACD| > 2.0 → **RIESGO**
+                
+                **PASO 2: Determinar lado**
+                - Precio > SMA50 → Lado alcista
+                - Precio < SMA50 → Lado bajista
+                
+                **PASO 3: Clasificar**
+                - Alcista: MACD-V [51, 150]
+                - Bajista: MACD-V [-150, -51]
+                - Rango: MACD-V [-50, +50]
+                """)
             
-            **PASO 3: Clasificar según MACD-V**
-            
-            *Lado ALCISTA (precio > SMA50):*
-            - MACD-V en [51, 150] → **ALCISTA** (verde)
-            - MACD-V en [-50, +50] → **RANGO** (amarillo)
-            - Otros casos → **RANGO** (contradicción)
-            
-            *Lado BAJISTA (precio < SMA50):*
-            - MACD-V en [-150, -51] → **BAJISTA** (rojo)
-            - MACD-V en [-50, +50] → **RANGO** (amarillo)
-            - Otros casos → **RANGO** (contradicción)
-            
-            **Nota:** Sin histéresis, respuesta inmediata
-            """)
-        
-        with col_logic2:
-            st.markdown("#### 🔹 Método Z-Score Precio")
-            st.markdown("""
-            **PASO 1: Detectar RIESGO (máxima prioridad)**
-            - Si |MACD-V| ≥ 151 **O** |Z-Score MACD| > 2.0 → **RIESGO** (morado)
-            
-            **PASO 2: Determinar lado del mercado**
-            - Precio > SMA50 → Lado alcista
-            - Precio < SMA50 → Lado bajista
-            
-            **PASO 3: Clasificar según Z-Score Precio**
-            
-            *Lado ALCISTA (precio > SMA50):*
-            - Z-Score > +0.5 → **ALCISTA** (verde)
-            - Z-Score en [-0.5, +0.5] → **RANGO** (amarillo)
-            - Otros casos → **RANGO**
-            
-            *Lado BAJISTA (precio < SMA50):*
-            - Z-Score < -0.5 → **BAJISTA** (rojo)
-            - Z-Score en [-0.5, +0.5] → **RANGO** (amarillo)
-            - Otros casos → **RANGO**
-            
-            **Nota:** Sin histéresis, respuesta inmediata
-            """)
-        
-        st.markdown("---")
-        st.markdown("#### ⚠️ Análisis de Riesgo en Tabla")
-        st.markdown("""
-        La tabla de riesgo distingue entre dos niveles de severidad:
-        
-        - **RIESGO+**: |MACD-V| ≥ 151 **Y** |Z-Score MACD| > 2.0 (ambas condiciones) → Alta precaución
-        - **RIESGO-**: |MACD-V| ≥ 151 **O** |Z-Score MACD| > 2.0 (una condición) → Precaución moderada
-        - **Sin Riesgo**: Ninguna condición extrema → Condiciones normales
-        
-        En los gráficos, cualquier nivel de riesgo (RIESGO+ o RIESGO-) se muestra con **puntos morados**.
-        """)
+            with col_logic2:
+                st.markdown("#### 🔹 Método Z-Score Precio")
+                st.markdown("""
+                **PASO 1: Detectar RIESGO**
+                - |MACD-V| ≥ 151 **O** |Z-Score MACD| > 2.0 → **RIESGO**
+                
+                **PASO 2: Determinar lado**
+                - Precio > SMA50 → Lado alcista
+                - Precio < SMA50 → Lado bajista
+                
+                **PASO 3: Clasificar**
+                - Alcista: Z-Score > +0.5
+                - Bajista: Z-Score < -0.5
+                - Rango: Z-Score [-0.5, +0.5]
+                """)
 
     elif st.session_state.analyzed and st.session_state.df is None:
         st.error("❌ No se pudo descargar data. Verifica el ticker.")
