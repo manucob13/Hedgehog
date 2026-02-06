@@ -362,17 +362,9 @@ def main():
         z_macd = float(current["Z_Score_MACD"])
         
         precio_above_sma = "✅ SÍ" if precio > sma50 else "❌ NO"
-        
-        # Determinar confluencia
-        if regime_macdv == regime_zscore:
-            confluencia = f"✅ Ambos {regime_macdv}"
-            confluencia_color = REGIME_COLORS.get(regime_macdv, "#FFFFFF")
-        else:
-            confluencia = f"⚠️ Discrepan"
-            confluencia_color = "#FFA500"
 
-        # ================= 3 TABLAS EN UNA FILA =================
-        col1, col2, col3 = st.columns(3)
+        # ================= 2 TABLAS EN UNA FILA (SIN CONFLUENCIA) =================
+        col1, col2 = st.columns(2)
         
         # ================= TABLA 1: MÉTODO MACD-V =================
         with col1:
@@ -438,36 +430,11 @@ def main():
             </table>
             """, unsafe_allow_html=True)
 
-        # ================= TABLA 3: CONFLUENCIA (SEMÁFORO) =================
-        with col3:
-            st.markdown("#### 🎯 Confluencia")
-            
-            st.markdown(f"""
-            <div style="background-color:{confluencia_color}; padding: 50px 10px; border-radius: 8px; margin-top: 8px;
-                        text-align: center; font-weight: bold; color: black; font-size: 16px; margin-bottom: 15px;">
-                {confluencia}
-            </div>
-            """, unsafe_allow_html=True)
-
-        # ================= ANÁLISIS DE RIESGO (MEJORADO Y ALINEADO) =================
+        # ================= ANÁLISIS DE RIESGO CON SEMÁFORO CIRCULAR =================
         st.markdown("### ⚠️ Análisis de Riesgo")
         
         macd_extreme = abs(macd_v) >= 151
         z_extreme = abs(z_macd) > 2.0
-        
-        # Interpretaciones
-        if macd_extreme and z_extreme:
-            interpretacion = "⚠️⚠️ ALTA PRECAUCIÓN"
-            interp_color = "#FF0000"
-        elif macd_extreme:
-            interpretacion = "⚠️ MACD-V sobre-extendido"
-            interp_color = "#FFA500"
-        elif z_extreme:
-            interpretacion = "⚠️ Momentum anormal"
-            interp_color = "#FFA500"
-        else:
-            interpretacion = "✅ Condiciones normales"
-            interp_color = "#00FF00"
         
         risk_color = RISK_COLORS.get(risk_level, "#FFFFFF")
         
@@ -499,14 +466,11 @@ def main():
         
         with col_risk2:
             st.markdown(f"""
-            <div style="margin-top: 34px;">
-                <div style="background-color: {risk_color}; padding: 20px 10px; border-radius: 8px; margin-bottom: 8px;
-                            text-align: center; font-weight: bold; color: black; font-size: 18px;">
+            <div style="display: flex; justify-content: center; align-items: center; height: 100%; margin-top: 34px;">
+                <div style="width: 120px; height: 120px; border-radius: 50%; background-color: {risk_color}; 
+                            display: flex; justify-content: center; align-items: center; text-align: center;
+                            font-weight: bold; color: black; font-size: 16px; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">
                     {risk_level}
-                </div>
-                <div style="background-color: {interp_color}; padding: 10px; border-radius: 8px;
-                            text-align: center; font-weight: bold; color: black; font-size: 11px;">
-                    {interpretacion}
                 </div>
             </div>
             """, unsafe_allow_html=True)
