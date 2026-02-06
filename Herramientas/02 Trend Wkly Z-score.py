@@ -363,7 +363,7 @@ def main():
         
         precio_above_sma = "✅ SÍ" if precio > sma50 else "❌ NO"
 
-        # ================= 2 TABLAS DE MÉTODOS EN UNA FILA =================
+        # ================= 2 TABLAS DE MÉTODOS EN UNA FILA (MÁS COMPACTAS) =================
         col1, col2 = st.columns(2)
         
         # ================= TABLA 1: MÉTODO MACD-V =================
@@ -373,27 +373,27 @@ def main():
             macdv_color = REGIME_COLORS.get(regime_macdv, "#FFFFFF")
             
             st.markdown(f"""
-            <table style="width:100%; border-collapse: collapse; margin-bottom: 15px;">
+            <table style="width:100%; border-collapse: collapse; margin-bottom: 10px;">
                 <tr>
-                    <td colspan="2" style="padding: 10px; border: 1px solid #444; background-color: {macdv_color}; color: black; font-weight: bold; text-align: center; font-size: 18px;">
+                    <td colspan="2" style="padding: 8px; border: 1px solid #444; background-color: {macdv_color}; color: black; font-weight: bold; text-align: center; font-size: 16px;">
                         {regime_macdv}
                     </td>
                 </tr>
                 <tr>
-                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px; background-color: #2e2e2e;">Precio</td>
-                    <td style="padding: 6px; border: 1px solid #444; font-weight: bold; font-size: 13px;">${precio:.2f}</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-size: 10px; background-color: #2e2e2e; width: 40%;">Precio</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-weight: bold; font-size: 12px;">${precio:.2f}</td>
                 </tr>
                 <tr>
-                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px; background-color: #2e2e2e;">SMA 50</td>
-                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">${sma50:.2f}</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-size: 10px; background-color: #2e2e2e;">SMA 50</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-size: 10px;">${sma50:.2f}</td>
                 </tr>
                 <tr>
-                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px; background-color: #2e2e2e;">Precio > SMA50</td>
-                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">{precio_above_sma}</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-size: 10px; background-color: #2e2e2e;">Precio > SMA50</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-size: 10px;">{precio_above_sma}</td>
                 </tr>
                 <tr>
-                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px; background-color: #2e2e2e;">MACD-V</td>
-                    <td style="padding: 6px; border: 1px solid #444; font-weight: bold; font-size: 11px;">{macd_v:.2f}</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-size: 10px; background-color: #2e2e2e;">MACD-V</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-weight: bold; font-size: 10px;">{macd_v:.2f}</td>
                 </tr>
             </table>
             """, unsafe_allow_html=True)
@@ -405,100 +405,95 @@ def main():
             zscore_color = REGIME_COLORS.get(regime_zscore, "#FFFFFF")
             
             st.markdown(f"""
-            <table style="width:100%; border-collapse: collapse; margin-bottom: 15px;">
+            <table style="width:100%; border-collapse: collapse; margin-bottom: 10px;">
                 <tr>
-                    <td colspan="2" style="padding: 10px; border: 1px solid #444; background-color: {zscore_color}; color: black; font-weight: bold; text-align: center; font-size: 18px;">
+                    <td colspan="2" style="padding: 8px; border: 1px solid #444; background-color: {zscore_color}; color: black; font-weight: bold; text-align: center; font-size: 16px;">
                         {regime_zscore}
                     </td>
                 </tr>
                 <tr>
-                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px; background-color: #2e2e2e;">Precio</td>
-                    <td style="padding: 6px; border: 1px solid #444; font-weight: bold; font-size: 13px;">${precio:.2f}</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-size: 10px; background-color: #2e2e2e; width: 40%;">Precio</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-weight: bold; font-size: 12px;">${precio:.2f}</td>
                 </tr>
                 <tr>
-                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px; background-color: #2e2e2e;">SMA 50</td>
-                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">${sma50:.2f}</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-size: 10px; background-color: #2e2e2e;">SMA 50</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-size: 10px;">${sma50:.2f}</td>
                 </tr>
                 <tr>
-                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px; background-color: #2e2e2e;">Precio > SMA50</td>
-                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">{precio_above_sma}</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-size: 10px; background-color: #2e2e2e;">Precio > SMA50</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-size: 10px;">{precio_above_sma}</td>
                 </tr>
                 <tr>
-                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px; background-color: #2e2e2e;">Z-Score Precio</td>
-                    <td style="padding: 6px; border: 1px solid #444; font-weight: bold; font-size: 11px;">{z_price:.2f}</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-size: 10px; background-color: #2e2e2e;">Z-Score Precio</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-weight: bold; font-size: 10px;">{z_price:.2f}</td>
                 </tr>
             </table>
             """, unsafe_allow_html=True)
 
-        # ================= ANÁLISIS DE RIESGO CON SEMÁFORO AL LADO DEL TÍTULO =================
+        # ================= ANÁLISIS DE RIESGO CON SEMÁFORO COMO PUNTO =================
         macd_extreme = abs(macd_v) >= 151
         z_extreme = abs(z_macd) > 2.0
         risk_color = RISK_COLORS.get(risk_level, "#FFFFFF")
         
-        # Título con semáforo al lado
-        col_title, col_semaforo = st.columns([5, 1])
-        
-        with col_title:
-            st.markdown("### ⚠️ Análisis de Riesgo")
-        
-        with col_semaforo:
-            st.markdown(f"""
-            <div style="display: flex; justify-content: flex-end; align-items: center; height: 40px;">
-                <div style="width: 80px; height: 80px; border-radius: 50%; background-color: {risk_color}; 
-                            display: flex; justify-content: center; align-items: center; text-align: center;
-                            font-weight: bold; color: black; font-size: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">
-                    {risk_level}
-                </div>
+        # Título con semáforo como punto
+        st.markdown(f"""
+        <div style="display: flex; align-items: center; margin-bottom: 10px;">
+            <h3 style="margin: 0; padding: 0; display: inline;">⚠️ Análisis de Riesgo</h3>
+            <div style="width: 35px; height: 35px; border-radius: 50%; background-color: {risk_color}; 
+                        margin-left: 15px; display: flex; justify-content: center; align-items: center;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.3); font-size: 9px; font-weight: bold; color: black;">
+                {risk_level.replace("Sin Riesgo", "OK")}
             </div>
-            """, unsafe_allow_html=True)
+        </div>
+        """, unsafe_allow_html=True)
         
-        # Tabla de riesgo en 3 columnas
+        # Tabla de riesgo en 3 columnas (MÁS COMPACTA)
         col_risk1, col_risk2, col_risk3 = st.columns(3)
         
         with col_risk1:
             st.markdown(f"""
-            <table style="width:100%; border-collapse: collapse; margin-bottom: 15px;">
+            <table style="width:100%; border-collapse: collapse; margin-bottom: 10px;">
                 <tr style="background-color: #1e1e1e;">
-                    <th style="padding: 8px; text-align: left; border: 1px solid #444; font-size: 12px;">Indicador</th>
-                    <th style="padding: 8px; text-align: center; border: 1px solid #444; font-size: 12px;">Valor</th>
+                    <th style="padding: 6px; text-align: left; border: 1px solid #444; font-size: 11px;">Indicador</th>
+                    <th style="padding: 6px; text-align: center; border: 1px solid #444; font-size: 11px;">Valor</th>
                 </tr>
                 <tr>
-                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">Z-Score MACD</td>
-                    <td style="padding: 6px; border: 1px solid #444; text-align: center; font-weight: bold; font-size: 11px;">{z_macd:.2f}</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-size: 10px;">Z-Score MACD</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; text-align: center; font-weight: bold; font-size: 10px;">{z_macd:.2f}</td>
                 </tr>
                 <tr>
-                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">MACD-V</td>
-                    <td style="padding: 6px; border: 1px solid #444; text-align: center; font-weight: bold; font-size: 11px;">{macd_v:.2f}</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-size: 10px;">MACD-V</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; text-align: center; font-weight: bold; font-size: 10px;">{macd_v:.2f}</td>
                 </tr>
             </table>
             """, unsafe_allow_html=True)
         
         with col_risk2:
             st.markdown(f"""
-            <table style="width:100%; border-collapse: collapse; margin-bottom: 15px;">
+            <table style="width:100%; border-collapse: collapse; margin-bottom: 10px;">
                 <tr style="background-color: #1e1e1e;">
-                    <th style="padding: 8px; text-align: center; border: 1px solid #444; font-size: 12px;">¿Extremo?</th>
+                    <th style="padding: 6px; text-align: center; border: 1px solid #444; font-size: 11px;">¿Extremo?</th>
                 </tr>
                 <tr>
-                    <td style="padding: 6px; border: 1px solid #444; text-align: center; font-size: 11px;">{"🔴 SÍ" if z_extreme else "🟢 NO"}</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; text-align: center; font-size: 10px;">{"🔴 SÍ" if z_extreme else "🟢 NO"}</td>
                 </tr>
                 <tr>
-                    <td style="padding: 6px; border: 1px solid #444; text-align: center; font-size: 11px;">{"🔴 SÍ" if macd_extreme else "🟢 NO"}</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; text-align: center; font-size: 10px;">{"🔴 SÍ" if macd_extreme else "🟢 NO"}</td>
                 </tr>
             </table>
             """, unsafe_allow_html=True)
         
         with col_risk3:
             st.markdown(f"""
-            <table style="width:100%; border-collapse: collapse; margin-bottom: 15px;">
+            <table style="width:100%; border-collapse: collapse; margin-bottom: 10px;">
                 <tr style="background-color: #1e1e1e;">
-                    <th style="padding: 8px; text-align: left; border: 1px solid #444; font-size: 12px;">Umbral</th>
+                    <th style="padding: 6px; text-align: left; border: 1px solid #444; font-size: 11px;">Umbral</th>
                 </tr>
                 <tr>
-                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">|Z| > 2.0</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-size: 10px;">|Z| > 2.0</td>
                 </tr>
                 <tr>
-                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">|MACD-V| ≥ 151</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-size: 10px;">|MACD-V| ≥ 151</td>
                 </tr>
             </table>
             """, unsafe_allow_html=True)
@@ -509,8 +504,8 @@ def main():
         for idx, (regime, color) in enumerate(REGIME_COLORS.items()):
             with cols[idx]:
                 st.markdown(
-                    f'<div style="background-color:{color};padding:6px;border-radius:5px;'
-                    f'text-align:center;font-weight:bold;color:black;border:2px solid white;font-size:12px;">{regime}</div>',
+                    f'<div style="background-color:{color};padding:5px;border-radius:5px;'
+                    f'text-align:center;font-weight:bold;color:black;border:2px solid white;font-size:11px;">{regime}</div>',
                     unsafe_allow_html=True
                 )
 
