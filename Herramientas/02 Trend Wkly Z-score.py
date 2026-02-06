@@ -62,11 +62,10 @@ REGIME_COLORS = {
     "RIESGO": "#9370DB",       # Morado (cuando hay riesgo en gráficos)
 }
 
-# Colores para el análisis de riesgo en tabla
+# Colores para el análisis de riesgo en tabla (SOLO CONSENSO)
 RISK_COLORS = {
-    "RIESGO-": "#9370DB",      # Morado medio
-    "RIESGO+": "#4B0082",      # Índigo oscuro
-    "Sin Riesgo": "#00FF00",   # Verde
+    "RIESGO+": "#9370DB",      # Morado - AMBOS extremos
+    "Sin Riesgo": "#00FF00",   # Verde - Sin consenso o sin extremos
 }
 
 # ============================================================================
@@ -235,14 +234,14 @@ def classify_by_zscore(df):
     return regimes
 
 # ============================================================================
-# ANÁLISIS DE RIESGO (INDEPENDIENTE - REQUIERE CONSENSO)
+# ANÁLISIS DE RIESGO (SOLO CONSENSO TOTAL)
 # ============================================================================
 
 def analyze_risk(df):
     """
-    Analiza condiciones de riesgo de manera independiente
-    Requiere que AMBOS indicadores estén extremos para marcar riesgo
-    Retorna: RIESGO+, RIESGO-, o Sin Riesgo
+    Analiza condiciones de riesgo SOLO cuando hay CONSENSO TOTAL
+    Solo marca RIESGO+ cuando AMBOS indicadores están extremos
+    Retorna: RIESGO+ o Sin Riesgo
     """
     risk_levels = []
 
@@ -262,12 +261,9 @@ def analyze_risk(df):
         macd_extreme = abs(macd_v) >= 151
         z_extreme = abs(z_macd) > 2.0
 
-        # CONSENSO: Ambos deben estar extremos para RIESGO+
+        # SOLO CONSENSO: AMBOS deben estar extremos
         if macd_extreme and z_extreme:
             risk = "RIESGO+"
-        # Al menos uno extremo para RIESGO-
-        elif macd_extreme or z_extreme:
-            risk = "RIESGO-"
         else:
             risk = "Sin Riesgo"
 
@@ -419,7 +415,7 @@ def main():
             </table>
             """, unsafe_allow_html=True)
 
-        # ================= ANÁLISIS DE RIESGO CON SEMÁFORO COMO PUNTO =================
+        # ================= ANÁLISIS DE RIESGO CON SEMÁFORO COMO PUNTO (SOLO CONSENSO) =================
         macd_extreme = abs(macd_v) >= 151
         z_extreme = abs(z_macd) > 2.0
         risk_color = RISK_COLORS.get(risk_level, "#FFFFFF")
@@ -431,7 +427,7 @@ def main():
             <div style="width: 35px; height: 35px; border-radius: 50%; background-color: {risk_color}; 
                         margin-left: 15px; display: flex; justify-content: center; align-items: center;
                         box-shadow: 0 2px 4px rgba(0,0,0,0.3); font-size: 9px; font-weight: bold; color: black;">
-                {risk_level.replace("Sin Riesgo", "OK")}
+                {risk_level.replace("Sin Riesgo", "OK").replace("RIESGO+", "R+")}
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -634,13 +630,14 @@ def main():
                 - Z-Score [-0.5, +0.5] → **RANGO**
                 """)
             
-            st.markdown("#### ⚠️ Análisis de Riesgo")
+            st.markdown("#### ⚠️ Análisis de Riesgo (SOLO CONSENSO)")
             st.markdown("""
-            **Análisis INDEPENDIENTE (requiere consenso):**
+            **El semáforo SOLO marca RIESGO+ cuando hay CONSENSO TOTAL:**
             
-            - |MACD-V| ≥ 151 **Y** |Z-Score MACD| > 2.0 → **RIESGO+** (ambos extremos)
-            - |MACD-V| ≥ 151 **O** |Z-Score MACD| > 2.0 → **RIESGO-** (uno extremo)
-            - Ninguno extremo → **Sin Riesgo**
+            - |MACD-V| ≥ 151 **Y** |Z-Score MACD| > 2.0 → **RIESGO+** (morado - AMBOS extremos)
+            - En cualquier otro caso → **Sin Riesgo** (verde)
+            
+            **No se marca riesgo si solo UNO de los indicadores está extremo.**
             """)
 
     elif st.session_state.analyzed and st.session_state.df is None:
