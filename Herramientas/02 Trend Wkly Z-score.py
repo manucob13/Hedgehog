@@ -350,10 +350,10 @@ def main():
         df_plot = df.tail(int(lookback_months * 4.33))
         current = df.iloc[-1]
 
-        # Extraer valores actuales - SOLUCIÓN CORRECTA
-        regime_macdv = df["Regime_MACDV"].iloc[-1]  # Último valor
-        regime_zscore = df["Regime_ZScore"].iloc[-1]  # Último valor
-        risk_level = df["Risk_Level"].iloc[-1]  # Último valor
+        # Extraer valores actuales
+        regime_macdv = df["Regime_MACDV"].iloc[-1]
+        regime_zscore = df["Regime_ZScore"].iloc[-1]
+        risk_level = df["Risk_Level"].iloc[-1]
         
         precio = float(current["Close"])
         sma50 = float(current["SMA_50"])
@@ -368,7 +368,7 @@ def main():
             confluencia = f"✅ Ambos {regime_macdv}"
             confluencia_color = REGIME_COLORS.get(regime_macdv, "#FFFFFF")
         else:
-            confluencia = f"⚠️ Discrepan ({regime_macdv} vs {regime_zscore})"
+            confluencia = f"⚠️ Discrepan"
             confluencia_color = "#FFA500"
 
         # ================= 3 TABLAS EN UNA FILA =================
@@ -438,18 +438,18 @@ def main():
             </table>
             """, unsafe_allow_html=True)
 
-        # ================= TABLA 3: CONFLUENCIA =================
+        # ================= TABLA 3: CONFLUENCIA (SEMÁFORO) =================
         with col3:
             st.markdown("#### 🎯 Confluencia")
             
             st.markdown(f"""
-            <div style="background-color:{confluencia_color}; padding: 15px; border-radius: 8px;
-                        text-align: center; font-weight: bold; color: black; font-size: 16px; margin-bottom: 15px; margin-top: 8px;">
+            <div style="background-color:{confluencia_color}; padding: 50px 10px; border-radius: 8px; margin-top: 8px;
+                        text-align: center; font-weight: bold; color: black; font-size: 16px; margin-bottom: 15px;">
                 {confluencia}
             </div>
             """, unsafe_allow_html=True)
 
-        # ================= ANÁLISIS DE RIESGO (COMPACTO) =================
+        # ================= ANÁLISIS DE RIESGO (MEJORADO Y ALINEADO) =================
         st.markdown("### ⚠️ Análisis de Riesgo")
         
         macd_extreme = abs(macd_v) >= 151
@@ -457,13 +457,13 @@ def main():
         
         # Interpretaciones
         if macd_extreme and z_extreme:
-            interpretacion = "⚠️⚠️ ALTA PRECAUCIÓN: Ambos indicadores extremos"
+            interpretacion = "⚠️⚠️ ALTA PRECAUCIÓN"
             interp_color = "#FF0000"
         elif macd_extreme:
-            interpretacion = "⚠️ PRECAUCIÓN: MACD-V sobre-extendido"
+            interpretacion = "⚠️ MACD-V sobre-extendido"
             interp_color = "#FFA500"
         elif z_extreme:
-            interpretacion = "⚠️ PRECAUCIÓN: Momentum anormal"
+            interpretacion = "⚠️ Momentum anormal"
             interp_color = "#FFA500"
         else:
             interpretacion = "✅ Condiciones normales"
@@ -471,7 +471,7 @@ def main():
         
         risk_color = RISK_COLORS.get(risk_level, "#FFFFFF")
         
-        col_risk1, col_risk2 = st.columns([2, 1])
+        col_risk1, col_risk2 = st.columns([3, 1])
         
         with col_risk1:
             st.markdown(f"""
@@ -480,29 +480,34 @@ def main():
                     <th style="padding: 8px; text-align: left; border: 1px solid #444; font-size: 12px;">Indicador</th>
                     <th style="padding: 8px; text-align: center; border: 1px solid #444; font-size: 12px;">Valor</th>
                     <th style="padding: 8px; text-align: center; border: 1px solid #444; font-size: 12px;">¿Extremo?</th>
+                    <th style="padding: 8px; text-align: left; border: 1px solid #444; font-size: 12px;">Umbral</th>
                 </tr>
                 <tr>
                     <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">Z-Score MACD</td>
                     <td style="padding: 6px; border: 1px solid #444; text-align: center; font-weight: bold; font-size: 11px;">{z_macd:.2f}</td>
                     <td style="padding: 6px; border: 1px solid #444; text-align: center; font-size: 11px;">{"🔴 SÍ" if z_extreme else "🟢 NO"}</td>
+                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">|Z| > 2.0</td>
                 </tr>
                 <tr>
                     <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">MACD-V</td>
                     <td style="padding: 6px; border: 1px solid #444; text-align: center; font-weight: bold; font-size: 11px;">{macd_v:.2f}</td>
                     <td style="padding: 6px; border: 1px solid #444; text-align: center; font-size: 11px;">{"🔴 SÍ" if macd_extreme else "🟢 NO"}</td>
+                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">|MACD-V| ≥ 151</td>
                 </tr>
             </table>
             """, unsafe_allow_html=True)
         
         with col_risk2:
             st.markdown(f"""
-            <div style="background-color: {risk_color}; padding: 15px; border-radius: 8px;
-                        text-align: center; font-weight: bold; color: black; font-size: 20px; margin-bottom: 10px; margin-top: 30px;">
-                {risk_level}
-            </div>
-            <div style="background-color: {interp_color}; padding: 10px; border-radius: 8px;
-                        text-align: center; font-weight: bold; color: black; font-size: 11px;">
-                {interpretacion}
+            <div style="margin-top: 34px;">
+                <div style="background-color: {risk_color}; padding: 20px 10px; border-radius: 8px; margin-bottom: 8px;
+                            text-align: center; font-weight: bold; color: black; font-size: 18px;">
+                    {risk_level}
+                </div>
+                <div style="background-color: {interp_color}; padding: 10px; border-radius: 8px;
+                            text-align: center; font-weight: bold; color: black; font-size: 11px;">
+                    {interpretacion}
+                </div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -520,7 +525,7 @@ def main():
         # ================= GRÁFICOS (MÁS COMPACTOS) =================
         st.markdown("---")
         plt.style.use("dark_background")
-        fig, axs = plt.subplots(3, 1, figsize=(11, 7), sharex=True)  # Reducido aún más
+        fig, axs = plt.subplots(3, 1, figsize=(11, 7), sharex=True)
 
         # ========== GRÁFICO 1: PRECIO + MACD-V ==========
         axs[0].plot(df_plot.index, df_plot["Close"], color="white", alpha=0.5, linewidth=1.3, label="Precio")
