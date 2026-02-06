@@ -62,6 +62,24 @@ REGIME_COLORS = {
     "RIESGO+": "#4B0082",      # Índigo oscuro
 }
 
+# Nombres simplificados para tabla
+REGIME_SIMPLE = {
+    "ALCISTA": "ALCISTA",
+    "BAJISTA": "BAJISTA",
+    "RANGO": "RANGO",
+    "RIESGO-": "RIESGO-",
+    "RIESGO+": "RIESGO+",
+}
+
+# Leyenda consolidada (solo 5 colores únicos)
+LEGEND_COLORS = {
+    "ALCISTA": "#00FF00",
+    "BAJISTA": "#FF0000",
+    "RANGO": "#FFD700",
+    "RIESGO-": "#9370DB",
+    "RIESGO+": "#4B0082",
+}
+
 # ============================================================================
 # INDICADORES
 # ============================================================================
@@ -91,7 +109,7 @@ def calculate_indicators(df, fast=12, slow=26, signal=9, z_window=20, z_price_wi
     signal_line = macd_v.ewm(span=signal, adjust=False).mean()
     histogram = macd_v - signal_line
 
-    # Z-Score del histograma MACD-V (para detectar RIESGO)
+    # Z-Score del histograma MACD-V
     mean = histogram.rolling(z_window).mean()
     std = histogram.rolling(z_window).std()
     z_macd = (histogram - mean) / std
@@ -104,7 +122,7 @@ def calculate_indicators(df, fast=12, slow=26, signal=9, z_window=20, z_price_wi
     adj_factor = 1 + (kurt / 10).clip(-0.5, 0.5)
     z_macd_adjusted = z_macd / adj_factor
 
-    # Z-Score del PRECIO (para clasificación alternativa)
+    # Z-Score del PRECIO
     price_mean = close.rolling(z_price_window).mean()
     price_std = close.rolling(z_price_window).std()
     z_price = (close - price_mean) / price_std
@@ -112,14 +130,14 @@ def calculate_indicators(df, fast=12, slow=26, signal=9, z_window=20, z_price_wi
     df["MACD_V"] = macd_v
     df["MACD_V_Signal"] = signal_line
     df["MACD_V_Histogram"] = histogram
-    df["Risk_Indicator"] = z_macd_adjusted  # Renombrado para claridad
-    df["Price_Deviation"] = z_price  # Renombrado para claridad
+    df["Z_Score_MACD"] = z_macd_adjusted
+    df["Z_Score_Price"] = z_price
     df["Kurtosis"] = kurt
 
     return df
 
 # ============================================================================
-# CLASIFICACIÓN POR MACD-V (MEJORADA)
+# CLASIFICACIÓN POR MACD-V
 # ============================================================================
 
 def classify_by_macdv(df):
@@ -129,13 +147,13 @@ def classify_by_macdv(df):
         try:
             price = float(df["Close"].iloc[i])
             sma50 = float(df["SMA_50"].iloc[i])
-            risk_ind = float(df["Risk_Indicator"].iloc[i])
+            z_macd = float(df["Z_Score_MACD"].iloc[i])
             macd_v = float(df["MACD_V"].iloc[i])
         except (ValueError, TypeError):
             regimes.append("RANGO")
             continue
 
-        if any(pd.isna(x) for x in [price, sma50, risk_ind, macd_v]):
+        if any(pd.isna(x) for x in [price, sma50, z_macd, macd_v]):
             regimes.append("RANGO")
             continue
 
@@ -143,29 +161,31 @@ def classify_by_macdv(df):
             regimes.append("RANGO")
             continue
 
-        # PASO 1: Detectar condiciones extremas de RIESGO (máxima prioridad)
-        macd_extreme = abs(macd_v) > 150
-        risk_extreme = abs(risk_ind) > 2.0
+        # FILTRO 1: Lado del mercado (Precio vs SMA50)
+        above_sma = price > sma50
 
-        if macd_extreme and risk_extreme:
+        # FILTRO 2: Detectar condiciones extremas para RIESGO
+        macd_extreme = abs(macd_v) > 150
+        z_extreme = abs(z_macd) > 2.0
+
+        # Evaluar RIESGO primero (máxima prioridad)
+        if macd_extreme and z_extreme:
             regime = "RIESGO+"
-        elif macd_extreme or risk_extreme:
+        elif macd_extreme or z_extreme:
             regime = "RIESGO-"
-        
-        # PASO 2: Verificar si MACD-V está en zona neutra (RANGO)
+        # FILTRO 3: Clasificación por MACD-V
         elif -50 <= macd_v <= 50:
+            # Si MACD-V está en rango, SIEMPRE es RANGO
             regime = "RANGO"
-        
-        # PASO 3: Clasificar según lado del mercado + MACD-V
-        else:
-            above_sma = price > sma50
-            
-            if above_sma and 50 < macd_v <= 150:
+        elif above_sma:  # Precio > SMA50
+            if 50 < macd_v <= 150:
                 regime = "ALCISTA"
-            elif not above_sma and -150 <= macd_v < -50:
+            else:
+                regime = "RANGO"
+        else:  # Precio < SMA50
+            if -150 <= macd_v < -50:
                 regime = "BAJISTA"
             else:
-                # Caso: precio y MACD-V en lados opuestos → RANGO
                 regime = "RANGO"
 
         regimes.append(regime)
@@ -173,7 +193,7 @@ def classify_by_macdv(df):
     return regimes
 
 # ============================================================================
-# CLASIFICACIÓN POR Z-SCORE DE PRECIO (MEJORADA)
+# CLASIFICACIÓN POR Z-SCORE DE PRECIO
 # ============================================================================
 
 def classify_by_zscore(df):
@@ -183,14 +203,14 @@ def classify_by_zscore(df):
         try:
             price = float(df["Close"].iloc[i])
             sma50 = float(df["SMA_50"].iloc[i])
-            risk_ind = float(df["Risk_Indicator"].iloc[i])
-            price_dev = float(df["Price_Deviation"].iloc[i])
+            z_macd = float(df["Z_Score_MACD"].iloc[i])
+            z_price = float(df["Z_Score_Price"].iloc[i])
             macd_v = float(df["MACD_V"].iloc[i])
         except (ValueError, TypeError):
             regimes.append("RANGO")
             continue
 
-        if any(pd.isna(x) for x in [price, sma50, risk_ind, price_dev, macd_v]):
+        if any(pd.isna(x) for x in [price, sma50, z_macd, z_price, macd_v]):
             regimes.append("RANGO")
             continue
 
@@ -198,29 +218,31 @@ def classify_by_zscore(df):
             regimes.append("RANGO")
             continue
 
-        # PASO 1: Detectar condiciones extremas de RIESGO (máxima prioridad)
-        macd_extreme = abs(macd_v) > 150
-        risk_extreme = abs(risk_ind) > 2.0
+        # FILTRO 1: Lado del mercado (Precio vs SMA50)
+        above_sma = price > sma50
 
-        if macd_extreme and risk_extreme:
+        # FILTRO 2: Detectar condiciones extremas para RIESGO
+        macd_extreme = abs(macd_v) > 150
+        z_extreme = abs(z_macd) > 2.0
+
+        # Evaluar RIESGO primero (máxima prioridad)
+        if macd_extreme and z_extreme:
             regime = "RIESGO+"
-        elif macd_extreme or risk_extreme:
+        elif macd_extreme or z_extreme:
             regime = "RIESGO-"
-        
-        # PASO 2: Verificar si Price Deviation está en zona neutra (RANGO)
-        elif -0.5 <= price_dev <= 0.5:
+        # FILTRO 3: Clasificación por Z-Score Precio
+        elif -0.5 <= z_price <= 0.5:
+            # Si Z-Score Precio está en rango, SIEMPRE es RANGO
             regime = "RANGO"
-        
-        # PASO 3: Clasificar según lado del mercado + Price Deviation
-        else:
-            above_sma = price > sma50
-            
-            if above_sma and price_dev > 0.5:
+        elif above_sma:  # Precio > SMA50
+            if z_price > 0.5:
                 regime = "ALCISTA"
-            elif not above_sma and price_dev < -0.5:
+            else:
+                regime = "RANGO"
+        else:  # Precio < SMA50
+            if z_price < -0.5:
                 regime = "BAJISTA"
             else:
-                # Caso: precio y desviación en lados opuestos → RANGO
                 regime = "RANGO"
 
         regimes.append(regime)
@@ -254,10 +276,10 @@ def download_weekly_data(ticker, years_back):
 # ============================================================================
 
 def main():
-    st.set_page_config(layout="wide", page_title="Weekly Regime Analyzer")
-    st.title("📊 Weekly Regime Analyzer — Comparación de Métodos")
+    st.set_page_config(layout="wide", page_title="Weekly Z-Score MACD-V")
+    st.title("📊 Weekly Z-Score MACD-V Regime Analyzer")
 
-    # Mantener estado en session_state
+    # Mantener estado en session_state para evitar que desaparezca
     if 'analyzed' not in st.session_state:
         st.session_state.analyzed = False
     if 'df' not in st.session_state:
@@ -282,374 +304,247 @@ def main():
         
         df = st.session_state.df
         
-        # Recalcular clasificaciones
-        df["Regime_MACDV"] = classify_by_macdv(df)
-        df["Regime_ZScore"] = classify_by_zscore(df)
-        st.session_state.df = df
+        if "Regime_MACDV" not in df.columns:
+            df["Regime_MACDV"] = classify_by_macdv(df)
+            df["Regime_ZScore"] = classify_by_zscore(df)
+            # Forzar recalculo eliminando las columnas cached
+            st.session_state.df = df
+        else:
+            # Recalcular siempre para asegurar valores actualizados
+            df["Regime_MACDV"] = classify_by_macdv(df)
+            df["Regime_ZScore"] = classify_by_zscore(df)
+            st.session_state.df = df
         
         df_plot = df.tail(int(lookback_months * 4.33))
         current = df.iloc[-1]
 
-        # ================= RESUMEN EJECUTIVO =================
-        st.markdown("## 📋 Resumen Actual")
+        # ================= TABLA COMPARATIVA - CORREGIDA =================
+        # Extraer correctamente el valor del régimen
+        if isinstance(current["Regime_MACDV"], str):
+            regime_macdv_full = current["Regime_MACDV"]
+        else:
+            regime_macdv_full = current["Regime_MACDV"].iloc[0] if hasattr(current["Regime_MACDV"], 'iloc') else str(current["Regime_MACDV"])
         
-        # Extraer valores actuales
-        precio = float(current["Close"])
-        sma50 = float(current["SMA_50"])
-        macd_v = float(current["MACD_V"])
-        risk_ind = float(current["Risk_Indicator"])
-        price_dev = float(current["Price_Deviation"])
+        if isinstance(current["Regime_ZScore"], str):
+            regime_zscore_full = current["Regime_ZScore"]
+        else:
+            regime_zscore_full = current["Regime_ZScore"].iloc[0] if hasattr(current["Regime_ZScore"], 'iloc') else str(current["Regime_ZScore"])
         
-        # Extraer regímenes
-        regime_macdv = str(current["Regime_MACDV"])
-        regime_zscore = str(current["Regime_ZScore"])
+        # Simplificar los nombres usando el diccionario
+        regime_macdv_simple = REGIME_SIMPLE.get(regime_macdv_full, regime_macdv_full)
+        regime_zscore_simple = REGIME_SIMPLE.get(regime_zscore_full, regime_zscore_full)
         
-        # Determinar condiciones
-        precio_lado = "ALCISTA (> SMA50)" if precio > sma50 else "BAJISTA (< SMA50)"
-        macd_extreme = abs(macd_v) > 150
-        risk_extreme = abs(risk_ind) > 2.0
+        # Verificar si precio está por encima de SMA50
+        precio_above_sma = "SÍ" if float(current["Close"]) > float(current["SMA_50"]) else "NO"
         
-        # TABLA 1: Valores Actuales
-        col1, col2 = st.columns(2)
+        # TABLA 1: Métodos de Clasificación
+        st.markdown("### 📊 Clasificación por Método")
+        comparison_data = {
+            "Método": ["MACD-V", "Z-Score Precio"],
+            "Régimen": [regime_macdv_simple, regime_zscore_simple],
+            "Precio > SMA50": [precio_above_sma, precio_above_sma],
+            "Precio": [f"${float(current['Close']):.2f}", f"${float(current['Close']):.2f}"],
+            "MACD-V": [f"{float(current['MACD_V']):.2f}", f"{float(current['MACD_V']):.2f}"],
+            "Z-Score Precio": [f"{float(current['Z_Score_Price']):.2f}", f"{float(current['Z_Score_Price']):.2f}"],
+        }
         
-        with col1:
-            st.markdown("### 📊 Valores de Indicadores")
-            values_data = {
-                "Indicador": [
-                    "Precio",
-                    "SMA 50",
-                    "Lado del Mercado",
-                    "MACD-V",
-                    "Risk Indicator (Z-MACD)",
-                    "Price Deviation (Z-Price)"
-                ],
-                "Valor": [
-                    f"${precio:.2f}",
-                    f"${sma50:.2f}",
-                    precio_lado,
-                    f"{macd_v:.2f}",
-                    f"{risk_ind:.2f}",
-                    f"{price_dev:.2f}"
-                ],
-                "Estado": [
-                    "✓",
-                    "✓",
-                    "🔵 ALCISTA" if precio > sma50 else "🔴 BAJISTA",
-                    "⚠️ EXTREMO" if macd_extreme else "✓ Normal",
-                    "⚠️ EXTREMO" if risk_extreme else "✓ Normal",
-                    f"{'⬆️' if price_dev > 0.5 else '⬇️' if price_dev < -0.5 else '↔️'}"
-                ]
-            }
-            values_df = pd.DataFrame(values_data)
-            st.dataframe(values_df, use_container_width=True, hide_index=True)
-        
-        with col2:
-            st.markdown("### 🎯 Clasificación por Método")
-            
-            # Determinar nivel de riesgo
-            if macd_extreme and risk_extreme:
-                nivel_riesgo = "RIESGO+ (Ambos extremos)"
-                color_riesgo = REGIME_COLORS["RIESGO+"]
-            elif macd_extreme or risk_extreme:
-                nivel_riesgo = "RIESGO- (Un extremo)"
-                color_riesgo = REGIME_COLORS["RIESGO-"]
-            else:
-                nivel_riesgo = "Sin Riesgo Extremo"
-                color_riesgo = "#00FF00"
-            
-            regime_data = {
-                "Método": [
-                    "MACD-V",
-                    "Z-Score Precio",
-                    "⚠️ Nivel de Riesgo"
-                ],
-                "Régimen": [
-                    regime_macdv,
-                    regime_zscore,
-                    nivel_riesgo
-                ],
-                "Color": [
-                    REGIME_COLORS.get(regime_macdv, "#FFFFFF"),
-                    REGIME_COLORS.get(regime_zscore, "#FFFFFF"),
-                    color_riesgo
-                ]
-            }
-            
-            regime_df = pd.DataFrame(regime_data)
-            
-            # Mostrar con colores
-            for idx, row in regime_df.iterrows():
-                st.markdown(
-                    f'<div style="background-color:{row["Color"]};padding:8px;border-radius:5px;'
-                    f'margin:4px 0;text-align:center;font-weight:bold;color:white;">'
-                    f'{row["Método"]}: {row["Régimen"]}</div>',
-                    unsafe_allow_html=True
-                )
+        comparison_df = pd.DataFrame(comparison_data)
+        st.dataframe(comparison_df, use_container_width=True, hide_index=True)
 
-        # ================= ANÁLISIS DETALLADO =================
-        st.markdown("---")
-        st.markdown("## 🔬 Análisis Detallado por Método")
+        # TABLA 2: Análisis de Riesgo (Compartido)
+        st.markdown("### ⚠️ Análisis de Riesgo (Compartido)")
         
-        col_analysis1, col_analysis2 = st.columns(2)
+        macd_extreme = abs(float(current['MACD_V'])) > 150
+        z_extreme = abs(float(current['Z_Score_MACD'])) > 2.0
         
-        with col_analysis1:
-            st.markdown("### 🔹 Método 1: MACD-V")
-            
-            # Determinar qué condición se cumplió
-            if macd_extreme and risk_extreme:
-                condicion = "✅ PASO 1: Ambos indicadores extremos → RIESGO+"
-            elif macd_extreme or risk_extreme:
-                condicion = "✅ PASO 1: Un indicador extremo → RIESGO-"
-            elif -50 <= macd_v <= 50:
-                condicion = "✅ PASO 2: MACD-V en zona neutra [-50, +50] → RANGO"
-            elif precio > sma50 and 50 < macd_v <= 150:
-                condicion = "✅ PASO 3: Precio > SMA50 Y MACD-V > 50 → ALCISTA"
-            elif precio < sma50 and -150 <= macd_v < -50:
-                condicion = "✅ PASO 3: Precio < SMA50 Y MACD-V < -50 → BAJISTA"
-            else:
-                condicion = "✅ PASO 3: Señales mixtas (precio y MACD-V en lados opuestos) → RANGO"
-            
-            st.markdown(f"""
-            **Resultado:** `{regime_macdv}`
-            
-            **Lógica aplicada:**
-            {condicion}
-            
-            **Rangos de clasificación:**
-            - RIESGO+: |MACD-V| > 150 **Y** |Risk Ind.| > 2.0
-            - RIESGO-: |MACD-V| > 150 **O** |Risk Ind.| > 2.0
-            - RANGO: MACD-V en [-50, +50]
-            - ALCISTA: Precio > SMA50 **Y** MACD-V en (50, 150]
-            - BAJISTA: Precio < SMA50 **Y** MACD-V en [-150, -50)
-            
-            **Ventaja:** Usa momentum normalizado por volatilidad
-            """)
+        if macd_extreme and z_extreme:
+            nivel_riesgo = "RIESGO+ (Ambas condiciones extremas)"
+            color_riesgo = "#4B0082"
+        elif macd_extreme or z_extreme:
+            nivel_riesgo = "RIESGO- (Una condición extrema)"
+            color_riesgo = "#9370DB"
+        else:
+            nivel_riesgo = "Sin Riesgo"
+            color_riesgo = "#00FF00"
         
-        with col_analysis2:
-            st.markdown("### 🔹 Método 2: Z-Score Precio")
-            
-            # Determinar qué condición se cumplió
-            if macd_extreme and risk_extreme:
-                condicion = "✅ PASO 1: Ambos indicadores extremos → RIESGO+"
-            elif macd_extreme or risk_extreme:
-                condicion = "✅ PASO 1: Un indicador extremo → RIESGO-"
-            elif -0.5 <= price_dev <= 0.5:
-                condicion = "✅ PASO 2: Price Deviation en zona neutra [-0.5, +0.5] → RANGO"
-            elif precio > sma50 and price_dev > 0.5:
-                condicion = "✅ PASO 3: Precio > SMA50 Y Price Dev. > 0.5 → ALCISTA"
-            elif precio < sma50 and price_dev < -0.5:
-                condicion = "✅ PASO 3: Precio < SMA50 Y Price Dev. < -0.5 → BAJISTA"
-            else:
-                condicion = "✅ PASO 3: Señales mixtas (precio y desviación en lados opuestos) → RANGO"
-            
-            st.markdown(f"""
-            **Resultado:** `{regime_zscore}`
-            
-            **Lógica aplicada:**
-            {condicion}
-            
-            **Rangos de clasificación:**
-            - RIESGO+: |MACD-V| > 150 **Y** |Risk Ind.| > 2.0
-            - RIESGO-: |MACD-V| > 150 **O** |Risk Ind.| > 2.0
-            - RANGO: Price Deviation en [-0.5, +0.5]
-            - ALCISTA: Precio > SMA50 **Y** Price Dev. > +0.5
-            - BAJISTA: Precio < SMA50 **Y** Price Dev. < -0.5
-            
-            **Ventaja:** Usa desviación estadística del precio
-            """)
+        risk_data = {
+            "Indicador": ["Z-Score MACD", "MACD-V", "Nivel de Riesgo"],
+            "Valor": [
+                f"{float(current['Z_Score_MACD']):.2f}",
+                f"{float(current['MACD_V']):.2f}",
+                nivel_riesgo
+            ],
+            "Extremo": [
+                "SÍ" if z_extreme else "NO",
+                "SÍ" if macd_extreme else "NO",
+                ""
+            ],
+            "Umbral": [
+                "|Z| > 2.0",
+                "|MACD-V| > 150",
+                ""
+            ]
+        }
+        
+        risk_df = pd.DataFrame(risk_data)
+        st.dataframe(risk_df, use_container_width=True, hide_index=True)
 
-        # ================= LEYENDA =================
-        st.markdown("---")
-        st.markdown("### 🎨 Leyenda de Regímenes")
+        # ================= LEYENDA CONSOLIDADA =================
+        st.markdown("### 🎨 Leyenda")
         cols = st.columns(5)
-        for idx, (regime, color) in enumerate(REGIME_COLORS.items()):
+        for idx, (regime, color) in enumerate(LEGEND_COLORS.items()):
             with cols[idx]:
                 st.markdown(
-                    f'<div style="background-color:{color};padding:8px;border-radius:5px;'
-                    f'text-align:center;font-weight:bold;color:white;">{regime}</div>',
+                    f'<div style="background-color:{color};padding:4px;border-radius:3px;text-align:center;font-weight:bold;color:white;font-size:10px;">'
+                    f'{regime}</div>',
                     unsafe_allow_html=True
                 )
 
         # ================= GRÁFICOS =================
-        st.markdown("---")
-        st.markdown("## 📈 Gráficos Comparativos")
-        
         plt.style.use("dark_background")
-        fig, axs = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
+        fig, axs = plt.subplots(3, 1, figsize=(14, 8), sharex=True)
 
         # ========== GRÁFICO 1: PRECIO + MACD-V ==========
-        axs[0].plot(df_plot.index, df_plot["Close"], color="white", alpha=0.5, linewidth=1.5, label="Precio")
-        axs[0].plot(df_plot.index, df_plot["SMA_50"], color="cyan", linewidth=2, alpha=0.7, label="SMA 50")
+        axs[0].plot(df_plot.index, df_plot["Close"], color="white", alpha=0.5, linewidth=1.5)
+        axs[0].plot(df_plot.index, df_plot["SMA_50"], color="cyan", linewidth=2, alpha=0.7)
 
         for r, c in REGIME_COLORS.items():
             m = df_plot["Regime_MACDV"] == r
             if m.any():
                 axs[0].scatter(df_plot[m].index, df_plot[m]["Close"], c=c, s=90, alpha=0.95, 
-                             edgecolors='black', linewidths=1.5, zorder=5, label=f"{r}")
+                             edgecolors='black', linewidths=1.5, zorder=5)
 
         last_price = float(df_plot["Close"].iloc[-1])
         axs[0].text(1.01, last_price, f'${last_price:.2f}', 
                    transform=axs[0].get_yaxis_transform(), 
-                   fontsize=10, color='white', va='center', fontweight='bold')
+                   fontsize=9, color='white', va='center', fontweight='bold')
         
-        axs[0].set_title(f"{ticker} — Método MACD-V", fontsize=12, fontweight='bold', pad=10)
+        axs[0].set_title(f"{ticker} — Método MACD-V", fontsize=11, fontweight='bold', pad=8)
         axs[0].grid(alpha=0.25, linestyle='--')
-        axs[0].set_ylabel("Precio ($)", fontsize=10)
-        axs[0].legend(loc='upper left', fontsize=8, ncol=3)
+        axs[0].set_ylabel("Precio ($)", fontsize=9)
         axs[0].yaxis.tick_right()
         axs[0].yaxis.set_label_position("right")
+        axs[0].tick_params(labelsize=8)
 
         # ========== GRÁFICO 2: PRECIO + Z-SCORE ==========
-        axs[1].plot(df_plot.index, df_plot["Close"], color="white", alpha=0.5, linewidth=1.5, label="Precio")
-        axs[1].plot(df_plot.index, df_plot["SMA_50"], color="cyan", linewidth=2, alpha=0.7, label="SMA 50")
+        axs[1].plot(df_plot.index, df_plot["Close"], color="white", alpha=0.5, linewidth=1.5)
+        axs[1].plot(df_plot.index, df_plot["SMA_50"], color="cyan", linewidth=2, alpha=0.7)
 
         for r, c in REGIME_COLORS.items():
             m = df_plot["Regime_ZScore"] == r
             if m.any():
                 axs[1].scatter(df_plot[m].index, df_plot[m]["Close"], c=c, s=90, alpha=0.95, 
-                             edgecolors='black', linewidths=1.5, zorder=5, label=f"{r}")
+                             edgecolors='black', linewidths=1.5, zorder=5)
 
         axs[1].text(1.01, last_price, f'${last_price:.2f}', 
                    transform=axs[1].get_yaxis_transform(), 
-                   fontsize=10, color='white', va='center', fontweight='bold')
+                   fontsize=9, color='white', va='center', fontweight='bold')
         
-        axs[1].set_title(f"{ticker} — Método Z-Score Precio", fontsize=12, fontweight='bold', pad=10)
+        axs[1].set_title(f"{ticker} — Método Z-Score Precio", fontsize=11, fontweight='bold', pad=8)
         axs[1].grid(alpha=0.25, linestyle='--')
-        axs[1].set_ylabel("Precio ($)", fontsize=10)
-        axs[1].legend(loc='upper left', fontsize=8, ncol=3)
+        axs[1].set_ylabel("Precio ($)", fontsize=9)
         axs[1].yaxis.tick_right()
         axs[1].yaxis.set_label_position("right")
+        axs[1].tick_params(labelsize=8)
 
-        # ========== GRÁFICO 3: INDICADORES DUALES ==========
+        # ========== GRÁFICO 3: Z-SCORE MACD (izq) y MACD-V (der) CON COLORES CONDICIONALES ==========
         ax3_left = axs[2]
         ax3_right = ax3_left.twinx()
         
-        # Risk Indicator (izquierda) con colores condicionales
-        risk_colors = ['#FF0000' if abs(z) > 2 else '#87CEEB' for z in df_plot["Risk_Indicator"]]
+        # Z-Score MACD con colores condicionales
+        z_colors = ['#FF0000' if abs(z) > 2 else '#87CEEB' for z in df_plot["Z_Score_MACD"]]
         for i in range(len(df_plot) - 1):
-            ax3_left.plot(df_plot.index[i:i+2], df_plot["Risk_Indicator"].iloc[i:i+2], 
-                         color=risk_colors[i], linewidth=2)
+            ax3_left.plot(df_plot.index[i:i+2], df_plot["Z_Score_MACD"].iloc[i:i+2], 
+                         color=z_colors[i], linewidth=2)
         
-        ax3_left.axhline(2, color="red", linestyle="--", alpha=0.6, linewidth=1.5, label="Umbral ±2.0")
+        ax3_left.axhline(2, color="red", linestyle="--", alpha=0.6, linewidth=1.5)
         ax3_left.axhline(-2, color="red", linestyle="--", alpha=0.6, linewidth=1.5)
         ax3_left.axhline(0, color="gray", linestyle="-", alpha=0.4)
-        ax3_left.fill_between(df_plot.index, 2, df_plot["Risk_Indicator"], 
-                             where=(df_plot["Risk_Indicator"]>2), color="red", alpha=0.15)
-        ax3_left.fill_between(df_plot.index, -2, df_plot["Risk_Indicator"], 
-                             where=(df_plot["Risk_Indicator"]<-2), color="red", alpha=0.15)
+        ax3_left.fill_between(df_plot.index, 2, df_plot["Z_Score_MACD"], 
+                             where=(df_plot["Z_Score_MACD"]>2), color="red", alpha=0.15)
+        ax3_left.fill_between(df_plot.index, -2, df_plot["Z_Score_MACD"], 
+                             where=(df_plot["Z_Score_MACD"]<-2), color="red", alpha=0.15)
         
-        # MACD-V (derecha) con colores condicionales
+        # MACD-V con colores condicionales
         macd_colors = ['#FF0000' if abs(m) > 150 else '#FFFFFF' for m in df_plot["MACD_V"]]
         for i in range(len(df_plot) - 1):
             ax3_right.plot(df_plot.index[i:i+2], df_plot["MACD_V"].iloc[i:i+2], 
                           color=macd_colors[i], linewidth=2)
         
         ax3_right.axhline(0, color="gray", linestyle="-", alpha=0.4)
-        ax3_right.axhline(50, color="green", linestyle=":", alpha=0.4, linewidth=1, label="Zona ±50")
+        ax3_right.axhline(50, color="green", linestyle=":", alpha=0.4, linewidth=1)
         ax3_right.axhline(-50, color="red", linestyle=":", alpha=0.4, linewidth=1)
-        ax3_right.axhline(150, color="red", linestyle="--", alpha=0.6, linewidth=1.5, label="Umbral ±150")
+        ax3_right.axhline(150, color="red", linestyle="--", alpha=0.6, linewidth=1.5)
         ax3_right.axhline(-150, color="red", linestyle="--", alpha=0.6, linewidth=1.5)
         
-        # Valores actuales
-        last_risk = float(df_plot["Risk_Indicator"].iloc[-1])
+        last_z = float(df_plot["Z_Score_MACD"].iloc[-1])
         last_macd = float(df_plot["MACD_V"].iloc[-1])
         
-        risk_color_final = '#FF0000' if abs(last_risk) > 2 else '#87CEEB'
+        z_color_final = '#FF0000' if abs(last_z) > 2 else '#87CEEB'
         macd_color_final = '#FF0000' if abs(last_macd) > 150 else '#FFFFFF'
         
-        ax3_left.text(-0.01, last_risk, f'{last_risk:.2f}σ', 
+        ax3_left.text(-0.01, last_z, f'{last_z:.2f}σ', 
                      transform=ax3_left.get_yaxis_transform(), 
-                     fontsize=10, color=risk_color_final, va='center', fontweight='bold', ha='right')
+                     fontsize=9, color=z_color_final, va='center', fontweight='bold', ha='right')
         
         ax3_right.text(1.01, last_macd, f'{last_macd:.2f}', 
                       transform=ax3_right.get_yaxis_transform(), 
-                      fontsize=10, color=macd_color_final, va='center', fontweight='bold')
+                      fontsize=9, color=macd_color_final, va='center', fontweight='bold')
         
-        ax3_left.set_title("Risk Indicator (izq) y MACD-V (der)", fontsize=12, fontweight='bold', pad=10)
+        ax3_left.set_title("Z-Score MACD (izq) y MACD-V (der)", fontsize=11, fontweight='bold', pad=8)
         ax3_left.grid(alpha=0.25, linestyle='--')
-        ax3_left.set_ylabel("Risk Indicator (Z-MACD)", fontsize=10, color='#87CEEB')
-        ax3_right.set_ylabel("MACD-V", fontsize=10, color='#FFFFFF')
-        ax3_left.set_xlabel("Fecha", fontsize=10)
-        ax3_left.tick_params(axis='y', labelcolor='#87CEEB')
-        ax3_right.tick_params(axis='y', labelcolor='#FFFFFF')
-        ax3_left.legend(loc='upper left', fontsize=8)
-        ax3_right.legend(loc='upper right', fontsize=8)
+        ax3_left.set_ylabel("Z-Score MACD", fontsize=9, color='#87CEEB')
+        ax3_right.set_ylabel("MACD-V", fontsize=9, color='#FFFFFF')
+        ax3_left.set_xlabel("Fecha", fontsize=9)
+        ax3_left.tick_params(axis='y', labelcolor='#87CEEB', labelsize=8)
+        ax3_right.tick_params(axis='y', labelcolor='#FFFFFF', labelsize=8)
+        ax3_left.tick_params(axis='x', labelsize=8)
 
         plt.tight_layout()
         st.pyplot(fig)
 
-        # ================= DOCUMENTACIÓN =================
+        # ================= LÓGICA DE CLASIFICACIÓN =================
         st.markdown("---")
-        st.markdown("## 📖 Documentación de Métodos")
+        st.markdown("### 📖 Lógica de Clasificación")
         
-        with st.expander("🔍 ¿Qué es el Risk Indicator (Z-Score MACD)?"):
+        col_logic1, col_logic2 = st.columns(2)
+        
+        with col_logic1:
+            st.markdown("#### 🔹 Método MACD-V")
             st.markdown("""
-            ### Risk Indicator (Z-Score del Histograma MACD-V)
+            **Filtro 1: Precio vs SMA50**
+            - Precio > SMA50 → Lado alcista
+            - Precio < SMA50 → Lado bajista
             
-            **Propósito:** Detector de condiciones extremas de mercado
+            **Filtro 2: MACD-V (rango de valores)**
+            - MACD-V entre -50 y +50 → **RANGO**
+            - MACD-V entre 50 y 150 (y precio > SMA50) → **ALCISTA**
+            - MACD-V entre -50 y -150 (y precio < SMA50) → **BAJISTA**
             
-            **Cálculo:**
-            1. Se toma el histograma del MACD-V (diferencia entre MACD-V y su señal)
-            2. Se calcula su media y desviación estándar en las últimas 20 semanas
-            3. Se normaliza: `Z = (Histograma - Media) / Desviación Estándar`
-            4. Se ajusta por curtosis (exceso de eventos extremos)
+            **Filtro 3: Condiciones extremas**
+            - Solo |MACD-V| > 150 O solo |Z-Score| > 2 → **RIESGO-**
+            - |MACD-V| > 150 Y |Z-Score| > 2 (ambas) → **RIESGO+**
             
-            **Interpretación:**
-            - `|Z| > 2.0` → El momentum está en niveles estadísticamente anormales (solo 5% del tiempo)
-            - `|Z| < 2.0` → El momentum está dentro de rangos normales
-            
-            **Uso:** Se combina con MACD-V para detectar RIESGO+ o RIESGO-
+            **Nota:** Sin histéresis - respuesta inmediata
             """)
         
-        with st.expander("🔍 ¿Qué es el Price Deviation (Z-Score del Precio)?"):
+        with col_logic2:
+            st.markdown("#### 🔹 Método Z-Score Precio")
             st.markdown("""
-            ### Price Deviation (Z-Score del Precio)
+            **Filtro 1: Precio vs SMA50**
+            - Precio > SMA50 → Lado alcista
+            - Precio < SMA50 → Lado bajista
             
-            **Propósito:** Medir qué tan "estirado" está el precio respecto a su normalidad
+            **Filtro 2: Z-Score Precio**
+            - Z-Score Precio > +0.5 (y precio > SMA50) → **ALCISTA**
+            - Z-Score Precio < -0.5 (y precio < SMA50) → **BAJISTA**
+            - Z-Score Precio entre -0.5 y +0.5 → **RANGO**
             
-            **Cálculo:**
-            1. Se calcula el precio promedio de las últimas 50 semanas
-            2. Se calcula la desviación estándar del precio en ese periodo
-            3. Se normaliza: `Z = (Precio Actual - Promedio) / Desviación Estándar`
+            **Filtro 3: Condiciones extremas**
+            - Solo |MACD-V| > 150 O solo |Z-Score| > 2 → **RIESGO-**
+            - |MACD-V| > 150 Y |Z-Score| > 2 (ambas) → **RIESGO+**
             
-            **Interpretación:**
-            - `Z > +0.5` → Precio significativamente arriba de su promedio
-            - `Z < -0.5` → Precio significativamente abajo de su promedio
-            - `-0.5 ≤ Z ≤ +0.5` → Precio cerca de su promedio (neutral)
-            
-            **Uso:** Método alternativo para clasificar regímenes (compite con MACD-V)
-            """)
-        
-        with st.expander("📊 Comparación de Métodos"):
-            st.markdown("""
-            ### Método 1: MACD-V
-            **Ventajas:**
-            - Captura cambios de momentum ajustados por volatilidad
-            - Responde rápido a cambios de tendencia
-            - Más sensible a aceleración/desaceleración
-            
-            **Desventajas:**
-            - Puede generar señales prematuras en mercados laterales
-            - Requiere filtro adicional para evitar ruido
-            
-            ---
-            
-            ### Método 2: Z-Score Precio
-            **Ventajas:**
-            - Mide desviación estadística pura del precio
-            - Más estable en mercados laterales
-            - Identifica mejor zonas de normalización
-            
-            **Desventajas:**
-            - Responde más lento a cambios bruscos
-            - Puede tardar en confirmar tendencias nuevas
-            
-            ---
-            
-            ### ¿Cuál usar?
-            - **Swing Trading agresivo:** Método MACD-V
-            - **Position Trading conservador:** Método Z-Score Precio
-            - **Mejor opción:** Combinar ambos para confluencias
+            **Nota:** Sin histéresis - respuesta inmediata
             """)
 
     elif st.session_state.analyzed and st.session_state.df is None:
