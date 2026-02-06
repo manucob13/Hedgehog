@@ -350,7 +350,7 @@ def main():
         df_plot = df.tail(int(lookback_months * 4.33))
         current = df.iloc[-1]
 
-        # Extraer valores actuales
+        # Extraer valores actuales correctamente
         regime_macdv = str(current["Regime_MACDV"])
         regime_zscore = str(current["Regime_ZScore"])
         risk_level = str(current["Risk_Level"])
@@ -371,63 +371,89 @@ def main():
             confluencia = f"⚠️ Discrepan ({regime_macdv} vs {regime_zscore})"
             confluencia_color = "#FFA500"
 
+        # ================= PRECIO ACTUAL DESTACADO =================
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                    padding: 20px; border-radius: 10px; text-align: center; margin-bottom: 20px;">
+            <h2 style="color: white; margin: 0;">{ticker}</h2>
+            <h1 style="color: white; margin: 10px 0; font-size: 48px;">${precio:.2f}</h1>
+            <p style="color: white; margin: 0; font-size: 18px;">SMA 50: ${sma50:.2f} | {precio_above_sma}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
         # ================= TABLA 1: MÉTODO MACD-V =================
         st.markdown("### 📊 Método 1: MACD-V")
         
-        macdv_data = {
-            "": ["Régimen", "Precio > SMA50", "Valor MACD-V", "Rango MACD-V"],
-            "Resultado": [
-                regime_macdv,
-                precio_above_sma,
-                f"{macd_v:.2f}",
-                "[-50, +50] RANGO | [51, 150] ALCISTA | [-150, -51] BAJISTA"
-            ]
-        }
+        macdv_color = REGIME_COLORS.get(regime_macdv, "#FFFFFF")
         
-        macdv_df = pd.DataFrame(macdv_data)
-        st.dataframe(
-            macdv_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "": st.column_config.TextColumn("Indicador", width="medium"),
-                "Resultado": st.column_config.TextColumn("Valor", width="large"),
-            }
-        )
+        st.markdown(f"""
+        <table style="width:100%; border-collapse: collapse; margin-bottom: 20px;">
+            <tr style="background-color: #1e1e1e;">
+                <th style="padding: 12px; text-align: left; border: 1px solid #444;">Indicador</th>
+                <th style="padding: 12px; text-align: left; border: 1px solid #444;">Valor</th>
+            </tr>
+            <tr>
+                <td style="padding: 12px; border: 1px solid #444;">Régimen</td>
+                <td style="padding: 12px; border: 1px solid #444; background-color: {macdv_color}; color: black; font-weight: bold; text-align: center;">
+                    {regime_macdv}
+                </td>
+            </tr>
+            <tr>
+                <td style="padding: 12px; border: 1px solid #444;">Precio > SMA50</td>
+                <td style="padding: 12px; border: 1px solid #444;">{precio_above_sma}</td>
+            </tr>
+            <tr>
+                <td style="padding: 12px; border: 1px solid #444;">Valor MACD-V</td>
+                <td style="padding: 12px; border: 1px solid #444; font-weight: bold;">{macd_v:.2f}</td>
+            </tr>
+            <tr>
+                <td style="padding: 12px; border: 1px solid #444;">Rango MACD-V</td>
+                <td style="padding: 12px; border: 1px solid #444;">[-50, +50] RANGO | [51, 150] ALCISTA | [-150, -51] BAJISTA</td>
+            </tr>
+        </table>
+        """, unsafe_allow_html=True)
 
         # ================= TABLA 2: MÉTODO Z-SCORE PRECIO =================
         st.markdown("### 📊 Método 2: Z-Score Precio")
         
-        zscore_data = {
-            "": ["Régimen", "Precio > SMA50", "Valor Z-Score Precio", "Rango Z-Score"],
-            "Resultado": [
-                regime_zscore,
-                precio_above_sma,
-                f"{z_price:.2f}",
-                "[-0.5, +0.5] RANGO | > +0.5 ALCISTA | < -0.5 BAJISTA"
-            ]
-        }
+        zscore_color = REGIME_COLORS.get(regime_zscore, "#FFFFFF")
         
-        zscore_df = pd.DataFrame(zscore_data)
-        st.dataframe(
-            zscore_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "": st.column_config.TextColumn("Indicador", width="medium"),
-                "Resultado": st.column_config.TextColumn("Valor", width="large"),
-            }
-        )
+        st.markdown(f"""
+        <table style="width:100%; border-collapse: collapse; margin-bottom: 20px;">
+            <tr style="background-color: #1e1e1e;">
+                <th style="padding: 12px; text-align: left; border: 1px solid #444;">Indicador</th>
+                <th style="padding: 12px; text-align: left; border: 1px solid #444;">Valor</th>
+            </tr>
+            <tr>
+                <td style="padding: 12px; border: 1px solid #444;">Régimen</td>
+                <td style="padding: 12px; border: 1px solid #444; background-color: {zscore_color}; color: black; font-weight: bold; text-align: center;">
+                    {regime_zscore}
+                </td>
+            </tr>
+            <tr>
+                <td style="padding: 12px; border: 1px solid #444;">Precio > SMA50</td>
+                <td style="padding: 12px; border: 1px solid #444;">{precio_above_sma}</td>
+            </tr>
+            <tr>
+                <td style="padding: 12px; border: 1px solid #444;">Valor Z-Score Precio</td>
+                <td style="padding: 12px; border: 1px solid #444; font-weight: bold;">{z_price:.2f}</td>
+            </tr>
+            <tr>
+                <td style="padding: 12px; border: 1px solid #444;">Rango Z-Score</td>
+                <td style="padding: 12px; border: 1px solid #444;">[-0.5, +0.5] RANGO | > +0.5 ALCISTA | < -0.5 BAJISTA</td>
+            </tr>
+        </table>
+        """, unsafe_allow_html=True)
 
         # ================= TABLA 3: CONFLUENCIA =================
         st.markdown("### 🎯 Confluencia entre Métodos")
         
-        st.markdown(
-            f'<div style="background-color:{confluencia_color};padding:12px;border-radius:5px;'
-            f'text-align:center;font-weight:bold;color:white;font-size:16px;">'
-            f'{confluencia}</div>',
-            unsafe_allow_html=True
-        )
+        st.markdown(f"""
+        <div style="background-color:{confluencia_color}; padding: 20px; border-radius: 10px;
+                    text-align: center; font-weight: bold; color: black; font-size: 20px; margin-bottom: 20px;">
+            {confluencia}
+        </div>
+        """, unsafe_allow_html=True)
 
         # ================= TABLA 4: ANÁLISIS DE RIESGO =================
         st.markdown("### ⚠️ Análisis de Riesgo (Compartido)")
@@ -438,52 +464,59 @@ def main():
         # Interpretaciones
         if macd_extreme and z_extreme:
             interpretacion = "⚠️⚠️ ALTA PRECAUCIÓN: Ambos indicadores en niveles extremos"
+            interp_color = "#FF0000"
         elif macd_extreme:
             interpretacion = "⚠️ PRECAUCIÓN: MACD-V sobre-extendido"
+            interp_color = "#FFA500"
         elif z_extreme:
             interpretacion = "⚠️ PRECAUCIÓN: Momentum estadísticamente anormal"
+            interp_color = "#FFA500"
         else:
             interpretacion = "✅ Condiciones normales de mercado"
+            interp_color = "#00FF00"
         
-        risk_data = {
-            "Indicador": [
-                "Z-Score MACD",
-                "MACD-V",
-                "Nivel de Riesgo",
-                "Interpretación"
-            ],
-            "Valor Actual": [
-                f"{z_macd:.2f}",
-                f"{macd_v:.2f}",
-                risk_level,
-                ""
-            ],
-            "¿Extremo?": [
-                "🔴 SÍ" if z_extreme else "🟢 NO",
-                "🔴 SÍ" if macd_extreme else "🟢 NO",
-                "",
-                ""
-            ],
-            "Umbral": [
-                "|Z| > 2.0",
-                "|MACD-V| ≥ 151",
-                "Ambos extremos = RIESGO+ | Uno extremo = RIESGO-",
-                interpretacion
-            ]
-        }
+        risk_color = RISK_COLORS.get(risk_level, "#FFFFFF")
         
-        risk_df = pd.DataFrame(risk_data)
-        st.dataframe(
-            risk_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Indicador": st.column_config.TextColumn("Indicador", width="medium"),
-                "Valor Actual": st.column_config.TextColumn("Valor", width="small"),
-                "¿Extremo?": st.column_config.TextColumn("Estado", width="small"),
-                "Umbral": st.column_config.TextColumn("Criterio / Interpretación", width="large"),
-            }
-        )
+        st.markdown(f"""
+        <table style="width:100%; border-collapse: collapse; margin-bottom: 20px;">
+            <tr style="background-color: #1e1e1e;">
+                <th style="padding: 12px; text-align: left; border: 1px solid #444;">Indicador</th>
+                <th style="padding: 12px; text-align: center; border: 1px solid #444;">Valor Actual</th>
+                <th style="padding: 12px; text-align: center; border: 1px solid #444;">¿Extremo?</th>
+                <th style="padding: 12px; text-align: left; border: 1px solid #444;">Umbral</th>
+            </tr>
+            <tr>
+                <td style="padding: 12px; border: 1px solid #444;">Z-Score MACD</td>
+                <td style="padding: 12px; border: 1px solid #444; text-align: center; font-weight: bold;">{z_macd:.2f}</td>
+                <td style="padding: 12px; border: 1px solid #444; text-align: center;">{"🔴 SÍ" if z_extreme else "🟢 NO"}</td>
+                <td style="padding: 12px; border: 1px solid #444;">|Z| > 2.0</td>
+            </tr>
+            <tr>
+                <td style="padding: 12px; border: 1px solid #444;">MACD-V</td>
+                <td style="padding: 12px; border: 1px solid #444; text-align: center; font-weight: bold;">{macd_v:.2f}</td>
+                <td style="padding: 12px; border: 1px solid #444; text-align: center;">{"🔴 SÍ" if macd_extreme else "🟢 NO"}</td>
+                <td style="padding: 12px; border: 1px solid #444;">|MACD-V| ≥ 151</td>
+            </tr>
+            <tr>
+                <td style="padding: 12px; border: 1px solid #444;">Nivel de Riesgo</td>
+                <td colspan="3" style="padding: 12px; border: 1px solid #444; background-color: {risk_color}; color: black; font-weight: bold; text-align: center;">
+                    {risk_level}
+                </td>
+            </tr>
+            <tr>
+                <td style="padding: 12px; border: 1px solid #444;">Criterio</td>
+                <td colspan="3" style="padding: 12px; border: 1px solid #444;">
+                    Ambos extremos = RIESGO+ | Uno extremo = RIESGO- | Ninguno = Sin Riesgo
+                </td>
+            </tr>
+            <tr>
+                <td style="padding: 12px; border: 1px solid #444; font-weight: bold;">Interpretación</td>
+                <td colspan="3" style="padding: 12px; border: 1px solid #444; background-color: {interp_color}; color: black; font-weight: bold;">
+                    {interpretacion}
+                </td>
+            </tr>
+        </table>
+        """, unsafe_allow_html=True)
 
         # ================= LEYENDA =================
         st.markdown("### 🎨 Leyenda de Regímenes")
@@ -491,8 +524,8 @@ def main():
         for idx, (regime, color) in enumerate(REGIME_COLORS.items()):
             with cols[idx]:
                 st.markdown(
-                    f'<div style="background-color:{color};padding:8px;border-radius:5px;'
-                    f'text-align:center;font-weight:bold;color:white;">{regime}</div>',
+                    f'<div style="background-color:{color};padding:10px;border-radius:5px;'
+                    f'text-align:center;font-weight:bold;color:black;border:2px solid white;">{regime}</div>',
                     unsafe_allow_html=True
                 )
 
