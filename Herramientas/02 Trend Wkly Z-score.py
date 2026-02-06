@@ -350,10 +350,10 @@ def main():
         df_plot = df.tail(int(lookback_months * 4.33))
         current = df.iloc[-1]
 
-        # Extraer valores actuales correctamente
-        regime_macdv = str(current["Regime_MACDV"])
-        regime_zscore = str(current["Regime_ZScore"])
-        risk_level = str(current["Risk_Level"])
+        # Extraer valores actuales correctamente - CONVERSIÓN EXPLÍCITA
+        regime_macdv = str(current["Regime_MACDV"]) if isinstance(current["Regime_MACDV"], str) else current["Regime_MACDV"]
+        regime_zscore = str(current["Regime_ZScore"]) if isinstance(current["Regime_ZScore"], str) else current["Regime_ZScore"]
+        risk_level = str(current["Risk_Level"]) if isinstance(current["Risk_Level"], str) else current["Risk_Level"]
         
         precio = float(current["Close"])
         sma50 = float(current["SMA_50"])
@@ -371,16 +371,6 @@ def main():
             confluencia = f"⚠️ Discrepan ({regime_macdv} vs {regime_zscore})"
             confluencia_color = "#FFA500"
 
-        # ================= PRECIO ACTUAL DESTACADO =================
-        st.markdown(f"""
-        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-                    padding: 20px; border-radius: 10px; text-align: center; margin-bottom: 20px;">
-            <h2 style="color: white; margin: 0;">{ticker}</h2>
-            <h1 style="color: white; margin: 10px 0; font-size: 48px;">${precio:.2f}</h1>
-            <p style="color: white; margin: 0; font-size: 18px;">SMA 50: ${sma50:.2f} | {precio_above_sma}</p>
-        </div>
-        """, unsafe_allow_html=True)
-
         # ================= TABLA 1: MÉTODO MACD-V =================
         st.markdown("### 📊 Método 1: MACD-V")
         
@@ -393,10 +383,18 @@ def main():
                 <th style="padding: 12px; text-align: left; border: 1px solid #444;">Valor</th>
             </tr>
             <tr>
-                <td style="padding: 12px; border: 1px solid #444;">Régimen</td>
-                <td style="padding: 12px; border: 1px solid #444; background-color: {macdv_color}; color: black; font-weight: bold; text-align: center;">
+                <td style="padding: 12px; border: 1px solid #444; font-weight: bold;">Resultado</td>
+                <td style="padding: 12px; border: 1px solid #444; background-color: {macdv_color}; color: black; font-weight: bold; text-align: center; font-size: 18px;">
                     {regime_macdv}
                 </td>
+            </tr>
+            <tr>
+                <td style="padding: 12px; border: 1px solid #444;">Precio ({ticker})</td>
+                <td style="padding: 12px; border: 1px solid #444; font-weight: bold; font-size: 16px;">${precio:.2f}</td>
+            </tr>
+            <tr>
+                <td style="padding: 12px; border: 1px solid #444;">SMA 50</td>
+                <td style="padding: 12px; border: 1px solid #444;">${sma50:.2f}</td>
             </tr>
             <tr>
                 <td style="padding: 12px; border: 1px solid #444;">Precio > SMA50</td>
@@ -425,10 +423,18 @@ def main():
                 <th style="padding: 12px; text-align: left; border: 1px solid #444;">Valor</th>
             </tr>
             <tr>
-                <td style="padding: 12px; border: 1px solid #444;">Régimen</td>
-                <td style="padding: 12px; border: 1px solid #444; background-color: {zscore_color}; color: black; font-weight: bold; text-align: center;">
+                <td style="padding: 12px; border: 1px solid #444; font-weight: bold;">Resultado</td>
+                <td style="padding: 12px; border: 1px solid #444; background-color: {zscore_color}; color: black; font-weight: bold; text-align: center; font-size: 18px;">
                     {regime_zscore}
                 </td>
+            </tr>
+            <tr>
+                <td style="padding: 12px; border: 1px solid #444;">Precio ({ticker})</td>
+                <td style="padding: 12px; border: 1px solid #444; font-weight: bold; font-size: 16px;">${precio:.2f}</td>
+            </tr>
+            <tr>
+                <td style="padding: 12px; border: 1px solid #444;">SMA 50</td>
+                <td style="padding: 12px; border: 1px solid #444;">${sma50:.2f}</td>
             </tr>
             <tr>
                 <td style="padding: 12px; border: 1px solid #444;">Precio > SMA50</td>
@@ -498,8 +504,8 @@ def main():
                 <td style="padding: 12px; border: 1px solid #444;">|MACD-V| ≥ 151</td>
             </tr>
             <tr>
-                <td style="padding: 12px; border: 1px solid #444;">Nivel de Riesgo</td>
-                <td colspan="3" style="padding: 12px; border: 1px solid #444; background-color: {risk_color}; color: black; font-weight: bold; text-align: center;">
+                <td style="padding: 12px; border: 1px solid #444; font-weight: bold;">Nivel de Riesgo</td>
+                <td colspan="3" style="padding: 12px; border: 1px solid #444; background-color: {risk_color}; color: black; font-weight: bold; text-align: center; font-size: 18px;">
                     {risk_level}
                 </td>
             </tr>
