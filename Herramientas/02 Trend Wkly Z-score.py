@@ -363,7 +363,7 @@ def main():
         
         precio_above_sma = "✅ SÍ" if precio > sma50 else "❌ NO"
 
-        # ================= 2 TABLAS EN UNA FILA (SIN CONFLUENCIA) =================
+        # ================= 2 TABLAS DE MÉTODOS EN UNA FILA =================
         col1, col2 = st.columns(2)
         
         # ================= TABLA 1: MÉTODO MACD-V =================
@@ -430,15 +430,30 @@ def main():
             </table>
             """, unsafe_allow_html=True)
 
-        # ================= ANÁLISIS DE RIESGO CON SEMÁFORO CIRCULAR =================
-        st.markdown("### ⚠️ Análisis de Riesgo")
-        
+        # ================= ANÁLISIS DE RIESGO CON SEMÁFORO AL LADO DEL TÍTULO =================
         macd_extreme = abs(macd_v) >= 151
         z_extreme = abs(z_macd) > 2.0
-        
         risk_color = RISK_COLORS.get(risk_level, "#FFFFFF")
         
-        col_risk1, col_risk2 = st.columns([3, 1])
+        # Título con semáforo al lado
+        col_title, col_semaforo = st.columns([5, 1])
+        
+        with col_title:
+            st.markdown("### ⚠️ Análisis de Riesgo")
+        
+        with col_semaforo:
+            st.markdown(f"""
+            <div style="display: flex; justify-content: flex-end; align-items: center; height: 40px;">
+                <div style="width: 80px; height: 80px; border-radius: 50%; background-color: {risk_color}; 
+                            display: flex; justify-content: center; align-items: center; text-align: center;
+                            font-weight: bold; color: black; font-size: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">
+                    {risk_level}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Tabla de riesgo en 3 columnas
+        col_risk1, col_risk2, col_risk3 = st.columns(3)
         
         with col_risk1:
             st.markdown(f"""
@@ -446,33 +461,46 @@ def main():
                 <tr style="background-color: #1e1e1e;">
                     <th style="padding: 8px; text-align: left; border: 1px solid #444; font-size: 12px;">Indicador</th>
                     <th style="padding: 8px; text-align: center; border: 1px solid #444; font-size: 12px;">Valor</th>
-                    <th style="padding: 8px; text-align: center; border: 1px solid #444; font-size: 12px;">¿Extremo?</th>
-                    <th style="padding: 8px; text-align: left; border: 1px solid #444; font-size: 12px;">Umbral</th>
                 </tr>
                 <tr>
                     <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">Z-Score MACD</td>
                     <td style="padding: 6px; border: 1px solid #444; text-align: center; font-weight: bold; font-size: 11px;">{z_macd:.2f}</td>
-                    <td style="padding: 6px; border: 1px solid #444; text-align: center; font-size: 11px;">{"🔴 SÍ" if z_extreme else "🟢 NO"}</td>
-                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">|Z| > 2.0</td>
                 </tr>
                 <tr>
                     <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">MACD-V</td>
                     <td style="padding: 6px; border: 1px solid #444; text-align: center; font-weight: bold; font-size: 11px;">{macd_v:.2f}</td>
-                    <td style="padding: 6px; border: 1px solid #444; text-align: center; font-size: 11px;">{"🔴 SÍ" if macd_extreme else "🟢 NO"}</td>
-                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">|MACD-V| ≥ 151</td>
                 </tr>
             </table>
             """, unsafe_allow_html=True)
         
         with col_risk2:
             st.markdown(f"""
-            <div style="display: flex; justify-content: center; align-items: center; height: 100%; margin-top: 34px;">
-                <div style="width: 120px; height: 120px; border-radius: 50%; background-color: {risk_color}; 
-                            display: flex; justify-content: center; align-items: center; text-align: center;
-                            font-weight: bold; color: black; font-size: 16px; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">
-                    {risk_level}
-                </div>
-            </div>
+            <table style="width:100%; border-collapse: collapse; margin-bottom: 15px;">
+                <tr style="background-color: #1e1e1e;">
+                    <th style="padding: 8px; text-align: center; border: 1px solid #444; font-size: 12px;">¿Extremo?</th>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; border: 1px solid #444; text-align: center; font-size: 11px;">{"🔴 SÍ" if z_extreme else "🟢 NO"}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; border: 1px solid #444; text-align: center; font-size: 11px;">{"🔴 SÍ" if macd_extreme else "🟢 NO"}</td>
+                </tr>
+            </table>
+            """, unsafe_allow_html=True)
+        
+        with col_risk3:
+            st.markdown(f"""
+            <table style="width:100%; border-collapse: collapse; margin-bottom: 15px;">
+                <tr style="background-color: #1e1e1e;">
+                    <th style="padding: 8px; text-align: left; border: 1px solid #444; font-size: 12px;">Umbral</th>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">|Z| > 2.0</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; border: 1px solid #444; font-size: 11px;">|MACD-V| ≥ 151</td>
+                </tr>
+            </table>
             """, unsafe_allow_html=True)
 
         # ================= LEYENDA =================
