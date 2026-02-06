@@ -350,10 +350,10 @@ def main():
         df_plot = df.tail(int(lookback_months * 4.33))
         current = df.iloc[-1]
 
-        # Extraer valores actuales correctamente - CONVERSIÓN EXPLÍCITA
-        regime_macdv = str(current["Regime_MACDV"]) if isinstance(current["Regime_MACDV"], str) else current["Regime_MACDV"]
-        regime_zscore = str(current["Regime_ZScore"]) if isinstance(current["Regime_ZScore"], str) else current["Regime_ZScore"]
-        risk_level = str(current["Risk_Level"]) if isinstance(current["Risk_Level"], str) else current["Risk_Level"]
+        # Extraer valores actuales - SOLUCIÓN CORRECTA
+        regime_macdv = df["Regime_MACDV"].iloc[-1]  # Último valor
+        regime_zscore = df["Regime_ZScore"].iloc[-1]  # Último valor
+        risk_level = df["Risk_Level"].iloc[-1]  # Último valor
         
         precio = float(current["Close"])
         sma50 = float(current["SMA_50"])
