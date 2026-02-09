@@ -406,16 +406,16 @@ def get_options_metrics_yf(ticker, current_price, price_range_pct=10):
                 # CALLS - filtrar por rango de strikes
                 calls = chain.calls
                 calls_in_range = calls[
-                    (calls['strike'] >= lower_bound) &
-                    (calls['strike'] <= upper_bound)
+                    (calls['Strike'] >= lower_bound) &
+                    (calls['Strike'] <= upper_bound)
                 ]
                 total_call_volume += calls_in_range['Volume'].fillna(0).sum()
                 
                 # PUTS - filtrar por rango de strikes
                 puts = chain.puts
                 puts_in_range = puts[
-                    (puts['strike'] >= lower_bound) &
-                    (puts['strike'] <= upper_bound)
+                    (puts['Strike'] >= lower_bound) &
+                    (puts['Strike'] <= upper_bound)
                 ]
                 total_put_volume += puts_in_range['Volume'].fillna(0).sum()
                 
