@@ -368,6 +368,90 @@ def calculate_macd_v(data):
     except:
         return None
 
+def get_options_metrics_yf(ticker, current_price, price_range_pct=10):
+    """
+    Obtiene métricas de volumen de opciones desde Yahoo Finance
+    
+    Args:
+        ticker (str): Símbolo del ticker
+        current_price (float): Precio actual de la acción
+        price_range_pct (int): Porcentaje de rango alrededor del precio (default: 10%)
+    
+    Returns:
+        dict con métricas o None si no hay datos
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        
+        # Verificar si tiene opciones disponibles
+        expirations = stock.options
+        
+        if not expirations or len(expirations) == 0:
+            return None
+        
+        # Analizar solo próximas 2 expiraciones
+        near_expirations = expirations[:min(2, len(expirations))]
+        
+        # Calcular rango de strikes (±price_range_pct%)
+        lower_bound = current_price * (1 - price_range_pct / 100)
+        upper_bound = current_price * (1 + price_range_pct / 100)
+        
+        total_call_volume = 0
+        total_put_volume = 0
+        
+        for exp_date in near_expirations:
+            try:
+                chain = stock.option_chain(exp_date)
+                
+                # CALLS - filtrar por rango de strikes
+                calls = chain.calls
+                calls_in_range = calls[
+                    (calls['strike'] >= lower_bound) &
+                    (calls['strike'] <= upper_bound)
+                ]
+                total_call_volume += calls_in_range['volume'].fillna(0).sum()
+                
+                # PUTS - filtrar por rango de strikes
+                puts = chain.puts
+                puts_in_range = puts[
+                    (puts['strike'] >= lower_bound) &
+                    (puts['strike'] <= upper_bound)
+                ]
+                total_put_volume += puts_in_range['volume'].fillna(0).sum()
+                
+            except:
+                continue
+        
+        # Calcular métricas
+        total_volume = total_call_volume + total_put_volume
+        
+        # Evitar división por cero
+        if total_call_volume == 0:
+            pc_ratio = None
+        else:
+            pc_ratio = total_put_volume / total_call_volume
+        
+        # Determinar sentiment basado en Put/Call Ratio
+        if pc_ratio is None:
+            sentiment = "N/A"
+        elif pc_ratio < 0.7:
+            sentiment = "🟢 Muy Alcista"
+        elif pc_ratio < 1.0:
+            sentiment = "🟢 Alcista"
+        elif pc_ratio < 1.3:
+            sentiment = "🟡 Neutral"
+        else:
+            sentiment = "🔴 Bajista"
+        
+        return {
+            'Options_Vol': int(total_volume) if total_volume > 0 else None,
+            'PC_Ratio': round(pc_ratio, 2) if pc_ratio is not None else None,
+            'Sentiment': sentiment
+        }
+        
+    except Exception as e:
+        return None
+
 def format_market_cap(value):
     """Formatea el market cap de forma legible"""
     if value is None or pd.isna(value):
@@ -791,6 +875,9 @@ def main():
         if len(df_results) > 0:
             st.session_state['scan_results'] = df_results
             st.session_state['scan_timestamp'] = datetime.now()
+            # Resetear datos de opciones al hacer nuevo scan
+            if 'options_calculated' in st.session_state:
+                del st.session_state['options_calculated']
             st.success(f"✅ Escaneo completado: **{len(df_results)}** acciones encontradas")
         else:
             st.warning("⚠️ No se encontraron acciones que cumplan todos los criterios")
@@ -804,6 +891,11 @@ def main():
     
     if 'scan_results' in st.session_state and len(st.session_state['scan_results']) > 0:
         df_display = st.session_state['scan_results'].copy()
+        
+        # Si ya se calcularon opciones, agregarlas al display
+        if 'options_calculated' in st.session_state and st.session_state['options_calculated']:
+            # Las columnas de opciones ya están en df_display
+            pass
         
         # Formatear Market Cap para display
         df_display['Market_Cap_Formatted'] = df_display['Market_Cap'].apply(format_market_cap)
@@ -824,17 +916,117 @@ def main():
         
         st.markdown("---")
         
-        # Preparar dataframe para mostrar (con Name, Market Cap y Dividendos)
-        df_table = df_display[['Ticker', 'Name', 'Price', 'Market_Cap_Formatted', 'Next_Dividend', 'Div_Yield_%',
-                               'RSC', 'Dist_Max_%', 'WMA30', 'Dist_WMA_%', 'Slope', 'R2', 'Norm_Dist', 
-                               'Atlas', 'MIC_Value', 'Sharpe', 'MACD_V']]
+        # ============= BOTÓN PARA CALCULAR VOLUMEN DE OPCIONES =============
+        st.markdown("### 📊 Volumen de Opciones")
         
-        # Tabla de resultados
-        st.dataframe(
-            df_table,
-            use_container_width=True,
-            height=400,
-            column_config={
+        st.info("💡 **Interpretación del Put/Call Ratio:** < 0.7 = Muy Alcista | 0.7-1.0 = Alcista | 1.0-1.3 = Neutral | > 1.3 = Bajista")
+        
+        col_opt1, col_opt2 = st.columns([3, 1])
+        
+        with col_opt1:
+            if 'options_calculated' not in st.session_state or not st.session_state['options_calculated']:
+                st.warning("⚠️ Aún no se ha calculado el volumen de opciones para estos tickers")
+            else:
+                st.success(f"✅ Volumen de opciones calculado para {len(df_display)} tickers")
+        
+        with col_opt2:
+            calculate_options_btn = st.button(
+                "📊 Calcular Volumen de Opciones",
+                type="primary",
+                use_container_width=True,
+                disabled='options_calculated' in st.session_state and st.session_state['options_calculated']
+            )
+        
+        if calculate_options_btn:
+            st.markdown("---")
+            st.info("🔄 Calculando volumen de opciones... Esto puede tomar algunos minutos.")
+            
+            progress_opt = st.progress(0)
+            status_opt = st.empty()
+            
+            total_tickers = len(df_display)
+            options_data = []
+            
+            for i, row in df_display.iterrows():
+                ticker = row['Ticker']
+                current_price = row['Price']
+                
+                progress_opt.progress((i + 1) / total_tickers)
+                status_opt.text(f"🔍 Analizando opciones: {ticker} ({i+1}/{total_tickers})")
+                
+                # Obtener métricas de opciones (±10% del precio, próximas 2 expiraciones)
+                metrics = get_options_metrics_yf(ticker, current_price, price_range_pct=10)
+                
+                if metrics:
+                    options_data.append({
+                        'Ticker': ticker,
+                        'Options_Vol': metrics['Options_Vol'],
+                        'PC_Ratio': metrics['PC_Ratio'],
+                        'Sentiment': metrics['Sentiment']
+                    })
+                else:
+                    options_data.append({
+                        'Ticker': ticker,
+                        'Options_Vol': None,
+                        'PC_Ratio': None,
+                        'Sentiment': 'N/A'
+                    })
+            
+            progress_opt.empty()
+            status_opt.empty()
+            
+            # Crear DataFrame de opciones
+            df_options = pd.DataFrame(options_data)
+            
+            # Merge con df_display
+            df_display = df_display.merge(df_options, on='Ticker', how='left')
+            
+            # Actualizar en session_state
+            st.session_state['scan_results'] = df_display
+            st.session_state['options_calculated'] = True
+            
+            st.success(f"✅ Volumen de opciones calculado exitosamente para {len(df_display)} tickers")
+            st.rerun()
+        
+        st.markdown("---")
+        
+        # Preparar dataframe para mostrar
+        if 'Options_Vol' in df_display.columns:
+            # Con datos de opciones
+            df_table = df_display[['Ticker', 'Name', 'Price', 'Market_Cap_Formatted', 'Next_Dividend', 'Div_Yield_%',
+                                   'Options_Vol', 'PC_Ratio', 'Sentiment',
+                                   'RSC', 'Dist_Max_%', 'WMA30', 'Dist_WMA_%', 'Slope', 'R2', 'Norm_Dist', 
+                                   'Atlas', 'MIC_Value', 'Sharpe', 'MACD_V']]
+            
+            column_config = {
+                "Ticker": st.column_config.TextColumn("Ticker", width="small"),
+                "Name": st.column_config.TextColumn("Nombre", width="medium"),
+                "Price": st.column_config.NumberColumn("Precio", format="$%.2f"),
+                "Market_Cap_Formatted": st.column_config.TextColumn("Market Cap", width="small"),
+                "Next_Dividend": st.column_config.TextColumn("Próx. Dividendo", width="medium"),
+                "Div_Yield_%": st.column_config.NumberColumn("Yield %", format="%.2f%%"),
+                "Options_Vol": st.column_config.NumberColumn("Vol Opciones", format="%d", help="Volumen total de opciones (±10%, próximas 2 exp)"),
+                "PC_Ratio": st.column_config.NumberColumn("P/C Ratio", format="%.2f", help="Put/Call Ratio"),
+                "Sentiment": st.column_config.TextColumn("Sentiment", width="medium"),
+                "RSC": st.column_config.NumberColumn("RSC", format="%.2f"),
+                "Dist_Max_%": st.column_config.NumberColumn("Dist Max %", format="%.2f%%"),
+                "WMA30": st.column_config.NumberColumn("WMA30", format="%.2f"),
+                "Dist_WMA_%": st.column_config.NumberColumn("Dist WMA %", format="%.2f%%"),
+                "Slope": st.column_config.NumberColumn("Slope", format="%.2f"),
+                "R2": st.column_config.NumberColumn("R²", format="%.3f"),
+                "Norm_Dist": st.column_config.NumberColumn("Norm Dist", format="%.2f"),
+                "Atlas": st.column_config.NumberColumn("Atlas", format="%d"),
+                "MIC_Value": st.column_config.NumberColumn("MIC Value", format="%.2f"),
+                "Sharpe": st.column_config.NumberColumn("Sharpe", format="%.2f"),
+                "MACD_V": st.column_config.NumberColumn("MACD-V", format="%.2f")
+            }
+        else:
+            # Sin datos de opciones
+            df_table = df_display[['Ticker', 'Name', 'Price', 'Market_Cap_Formatted', 'Next_Dividend', 'Div_Yield_%',
+                                   'RSC', 'Dist_Max_%', 'WMA30', 'Dist_WMA_%', 'Slope', 'R2', 'Norm_Dist', 
+                                   'Atlas', 'MIC_Value', 'Sharpe', 'MACD_V']]
+            
+            column_config = {
                 "Ticker": st.column_config.TextColumn("Ticker", width="small"),
                 "Name": st.column_config.TextColumn("Nombre", width="medium"),
                 "Price": st.column_config.NumberColumn("Precio", format="$%.2f"),
@@ -853,10 +1045,22 @@ def main():
                 "Sharpe": st.column_config.NumberColumn("Sharpe", format="%.2f"),
                 "MACD_V": st.column_config.NumberColumn("MACD-V", format="%.2f")
             }
+        
+        # Tabla de resultados
+        st.dataframe(
+            df_table,
+            use_container_width=True,
+            height=400,
+            column_config=column_config
         )
         
         # Botón de descarga
-        csv = df_display.drop('Market_Cap_Formatted', axis=1).to_csv(index=False)
+        if 'Options_Vol' in df_display.columns:
+            csv_df = df_display.drop('Market_Cap_Formatted', axis=1)
+        else:
+            csv_df = df_display.drop('Market_Cap_Formatted', axis=1)
+        
+        csv = csv_df.to_csv(index=False)
         st.download_button(
             label="📥 Descargar Resultados (CSV)",
             data=csv,
@@ -940,17 +1144,34 @@ def main():
                     # Mostrar métricas del ticker
                     ticker_data = df_display[df_display['Ticker'] == ticker].iloc[0]
                     
-                    col_a, col_b, col_c, col_d, col_e = st.columns(5)
-                    with col_a:
-                        st.metric("Precio", f"${ticker_data['Price']:.2f}")
-                    with col_b:
-                        st.metric("RSC", f"{ticker_data['RSC']:.2f}")
-                    with col_c:
-                        st.metric("R²", f"{ticker_data['R2']:.3f}" if pd.notna(ticker_data['R2']) else "N/A")
-                    with col_d:
-                        st.metric("Sharpe", f"{ticker_data['Sharpe']:.2f}" if pd.notna(ticker_data['Sharpe']) else "N/A")
-                    with col_e:
-                        st.metric("MACD-V", f"{ticker_data['MACD_V']:.2f}" if pd.notna(ticker_data['MACD_V']) else "N/A")
+                    # Si hay datos de opciones, mostrar 6 métricas, sino 5
+                    if 'Options_Vol' in df_display.columns and pd.notna(ticker_data.get('Options_Vol')):
+                        col_a, col_b, col_c, col_d, col_e, col_f = st.columns(6)
+                        with col_a:
+                            st.metric("Precio", f"${ticker_data['Price']:.2f}")
+                        with col_b:
+                            st.metric("RSC", f"{ticker_data['RSC']:.2f}")
+                        with col_c:
+                            st.metric("R²", f"{ticker_data['R2']:.3f}" if pd.notna(ticker_data['R2']) else "N/A")
+                        with col_d:
+                            st.metric("Sharpe", f"{ticker_data['Sharpe']:.2f}" if pd.notna(ticker_data['Sharpe']) else "N/A")
+                        with col_e:
+                            st.metric("MACD-V", f"{ticker_data['MACD_V']:.2f}" if pd.notna(ticker_data['MACD_V']) else "N/A")
+                        with col_f:
+                            sentiment = ticker_data.get('Sentiment', 'N/A')
+                            st.metric("Sentiment", sentiment)
+                    else:
+                        col_a, col_b, col_c, col_d, col_e = st.columns(5)
+                        with col_a:
+                            st.metric("Precio", f"${ticker_data['Price']:.2f}")
+                        with col_b:
+                            st.metric("RSC", f"{ticker_data['RSC']:.2f}")
+                        with col_c:
+                            st.metric("R²", f"{ticker_data['R2']:.3f}" if pd.notna(ticker_data['R2']) else "N/A")
+                        with col_d:
+                            st.metric("Sharpe", f"{ticker_data['Sharpe']:.2f}" if pd.notna(ticker_data['Sharpe']) else "N/A")
+                        with col_e:
+                            st.metric("MACD-V", f"{ticker_data['MACD_V']:.2f}" if pd.notna(ticker_data['MACD_V']) else "N/A")
                     
                     # Generar gráfico con nombre
                     plot_candlestick_chart(ticker, ticker_name, period=chart_period)
