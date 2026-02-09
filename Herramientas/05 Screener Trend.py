@@ -368,6 +368,7 @@ def calculate_macd_v(data):
     except:
         return None
 
+
 def get_options_metrics_yf(ticker, current_price, price_range_pct=10):
     """
     Obtiene métricas de volumen de opciones desde Yahoo Finance
@@ -406,34 +407,45 @@ def get_options_metrics_yf(ticker, current_price, price_range_pct=10):
                 # CALLS - filtrar por rango de strikes
                 calls = chain.calls
                 calls_in_range = calls[
-                    (calls['Strike'] >= lower_bound) &
-                    (calls['Strike'] <= upper_bound)
+                    (calls['strike'] >= lower_bound) &
+                    (calls['strike'] <= upper_bound)
                 ]
-                total_call_volume += calls_in_range['Volume'].fillna(0).sum()
+                
+                # Sumar volumen de calls (convertir NaN a 0)
+                call_vol = calls_in_range['volume'].fillna(0).sum()
+                total_call_volume += call_vol
                 
                 # PUTS - filtrar por rango de strikes
                 puts = chain.puts
                 puts_in_range = puts[
-                    (puts['Strike'] >= lower_bound) &
-                    (puts['Strike'] <= upper_bound)
+                    (puts['strike'] >= lower_bound) &
+                    (puts['strike'] <= upper_bound)
                 ]
-                total_put_volume += puts_in_range['Volume'].fillna(0).sum()
                 
-            except:
+                # Sumar volumen de puts (convertir NaN a 0)
+                put_vol = puts_in_range['volume'].fillna(0).sum()
+                total_put_volume += put_vol
+                
+            except Exception as e:
+                # Si hay error en una expiración, continuar con la siguiente
                 continue
         
         # Calcular métricas
         total_volume = total_call_volume + total_put_volume
         
-        # Evitar división por cero
+        # Si no hay volumen, retornar None
+        if total_volume == 0:
+            return None
+        
+        # Calcular Put/Call Ratio
         if total_call_volume == 0:
-            pc_ratio = None
+            pc_ratio = float('inf')  # Infinito si solo hay puts
         else:
             pc_ratio = total_put_volume / total_call_volume
         
         # Determinar sentiment basado en Put/Call Ratio
-        if pc_ratio is None:
-            sentiment = "N/A"
+        if pc_ratio == float('inf'):
+            sentiment = "🔴 Muy Bajista"
         elif pc_ratio < 0.7:
             sentiment = "🟢 Muy Alcista"
         elif pc_ratio < 1.0:
@@ -444,13 +456,15 @@ def get_options_metrics_yf(ticker, current_price, price_range_pct=10):
             sentiment = "🔴 Bajista"
         
         return {
-            'Options_Vol': int(total_volume) if total_volume > 0 else None,
-            'PC_Ratio': round(pc_ratio, 2) if pc_ratio is not None else None,
+            'Options_Vol': int(total_volume),
+            'PC_Ratio': round(pc_ratio, 2) if pc_ratio != float('inf') else None,
             'Sentiment': sentiment
         }
         
     except Exception as e:
+        # Si hay error general, retornar None
         return None
+
 
 def format_market_cap(value):
     """Formatea el market cap de forma legible"""
