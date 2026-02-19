@@ -242,97 +242,103 @@ def calculate_linear_regression(prices, period=30):
     except:
         return None, None, None
 
-def calculate_hurst_exponent(prices, min_period=10, max_period=None):
+def calculate_hurst_exponent(prices, min_window=10, max_window=None):
     """
-    Calcula el Exponente de Hurst usando el método R/S (Rescaled Range).
-    
-    H > 0.5  → Serie con tendencia persistente (memoria positiva)
-    H = 0.5  → Camino aleatorio (sin memoria)
-    H < 0.5  → Serie antipersistente (reversión a la media)
-    
-    Para tendencias fuertes se recomienda H > 0.7
-    
+    Calcula el Exponente de Hurst usando DFA (Detrended Fluctuation Analysis).
+
+    DFA es el método preferido frente al R/S clásico porque:
+    - Tiene mucho menos sesgo con muestras pequeñas (~260 barras semanales)
+    - R/S clásico sobreestima H en ~0.12 con estos tamaños de muestra
+    - DFA distingue mejor entre tendencia real y ruido
+
+    Interpretación calibrada para datos semanales (5 años, ~260 barras):
+        H < 0.50  → Serie antipersistente (reversión a la media)
+        H ≈ 0.51  → Ruido blanco / camino aleatorio
+        H > 0.55  → Tendencia persistente (umbral recomendado)
+        H > 0.60  → Tendencia fuerte
+        H > 0.65  → Tendencia muy fuerte (solo ~20% de trending stocks)
+
+    NOTA: Con datos semanales, H > 0.70 es extremadamente raro incluso
+    en acciones con tendencias claras. No usar umbrales superiores a 0.65.
+
+    Algoritmo DFA:
+        1. Calcular log-retornos y su perfil acumulado centrado
+        2. Dividir el perfil en ventanas de tamaño s
+        3. Detrend lineal en cada ventana → RMS de residuos F(s)
+        4. Regresión log(F) ~ alpha * log(s)  →  alpha ≈ H
+
     Args:
-        prices: Serie de precios de cierre
-        min_period: Período mínimo para el análisis R/S (default 10)
-        max_period: Período máximo (default: mitad del total de datos)
-    
+        prices: Serie de precios de cierre (pd.Series o similar)
+        min_window: Ventana mínima (default 10 semanas)
+        max_window: Ventana máxima (default: n/4)
+
     Returns:
-        float: Exponente de Hurst (0-1) o None si no hay suficientes datos
+        float: Exponente de Hurst DFA (0-1) o None si datos insuficientes
     """
     try:
         if len(prices) < 52:
             return None
-        
-        # Trabajar con log-retornos para estacionariedad
-        series = np.log(prices.values / np.roll(prices.values, 1))[1:]
-        n = len(series)
-        
-        if max_period is None:
-            max_period = n // 2
-        
-        # Generar lista de períodos (potencias de 2 aproximadas, mínimo 10)
-        lags = []
-        lag = min_period
-        while lag <= max_period:
-            lags.append(lag)
-            lag = int(lag * 1.5)
-            if lag == lags[-1]:
-                lag += 1
-        
-        if len(lags) < 3:
+
+        # Paso 1: log-retornos
+        log_ret = np.diff(np.log(prices.values.astype(float)))
+        n = len(log_ret)
+
+        if n < 40:
             return None
-        
-        rs_values = []
-        valid_lags = []
-        
-        for lag in lags:
-            # Dividir la serie en sub-series de longitud `lag`
-            n_subseries = n // lag
-            if n_subseries < 2:
+
+        # Paso 2: perfil = cumsum de retornos centrados en su media
+        profile = np.cumsum(log_ret - np.mean(log_ret))
+
+        if max_window is None:
+            max_window = n // 4
+
+        # Paso 3: escala logarítmica de ventanas
+        windows = []
+        w = min_window
+        while w <= max_window:
+            windows.append(w)
+            w = int(w * 1.5)
+            if w == windows[-1]:
+                w += 1
+
+        if len(windows) < 3:
+            return None
+
+        fluctuations = []
+        valid_windows = []
+
+        for w in windows:
+            n_segments = n // w
+            if n_segments < 4:      # mínimo 4 segmentos para fiabilidad
                 continue
-            
-            rs_list = []
-            for j in range(n_subseries):
-                sub = series[j * lag:(j + 1) * lag]
-                
-                # Media y desviación de la sub-serie
-                mean_sub = np.mean(sub)
-                std_sub = np.std(sub, ddof=1)
-                
-                if std_sub == 0:
-                    continue
-                
-                # Serie centrada acumulada (perfil)
-                cumdev = np.cumsum(sub - mean_sub)
-                
-                # R = rango, S = desviación estándar
-                R = np.max(cumdev) - np.min(cumdev)
-                S = std_sub
-                
-                rs_list.append(R / S)
-            
-            if len(rs_list) > 0:
-                rs_values.append(np.mean(rs_list))
-                valid_lags.append(lag)
-        
-        if len(valid_lags) < 3:
+
+            rms_list = []
+            for seg in range(n_segments):
+                seg_data = profile[seg * w:(seg + 1) * w]
+                x = np.arange(w)
+                # Detrend lineal dentro de cada segmento
+                coeffs = np.polyfit(x, seg_data, 1)
+                trend = np.polyval(coeffs, x)
+                residuals = seg_data - trend
+                rms_list.append(np.sqrt(np.mean(residuals ** 2)))
+
+            if rms_list:
+                fluctuations.append(np.mean(rms_list))
+                valid_windows.append(w)
+
+        if len(valid_windows) < 3:
             return None
-        
-        # Regresión log-log: log(R/S) ~ H * log(lag)
-        log_lags = np.log(valid_lags)
-        log_rs = np.log(rs_values)
-        
-        # Ajuste por mínimos cuadrados
-        coeffs = np.polyfit(log_lags, log_rs, 1)
-        hurst = coeffs[0]
-        
-        # El Hurst debe estar en rango razonable [0, 1]
-        if hurst < 0 or hurst > 1:
-            return None
-        
-        return round(hurst, 3)
-        
+
+        # Paso 4: regresión log-log → pendiente = alpha (≈ H)
+        log_w = np.log(valid_windows)
+        log_f = np.log(fluctuations)
+        coeffs = np.polyfit(log_w, log_f, 1)
+        alpha = coeffs[0]
+
+        # Limitar al rango válido
+        alpha = max(0.0, min(1.0, alpha))
+        return round(alpha, 3)
+
     except:
         return None
 
@@ -727,13 +733,6 @@ def analyze_ticker(ticker, params, benchmark_data):
             if macd_v is None or macd_v < 150:
                 return None
 
-        # ========== FILTRO OPCIONAL: Exponente de Hurst ==========
-        # Siempre se calcula (para mostrar en tabla), pero solo filtra si está activado
-        hurst = calculate_hurst_exponent(close)
-        if params['apply_hurst']:
-            if hurst is None or hurst < params['hurst_min']:
-                return None
-        
         # ========== TODOS LOS FILTROS PASADOS ==========
         name, market_cap = get_ticker_name_and_marketcap(ticker)
         next_dividend = get_next_dividend_date(ticker)
@@ -754,7 +753,6 @@ def analyze_ticker(ticker, params, benchmark_data):
             'Slope':       round(slope, 2) if slope is not None else None,
             'R2':          round(r_squared, 3) if r_squared is not None else None,
             'Norm_Dist':   round(normalized_dist, 2) if normalized_dist is not None else None,
-            'Hurst':       hurst,
             'Atlas':       int(atlas_value),
             'MIC_Value':   round(mic_value, 2) if mic_value is not None else None,
             'Sharpe':      round(sharpe, 2) if sharpe is not None else None,
@@ -997,30 +995,6 @@ def main():
         )
 
         st.markdown("---")
-
-        # ---- FILTRO HURST ----
-        apply_hurst = st.checkbox(
-            "Exponente de Hurst",
-            value=False,
-            help=(
-                "Filtra por persistencia de tendencia (método R/S).\n"
-                "H > 0.5 → tendencia persistente\n"
-                "H > 0.7 → tendencia fuerte (recomendado)"
-            )
-        )
-
-        hurst_min = st.slider(
-            "Hurst mínimo",
-            min_value=0.50,
-            max_value=0.90,
-            value=0.70,
-            step=0.05,
-            format="%.2f",
-            help="Valor mínimo del Exponente de Hurst para filtrar",
-            disabled=not apply_hurst
-        )
-
-        st.markdown("---")
         st.markdown("**📋 Resumen Filtros Activos:**")
         
         filters_count = sum([
@@ -1034,15 +1008,12 @@ def main():
             apply_sharpe,
             1 if macd_filter != "Sin filtro" else 0,
             apply_atlas,
-            apply_hurst
         ])
         
         st.info(f"**{filters_count}** filtros activos")
         st.success(f"Precio máx: **${max_price}**")
         if macd_filter != "Sin filtro":
             st.success(f"MACD-V: {macd_filter.replace('MACD-V ', '')}")
-        if apply_hurst:
-            st.success(f"Hurst ≥ **{hurst_min:.2f}**")
     
     st.markdown("---")
     
@@ -1068,8 +1039,6 @@ def main():
             'apply_sharpe': apply_sharpe,
             'macd_filter':  macd_filter,
             'apply_atlas':  apply_atlas,
-            'apply_hurst':  apply_hurst,
-            'hurst_min':    hurst_min
         }
         
         progress_bar = st.progress(0)
@@ -1120,91 +1089,105 @@ def main():
         
         st.markdown("---")
         
-        # ============= BOTÓN PARA CALCULAR VOLUMEN DE OPCIONES =============
-        st.markdown("### 📊 Volumen de Opciones")
-        
+        # ============= BOTÓN PARA CALCULAR OPCIONES + HURST =============
+        st.markdown("### 📊 Opciones & Hurst (DFA)")
+
         st.info(
-            "💡 **Interpretación del Put/Call Ratio:** < 0.7 = Muy Alcista | 0.7-1.0 = Alcista | "
-            "1.0-1.3 = Neutral | > 1.3 = Bajista  |  "
-            "📅 **Vencimientos:** 3er viernes del mes (mensual). "
-            "Si el próximo está a < 7 días, se añade también el siguiente mensual.  |  "
-            "📊 **Actividad:** volumen del día; si es 0, se usa open interest como fallback."
+            "💡 **P/C Ratio:** < 0.7 = 🟢 Muy Alcista | 0.7–1.0 = 🟢 Alcista | "
+            "1.0–1.3 = 🟡 Neutral | > 1.3 = 🔴 Bajista  ·  "
+            "📅 Vencimiento mensual (3er viernes). Si está a < 7 días se añade el siguiente.  ·  "
+            "📊 Actividad: volumen del día; si es 0 se usa Open Interest.  |  "
+            "📈 **Hurst DFA:** < 0.50 = 🔴 Antipersistente | 0.50–0.54 = ⚪ Aleatorio | "
+            "0.55–0.59 = 🟡 Persistente | 0.60–0.64 = 🟠 Tendencia fuerte | ≥ 0.65 = 🟢 Muy fuerte"
         )
-        
+
         col_opt1, col_opt2 = st.columns([3, 1])
-        
+
         with col_opt1:
             if 'options_calculated' not in st.session_state or not st.session_state['options_calculated']:
-                st.warning("⚠️ Aún no se ha calculado el volumen de opciones para estos tickers")
+                st.warning("⚠️ Aún no se ha calculado el volumen de opciones ni el Hurst DFA")
             else:
-                st.success(f"✅ Volumen de opciones calculado para {len(df_display)} tickers")
-        
+                st.success(f"✅ Opciones y Hurst DFA calculados para {len(df_display)} tickers")
+
         with col_opt2:
             calculate_options_btn = st.button(
-                "📊 Calcular Volumen de Opciones",
+                "📊 Calcular Opciones + Hurst",
                 type="primary",
                 use_container_width=True,
                 disabled='options_calculated' in st.session_state and st.session_state['options_calculated']
             )
-        
+
         if calculate_options_btn:
             st.markdown("---")
-            st.info("🔄 Calculando volumen de opciones... Esto puede tomar algunos minutos.")
-            
+            st.info("🔄 Calculando opciones y Hurst DFA... Esto puede tomar algunos minutos.")
+
             progress_opt = st.progress(0)
             status_opt = st.empty()
-            
+
             total_tickers = len(df_display)
-            options_data = []
-            
-            for i, row in df_display.iterrows():
+            enriched_data = []
+
+            for idx, (_, row) in enumerate(df_display.iterrows()):
                 ticker = row['Ticker']
                 current_price = row['Price']
-                
-                progress_opt.progress((i + 1) / total_tickers)
-                status_opt.text(f"🔍 Analizando opciones: {ticker} ({i+1}/{total_tickers})")
-                
-                # Obtener métricas de opciones (mensual, ±10%, volumen+OI)
+
+                progress_opt.progress((idx + 1) / total_tickers)
+                status_opt.text(f"🔍 Procesando: {ticker} ({idx + 1}/{total_tickers})")
+
+                # ---- Opciones ----
                 metrics = get_options_metrics_yf(
                     ticker,
                     current_price,
                     price_range_pct=10,
                     days_threshold=7
                 )
-                
-                if metrics:
-                    options_data.append({
-                        'Ticker':      ticker,
-                        'Options_Vol': metrics['Options_Vol'],
-                        'PC_Ratio':    metrics['PC_Ratio'],
-                        'Sentiment':   metrics['Sentiment'],
-                        'Exp_Used':    metrics.get('Exp_Used', 'N/A')
-                    })
+
+                # ---- Hurst DFA (necesita datos semanales) ----
+                weekly_data = download_weekly_data(ticker, period="5y", use_lock=False)
+                hurst_val = None
+                if weekly_data is not None and len(weekly_data) >= 52:
+                    hurst_val = calculate_hurst_exponent(weekly_data['Close'])
+
+                # Etiqueta legible para Hurst
+                if hurst_val is None:
+                    hurst_label = "N/A"
+                elif hurst_val < 0.50:
+                    hurst_label = "🔴 Antipersistente"
+                elif hurst_val < 0.55:
+                    hurst_label = "⚪ Aleatorio"
+                elif hurst_val < 0.60:
+                    hurst_label = "🟡 Persistente"
+                elif hurst_val < 0.65:
+                    hurst_label = "🟠 Tendencia fuerte"
                 else:
-                    options_data.append({
-                        'Ticker':      ticker,
-                        'Options_Vol': None,
-                        'PC_Ratio':    None,
-                        'Sentiment':   'N/A',
-                        'Exp_Used':    'N/A'
-                    })
-            
+                    hurst_label = "🟢 Muy fuerte"
+
+                record = {
+                    'Ticker':      ticker,
+                    'Options_Vol': metrics['Options_Vol'] if metrics else None,
+                    'PC_Ratio':    metrics['PC_Ratio']    if metrics else None,
+                    'Sentiment':   metrics['Sentiment']   if metrics else 'N/A',
+                    'Exp_Used':    metrics.get('Exp_Used', 'N/A') if metrics else 'N/A',
+                    'Hurst':       hurst_val,
+                    'Hurst_Label': hurst_label,
+                }
+                enriched_data.append(record)
+
             progress_opt.empty()
             status_opt.empty()
-            
-            # Crear DataFrame de opciones y merge
-            df_options = pd.DataFrame(options_data)
-            df_display = df_display.merge(df_options, on='Ticker', how='left')
-            
-            # Actualizar en session_state
+
+            # Merge con df_display
+            df_enriched = pd.DataFrame(enriched_data)
+            df_display = df_display.merge(df_enriched, on='Ticker', how='left')
+
             st.session_state['scan_results'] = df_display
             st.session_state['options_calculated'] = True
-            
-            st.success(f"✅ Volumen de opciones calculado exitosamente para {len(df_display)} tickers")
+
+            st.success(f"✅ Opciones y Hurst DFA calculados para {len(df_display)} tickers")
             st.rerun()
         
         st.markdown("---")
-        
+
         # Preparar dataframe para mostrar
         has_options = 'Options_Vol' in df_display.columns
         has_hurst   = 'Hurst' in df_display.columns
@@ -1213,65 +1196,69 @@ def main():
         base_cols = ['Ticker', 'Name', 'Price', 'Market_Cap_Formatted',
                      'Next_Dividend', 'Div_Yield_%']
 
-        # Columnas de opciones (condicional)
+        # Opciones + Hurst (aparecen juntos tras pulsar el botón)
         options_cols = ['Options_Vol', 'PC_Ratio', 'Sentiment', 'Exp_Used'] if has_options else []
+        hurst_cols   = ['Hurst', 'Hurst_Label'] if has_hurst else []
 
-        # Columnas técnicas (siempre)
-        tech_cols = ['RSC', 'Dist_Max_%', 'WMA30', 'Dist_WMA_%',
-                     'Slope', 'R2', 'Norm_Dist']
-
-        # Hurst (siempre presente si se calculó en el scan)
-        hurst_cols = ['Hurst'] if has_hurst else []
-
-        # Resto de columnas técnicas
+        # Columnas técnicas del screener (siempre)
+        tech_cols  = ['RSC', 'Dist_Max_%', 'WMA30', 'Dist_WMA_%',
+                      'Slope', 'R2', 'Norm_Dist']
         extra_cols = ['Atlas', 'MIC_Value', 'Sharpe', 'MACD_V']
 
-        all_display_cols = base_cols + options_cols + tech_cols + hurst_cols + extra_cols
-        # Filtrar solo las que realmente existen en el df
+        all_display_cols = base_cols + options_cols + hurst_cols + tech_cols + extra_cols
         all_display_cols = [c for c in all_display_cols if c in df_display.columns]
 
         df_table = df_display[all_display_cols]
 
         column_config = {
-            "Ticker":              st.column_config.TextColumn("Ticker", width="small"),
-            "Name":                st.column_config.TextColumn("Nombre", width="medium"),
-            "Price":               st.column_config.NumberColumn("Precio", format="$%.2f"),
+            "Ticker":               st.column_config.TextColumn("Ticker", width="small"),
+            "Name":                 st.column_config.TextColumn("Nombre", width="medium"),
+            "Price":                st.column_config.NumberColumn("Precio", format="$%.2f"),
             "Market_Cap_Formatted": st.column_config.TextColumn("Market Cap", width="small"),
-            "Next_Dividend":       st.column_config.TextColumn("Próx. Dividendo", width="medium"),
-            "Div_Yield_%":         st.column_config.NumberColumn("Yield %", format="%.2f%%"),
-            "Options_Vol":         st.column_config.NumberColumn(
+            "Next_Dividend":        st.column_config.TextColumn("Próx. Dividendo", width="medium"),
+            "Div_Yield_%":          st.column_config.NumberColumn("Yield %", format="%.2f%%"),
+            "Options_Vol":          st.column_config.NumberColumn(
                 "Act. Opciones",
                 format="%d",
                 help="Actividad total de opciones (±10% precio, venc. mensual). "
                      "Volumen del día; si es 0, se usa Open Interest."
             ),
-            "PC_Ratio":            st.column_config.NumberColumn(
+            "PC_Ratio":             st.column_config.NumberColumn(
                 "P/C Ratio",
                 format="%.2f",
                 help="Put/Call Ratio sobre vencimiento mensual (±10% strikes)"
             ),
-            "Sentiment":           st.column_config.TextColumn("Sentiment", width="medium"),
-            "Exp_Used":            st.column_config.TextColumn(
+            "Sentiment":            st.column_config.TextColumn("Sentiment", width="medium"),
+            "Exp_Used":             st.column_config.TextColumn(
                 "Vencimiento(s)",
                 width="medium",
                 help="Vencimiento(s) mensual(es) utilizados para el cálculo"
             ),
-            "RSC":                 st.column_config.NumberColumn("RSC", format="%.2f"),
-            "Dist_Max_%":          st.column_config.NumberColumn("Dist Max %", format="%.2f%%"),
-            "WMA30":               st.column_config.NumberColumn("WMA30", format="%.2f"),
-            "Dist_WMA_%":          st.column_config.NumberColumn("Dist WMA %", format="%.2f%%"),
-            "Slope":               st.column_config.NumberColumn("Slope", format="%.2f"),
-            "R2":                  st.column_config.NumberColumn("R²", format="%.3f"),
-            "Norm_Dist":           st.column_config.NumberColumn("Norm Dist", format="%.2f"),
-            "Hurst":               st.column_config.NumberColumn(
-                "Hurst",
+            "Hurst":                st.column_config.NumberColumn(
+                "Hurst (DFA)",
                 format="%.3f",
-                help="Exponente de Hurst (R/S). >0.5 = persistente, >0.7 = tendencia fuerte"
+                help=(
+                    "Exponente de Hurst por DFA (datos semanales, 5 años). "
+                    "< 0.50 Antipersistente · 0.50–0.54 Aleatorio · "
+                    "0.55–0.59 Persistente · 0.60–0.64 Fuerte · ≥ 0.65 Muy fuerte"
+                )
             ),
-            "Atlas":               st.column_config.NumberColumn("Atlas", format="%d"),
-            "MIC_Value":           st.column_config.NumberColumn("MIC Value", format="%.2f"),
-            "Sharpe":              st.column_config.NumberColumn("Sharpe", format="%.2f"),
-            "MACD_V":              st.column_config.NumberColumn("MACD-V", format="%.2f")
+            "Hurst_Label":          st.column_config.TextColumn(
+                "Hurst señal",
+                width="medium",
+                help="Interpretación del Exponente de Hurst DFA"
+            ),
+            "RSC":                  st.column_config.NumberColumn("RSC", format="%.2f"),
+            "Dist_Max_%":           st.column_config.NumberColumn("Dist Max %", format="%.2f%%"),
+            "WMA30":                st.column_config.NumberColumn("WMA30", format="%.2f"),
+            "Dist_WMA_%":           st.column_config.NumberColumn("Dist WMA %", format="%.2f%%"),
+            "Slope":                st.column_config.NumberColumn("Slope", format="%.2f"),
+            "R2":                   st.column_config.NumberColumn("R²", format="%.3f"),
+            "Norm_Dist":            st.column_config.NumberColumn("Norm Dist", format="%.2f"),
+            "Atlas":                st.column_config.NumberColumn("Atlas", format="%d"),
+            "MIC_Value":            st.column_config.NumberColumn("MIC Value", format="%.2f"),
+            "Sharpe":               st.column_config.NumberColumn("Sharpe", format="%.2f"),
+            "MACD_V":               st.column_config.NumberColumn("MACD-V", format="%.2f")
         }
         
         # Tabla de resultados
@@ -1369,10 +1356,14 @@ def main():
                         ("Precio",  f"${ticker_data['Price']:.2f}"),
                         ("RSC",     f"{ticker_data['RSC']:.2f}" if pd.notna(ticker_data.get('RSC')) else "N/A"),
                         ("R²",      f"{ticker_data['R2']:.3f}"  if pd.notna(ticker_data.get('R2'))  else "N/A"),
-                        ("Hurst",   f"{ticker_data['Hurst']:.3f}" if 'Hurst' in ticker_data and pd.notna(ticker_data.get('Hurst')) else "N/A"),
                         ("Sharpe",  f"{ticker_data['Sharpe']:.2f}" if pd.notna(ticker_data.get('Sharpe')) else "N/A"),
                         ("MACD-V",  f"{ticker_data['MACD_V']:.2f}" if pd.notna(ticker_data.get('MACD_V')) else "N/A"),
                     ]
+
+                    if 'Hurst' in ticker_data and pd.notna(ticker_data.get('Hurst')):
+                        metric_cols_data.append(
+                            ("Hurst DFA", ticker_data.get('Hurst_Label', f"{ticker_data['Hurst']:.3f}"))
+                        )
 
                     if has_options and pd.notna(ticker_data.get('Options_Vol')):
                         metric_cols_data.append(
