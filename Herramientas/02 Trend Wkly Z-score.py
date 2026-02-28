@@ -288,6 +288,8 @@ def download_weekly_data(ticker, years_back):
     df.set_index("Date", inplace=True)
     
     df["SMA_50"] = df["Close"].rolling(50).mean()
+    df["EMA_8"]  = df["Close"].ewm(span=8,  adjust=False).mean()
+    df["EMA_21"] = df["Close"].ewm(span=21, adjust=False).mean()
     df = calculate_indicators(df)
     df.dropna(inplace=True)
 
@@ -500,8 +502,10 @@ def main():
         fig, axs = plt.subplots(3, 1, figsize=(11, 7), sharex=True)
 
         # ========== GRÁFICO 1: PRECIO + MACD-V ==========
-        axs[0].plot(df_plot.index, df_plot["Close"], color="white", alpha=0.5, linewidth=1.3, label="Precio")
-        axs[0].plot(df_plot.index, df_plot["SMA_50"], color="cyan", linewidth=1.8, alpha=0.7, label="SMA 50")
+        axs[0].plot(df_plot.index, df_plot["Close"],  color="white",   alpha=0.5,  linewidth=1.3, label="Precio")
+        axs[0].plot(df_plot.index, df_plot["SMA_50"], color="cyan",    linewidth=1.8, alpha=0.7,  label="SMA 50")
+        axs[0].plot(df_plot.index, df_plot["EMA_8"],  color="#FF8C00", linewidth=1.4, alpha=0.85, linestyle="--", label="EMA 8")
+        axs[0].plot(df_plot.index, df_plot["EMA_21"], color="#DA70D6", linewidth=1.4, alpha=0.85, linestyle="--", label="EMA 21")
 
         for r, c in REGIME_COLORS.items():
             m = df_plot["Regime_MACDV"] == r
@@ -517,14 +521,16 @@ def main():
         axs[0].set_title(f"{ticker} — Método MACD-V", fontsize=10, fontweight='bold', pad=6)
         axs[0].grid(alpha=0.25, linestyle='--')
         axs[0].set_ylabel("Precio ($)", fontsize=8)
-        axs[0].legend(loc='upper left', fontsize=6.5, ncol=2)
+        axs[0].legend(loc='upper left', fontsize=6.5, ncol=3)
         axs[0].yaxis.tick_right()
         axs[0].yaxis.set_label_position("right")
         axs[0].tick_params(axis='both', labelsize=7)
 
         # ========== GRÁFICO 2: PRECIO + Z-SCORE ==========
-        axs[1].plot(df_plot.index, df_plot["Close"], color="white", alpha=0.5, linewidth=1.3, label="Precio")
-        axs[1].plot(df_plot.index, df_plot["SMA_50"], color="cyan", linewidth=1.8, alpha=0.7, label="SMA 50")
+        axs[1].plot(df_plot.index, df_plot["Close"],  color="white",   alpha=0.5,  linewidth=1.3, label="Precio")
+        axs[1].plot(df_plot.index, df_plot["SMA_50"], color="cyan",    linewidth=1.8, alpha=0.7,  label="SMA 50")
+        axs[1].plot(df_plot.index, df_plot["EMA_8"],  color="#FF8C00", linewidth=1.4, alpha=0.85, linestyle="--", label="EMA 8")
+        axs[1].plot(df_plot.index, df_plot["EMA_21"], color="#DA70D6", linewidth=1.4, alpha=0.85, linestyle="--", label="EMA 21")
 
         for r, c in REGIME_COLORS.items():
             m = df_plot["Regime_ZScore"] == r
@@ -539,7 +545,7 @@ def main():
         axs[1].set_title(f"{ticker} — Método Z-Score Precio", fontsize=10, fontweight='bold', pad=6)
         axs[1].grid(alpha=0.25, linestyle='--')
         axs[1].set_ylabel("Precio ($)", fontsize=8)
-        axs[1].legend(loc='upper left', fontsize=6.5, ncol=2)
+        axs[1].legend(loc='upper left', fontsize=6.5, ncol=3)
         axs[1].yaxis.tick_right()
         axs[1].yaxis.set_label_position("right")
         axs[1].tick_params(axis='both', labelsize=7)
