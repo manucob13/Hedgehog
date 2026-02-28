@@ -461,7 +461,7 @@ def main():
         # ── Gráfico 1: Precio + MACD-V ──────────────────────────────────────
         axs[0].plot(df_plot.index, df_plot["Close"],  color="white",   alpha=0.5,  linewidth=1.3,  label="Precio")
         axs[0].plot(df_plot.index, df_plot["SMA_50"], color="cyan",    linewidth=1.8, alpha=0.7,   label="SMA 50")
-        axs[0].plot(df_plot.index, df_plot["EMA_8"],  color="#00FF00", linewidth=1.4, alpha=0.85,  linestyle="--", label="EMA 8")
+        axs[0].plot(df_plot.index, df_plot["EMA_8"],  color="#FFFFFF", linewidth=1.4, alpha=0.85,  linestyle="--", label="EMA 8")
         axs[0].plot(df_plot.index, df_plot["EMA_21"], color="#DA70D6", linewidth=1.4, alpha=0.85,  linestyle="--", label="EMA 21")
 
         for r, c in REGIME_COLORS.items():
@@ -486,7 +486,7 @@ def main():
         # ── Gráfico 2: Precio + Z-Score ──────────────────────────────────────
         axs[1].plot(df_plot.index, df_plot["Close"],  color="white",   alpha=0.5,  linewidth=1.3,  label="Precio")
         axs[1].plot(df_plot.index, df_plot["SMA_50"], color="cyan",    linewidth=1.8, alpha=0.7,   label="SMA 50")
-        axs[1].plot(df_plot.index, df_plot["EMA_8"],  color="#00FF00", linewidth=1.4, alpha=0.85,  linestyle="--", label="EMA 8")
+        axs[1].plot(df_plot.index, df_plot["EMA_8"],  color="#FFFFFF", linewidth=1.4, alpha=0.85,  linestyle="--", label="EMA 8")
         axs[1].plot(df_plot.index, df_plot["EMA_21"], color="#DA70D6", linewidth=1.4, alpha=0.85,  linestyle="--", label="EMA 21")
 
         for r, c in REGIME_COLORS.items():
