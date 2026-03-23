@@ -26,20 +26,13 @@ _yfinance_lock = Lock()
 # ============= FUNCIONES DE CÁLCULO =============
 
 def get_ticker_name_and_marketcap(ticker):
-    """
-    Obtiene el nombre y market cap del ticker
-    Prioridad: 1) Índices, 2) ETFs, 3) Acciones (yfinance)
-    """
     try:
-        # 1. Verificar si es un ÍNDICE
         index_name = get_index_name(ticker)
         if index_name is not None:
-            return index_name, None  # Los índices no tienen market cap
+            return index_name, None
         
-        # 2. Verificar si es un ETF
         etf_name = get_etf_name(ticker)
         if etf_name is not None:
-            # Para ETFs, intentar obtener market cap de yfinance
             try:
                 stock = yf.Ticker(ticker)
                 info = stock.info
@@ -48,17 +41,14 @@ def get_ticker_name_and_marketcap(ticker):
             except:
                 return etf_name, None
         
-        # 3. Si no es índice ni ETF, es una ACCIÓN - usar yfinance
         stock = yf.Ticker(ticker)
         info = stock.info
         
-        # Intentar múltiples campos para el nombre
         name = (info.get('longName') or 
                 info.get('shortName') or 
                 info.get('name') or
                 info.get('quoteType', '') + ' - ' + ticker if info.get('quoteType') else ticker)
         
-        # Si aún no hay nombre, intentar con el ticker directamente
         if name == ticker or not name:
             name = info.get('shortName', ticker)
         
@@ -70,10 +60,6 @@ def get_ticker_name_and_marketcap(ticker):
         return ticker, None
 
 def get_next_dividend_date(ticker):
-    """
-    Obtiene la fecha del próximo dividendo para un ticker.
-    Retorna: fecha del próximo dividendo (str) o None
-    """
     try:
         stock = yf.Ticker(ticker)
         
@@ -111,10 +97,6 @@ def get_next_dividend_date(ticker):
         return "N/A"
 
 def get_dividend_yield(ticker):
-    """
-    Obtiene el dividend yield de un ticker
-    Retorna: yield en porcentaje (float) o None
-    """
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
@@ -130,7 +112,6 @@ def get_dividend_yield(ticker):
         return None
 
 def download_weekly_data(ticker, period="5y", use_lock=True):
-    """Descarga datos semanales para un ticker"""
     try:
         end = datetime.now() + timedelta(days=1)
         
@@ -177,10 +158,6 @@ def download_weekly_data(ticker, period="5y", use_lock=True):
         return None
 
 def calculate_rsc_mansfield(prices, benchmark_prices, period=52):
-    """
-    Calcula el RSC Mansfield
-    RSC = ((Ratio / Media_Ratio) - 1) * 10
-    """
     try:
         if len(prices) < period or len(benchmark_prices) < period:
             return None
@@ -201,7 +178,6 @@ def calculate_rsc_mansfield(prices, benchmark_prices, period=52):
         return None
 
 def calculate_wma(prices, period=30):
-    """Calcula la media móvil ponderada usando pandas_ta"""
     try:
         if len(prices) < period:
             return None
@@ -212,10 +188,6 @@ def calculate_wma(prices, period=30):
         return None
 
 def calculate_linear_regression(prices, period=30):
-    """
-    Calcula regresión lineal y sus métricas
-    Returns: slope, r_squared, normalized_distance
-    """
     try:
         if len(prices) < period:
             return None, None, None
@@ -250,16 +222,14 @@ def calculate_k_ratio(prices, period=52):
     SE_slope = SE_residuos / √Sxx   donde Sxx = Σ(x - x̄)²
     Esto es equivalente al estadístico-t del slope dividido entre √n.
 
-    Timeframe: Semanal · Período: 52 semanas (1 año)
+    Timeframe: Semanal · Período: 52 semanas (1 año) · ddof = 2
 
-    Umbrales orientativos para n=52:
-        K < 0.5   → Tendencia débil o ruido
-        K 0.5–0.9 → Tendencia moderada
-        K 0.9–1.5 → Tendencia sólida       ✅ (filtro "Sólida")
-        K ≥ 1.5   → Tendencia muy consistente ✅ (filtro "Muy consistente")
-
-    Con R²=0.86 y tendencia del 30% anual → K ≈ 2.5–3.0
-    Con R²=0.50 y tendencia débil         → K ≈ 0.5–0.8
+    Umbrales orientativos para n=52 (universo ya pre-filtrado en tendencia):
+        K < 0.5   → Tendencia débil
+        K 0.5–1.0 → Tendencia moderada
+        K 1.0–1.5 → Tendencia sólida
+        K 1.5–2.0 → Tendencia fuerte       ✅ (filtro "Fuerte")
+        K ≥ 2.0   → Tendencia muy consistente ✅ (filtro "Muy consistente")
     """
     try:
         if len(prices) < period:
@@ -296,15 +266,9 @@ def calculate_k_ratio(prices, period=52):
         return None
 
 
-
 def calculate_hurst_exponent(prices, min_window=10, max_window=None):
     """
     Calcula el Exponente de Hurst usando DFA (Detrended Fluctuation Analysis).
-
-    DFA es el método preferido frente al R/S clásico porque:
-    - Tiene mucho menos sesgo con muestras pequeñas (~260 barras semanales)
-    - R/S clásico sobreestima H en ~0.12 con estos tamaños de muestra
-    - DFA distingue mejor entre tendencia real y ruido
 
     Interpretación calibrada para datos semanales (5 años, ~260 barras):
         H < 0.50  → Serie antipersistente (reversión a la media)
@@ -312,42 +276,22 @@ def calculate_hurst_exponent(prices, min_window=10, max_window=None):
         H > 0.55  → Tendencia persistente (umbral recomendado)
         H > 0.60  → Tendencia fuerte
         H > 0.65  → Tendencia muy fuerte (solo ~20% de trending stocks)
-
-    NOTA: Con datos semanales, H > 0.70 es extremadamente raro incluso
-    en acciones con tendencias claras. No usar umbrales superiores a 0.65.
-
-    Algoritmo DFA:
-        1. Calcular log-retornos y su perfil acumulado centrado
-        2. Dividir el perfil en ventanas de tamaño s
-        3. Detrend lineal en cada ventana → RMS de residuos F(s)
-        4. Regresión log(F) ~ alpha * log(s)  →  alpha ≈ H
-
-    Args:
-        prices: Serie de precios de cierre (pd.Series o similar)
-        min_window: Ventana mínima (default 10 semanas)
-        max_window: Ventana máxima (default: n/4)
-
-    Returns:
-        float: Exponente de Hurst DFA (0-1) o None si datos insuficientes
     """
     try:
         if len(prices) < 52:
             return None
 
-        # Paso 1: log-retornos
         log_ret = np.diff(np.log(prices.values.astype(float)))
         n = len(log_ret)
 
         if n < 40:
             return None
 
-        # Paso 2: perfil = cumsum de retornos centrados en su media
         profile = np.cumsum(log_ret - np.mean(log_ret))
 
         if max_window is None:
             max_window = n // 4
 
-        # Paso 3: escala logarítmica de ventanas
         windows = []
         w = min_window
         while w <= max_window:
@@ -364,14 +308,13 @@ def calculate_hurst_exponent(prices, min_window=10, max_window=None):
 
         for w in windows:
             n_segments = n // w
-            if n_segments < 4:      # mínimo 4 segmentos para fiabilidad
+            if n_segments < 4:
                 continue
 
             rms_list = []
             for seg in range(n_segments):
                 seg_data = profile[seg * w:(seg + 1) * w]
                 x = np.arange(w)
-                # Detrend lineal dentro de cada segmento
                 coeffs = np.polyfit(x, seg_data, 1)
                 trend = np.polyval(coeffs, x)
                 residuals = seg_data - trend
@@ -384,13 +327,11 @@ def calculate_hurst_exponent(prices, min_window=10, max_window=None):
         if len(valid_windows) < 3:
             return None
 
-        # Paso 4: regresión log-log → pendiente = alpha (≈ H)
         log_w = np.log(valid_windows)
         log_f = np.log(fluctuations)
         coeffs = np.polyfit(log_w, log_f, 1)
         alpha = coeffs[0]
 
-        # Limitar al rango válido
         alpha = max(0.0, min(1.0, alpha))
         return round(alpha, 3)
 
@@ -398,7 +339,6 @@ def calculate_hurst_exponent(prices, min_window=10, max_window=None):
         return None
 
 def calculate_atlas(prices, period_bb=20, period_ema=120):
-    """Calcula el indicador Atlas usando pandas_ta"""
     try:
         if len(prices) < max(period_bb, period_ema):
             return 0
@@ -423,7 +363,6 @@ def calculate_atlas(prices, period_bb=20, period_ema=120):
         return 0
 
 def calculate_mic_value(data):
-    """Calcula el MIC Value: (ROC18/NATR18)*0.6 + (ROC50/NATR50)*0.4 usando pandas_ta"""
     try:
         if len(data) < 50:
             return None
@@ -462,7 +401,6 @@ def calculate_mic_value(data):
         return None
 
 def calculate_sharpe_ratio(prices, period=50):
-    """Calcula el Sharpe Ratio anualizado"""
     try:
         if len(prices) < period + 1:
             return None
@@ -485,7 +423,6 @@ def calculate_sharpe_ratio(prices, period=50):
         return None
 
 def calculate_macd_v(data):
-    """Calcula MACD-V normalizado por ATR usando pandas_ta"""
     try:
         if len(data) < 26:
             return None
@@ -517,29 +454,13 @@ def calculate_macd_v(data):
 
 
 def get_monthly_expirations(expirations, days_threshold=7):
-    """
-    Filtra las expiraciones mensuales (3er viernes de cada mes)
-    y aplica la regla de proximidad: si el próximo mensual está a
-    menos de `days_threshold` días, incluye también el siguiente mensual.
-
-    Args:
-        expirations: tuple/list de strings 'YYYY-MM-DD' de yfinance
-        days_threshold: días mínimos para considerar que un vencimiento
-                        está "demasiado cerca" (default 7)
-
-    Returns:
-        list de strings con las expiraciones mensuales seleccionadas (1 o 2)
-    """
     today = datetime.now().date()
 
     def is_third_friday(d):
-        """Comprueba si una fecha es el 3er viernes del mes."""
-        if d.weekday() != 4:   # 4 = viernes
+        if d.weekday() != 4:
             return False
-        # El 3er viernes cae siempre entre el día 15 y el 21
         return 15 <= d.day <= 21
 
-    # Filtrar solo vencimientos mensuales futuros
     monthly = []
     for exp_str in expirations:
         try:
@@ -552,61 +473,30 @@ def get_monthly_expirations(expirations, days_threshold=7):
     if not monthly:
         return []
 
-    # Ordenar por fecha
     monthly.sort(key=lambda x: x[0])
 
-    # Regla de proximidad: si el primer mensual está a < threshold días, coger también el segundo
     first_date, first_str = monthly[0]
     days_to_first = (first_date - today).days
 
     if days_to_first < days_threshold and len(monthly) >= 2:
-        # Primer mensual muy cercano → usar primero + segundo
         return [first_str, monthly[1][1]]
     else:
-        # Usar solo el primer mensual
         return [first_str]
 
 
 def get_options_metrics_yf(ticker, current_price, price_range_pct=10, days_threshold=7):
-    """
-    Obtiene métricas de volumen de opciones desde Yahoo Finance.
-
-    Lógica de vencimientos:
-        - Usa únicamente vencimientos MENSUALES (3er viernes del mes).
-        - Si el próximo mensual está a menos de `days_threshold` días,
-          añade también el siguiente mensual.
-
-    Lógica de actividad (volumen + open interest):
-        - Para cada strike en rango ±price_range_pct%:
-            · Si volume > 0  → usar volume  (actividad intradía)
-            · Si volume == 0 → usar openInterest como fallback
-        - El P/C Ratio se calcula sobre la suma total de ambas métricas.
-
-    Args:
-        ticker (str): Símbolo del ticker
-        current_price (float): Precio actual de la acción
-        price_range_pct (int): Rango de strikes alrededor del precio (default 10%)
-        days_threshold (int): Días mínimos al primer mensual (default 7)
-
-    Returns:
-        dict con 'Options_Vol', 'PC_Ratio', 'Sentiment', 'Exp_Used'  o  None
-    """
     try:
         stock = yf.Ticker(ticker)
 
-        # Verificar si tiene opciones disponibles
         expirations = stock.options
         if not expirations or len(expirations) == 0:
             return None
 
-        # Seleccionar vencimientos mensuales
         selected_exps = get_monthly_expirations(expirations, days_threshold=days_threshold)
 
-        # Fallback: si no hay mensuales disponibles, usar las 2 primeras
         if not selected_exps:
             selected_exps = list(expirations[:min(2, len(expirations))])
 
-        # Calcular rango de strikes (±price_range_pct%)
         lower_bound = current_price * (1 - price_range_pct / 100)
         upper_bound = current_price * (1 + price_range_pct / 100)
 
@@ -617,7 +507,6 @@ def get_options_metrics_yf(ticker, current_price, price_range_pct=10, days_thres
             try:
                 chain = stock.option_chain(exp_date)
 
-                # ---- CALLS ----
                 calls = chain.calls
                 calls_in_range = calls[
                     (calls['strike'] >= lower_bound) &
@@ -635,7 +524,6 @@ def get_options_metrics_yf(ticker, current_price, price_range_pct=10, days_thres
                     ).sum()
                     total_call_activity += call_activity
 
-                # ---- PUTS ----
                 puts = chain.puts
                 puts_in_range = puts[
                     (puts['strike'] >= lower_bound) &
@@ -691,7 +579,6 @@ def get_options_metrics_yf(ticker, current_price, price_range_pct=10, days_thres
 
 
 def format_market_cap(value):
-    """Formatea el market cap de forma legible"""
     if value is None or pd.isna(value):
         return "N/A"
     
@@ -768,7 +655,7 @@ def analyze_ticker(ticker, params, benchmark_data):
             if sharpe is None or sharpe < 1.5:
                 return None
         
-        # MACD-V - Filtro configurable con radio button
+        # MACD-V
         macd_v = calculate_macd_v(data)
         macd_filter = params['macd_filter']
         
@@ -787,39 +674,38 @@ def analyze_ticker(ticker, params, benchmark_data):
         k_ratio = calculate_k_ratio(close, period=52)
 
         k_ratio_filter = params['k_ratio_filter']
-        if k_ratio_filter == "K-Ratio ≥ 0.9 (Sólida)":
-            if k_ratio is None or k_ratio < 0.9:
-                return None
-        elif k_ratio_filter == "K-Ratio ≥ 1.5 (Muy consistente)":
+        if k_ratio_filter == "K-Ratio ≥ 1.5 (Tendencia fuerte)":
             if k_ratio is None or k_ratio < 1.5:
                 return None
-        # "Sin filtro" → no elimina nada, solo calcula
+        elif k_ratio_filter == "K-Ratio ≥ 2.0 (Muy consistente)":
+            if k_ratio is None or k_ratio < 2.0:
+                return None
+        # "Sin filtro (solo calcular)" → no elimina nada
 
         # ========== TODOS LOS FILTROS PASADOS ==========
         name, market_cap = get_ticker_name_and_marketcap(ticker)
         next_dividend = get_next_dividend_date(ticker)
         div_yield = get_dividend_yield(ticker)
         
-        # ========== RESULTADO ==========
         result = {
-            'Ticker':      ticker,
-            'Name':        name,
-            'Price':       round(current_price, 2),
-            'Market_Cap':  market_cap,
+            'Ticker':        ticker,
+            'Name':          name,
+            'Price':         round(current_price, 2),
+            'Market_Cap':    market_cap,
             'Next_Dividend': next_dividend,
-            'Div_Yield_%': div_yield,
-            'RSC':         round(rsc, 2) if rsc is not None else None,
-            'Dist_Max_%':  round(dist_to_max, 2),
-            'WMA30':       round(wma30, 2) if wma30 is not None else None,
-            'Dist_WMA_%':  round(dist_to_wma, 2),
-            'Slope':       round(slope, 2) if slope is not None else None,
-            'R2':          round(r_squared, 3) if r_squared is not None else None,
-            'Norm_Dist':   round(normalized_dist, 2) if normalized_dist is not None else None,
-            'K_Ratio':     k_ratio,
-            'Atlas':       int(atlas_value),
-            'MIC_Value':   round(mic_value, 2) if mic_value is not None else None,
-            'Sharpe':      round(sharpe, 2) if sharpe is not None else None,
-            'MACD_V':      round(macd_v, 2) if macd_v is not None else None
+            'Div_Yield_%':   div_yield,
+            'RSC':           round(rsc, 2) if rsc is not None else None,
+            'Dist_Max_%':    round(dist_to_max, 2),
+            'WMA30':         round(wma30, 2) if wma30 is not None else None,
+            'Dist_WMA_%':    round(dist_to_wma, 2),
+            'Slope':         round(slope, 2) if slope is not None else None,
+            'R2':            round(r_squared, 3) if r_squared is not None else None,
+            'Norm_Dist':     round(normalized_dist, 2) if normalized_dist is not None else None,
+            'K_Ratio':       k_ratio,
+            'Atlas':         int(atlas_value),
+            'MIC_Value':     round(mic_value, 2) if mic_value is not None else None,
+            'Sharpe':        round(sharpe, 2) if sharpe is not None else None,
+            'MACD_V':        round(macd_v, 2) if macd_v is not None else None
         }
         
         return result
@@ -873,7 +759,6 @@ def run_screener(tickers, params, progress_bar, status_text):
     return df_results
 
 def plot_candlestick_chart(ticker, ticker_name, period="1y"):
-    """Crea un gráfico de velas para un ticker"""
     try:
         data = download_weekly_data(ticker, period=period, use_lock=False)
         
@@ -881,13 +766,10 @@ def plot_candlestick_chart(ticker, ticker_name, period="1y"):
             st.error(f"No se pudieron cargar datos para {ticker}")
             return
         
-        # Calcular WMA30
         wma30 = ta.wma(data['Close'], length=30)
         
-        # Crear gráfico
         fig = go.Figure()
         
-        # Velas japonesas
         fig.add_trace(go.Candlestick(
             x=data.index,
             open=data['Open'],
@@ -899,7 +781,6 @@ def plot_candlestick_chart(ticker, ticker_name, period="1y"):
             decreasing_line_color='#ef5350'
         ))
         
-        # WMA30
         if wma30 is not None:
             fig.add_trace(go.Scatter(
                 x=data.index,
@@ -1045,16 +926,16 @@ def main():
             "Selecciona filtro K-Ratio:",
             options=[
                 "Sin filtro (solo calcular)",
-                "K-Ratio ≥ 0.9 (Sólida)",
-                "K-Ratio ≥ 1.5 (Muy consistente)",
+                "K-Ratio ≥ 1.5 (Tendencia fuerte)",
+                "K-Ratio ≥ 2.0 (Muy consistente)",
             ],
             index=0,
             help=(
-                "K-Ratio = slope / (SE_residuos × √52) sobre log-precios semanales.\n"
+                "K-Ratio = slope / (SE_slope × √52) sobre log-precios semanales.\n"
                 "Mide la consistencia de la tendencia en el último año.\n\n"
-                "Sin filtro → aparece en resultados pero no elimina tickers\n"
-                "≥ 0.9 → tendencia sólida (1 año de subida consistente)\n"
-                "≥ 1.5 → tendencia muy consistente (pocos candidatos)"
+                "Sin filtro  → aparece en resultados pero no elimina tickers\n"
+                "≥ 1.5 → tendencia fuerte y sostenida durante 1 año\n"
+                "≥ 2.0 → tendencia muy consistente (pocos candidatos)"
             )
         )
 
@@ -1141,7 +1022,6 @@ def main():
         if len(df_results) > 0:
             st.session_state['scan_results'] = df_results
             st.session_state['scan_timestamp'] = datetime.now()
-            # Resetear datos de opciones al hacer nuevo scan
             if 'options_calculated' in st.session_state:
                 del st.session_state['options_calculated']
             st.success(f"✅ Escaneo completado: **{len(df_results)}** acciones encontradas")
@@ -1158,10 +1038,8 @@ def main():
     if 'scan_results' in st.session_state and len(st.session_state['scan_results']) > 0:
         df_display = st.session_state['scan_results'].copy()
         
-        # Formatear Market Cap para display
         df_display['Market_Cap_Formatted'] = df_display['Market_Cap'].apply(format_market_cap)
         
-        # Métricas resumen
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("📊 Acciones Encontradas", len(df_display))
@@ -1222,7 +1100,6 @@ def main():
                 progress_opt.progress((idx + 1) / total_tickers)
                 status_opt.text(f"🔍 Procesando: {ticker} ({idx + 1}/{total_tickers})")
 
-                # ---- Opciones ----
                 metrics = get_options_metrics_yf(
                     ticker,
                     current_price,
@@ -1230,7 +1107,6 @@ def main():
                     days_threshold=7
                 )
 
-                # ---- Hurst DFA (necesita datos semanales) ----
                 weekly_data = download_weekly_data(ticker, period="5y", use_lock=False)
                 hurst_val = None
                 if weekly_data is not None and len(weekly_data) >= 52:
@@ -1274,22 +1150,16 @@ def main():
         
         st.markdown("---")
 
-        # Preparar dataframe para mostrar
         has_options = 'Options_Vol' in df_display.columns
         has_hurst   = 'Hurst' in df_display.columns
 
-        # Columnas base (siempre presentes)
-        base_cols = ['Ticker', 'Name', 'Price', 'Market_Cap_Formatted',
-                     'Next_Dividend', 'Div_Yield_%']
-
-        # Opciones + Hurst (aparecen juntos tras pulsar el botón)
+        base_cols    = ['Ticker', 'Name', 'Price', 'Market_Cap_Formatted',
+                        'Next_Dividend', 'Div_Yield_%']
         options_cols = ['Options_Vol', 'PC_Ratio', 'Sentiment', 'Exp_Used'] if has_options else []
         hurst_cols   = ['Hurst', 'Hurst_Label'] if has_hurst else []
-
-        # Columnas técnicas del screener — K_Ratio incluido siempre
-        tech_cols  = ['RSC', 'Dist_Max_%', 'WMA30', 'Dist_WMA_%',
-                      'Slope', 'R2', 'Norm_Dist', 'K_Ratio']
-        extra_cols = ['Atlas', 'MIC_Value', 'Sharpe', 'MACD_V']
+        tech_cols    = ['RSC', 'Dist_Max_%', 'WMA30', 'Dist_WMA_%',
+                        'Slope', 'R2', 'Norm_Dist', 'K_Ratio']
+        extra_cols   = ['Atlas', 'MIC_Value', 'Sharpe', 'MACD_V']
 
         all_display_cols = base_cols + options_cols + hurst_cols + tech_cols + extra_cols
         all_display_cols = [c for c in all_display_cols if c in df_display.columns]
@@ -1345,8 +1215,9 @@ def main():
                 "K-Ratio (52s)",
                 format="%.3f",
                 help=(
-                    "K-Ratio semanal (n=52, 1 año): slope / (SE × √52) sobre log-precios.\n"
-                    "< 0.4 débil · 0.4–0.9 moderada · 0.9–1.5 sólida · ≥ 1.5 muy consistente"
+                    "K-Ratio semanal (n=52, 1 año): slope / (SE_slope × √52) sobre log-precios.\n"
+                    "< 0.5 débil · 0.5–1.0 moderada · 1.0–1.5 sólida · "
+                    "1.5–2.0 fuerte · ≥ 2.0 muy consistente"
                 )
             ),
             "Atlas":                st.column_config.NumberColumn("Atlas", format="%d"),
@@ -1355,7 +1226,6 @@ def main():
             "MACD_V":               st.column_config.NumberColumn("MACD-V", format="%.2f")
         }
         
-        # Tabla de resultados
         st.dataframe(
             df_table,
             use_container_width=True,
@@ -1363,7 +1233,6 @@ def main():
             column_config=column_config
         )
         
-        # Botón de descarga
         csv_df = df_display.drop('Market_Cap_Formatted', axis=1, errors='ignore')
         csv = csv_df.to_csv(index=False)
         st.download_button(
@@ -1445,14 +1314,13 @@ def main():
                     
                     ticker_data = df_display[df_display['Ticker'] == ticker].iloc[0]
                     
-                    # Métricas: adaptar según datos disponibles
                     metric_cols_data = [
                         ("Precio",   f"${ticker_data['Price']:.2f}"),
-                        ("RSC",      f"{ticker_data['RSC']:.2f}"    if pd.notna(ticker_data.get('RSC'))     else "N/A"),
-                        ("R²",       f"{ticker_data['R2']:.3f}"     if pd.notna(ticker_data.get('R2'))      else "N/A"),
+                        ("RSC",      f"{ticker_data['RSC']:.2f}"     if pd.notna(ticker_data.get('RSC'))     else "N/A"),
+                        ("R²",       f"{ticker_data['R2']:.3f}"      if pd.notna(ticker_data.get('R2'))      else "N/A"),
                         ("K-Ratio",  f"{ticker_data['K_Ratio']:.3f}" if pd.notna(ticker_data.get('K_Ratio')) else "N/A"),
-                        ("Sharpe",   f"{ticker_data['Sharpe']:.2f}" if pd.notna(ticker_data.get('Sharpe'))  else "N/A"),
-                        ("MACD-V",   f"{ticker_data['MACD_V']:.2f}" if pd.notna(ticker_data.get('MACD_V'))  else "N/A"),
+                        ("Sharpe",   f"{ticker_data['Sharpe']:.2f}"  if pd.notna(ticker_data.get('Sharpe'))  else "N/A"),
+                        ("MACD-V",   f"{ticker_data['MACD_V']:.2f}"  if pd.notna(ticker_data.get('MACD_V'))  else "N/A"),
                     ]
 
                     if 'Hurst' in ticker_data and pd.notna(ticker_data.get('Hurst')):
