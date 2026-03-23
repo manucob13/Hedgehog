@@ -1045,8 +1045,8 @@ def main():
             "Selecciona filtro K-Ratio:",
             options=[
                 "Sin filtro (solo calcular)",
-                "K-Ratio ≥ 0.9 (Sólida)",
-                "K-Ratio ≥ 1.5 (Muy consistente)",
+                "K-Ratio ≥ 1.5 (Tendencia fuerte)",
+                "K-Ratio ≥ 2.0 (Muy consistente)",
             ],
             index=0,
             help=(
