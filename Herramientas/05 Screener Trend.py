@@ -1346,7 +1346,7 @@ def main():
                 format="%.3f",
                 help=(
                     "K-Ratio semanal (n=52, 1 año): slope / (SE × √52) sobre log-precios.\n"
-                    "< 0.4 débil · 0.4–0.9 moderada · 0.9–1.5 sólida · ≥ 1.5 muy consistente"
+                    "< 0.5 débil · 0.5–1.0 moderada · 1.0–1.5 sólida · 1.5–2.0 fuerte · ≥ 2.0 muy consistente"
                 )
             ),
             "Atlas":                st.column_config.NumberColumn("Atlas", format="%d"),
