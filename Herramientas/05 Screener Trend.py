@@ -787,11 +787,11 @@ def analyze_ticker(ticker, params, benchmark_data):
         k_ratio = calculate_k_ratio(close, period=52)
 
         k_ratio_filter = params['k_ratio_filter']
-        if k_ratio_filter == "K-Ratio ≥ 0.9 (Sólida)":
-            if k_ratio is None or k_ratio < 0.9:
-                return None
-        elif k_ratio_filter == "K-Ratio ≥ 1.5 (Muy consistente)":
+        if k_ratio_filter == "K-Ratio ≥ 1.5 (Tendencia fuerte)":
             if k_ratio is None or k_ratio < 1.5:
+                return None
+        elif k_ratio_filter == "K-Ratio ≥ 2.0 (Muy consistente)":
+            if k_ratio is None or k_ratio < 2.0:
                 return None
         # "Sin filtro" → no elimina nada, solo calcula
 
