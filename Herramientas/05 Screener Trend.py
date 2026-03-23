@@ -242,6 +242,56 @@ def calculate_linear_regression(prices, period=30):
     except:
         return None, None, None
 
+def calculate_k_ratio(prices, period=52):
+    """
+    Calcula el K-Ratio = slope / (SE_residuos * sqrt(n))
+    sobre log-precios semanales.
+
+    Usar log-precios normaliza por nivel de precio absoluto, haciendo
+    el K-Ratio comparable entre todos los tickers del universo.
+
+    Timeframe: Semanal (datos del screener son semanales)
+    Período por defecto: 52 semanas (1 año) → 50 grados de libertad
+
+    Umbrales orientativos para n=52 semanas:
+        K < 0.4   → Tendencia débil o ruido
+        K 0.4–0.9 → Tendencia moderada
+        K 0.9–1.5 → Tendencia sólida       ✅ (filtro "Sólida")
+        K ≥ 1.5   → Tendencia muy consistente ✅ (filtro "Muy consistente")
+
+    Args:
+        prices: pd.Series con precios de cierre
+        period: número de barras semanales a usar (default 52)
+
+    Returns:
+        float: K-Ratio redondeado a 3 decimales, o None si datos insuficientes
+    """
+    try:
+        if len(prices) < period:
+            return None
+
+        y = np.log(prices.values[-period:].astype(float))
+        x = np.arange(period)
+
+        # Regresión lineal sobre log-precios
+        coeffs = np.polyfit(x, y, 1)
+        slope  = coeffs[0]
+
+        # Residuos y error estándar de los residuos
+        y_pred    = np.polyval(coeffs, x)
+        residuals = y - y_pred
+        # ddof = 2 (estimamos pendiente e intercepto)
+        se = np.sqrt(np.sum(residuals ** 2) / (period - 2))
+
+        if se == 0:
+            return None
+
+        k_ratio = slope / (se * np.sqrt(period))
+        return round(k_ratio, 3)
+
+    except:
+        return None
+
 def calculate_hurst_exponent(prices, min_window=10, max_window=None):
     """
     Calcula el Exponente de Hurst usando DFA (Detrended Fluctuation Analysis).
@@ -570,12 +620,10 @@ def get_options_metrics_yf(ticker, current_price, price_range_pct=10, days_thres
                 ].copy()
 
                 if not calls_in_range.empty:
-                    # Rellenar NaN con 0
                     calls_in_range['volume']       = calls_in_range['volume'].fillna(0)
                     calls_in_range['openInterest'] = calls_in_range['openInterest'].fillna(0) \
                         if 'openInterest' in calls_in_range.columns else 0
 
-                    # Por strike: usar volume si > 0, sino openInterest
                     call_activity = calls_in_range.apply(
                         lambda row: row['volume'] if row['volume'] > 0 else row['openInterest'],
                         axis=1
@@ -603,19 +651,16 @@ def get_options_metrics_yf(ticker, current_price, price_range_pct=10, days_thres
             except Exception:
                 continue
 
-        # Calcular métricas totales
         total_activity = total_call_activity + total_put_activity
 
         if total_activity == 0:
             return None
 
-        # Put/Call Ratio
         if total_call_activity == 0:
             pc_ratio = float('inf')
         else:
             pc_ratio = total_put_activity / total_call_activity
 
-        # Sentiment
         if pc_ratio == float('inf'):
             sentiment = "🔴 Muy Bajista"
         elif pc_ratio < 0.7:
@@ -627,7 +672,6 @@ def get_options_metrics_yf(ticker, current_price, price_range_pct=10, days_thres
         else:
             sentiment = "🔴 Bajista"
 
-        # Expiraciones usadas (para transparencia en la UI)
         exp_used = ", ".join(selected_exps)
 
         return {
@@ -733,6 +777,19 @@ def analyze_ticker(ticker, params, benchmark_data):
             if macd_v is None or macd_v < 150:
                 return None
 
+        # ========== K-RATIO (52 semanas) ==========
+        # Siempre se calcula; solo filtra si el usuario lo activa
+        k_ratio = calculate_k_ratio(close, period=52)
+
+        k_ratio_filter = params['k_ratio_filter']
+        if k_ratio_filter == "K-Ratio ≥ 0.9 (Sólida)":
+            if k_ratio is None or k_ratio < 0.9:
+                return None
+        elif k_ratio_filter == "K-Ratio ≥ 1.5 (Muy consistente)":
+            if k_ratio is None or k_ratio < 1.5:
+                return None
+        # "Sin filtro" → no elimina nada, solo calcula
+
         # ========== TODOS LOS FILTROS PASADOS ==========
         name, market_cap = get_ticker_name_and_marketcap(ticker)
         next_dividend = get_next_dividend_date(ticker)
@@ -753,6 +810,7 @@ def analyze_ticker(ticker, params, benchmark_data):
             'Slope':       round(slope, 2) if slope is not None else None,
             'R2':          round(r_squared, 3) if r_squared is not None else None,
             'Norm_Dist':   round(normalized_dist, 2) if normalized_dist is not None else None,
+            'K_Ratio':     k_ratio,
             'Atlas':       int(atlas_value),
             'MIC_Value':   round(mic_value, 2) if mic_value is not None else None,
             'Sharpe':      round(sharpe, 2) if sharpe is not None else None,
@@ -975,7 +1033,26 @@ def main():
             value=True,
             help="Sharpe ratio anualizado"
         )
-        
+
+        st.markdown("**📐 K-Ratio (52 sem. · 1 año)**")
+
+        k_ratio_filter = st.radio(
+            "Selecciona filtro K-Ratio:",
+            options=[
+                "Sin filtro (solo calcular)",
+                "K-Ratio ≥ 0.9 (Sólida)",
+                "K-Ratio ≥ 1.5 (Muy consistente)",
+            ],
+            index=0,
+            help=(
+                "K-Ratio = slope / (SE_residuos × √52) sobre log-precios semanales.\n"
+                "Mide la consistencia de la tendencia en el último año.\n\n"
+                "Sin filtro → aparece en resultados pero no elimina tickers\n"
+                "≥ 0.9 → tendencia sólida (1 año de subida consistente)\n"
+                "≥ 1.5 → tendencia muy consistente (pocos candidatos)"
+            )
+        )
+
         st.markdown("**📊 Filtros MACD-V**")
         
         macd_filter = st.radio(
@@ -1007,6 +1084,7 @@ def main():
             apply_mic,
             apply_sharpe,
             1 if macd_filter != "Sin filtro" else 0,
+            1 if k_ratio_filter != "Sin filtro (solo calcular)" else 0,
             apply_atlas,
         ])
         
@@ -1014,6 +1092,10 @@ def main():
         st.success(f"Precio máx: **${max_price}**")
         if macd_filter != "Sin filtro":
             st.success(f"MACD-V: {macd_filter.replace('MACD-V ', '')}")
+        if k_ratio_filter != "Sin filtro (solo calcular)":
+            st.success(f"K-Ratio: {k_ratio_filter.replace('K-Ratio ', '')}")
+        else:
+            st.info("K-Ratio: solo cálculo")
     
     st.markdown("---")
     
@@ -1029,16 +1111,17 @@ def main():
     
     if scan_button:
         params = {
-            'max_price':    max_price,
-            'dist_to_max':  dist_to_max,
-            'max_years':    max_years,
-            'dist_to_wma':  dist_to_wma,
+            'max_price':      max_price,
+            'dist_to_max':    dist_to_max,
+            'max_years':      max_years,
+            'dist_to_wma':    dist_to_wma,
             'apply_wma_dist': apply_wma_dist,
-            'apply_lr':     apply_lr,
-            'apply_mic':    apply_mic,
-            'apply_sharpe': apply_sharpe,
-            'macd_filter':  macd_filter,
-            'apply_atlas':  apply_atlas,
+            'apply_lr':       apply_lr,
+            'apply_mic':      apply_mic,
+            'apply_sharpe':   apply_sharpe,
+            'macd_filter':    macd_filter,
+            'k_ratio_filter': k_ratio_filter,
+            'apply_atlas':    apply_atlas,
         }
         
         progress_bar = st.progress(0)
@@ -1148,7 +1231,6 @@ def main():
                 if weekly_data is not None and len(weekly_data) >= 52:
                     hurst_val = calculate_hurst_exponent(weekly_data['Close'])
 
-                # Etiqueta legible para Hurst
                 if hurst_val is None:
                     hurst_label = "N/A"
                 elif hurst_val < 0.50:
@@ -1176,7 +1258,6 @@ def main():
             progress_opt.empty()
             status_opt.empty()
 
-            # Merge con df_display
             df_enriched = pd.DataFrame(enriched_data)
             df_display = df_display.merge(df_enriched, on='Ticker', how='left')
 
@@ -1200,9 +1281,9 @@ def main():
         options_cols = ['Options_Vol', 'PC_Ratio', 'Sentiment', 'Exp_Used'] if has_options else []
         hurst_cols   = ['Hurst', 'Hurst_Label'] if has_hurst else []
 
-        # Columnas técnicas del screener (siempre)
+        # Columnas técnicas del screener — K_Ratio incluido siempre
         tech_cols  = ['RSC', 'Dist_Max_%', 'WMA30', 'Dist_WMA_%',
-                      'Slope', 'R2', 'Norm_Dist']
+                      'Slope', 'R2', 'Norm_Dist', 'K_Ratio']
         extra_cols = ['Atlas', 'MIC_Value', 'Sharpe', 'MACD_V']
 
         all_display_cols = base_cols + options_cols + hurst_cols + tech_cols + extra_cols
@@ -1255,6 +1336,14 @@ def main():
             "Slope":                st.column_config.NumberColumn("Slope", format="%.2f"),
             "R2":                   st.column_config.NumberColumn("R²", format="%.3f"),
             "Norm_Dist":            st.column_config.NumberColumn("Norm Dist", format="%.2f"),
+            "K_Ratio":              st.column_config.NumberColumn(
+                "K-Ratio (52s)",
+                format="%.3f",
+                help=(
+                    "K-Ratio semanal (n=52, 1 año): slope / (SE × √52) sobre log-precios.\n"
+                    "< 0.4 débil · 0.4–0.9 moderada · 0.9–1.5 sólida · ≥ 1.5 muy consistente"
+                )
+            ),
             "Atlas":                st.column_config.NumberColumn("Atlas", format="%d"),
             "MIC_Value":            st.column_config.NumberColumn("MIC Value", format="%.2f"),
             "Sharpe":               st.column_config.NumberColumn("Sharpe", format="%.2f"),
@@ -1353,11 +1442,12 @@ def main():
                     
                     # Métricas: adaptar según datos disponibles
                     metric_cols_data = [
-                        ("Precio",  f"${ticker_data['Price']:.2f}"),
-                        ("RSC",     f"{ticker_data['RSC']:.2f}" if pd.notna(ticker_data.get('RSC')) else "N/A"),
-                        ("R²",      f"{ticker_data['R2']:.3f}"  if pd.notna(ticker_data.get('R2'))  else "N/A"),
-                        ("Sharpe",  f"{ticker_data['Sharpe']:.2f}" if pd.notna(ticker_data.get('Sharpe')) else "N/A"),
-                        ("MACD-V",  f"{ticker_data['MACD_V']:.2f}" if pd.notna(ticker_data.get('MACD_V')) else "N/A"),
+                        ("Precio",   f"${ticker_data['Price']:.2f}"),
+                        ("RSC",      f"{ticker_data['RSC']:.2f}"    if pd.notna(ticker_data.get('RSC'))     else "N/A"),
+                        ("R²",       f"{ticker_data['R2']:.3f}"     if pd.notna(ticker_data.get('R2'))      else "N/A"),
+                        ("K-Ratio",  f"{ticker_data['K_Ratio']:.3f}" if pd.notna(ticker_data.get('K_Ratio')) else "N/A"),
+                        ("Sharpe",   f"{ticker_data['Sharpe']:.2f}" if pd.notna(ticker_data.get('Sharpe'))  else "N/A"),
+                        ("MACD-V",   f"{ticker_data['MACD_V']:.2f}" if pd.notna(ticker_data.get('MACD_V'))  else "N/A"),
                     ]
 
                     if 'Hurst' in ticker_data and pd.notna(ticker_data.get('Hurst')):
