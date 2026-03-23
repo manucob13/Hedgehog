@@ -242,29 +242,24 @@ def calculate_linear_regression(prices, period=30):
     except:
         return None, None, None
 
+
 def calculate_k_ratio(prices, period=52):
     """
-    Calcula el K-Ratio = slope / (SE_residuos * sqrt(n))
-    sobre log-precios semanales.
+    Calcula el K-Ratio = slope / (SE_slope × √n) sobre log-precios semanales.
 
-    Usar log-precios normaliza por nivel de precio absoluto, haciendo
-    el K-Ratio comparable entre todos los tickers del universo.
+    SE_slope = SE_residuos / √Sxx   donde Sxx = Σ(x - x̄)²
+    Esto es equivalente al estadístico-t del slope dividido entre √n.
 
-    Timeframe: Semanal (datos del screener son semanales)
-    Período por defecto: 52 semanas (1 año) → 50 grados de libertad
+    Timeframe: Semanal · Período: 52 semanas (1 año)
 
-    Umbrales orientativos para n=52 semanas:
-        K < 0.4   → Tendencia débil o ruido
-        K 0.4–0.9 → Tendencia moderada
+    Umbrales orientativos para n=52:
+        K < 0.5   → Tendencia débil o ruido
+        K 0.5–0.9 → Tendencia moderada
         K 0.9–1.5 → Tendencia sólida       ✅ (filtro "Sólida")
         K ≥ 1.5   → Tendencia muy consistente ✅ (filtro "Muy consistente")
 
-    Args:
-        prices: pd.Series con precios de cierre
-        period: número de barras semanales a usar (default 52)
-
-    Returns:
-        float: K-Ratio redondeado a 3 decimales, o None si datos insuficientes
+    Con R²=0.86 y tendencia del 30% anual → K ≈ 2.5–3.0
+    Con R²=0.50 y tendencia débil         → K ≈ 0.5–0.8
     """
     try:
         if len(prices) < period:
@@ -277,20 +272,30 @@ def calculate_k_ratio(prices, period=52):
         coeffs = np.polyfit(x, y, 1)
         slope  = coeffs[0]
 
-        # Residuos y error estándar de los residuos
-        y_pred    = np.polyval(coeffs, x)
-        residuals = y - y_pred
-        # ddof = 2 (estimamos pendiente e intercepto)
-        se = np.sqrt(np.sum(residuals ** 2) / (period - 2))
+        # Residuos → SE de los residuos (ddof=2: pendiente + intercepto)
+        y_pred       = np.polyval(coeffs, x)
+        residuals    = y - y_pred
+        se_residuals = np.sqrt(np.sum(residuals ** 2) / (period - 2))
 
-        if se == 0:
+        if se_residuals == 0:
             return None
 
-        k_ratio = slope / (se * np.sqrt(period))
+        # Sxx = Σ(x - x̄)²  →  SE del slope
+        x_mean   = np.mean(x)
+        sxx      = np.sum((x - x_mean) ** 2)
+        se_slope = se_residuals / np.sqrt(sxx)
+
+        if se_slope == 0:
+            return None
+
+        # K-Ratio final
+        k_ratio = slope / (se_slope * np.sqrt(period))
         return round(k_ratio, 3)
 
     except:
         return None
+
+
 
 def calculate_hurst_exponent(prices, min_window=10, max_window=None):
     """
