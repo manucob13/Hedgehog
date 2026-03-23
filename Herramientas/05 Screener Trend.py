@@ -1053,8 +1053,8 @@ def main():
                 "K-Ratio = slope / (SE_residuos × √52) sobre log-precios semanales.\n"
                 "Mide la consistencia de la tendencia en el último año.\n\n"
                 "Sin filtro → aparece en resultados pero no elimina tickers\n"
-                "≥ 0.9 → tendencia sólida (1 año de subida consistente)\n"
-                "≥ 1.5 → tendencia muy consistente (pocos candidatos)"
+                "≥ 1.5 → tendencia fuerte (1 año de subida consistente)\n"
+                "≥ 2.0 → tendencia muy consistente (pocos candidatos)"
             )
         )
 
