@@ -142,9 +142,9 @@ if check_password():
         spx_filtered['RV_change'] = spx_filtered['RV_5d_pct'].diff()
         is_up = spx_filtered['RV_change'] >= 0
 
-        prob_baja_serie_k2 = results_k2['prob_baja_serie'].loc[spx_filtered.index].fillna(method='ffill')
-        prob_baja_serie_k3 = results_k3['prob_baja_serie'].loc[spx_filtered.index].fillna(method='ffill')
-        prob_media_serie_k3 = results_k3['prob_media_serie'].loc[spx_filtered.index].fillna(method='ffill')
+        prob_baja_serie_k2 = results_k2['prob_baja_serie'].loc[spx_filtered.index].ffill()
+        prob_baja_serie_k3 = results_k3['prob_baja_serie'].loc[spx_filtered.index].ffill()
+        prob_media_serie_k3 = results_k3['prob_media_serie'].loc[spx_filtered.index].ffill()
         prob_k3_consolidada = prob_baja_serie_k3 + prob_media_serie_k3
         nr_wr_filtered = nr_wr_series.reindex(spx_filtered.index).fillna(0)
 
