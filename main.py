@@ -77,7 +77,7 @@ screener_trend = st.Page(
 screener_CC = st.Page(
     "Herramientas/07 CC ATM Screener.py", 
     title="Screener CC ATM", 
-    icon="🚀"
+    icon="🧲"
 )
 broker_test = st.Page(
     "Herramientas/06 Broker Test.py", 
