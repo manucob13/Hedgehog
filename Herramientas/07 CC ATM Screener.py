@@ -12,15 +12,10 @@ from utils.utils import check_password
 
 warnings.filterwarnings('ignore')
 
-# ============================================================
-# UNIVERSO ETFs - Alta liquidez en opciones, sin dividendos
-# ============================================================
 ETF_UNIVERSE = {
-    # Tier 1 - Máxima liquidez
     "SPY":  "SPDR S&P 500 ETF",
     "QQQ":  "Invesco Nasdaq-100 ETF",
     "IWM":  "iShares Russell 2000 ETF",
-    # Tier 2 - Muy líquidos
     "GLD":  "SPDR Gold Shares",
     "SLV":  "iShares Silver Trust",
     "TLT":  "iShares 20+ Year Treasury Bond",
@@ -33,7 +28,6 @@ ETF_UNIVERSE = {
     "ARKK": "ARK Innovation ETF",
     "GDX":  "VanEck Gold Miners ETF",
     "KWEB": "KraneShares CSI China Internet",
-    # Tier 3 - Líquidos con opciones semanales
     "SOXX": "iShares Semiconductor ETF",
     "XOP":  "SPDR S&P Oil & Gas Exploration",
     "GDXJ": "VanEck Junior Gold Miners",
@@ -54,12 +48,7 @@ ETF_UNIVERSE = {
 
 _yfinance_lock = Lock()
 
-# ============================================================
-# FUNCIONES DE CÁLCULO
-# ============================================================
-
 def download_daily_data(ticker, period="1y"):
-    """Descarga datos diarios para un ticker"""
     try:
         end = datetime.now() + timedelta(days=1)
         period_days = {'3mo': 90, '6mo': 180, '1y': 365, '2y': 730}
@@ -80,7 +69,6 @@ def download_daily_data(ticker, period="1y"):
 
 
 def calculate_efficiency_ratio(prices, period=21):
-    """ER = movimiento_neto / suma_movimientos. Bajo = lateral."""
     try:
         if len(prices) < period + 1:
             return None
@@ -95,7 +83,6 @@ def calculate_efficiency_ratio(prices, period=21):
 
 
 def calculate_fdi(prices, period=50):
-    """Fractal Dimension Index. Alto (>1.4) = lateral/caótico."""
     try:
         if len(prices) < period + 1:
             return None
@@ -113,7 +100,6 @@ def calculate_fdi(prices, period=50):
 
 
 def calculate_permutation_entropy(prices, window, m=3, tau=1):
-    """PE en una ventana. Más alto = más caótico/lateral."""
     try:
         p = prices.iloc[-window:].values.astype(float)
         if len(p) < m + (m-1)*tau:
@@ -134,7 +120,6 @@ def calculate_permutation_entropy(prices, window, m=3, tau=1):
 
 
 def calculate_pe_multiscale(prices):
-    """PE en 3 ventanas: 10, 30, 90 días. Divergencia baja = régimen estable."""
     try:
         pe10 = calculate_permutation_entropy(prices, window=min(10, len(prices)))
         pe30 = calculate_permutation_entropy(prices, window=min(30, len(prices)))
@@ -148,7 +133,6 @@ def calculate_pe_multiscale(prices):
 
 
 def calculate_rvr(prices):
-    """Realized Volatility Ratio = HV5 / HV20. Cerca de 1.0 = estable."""
     try:
         if len(prices) < 22:
             return None
@@ -163,7 +147,6 @@ def calculate_rvr(prices):
 
 
 def calculate_r2(prices, period=60):
-    """R² de regresión lineal. Bajo = lateral (no hay tendencia lineal)."""
     try:
         if len(prices) < period:
             return None
@@ -220,7 +203,6 @@ def score_r2(r2):
 
 
 def calculate_score(er, fdi, pe_div, rvr, r2):
-    """Score ponderado 0-100."""
     s_er  = score_er(er)   * 0.25
     s_fdi = score_fdi(fdi) * 0.25
     s_pe  = score_pe_div(pe_div) * 0.25
@@ -236,13 +218,11 @@ def get_semaphore(score):
 
 
 def get_atm_iv(ticker, current_price):
-    """Obtiene IV ATM del vencimiento mensual más próximo."""
     try:
         stock = yf.Ticker(ticker)
         expirations = stock.options
         if not expirations:
             return None, None
-
         today = datetime.now().date()
 
         def is_third_friday(d):
@@ -270,7 +250,6 @@ def get_atm_iv(ticker, current_price):
 
         chain = stock.option_chain(first_str)
         calls = chain.calls
-
         calls = calls[calls['strike'].notna() & calls['impliedVolatility'].notna()]
         if calls.empty:
             return None, days_to_exp
@@ -284,7 +263,6 @@ def get_atm_iv(ticker, current_price):
 
 
 def analyze_etf(ticker):
-    """Analiza un ETF individual."""
     try:
         data = download_daily_data(ticker, period="1y")
         if data is None or len(data) < 100:
@@ -304,28 +282,27 @@ def analyze_etf(ticker):
 
         iv_atm, dte = get_atm_iv(ticker, current_price)
 
-        # Prima estimada ATM (simplificada: IV * precio * sqrt(DTE/365))
         prima_est = None
         if iv_atm is not None and dte is not None and dte > 0:
             prima_est = round(current_price * (iv_atm/100) * np.sqrt(dte/365), 2)
 
         return {
-            'Semáforo':   semaphore,
-            'Ticker':     ticker,
-            'Nombre':     ETF_UNIVERSE.get(ticker, ticker),
-            'Precio':     round(current_price, 2),
-            'Score':      score,
-            'ER_21d':     er,
-            'FDI_50d':    fdi,
-            'PE_10d':     pe10,
-            'PE_30d':     pe30,
-            'PE_90d':     pe90,
-            'PE_Div':     pe_div,
-            'RVR':        rvr,
-            'R2_60d':     r2,
-            'IV_ATM_%':   iv_atm,
-            'DTE':        dte,
-            'Prima_Est':  prima_est,
+            'Semáforo':  semaphore,
+            'Ticker':    ticker,
+            'Nombre':    ETF_UNIVERSE.get(ticker, ticker),
+            'Precio':    round(current_price, 2),
+            'Score':     score,
+            'ER_21d':    er,
+            'FDI_50d':   fdi,
+            'PE_10d':    pe10,
+            'PE_30d':    pe30,
+            'PE_90d':    pe90,
+            'PE_Div':    pe_div,
+            'RVR':       rvr,
+            'R2_60d':    r2,
+            'IV_ATM_%':  iv_atm,
+            'DTE':       dte,
+            'Prima_Est': prima_est,
         }
     except:
         return None
@@ -353,7 +330,6 @@ def run_screener(tickers, progress_bar, status_text):
 
 
 def plot_radar(row):
-    """Gráfico radar del scoring para un ETF."""
     categories = ['ER (lateral)', 'FDI (fractal)', 'PE Estabilidad', 'RVR (vol ratio)', 'R² (no trend)']
     values = [
         score_er(row.get('ER_21d')),
@@ -389,7 +365,6 @@ def plot_radar(row):
 
 
 def plot_price_chart(ticker, ticker_name):
-    """Gráfico de velas + HV5 overlay."""
     try:
         data = download_daily_data(ticker, period="6mo")
         if data is None or data.empty:
@@ -427,9 +402,6 @@ def plot_price_chart(ticker, ticker_name):
         return None
 
 
-# ============================================================
-# INTERFAZ PRINCIPAL
-# ============================================================
 def main():
     st.set_page_config(
         page_title="CC ATM Screener",
@@ -444,7 +416,6 @@ def main():
     st.markdown("**Detecta ETFs en régimen lateral/baja subida para Covered Calls ATM · Alta liquidez en opciones**")
     st.markdown("---")
 
-    # ============= CONFIGURACIÓN =============
     st.markdown("### ⚙️ Configuración")
     col1, col2, col3 = st.columns(3)
 
@@ -481,7 +452,6 @@ def main():
 
     st.markdown("---")
 
-    # ============= RESUMEN FILTROS =============
     with st.expander("📋 Resumen de filtros activos", expanded=False):
         fc1, fc2 = st.columns(2)
         with fc1:
@@ -495,7 +465,6 @@ def main():
 
     st.markdown("---")
 
-    # ============= ESCANEO =============
     st.markdown("### 🚀 Ejecutar Escaneo")
     scan_btn = st.button("🚀 INICIAR ESCANEO CC ATM",
                          type="primary", use_container_width=True,
@@ -508,7 +477,6 @@ def main():
         progress_bar.empty()
 
         if not df_raw.empty:
-            # Aplicar filtros adicionales
             df_filtered = df_raw.copy()
             df_filtered = df_filtered[df_filtered['Score'] >= min_score]
             df_filtered = df_filtered[df_filtered['ER_21d'].apply(lambda x: x is not None and x <= max_er)]
@@ -529,7 +497,6 @@ def main():
 
     st.markdown("---")
 
-    # ============= RESULTADOS =============
     st.markdown("### 📈 Resultados")
 
     if 'scan_results_filtered' in st.session_state:
@@ -537,7 +504,6 @@ def main():
         df_raw  = st.session_state['scan_results_raw']
         ts      = st.session_state['scan_timestamp']
 
-        # KPIs
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("🟢 Candidatos CC", len(df_show[df_show['Score'] >= 70]))
         k2.metric("🟡 Candidatos Moderados", len(df_show[(df_show['Score'] >= 50) & (df_show['Score'] < 70)]))
@@ -546,12 +512,11 @@ def main():
 
         st.markdown("---")
 
-        # Tabla principal
         tab1, tab2, tab3 = st.tabs(["📊 Tabla Completa", "🎯 Top Candidatos", "📉 Gráficos"])
 
         with tab1:
             df_display = df_show.copy()
-            # Formato visual
+
             def color_score(val):
                 if val >= 70: return 'background-color: #1e3a1e; color: #6daa45'
                 if val >= 50: return 'background-color: #3a3a1e; color: #e8af34'
@@ -562,12 +527,11 @@ def main():
                     'Semáforo','Ticker','Nombre','Precio',
                     'Score','ER_21d','FDI_50d','PE_Div',
                     'RVR','R2_60d','IV_ATM_%','DTE','Prima_Est'
-                ]].style.applymap(color_score, subset=['Score']),
+                ]].style.map(color_score, subset=['Score']),
                 use_container_width=True,
                 height=500
             )
 
-            # Descarga CSV
             csv = df_display.to_csv(index=False).encode('utf-8')
             st.download_button("⬇️ Descargar CSV", csv, "cc_atm_screener.csv", "text/csv")
 
@@ -614,7 +578,6 @@ def main():
                     else:
                         st.warning("No se pudo cargar el gráfico de precios.")
 
-                # Score bar chart
                 fig_scores = px.bar(
                     df_show.sort_values('Score', ascending=True).tail(20),
                     x='Score', y='Ticker', orientation='h',
@@ -634,7 +597,6 @@ def main():
     else:
         st.info("👆 Configura los parámetros y pulsa **INICIAR ESCANEO** para analizar los ETFs.")
 
-    # ============= LEYENDA =============
     st.markdown("---")
     with st.expander("ℹ️ Guía de métricas y scoring", expanded=False):
         st.markdown("""
