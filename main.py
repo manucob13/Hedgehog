@@ -74,7 +74,11 @@ screener_trend = st.Page(
     title="Screener Trend", 
     icon="🚀"
 )
-
+screener_CC = st.Page(
+    "Herramientas/07 CC ATM Screener.py", 
+    title="Screener CC ATM", 
+    icon="🚀"
+)
 broker_test = st.Page(
     "Herramientas/06 Broker Test.py", 
     title="Broker Test", 
@@ -91,6 +95,7 @@ pg = st.navigation({
         gex_analyzer,
         screener_risk,
         screener_trend,
+        screener_CC,
         broker_test
     ]
 })
