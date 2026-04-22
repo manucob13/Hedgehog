@@ -447,7 +447,7 @@ def plot_price_chart(ticker, ticker_name):
 def main():
     st.set_page_config(
         page_title="CC ATM Screener",
-        page_icon="🧲"",
+        page_icon="🧲",
         layout="wide"
     )
 
