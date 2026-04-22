@@ -454,7 +454,7 @@ def main():
     if not check_password():
         st.stop()
 
-    st.title("📊 CC ATM Screener — ETFs Laterales")
+    st.title("🧲 CC ATM Screener — ETFs Laterales")
     st.markdown("**Detecta ETFs en régimen lateral/baja subida para Covered Calls ATM · Alta liquidez en opciones**")
     st.markdown("---")
 
@@ -507,8 +507,8 @@ def main():
 
     st.markdown("---")
 
-    st.markdown("### 🚀 Ejecutar Escaneo")
-    scan_btn = st.button("🚀 INICIAR ESCANEO CC ATM",
+    st.markdown("### 🧲 Ejecutar Escaneo")
+    scan_btn = st.button("🧲 INICIAR ESCANEO CC ATM",
                          type="primary", use_container_width=True,
                          disabled=len(selected_tickers) == 0)
 
