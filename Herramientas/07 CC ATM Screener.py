@@ -13,9 +13,12 @@ from utils.utils import check_password
 warnings.filterwarnings('ignore')
 
 ETF_UNIVERSE = {
+    # ── TIER 1 · Máxima liquidez ──────────────────────────────
     "SPY":  "SPDR S&P 500 ETF",
     "QQQ":  "Invesco Nasdaq-100 ETF",
     "IWM":  "iShares Russell 2000 ETF",
+
+    # ── TIER 2 · Muy líquidos ─────────────────────────────────
     "GLD":  "SPDR Gold Shares",
     "SLV":  "iShares Silver Trust",
     "TLT":  "iShares 20+ Year Treasury Bond",
@@ -28,6 +31,8 @@ ETF_UNIVERSE = {
     "ARKK": "ARK Innovation ETF",
     "GDX":  "VanEck Gold Miners ETF",
     "KWEB": "KraneShares CSI China Internet",
+
+    # ── TIER 3 · Alta liquidez ────────────────────────────────
     "SOXX": "iShares Semiconductor ETF",
     "XOP":  "SPDR S&P Oil & Gas Exploration",
     "GDXJ": "VanEck Junior Gold Miners",
@@ -44,6 +49,43 @@ ETF_UNIVERSE = {
     "DIA":  "SPDR Dow Jones Industrial Average",
     "EWJ":  "iShares MSCI Japan ETF",
     "FXI":  "iShares China Large-Cap ETF",
+
+    # ── TIER 4 · Buen volumen opciones ───────────────────────
+    "VNQ":  "Vanguard Real Estate ETF",
+    "MSOS": "AdvisorShares Pure US Cannabis ETF",
+    "JETS": "U.S. Global Jets ETF",
+    "LQD":  "iShares iBoxx $ Investment Grade Corp Bond",
+    "IEF":  "iShares 7-10 Year Treasury Bond",
+    "SHY":  "iShares 1-3 Year Treasury Bond",
+    "AGG":  "iShares Core U.S. Aggregate Bond ETF",
+    "EMB":  "iShares JP Morgan USD Emerging Markets Bond",
+    "XHB":  "SPDR S&P Homebuilders ETF",
+    "XRT":  "SPDR S&P Retail ETF",
+    "XME":  "SPDR S&P Metals & Mining ETF",
+    "KRE":  "SPDR S&P Regional Banking ETF",
+    "KBE":  "SPDR S&P Bank ETF",
+    "ITB":  "iShares U.S. Home Construction ETF",
+    "IBB":  "iShares Nasdaq Biotechnology ETF",
+    "IYR":  "iShares U.S. Real Estate ETF",
+    "EWZ":  "iShares MSCI Brazil ETF",
+    "EWW":  "iShares MSCI Mexico ETF",
+    "EWY":  "iShares MSCI South Korea ETF",
+    "MCHI": "iShares MSCI China ETF",
+    "VEA":  "Vanguard FTSE Developed Markets ETF",
+    "VWO":  "Vanguard FTSE Emerging Markets ETF",
+    "VXUS": "Vanguard Total International Stock ETF",
+    "BIL":  "SPDR Bloomberg 1-3 Month T-Bill ETF",
+    "UVXY": "ProShares Ultra VIX Short-Term Futures",
+    "SVXY": "ProShares Short VIX Short-Term Futures",
+    "BITO": "ProShares Bitcoin Strategy ETF",
+    "GBTC": "Grayscale Bitcoin Trust ETF",
+    "OIH":  "VanEck Oil Services ETF",
+    "HACK": "ETFMG Prime Cyber Security ETF",
+    "SKYY": "First Trust Cloud Computing ETF",
+    "ICLN": "iShares Global Clean Energy ETF",
+    "TAN":  "Invesco Solar ETF",
+    "ARKG": "ARK Genomic Revolution ETF",
+    "ARKW": "ARK Next Generation Internet ETF",
 }
 
 _yfinance_lock = Lock()
