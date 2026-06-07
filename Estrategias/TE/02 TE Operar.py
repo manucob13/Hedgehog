@@ -58,32 +58,29 @@ def conectar_y_obtener_expiraciones():
         return False
     st.session_state['te_operar_precio_spx'] = precio
 
-    with st.spinner("📅 Escaneando viernes entre 60 y 120 DTE..."):
+    with st.spinner("📅 Escaneando todas las expiraciones entre 60 y 120 DTE..."):
         hoy = date.today()
         expiraciones_encontradas = set()
 
         for delta in range(60, 121):
             target = hoy + timedelta(days=delta)
-            # Solo viernes (weekday == 4)
-            if target.weekday() != 4:
+            # Saltear fines de semana
+            if target.weekday() >= 5:
                 continue
             try:
-                # Ventana ±3 días para capturar expiraciones desplazadas por feriados
                 resp = client.get_option_chain(
                     "$SPX",
-                    from_date=target - timedelta(days=3),
-                    to_date=target + timedelta(days=3)
+                    from_date=target - timedelta(days=1),
+                    to_date=target + timedelta(days=1)
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    for map_type in ['callExpDateMap', 'putExpDateMap']:
+                    for map_type in ["callExpDateMap", "putExpDateMap"]:
                         for date_key in data.get(map_type, {}).keys():
                             fecha_str = date_key.split(":")[0]
-                            # Aceptar viernes Y jueves (feriados desplazan a jueves)
                             try:
                                 dte_real = (date.fromisoformat(fecha_str) - hoy).days
-                                dow = date.fromisoformat(fecha_str).weekday()
-                                if 60 <= dte_real <= 120 and dow in (3, 4):  # 3=jueves, 4=viernes
+                                if 60 <= dte_real <= 120:
                                     expiraciones_encontradas.add(fecha_str)
                             except Exception:
                                 pass
@@ -230,7 +227,7 @@ def main():
             exito = conectar_y_obtener_expiraciones()
             if exito:
                 n = len(st.session_state['te_operar_expiraciones'])
-                st.success(f"✅ Conectado — {n} viernes encontrados entre 60 y 120 DTE")
+                st.success(f"✅ Conectado — {n} expiraciones encontradas entre 60 y 120 DTE")
 
     with col2:
         if st.button("🧹 Limpiar", use_container_width=True):
@@ -274,7 +271,7 @@ def main():
 
     with col_sel:
         seleccion = st.selectbox(
-            "📅 Seleccioná la fecha de expiración (viernes):",
+            "📅 Seleccioná la fecha de expiración:",
             options=opciones_selector,
             index=0,
             key="te_operar_selector_fecha"
