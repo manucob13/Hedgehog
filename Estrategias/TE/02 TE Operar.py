@@ -68,19 +68,22 @@ def conectar_y_obtener_expiraciones():
             if target.weekday() != 4:
                 continue
             try:
+                # Ventana ±3 días para capturar expiraciones desplazadas por feriados
                 resp = client.get_option_chain(
                     "$SPX",
-                    from_date=target - timedelta(days=1),
-                    to_date=target + timedelta(days=1)
+                    from_date=target - timedelta(days=3),
+                    to_date=target + timedelta(days=3)
                 )
                 if resp.status_code == 200:
                     data = resp.json()
                     for map_type in ['callExpDateMap', 'putExpDateMap']:
                         for date_key in data.get(map_type, {}).keys():
                             fecha_str = date_key.split(":")[0]
-                            # Doble verificación: que sea efectivamente viernes
+                            # Aceptar viernes Y jueves (feriados desplazan a jueves)
                             try:
-                                if date.fromisoformat(fecha_str).weekday() == 4:
+                                dte_real = (date.fromisoformat(fecha_str) - hoy).days
+                                dow = date.fromisoformat(fecha_str).weekday()
+                                if 60 <= dte_real <= 120 and dow in (3, 4):  # 3=jueves, 4=viernes
                                     expiraciones_encontradas.add(fecha_str)
                             except Exception:
                                 pass
