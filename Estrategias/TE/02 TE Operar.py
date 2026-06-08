@@ -20,13 +20,12 @@ def inicializar_session_state():
         'te_operar_client':          None,
         'te_operar_precio_spx':      None,
         'te_operar_expiraciones':    [],
-        # Pata SHORT (near)
         'te_short_fecha_cargada':    None,
         'te_short_df_puts':          None,
-        # Pata LONG (far)
         'te_long_fecha_cargada':     None,
         'te_long_df_puts':           None,
-        # Registro de calendars
+        'te_order_preview':          False,
+        'te_order_df':               None,
         'te_calendar_registros':     [],
     }
     for k, v in defaults.items():
@@ -37,9 +36,15 @@ def inicializar_session_state():
 def limpiar_todo():
     keys = ['te_operar_client', 'te_operar_precio_spx', 'te_operar_expiraciones',
             'te_short_fecha_cargada', 'te_short_df_puts',
-            'te_long_fecha_cargada',  'te_long_df_puts']
+            'te_long_fecha_cargada',  'te_long_df_puts',
+            'te_order_preview',       'te_order_df']
     for k in keys:
-        st.session_state[k] = [] if k == 'te_operar_expiraciones' else None
+        if k == 'te_operar_expiraciones':
+            st.session_state[k] = []
+        elif k == 'te_order_preview':
+            st.session_state[k] = False
+        else:
+            st.session_state[k] = None
 
 
 # ==============================================================================
@@ -114,52 +119,56 @@ def cargar_cadena_para_fecha(client, fecha_str):
 
 
 # ==============================================================================
-# PARSER — Puts ±5 strikes del ATM
+# PARSER — Puts y Calls, ATM ±1 strike (3 strikes total)
 # ==============================================================================
 
-def parsear_puts_atm(chain_data, fecha_str, precio_spx, n_strikes=5):
-    rows = []
-    put_map = chain_data.get('putExpDateMap', {})
-    for date_key, strikes_dict in put_map.items():
-        if not date_key.startswith(fecha_str):
-            continue
-        dte = int(date_key.split(":")[1]) if ":" in date_key else 0
-        for strike_key, contratos in strikes_dict.items():
-            if not contratos:
+def parsear_cadena_atm(chain_data, fecha_str, precio_spx, n_strikes=1):
+    """
+    Extrae puts Y calls para una fecha, limitado a ATM ±n_strikes.
+    Retorna (df_puts, df_calls).
+    """
+    def extraer(exp_map):
+        rows = []
+        for date_key, strikes_dict in exp_map.items():
+            if not date_key.startswith(fecha_str):
                 continue
-            c    = contratos[0]
-            bid  = c.get('bid',  0) or 0
-            ask  = c.get('ask',  0) or 0
-            mark = c.get('mark', 0) or 0
-            mid  = (bid + ask) / 2 if bid > 0 and ask > 0 else mark
-            rows.append({
-                'Strike':  float(strike_key),
-                'DTE':     dte,
-                'Bid':     round(bid,  2),
-                'Ask':     round(ask,  2),
-                'Mid':     round(mid,  2),
-                'Mark':    round(mark, 2),
-                'Delta':   round(c.get('delta')       or 0, 4),
-                'Gamma':   round(c.get('gamma')       or 0, 4),
-                'Theta':   round(c.get('theta')       or 0, 4),
-                'Vega':    round(c.get('vega')        or 0, 4),
-                'IV':      round((c.get('volatility') or 0) / 100, 4),
-                'OI':      c.get('openInterest')  or 0,
-                'Volumen': c.get('totalVolume')   or 0,
-            })
-    if not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows).sort_values('Strike').reset_index(drop=True)
-    atm_idx = (df['Strike'] - precio_spx).abs().idxmin()
-    idx_min = max(0, atm_idx - n_strikes)
-    idx_max = min(len(df) - 1, atm_idx + n_strikes)
-    return df.iloc[idx_min:idx_max + 1].reset_index(drop=True)
+            dte = int(date_key.split(":")[1]) if ":" in date_key else 0
+            for strike_key, contratos in strikes_dict.items():
+                if not contratos:
+                    continue
+                c    = contratos[0]
+                bid  = c.get('bid',  0) or 0
+                ask  = c.get('ask',  0) or 0
+                mark = c.get('mark', 0) or 0
+                mid  = (bid + ask) / 2 if bid > 0 and ask > 0 else mark
+                rows.append({
+                    'Strike':  float(strike_key),
+                    'DTE':     dte,
+                    'Bid':     round(bid,  2),
+                    'Ask':     round(ask,  2),
+                    'Mid':     round(mid,  2),
+                    'Delta':   round(c.get('delta')       or 0, 4),
+                    'Theta':   round(c.get('theta')       or 0, 4),
+                    'Vega':    round(c.get('vega')        or 0, 4),
+                    'IV':      round((c.get('volatility') or 0) / 100, 4),
+                })
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows).sort_values('Strike').reset_index(drop=True)
+        atm_idx = (df['Strike'] - precio_spx).abs().idxmin()
+        idx_min = max(0, atm_idx - n_strikes)
+        idx_max = min(len(df) - 1, atm_idx + n_strikes)
+        return df.iloc[idx_min:idx_max + 1].reset_index(drop=True)
+
+    df_puts  = extraer(chain_data.get('putExpDateMap',  {}))
+    df_calls = extraer(chain_data.get('callExpDateMap', {}))
+    return df_puts, df_calls
 
 
-def highlight_atm(df, precio_spx, col='Strike'):
-    if df.empty or col not in df.columns:
+def highlight_atm(df, precio_spx):
+    if df.empty or 'Strike' not in df.columns:
         return df.style
-    atm_idx = (df[col] - precio_spx).abs().idxmin()
+    atm_idx = (df['Strike'] - precio_spx).abs().idxmin()
     def resaltar(row):
         if row.name == atm_idx:
             return ['background-color: #1a3a5c; color: white; font-weight: bold'] * len(row)
@@ -167,18 +176,33 @@ def highlight_atm(df, precio_spx, col='Strike'):
     return df.style.apply(resaltar, axis=1)
 
 
-def bloque_cadena(pata, key_fecha, key_df, expiraciones, client, precio_spx, color_header):
-    """
-    Renderiza el bloque completo de selección + carga + tabla para una pata.
+def mostrar_tabla_cadena(df_puts, df_calls, precio_spx, label):
+    """Muestra puts y calls en tabs para una pata."""
+    if (df_puts is None or df_puts.empty) and (df_calls is None or df_calls.empty):
+        return
+    tab_p, tab_c = st.tabs(["📉 Puts", "📈 Calls"])
+    cols = ['Strike', 'DTE', 'Bid', 'Ask', 'Mid', 'Delta', 'Theta', 'Vega', 'IV']
+    with tab_p:
+        if df_puts is not None and not df_puts.empty:
+            cols_ok = [c for c in cols if c in df_puts.columns]
+            st.dataframe(highlight_atm(df_puts[cols_ok], precio_spx),
+                         hide_index=True, use_container_width=True)
+        else:
+            st.info("Sin puts disponibles.")
+    with tab_c:
+        if df_calls is not None and not df_calls.empty:
+            cols_ok = [c for c in cols if c in df_calls.columns]
+            st.dataframe(highlight_atm(df_calls[cols_ok], precio_spx),
+                         hide_index=True, use_container_width=True)
+        else:
+            st.info("Sin calls disponibles.")
 
-    Args:
-        pata        (str): 'SHORT' o 'LONG'
-        key_fecha   (str): clave en session_state para la fecha cargada
-        key_df      (str): clave en session_state para el DataFrame de puts
-        expiraciones(list): lista de fechas disponibles
-        client      : cliente Schwab
-        precio_spx  (float): precio actual SPX
-        color_header(str): color del badge de header
+
+def bloque_cadena(pata, key_fecha, key_df_puts, key_df_calls,
+                  expiraciones, client, precio_spx, color_header):
+    """
+    Renderiza selector + botón + tabla (puts y calls) para una pata.
+    Retorna (df_puts, df_calls, fecha_cargada).
     """
     hoy = date.today()
 
@@ -193,7 +217,7 @@ def bloque_cadena(pata, key_fecha, key_df, expiraciones, client, precio_spx, col
     col_sel, col_btn = st.columns([3, 1])
     with col_sel:
         seleccion = st.selectbox(
-            f"📅 Fecha expiración ({pata}):",
+            f"📅 Fecha ({pata}):",
             options=opciones,
             index=0,
             key=f"te_sel_fecha_{pata.lower()}"
@@ -202,36 +226,34 @@ def bloque_cadena(pata, key_fecha, key_df, expiraciones, client, precio_spx, col
 
     with col_btn:
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button(f"📥 Cargar {pata}", type="primary", use_container_width=True, key=f"btn_cargar_{pata.lower()}"):
-            with st.spinner(f"Bajando puts {pata} para {fecha_sel}..."):
+        if st.button(f"📥 Cargar {pata}", type="primary",
+                     use_container_width=True, key=f"btn_cargar_{pata.lower()}"):
+            with st.spinner(f"Bajando cadena {pata} para {fecha_sel}..."):
                 chain = cargar_cadena_para_fecha(client, fecha_sel)
             if chain:
-                df = parsear_puts_atm(chain, fecha_sel, precio_spx)
-                st.session_state[key_df]    = df
-                st.session_state[key_fecha] = fecha_sel
-                if df.empty:
-                    st.warning(f"⚠️ Sin puts para {fecha_sel}.")
+                df_p, df_c = parsear_cadena_atm(chain, fecha_sel, precio_spx, n_strikes=1)
+                st.session_state[key_df_puts]  = df_p
+                st.session_state[key_df_calls] = df_c
+                st.session_state[key_fecha]    = fecha_sel
+                if (df_p is None or df_p.empty) and (df_c is None or df_c.empty):
+                    st.warning(f"⚠️ Sin datos para {fecha_sel}.")
                 else:
-                    st.success(f"✅ {len(df)} puts {pata} cargados")
+                    st.success(f"✅ Cadena {pata} cargada — {fecha_sel}")
 
-    df      = st.session_state.get(key_df)
-    f_carg  = st.session_state.get(key_fecha)
+    df_p   = st.session_state.get(key_df_puts)
+    df_c   = st.session_state.get(key_df_calls)
+    f_carg = st.session_state.get(key_fecha)
 
-    if df is not None and not df.empty:
+    if f_carg and ((df_p is not None and not df_p.empty) or
+                   (df_c is not None and not df_c.empty)):
         st.markdown(
             f"<span style='background:{color_header}; color:white; padding:3px 10px; "
             f"border-radius:4px; font-size:0.85em;'>Cadena {pata}: {f_carg}</span>",
             unsafe_allow_html=True
         )
-        columnas = ['Strike', 'DTE', 'Bid', 'Ask', 'Mid', 'Delta', 'Gamma', 'Theta', 'Vega', 'IV']
-        cols_ok  = [c for c in columnas if c in df.columns]
-        st.dataframe(
-            highlight_atm(df[cols_ok], precio_spx),
-            hide_index=True,
-            use_container_width=True
-        )
+        mostrar_tabla_cadena(df_p, df_c, precio_spx, pata)
 
-    return df, f_carg
+    return df_p, df_c, f_carg
 
 
 # ==============================================================================
@@ -241,10 +263,10 @@ def bloque_cadena(pata, key_fecha, key_df, expiraciones, client, precio_spx, col
 def main():
 
     st.markdown(
-        "<h1><span style='font-size: 1.5em;'>📊</span> TE Operar — Cadena de Opciones SPX</h1>",
+        "<h1><span style='font-size: 1.5em;'>📊</span> TE Operar — Calendar Put Spread SPX</h1>",
         unsafe_allow_html=True
     )
-    st.markdown("Cadena de **puts** del SPX · 60–120 DTE · ±5 strikes del ATM")
+    st.markdown("Cadena SPX en tiempo real · 60–120 DTE · ATM ±1 strike")
     st.markdown("---")
 
     inicializar_session_state()
@@ -286,129 +308,285 @@ def main():
         return
 
     # =========================================================================
-    # 2.2 — CADENAS: SHORT (near) y LONG (far) en dos columnas
+    # 2.2 — CADENAS: SHORT (near) y LONG (far)
     # =========================================================================
-    st.header("2.2 Cadenas de Puts — Short y Long")
-    st.markdown("Cargá cada pata de forma independiente. El **Short** es la expiración más corta (near), el **Long** la más larga (far).")
+    st.header("2.2 Cadenas — Short (near) y Long (far)")
+    st.caption("Cada pata muestra Puts y Calls · ATM ±1 strike · Strike azul = ATM")
 
     col_s, col_l = st.columns(2)
 
     with col_s:
-        st.markdown("### 📤 Short Put *(near — vendés)*")
-        df_short, fecha_short = bloque_cadena(
-            pata         = 'SHORT',
-            key_fecha    = 'te_short_fecha_cargada',
-            key_df       = 'te_short_df_puts',
-            expiraciones = expiraciones,
-            client       = client,
-            precio_spx   = precio_spx,
-            color_header = '#8B0000'
+        st.markdown("### 📤 Short *(near — vendés)*")
+        df_short_puts, df_short_calls, fecha_short = bloque_cadena(
+            pata          = 'SHORT',
+            key_fecha     = 'te_short_fecha_cargada',
+            key_df_puts   = 'te_short_df_puts',
+            key_df_calls  = 'te_short_df_calls',
+            expiraciones  = expiraciones,
+            client        = client,
+            precio_spx    = precio_spx,
+            color_header  = '#8B0000'
         )
 
     with col_l:
-        st.markdown("### 📥 Long Put *(far — comprás)*")
-        df_long, fecha_long = bloque_cadena(
-            pata         = 'LONG',
-            key_fecha    = 'te_long_fecha_cargada',
-            key_df       = 'te_long_df_puts',
-            expiraciones = expiraciones,
-            client       = client,
-            precio_spx   = precio_spx,
-            color_header = '#1a5c1a'
+        st.markdown("### 📥 Long *(far — comprás)*")
+        df_long_puts, df_long_calls, fecha_long = bloque_cadena(
+            pata          = 'LONG',
+            key_fecha     = 'te_long_fecha_cargada',
+            key_df_puts   = 'te_long_df_puts',
+            key_df_calls  = 'te_long_df_calls',
+            expiraciones  = expiraciones,
+            client        = client,
+            precio_spx    = precio_spx,
+            color_header  = '#1a5c1a'
         )
 
     st.markdown("---")
 
     # =========================================================================
-    # 2.3 — ARMAR CALENDAR PUT SPREAD
+    # 2.3 — CONFIGURAR ORDEN
     # =========================================================================
-    st.header("2.3 Armar Calendar Put Spread")
+    st.header("2.3 Configurar Orden")
 
-    if df_short is None or df_short.empty:
-        st.info("ℹ️ Cargá la pata **Short** arriba para armar el calendar.")
+    cadena_short_ok = (df_short_puts is not None and not df_short_puts.empty) or \
+                      (df_short_calls is not None and not df_short_calls.empty)
+    cadena_long_ok  = (df_long_puts  is not None and not df_long_puts.empty)  or \
+                      (df_long_calls is not None and not df_long_calls.empty)
+
+    if not cadena_short_ok:
+        st.info("ℹ️ Cargá la cadena **Short** arriba para configurar la orden.")
         return
-    if df_long is None or df_long.empty:
-        st.info("ℹ️ Cargá la pata **Long** arriba para armar el calendar.")
+    if not cadena_long_ok:
+        st.info("ℹ️ Cargá la cadena **Long** arriba para configurar la orden.")
         return
 
-    # Strikes comunes a ambas cadenas para el selectbox
-    strikes_short = sorted(df_short['Strike'].unique().tolist())
-    strikes_long  = sorted(df_long['Strike'].unique().tolist())
-    strikes_comunes = sorted(set(strikes_short) & set(strikes_long))
+    # Strikes disponibles por pata
+    strikes_short_all = sorted(set(
+        (df_short_puts['Strike'].tolist()  if df_short_puts  is not None and not df_short_puts.empty  else []) +
+        (df_short_calls['Strike'].tolist() if df_short_calls is not None and not df_short_calls.empty else [])
+    ))
+    strikes_long_all = sorted(set(
+        (df_long_puts['Strike'].tolist()   if df_long_puts   is not None and not df_long_puts.empty   else []) +
+        (df_long_calls['Strike'].tolist()  if df_long_calls  is not None and not df_long_calls.empty  else [])
+    ))
 
-    # Si no hay strikes comunes, permitir selección independiente
-    usar_comunes = len(strikes_comunes) > 0
+    col_front, col_back = st.columns(2)
 
-    col_short, col_long = st.columns(2)
+    # ------------------------------------------------------------------
+    # PATA SHORT
+    # ------------------------------------------------------------------
+    with col_front:
+        st.markdown(f"### 📤 Short — `{fecha_short}`")
+        st.markdown("---")
 
-    with col_short:
-        st.markdown("#### 📤 Short Put (vendés)")
-        opciones_s = [f"{s:,.0f}" for s in (strikes_comunes if usar_comunes else strikes_short)]
-        short_label = st.selectbox("Strike Short:", options=opciones_s, key="cal_short_strike")
-        short_strike = float(short_label.replace(",", ""))
-        fila_short = df_short[df_short['Strike'] == short_strike]
-        short_row  = fila_short.iloc[0] if not fila_short.empty else None
-        if short_row is not None:
-            st.metric("Mid Short", f"${short_row['Mid']:.2f}")
-            st.caption(f"Bid: {short_row['Bid']}  |  Ask: {short_row['Ask']}  |  DTE: {short_row['DTE']}  |  Δ: {short_row['Delta']}")
+        tipo_short = st.selectbox(
+            "Tipo de Opción SHORT",
+            ["PUT", "CALL"],
+            index=0,
+            key='orden_tipo_short'
+        )
+        accion_short = st.selectbox(
+            "Acción SHORT",
+            ["SELL", "BUY"],
+            index=0,
+            key='orden_accion_short'
+        )
+        strike_short_label = st.selectbox(
+            "Strike SHORT",
+            options=[f"{s:,.0f}" for s in strikes_short_all],
+            key='orden_strike_short'
+        )
+        strike_short_val = float(strike_short_label.replace(",", ""))
 
-    with col_long:
-        st.markdown("#### 📥 Long Put (comprás)")
-        opciones_l = [f"{s:,.0f}" for s in (strikes_comunes if usar_comunes else strikes_long)]
-        long_label = st.selectbox("Strike Long:", options=opciones_l, key="cal_long_strike")
-        long_strike = float(long_label.replace(",", ""))
-        fila_long = df_long[df_long['Strike'] == long_strike]
-        long_row  = fila_long.iloc[0] if not fila_long.empty else None
-        if long_row is not None:
-            st.metric("Mid Long", f"${long_row['Mid']:.2f}")
-            st.caption(f"Bid: {long_row['Bid']}  |  Ask: {long_row['Ask']}  |  DTE: {long_row['DTE']}  |  Δ: {long_row['Delta']}")
+        # Buscar mid de referencia en la cadena correspondiente
+        df_ref_short = df_short_puts if tipo_short == "PUT" else df_short_calls
+        mid_ref_short = None
+        if df_ref_short is not None and not df_ref_short.empty:
+            fila = df_ref_short[df_ref_short['Strike'] == strike_short_val]
+            if not fila.empty:
+                mid_ref_short = fila.iloc[0]['Mid']
+                bid_s = fila.iloc[0]['Bid']
+                ask_s = fila.iloc[0]['Ask']
+                st.caption(f"Bid: {bid_s}  |  Ask: {ask_s}  |  Mid referencia: **{mid_ref_short:.2f}**")
+
+        mid_short_input = st.number_input(
+            "Mid Price SHORT (editable)",
+            min_value=0.0,
+            value=float(mid_ref_short) if mid_ref_short else 0.0,
+            step=0.05,
+            format="%.2f",
+            key='orden_mid_short',
+            help="Podés editar el mid price manualmente"
+        )
+
+        # Análisis ITM/ATM/OTM
+        diff_s = strike_short_val - precio_spx
+        pct_s  = (diff_s / precio_spx) * 100
+        if tipo_short == "PUT":
+            estado_s = "ITM 🔴" if diff_s > 0 else ("ATM 🟡" if abs(diff_s) <= 10 else "OTM 🟢")
+        else:
+            estado_s = "ITM 🔴" if diff_s < 0 else ("ATM 🟡" if abs(diff_s) <= 10 else "OTM 🟢")
+        st.markdown(f"**{diff_s:+.0f} pts** ({pct_s:+.2f}%) · {estado_s}")
+
+    # ------------------------------------------------------------------
+    # PATA LONG
+    # ------------------------------------------------------------------
+    with col_back:
+        st.markdown(f"### 📥 Long — `{fecha_long}`")
+        st.markdown("---")
+
+        tipo_long = st.selectbox(
+            "Tipo de Opción LONG",
+            ["PUT", "CALL"],
+            index=0,
+            key='orden_tipo_long'
+        )
+        accion_long = st.selectbox(
+            "Acción LONG",
+            ["BUY", "SELL"],
+            index=0,
+            key='orden_accion_long'
+        )
+        strike_long_label = st.selectbox(
+            "Strike LONG",
+            options=[f"{s:,.0f}" for s in strikes_long_all],
+            key='orden_strike_long'
+        )
+        strike_long_val = float(strike_long_label.replace(",", ""))
+
+        df_ref_long = df_long_puts if tipo_long == "PUT" else df_long_calls
+        mid_ref_long = None
+        if df_ref_long is not None and not df_ref_long.empty:
+            fila = df_ref_long[df_ref_long['Strike'] == strike_long_val]
+            if not fila.empty:
+                mid_ref_long = fila.iloc[0]['Mid']
+                bid_l = fila.iloc[0]['Bid']
+                ask_l = fila.iloc[0]['Ask']
+                st.caption(f"Bid: {bid_l}  |  Ask: {ask_l}  |  Mid referencia: **{mid_ref_long:.2f}**")
+
+        mid_long_input = st.number_input(
+            "Mid Price LONG (editable)",
+            min_value=0.0,
+            value=float(mid_ref_long) if mid_ref_long else 0.0,
+            step=0.05,
+            format="%.2f",
+            key='orden_mid_long',
+            help="Podés editar el mid price manualmente"
+        )
+
+        diff_l = strike_long_val - precio_spx
+        pct_l  = (diff_l / precio_spx) * 100
+        if tipo_long == "PUT":
+            estado_l = "ITM 🔴" if diff_l > 0 else ("ATM 🟡" if abs(diff_l) <= 10 else "OTM 🟢")
+        else:
+            estado_l = "ITM 🔴" if diff_l < 0 else ("ATM 🟡" if abs(diff_l) <= 10 else "OTM 🟢")
+        st.markdown(f"**{diff_l:+.0f} pts** ({pct_l:+.2f}%) · {estado_l}")
+
+    # ------------------------------------------------------------------
+    # CANTIDAD Y DÉBITO
+    # ------------------------------------------------------------------
+    st.markdown("<br>", unsafe_allow_html=True)
+    col_qty, col_debito = st.columns([1, 2])
+
+    with col_qty:
+        cantidad = st.number_input(
+            "Cantidad de contratos",
+            min_value=1, value=1, step=1,
+            key='orden_cantidad'
+        )
+
+    with col_debito:
+        debito = round(mid_long_input - mid_short_input, 2)
+        color_debito = "#ffb74d" if debito > 0 else "#ef5350"
+        signo = "DÉBITO" if debito > 0 else "CRÉDITO"
+        st.markdown(
+            f"<div style='padding:12px; background:#1a1a2e; border-radius:6px; margin-top:8px;'>"
+            f"<span style='font-size:0.9em; color:#aaa;'>Resultado neto ({signo})</span><br>"
+            f"<span style='font-size:1.5em; font-weight:bold; color:{color_debito};'>"
+            f"${abs(debito):.2f} / contrato &nbsp;·&nbsp; ${abs(debito)*100*cantidad:.2f} total</span>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    if short_row is not None and long_row is not None:
-        mid_short = short_row['Mid']
-        mid_long  = long_row['Mid']
-        dte_short = short_row['DTE']
-        dte_long  = long_row['DTE']
-        debito    = round(mid_long - mid_short, 2)
+    # ------------------------------------------------------------------
+    # BOTÓN VISTA PREVIA
+    # ------------------------------------------------------------------
+    if st.button("📝 Generar Vista Previa de Orden", type="primary", use_container_width=True):
+        orders = [
+            {
+                'Pata':       'SHORT',
+                'Acción':     accion_short,
+                'Tipo':       tipo_short,
+                'Strike':     int(strike_short_val),
+                'Expiración': fecha_short,
+                'Mid Price':  mid_short_input,
+                'Contratos':  cantidad,
+            },
+            {
+                'Pata':       'LONG',
+                'Acción':     accion_long,
+                'Tipo':       tipo_long,
+                'Strike':     int(strike_long_val),
+                'Expiración': fecha_long,
+                'Mid Price':  mid_long_input,
+                'Contratos':  cantidad,
+            },
+        ]
+        st.session_state['te_order_df']      = pd.DataFrame(orders)
+        st.session_state['te_order_preview'] = True
 
-        # Validaciones
-        if dte_long <= dte_short:
-            st.warning(f"⚠️ El Long ({dte_long} DTE) debe tener **más DTE** que el Short ({dte_short} DTE).")
-        elif debito <= 0:
-            st.warning(f"⚠️ Débito calculado: ${debito:.2f} — el Long debería ser más caro que el Short.")
-        else:
-            st.markdown(
-                f"<div style='background:#0e2a0e; border:1px solid #2e7d32; border-radius:8px; padding:16px;'>"
-                f"<h4 style='color:#81c784; margin:0 0 12px 0;'>📋 Calendar Put Spread — Resumen</h4>"
-                f"<table style='width:100%; color:white; font-size:0.95em; border-collapse:collapse;'>"
-                f"<tr><td style='padding:4px 8px;'>Strike</td><td style='padding:4px 8px;'><strong>{short_strike:,.0f}</strong></td></tr>"
-                f"<tr><td style='padding:4px 8px;'>📤 Short Put</td><td style='padding:4px 8px;'>{fecha_short} · {dte_short} DTE · Mid <strong>${mid_short:.2f}</strong></td></tr>"
-                f"<tr><td style='padding:4px 8px;'>📥 Long Put</td><td style='padding:4px 8px;'>{fecha_long} · {dte_long} DTE · Mid <strong>${mid_long:.2f}</strong></td></tr>"
-                f"<tr><td style='padding:10px 8px 4px; font-size:1.1em;'>💰 Débito Neto</td>"
-                f"<td style='padding:10px 8px 4px; font-size:1.1em; color:#ffb74d;'>"
-                f"<strong>${debito:.2f} / contrato &nbsp;·&nbsp; ${debito*100:.2f} / lote</strong></td></tr>"
-                f"</table></div>",
-                unsafe_allow_html=True
-            )
-            st.markdown("<br>", unsafe_allow_html=True)
+    # ------------------------------------------------------------------
+    # VISTA PREVIA
+    # ------------------------------------------------------------------
+    if st.session_state.get('te_order_preview') and st.session_state.get('te_order_df') is not None:
+        df_order = st.session_state['te_order_df']
 
-            if st.button("✅ Registrar este Calendar", type="primary"):
+        st.markdown("---")
+        st.markdown("### 📋 Vista Previa de Orden")
+        st.dataframe(df_order, hide_index=True, use_container_width=True)
+
+        col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+        with col_r1:
+            st.metric("SPX al momento", f"{precio_spx:,.2f}")
+        with col_r2:
+            st.metric("Strike", f"{int(strike_short_val):,}")
+        with col_r3:
+            st.metric(signo, f"${abs(debito):.2f} / cto")
+        with col_r4:
+            st.metric("Total", f"${abs(debito)*100*cantidad:.2f}")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        col_reg, col_cancel = st.columns([2, 1])
+        with col_reg:
+            if st.button("✅ Registrar este Calendar", type="primary", use_container_width=True):
                 registro = {
-                    'Timestamp':       datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    'SPX al abrir':    f"{precio_spx:,.2f}",
-                    'Strike':          int(short_strike),
-                    'Short Fecha':     fecha_short,
-                    'Short DTE':       dte_short,
-                    'Short Mid':       mid_short,
-                    'Long Fecha':      fecha_long,
-                    'Long DTE':        dte_long,
-                    'Long Mid':        mid_long,
-                    'Débito Neto':     debito,
-                    'Débito x Lote':   round(debito * 100, 2),
+                    'Timestamp':      datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    'SPX al abrir':   f"{precio_spx:,.2f}",
+                    'Strike':         int(strike_short_val),
+                    'Short Tipo':     tipo_short,
+                    'Short Acción':   accion_short,
+                    'Short Fecha':    fecha_short,
+                    'Short Mid':      mid_short_input,
+                    'Long Tipo':      tipo_long,
+                    'Long Acción':    accion_long,
+                    'Long Fecha':     fecha_long,
+                    'Long Mid':       mid_long_input,
+                    f'{signo}':       abs(debito),
+                    'Total ($)':      round(abs(debito) * 100 * cantidad, 2),
+                    'Contratos':      cantidad,
                 }
                 st.session_state['te_calendar_registros'].append(registro)
-                st.success("✅ Calendar registrado abajo.")
+                st.session_state['te_order_preview'] = False
+                st.success("✅ Calendar registrado.")
+                st.rerun()
+
+        with col_cancel:
+            if st.button("✖ Cancelar", use_container_width=True):
+                st.session_state['te_order_preview'] = False
+                st.rerun()
 
     st.markdown("---")
 
