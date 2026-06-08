@@ -274,6 +274,13 @@ def bloque_cadena(pata, key_fecha, key_df_puts, key_df_calls,
     df_c   = st.session_state.get(key_df_calls)
     f_carg = st.session_state.get(key_fecha)
 
+    # Si la fecha seleccionada es distinta a la cargada, limpiar datos viejos
+    if f_carg and f_carg != fecha_sel:
+        st.session_state[key_df_puts]  = None
+        st.session_state[key_df_calls] = None
+        st.session_state[key_fecha]    = None
+        df_p, df_c, f_carg = None, None, None
+
     if f_carg and ((df_p is not None and not df_p.empty) or
                    (df_c is not None and not df_c.empty)):
         st.markdown(
@@ -432,6 +439,15 @@ def main():
 
     col_front, col_back = st.columns(2)
 
+    # Calcular índice ATM en cada lista de strikes para el selectbox
+    def idx_atm(strikes_list, atm):
+        if not strikes_list:
+            return 0
+        return min(range(len(strikes_list)), key=lambda i: abs(strikes_list[i] - atm))
+
+    atm_idx_short = idx_atm(strikes_short_all, strike_atm_global)
+    atm_idx_long  = idx_atm(strikes_long_all,  strike_atm_global)
+
     # ------------------------------------------------------------------
     # PATA SHORT
     # ------------------------------------------------------------------
@@ -454,32 +470,36 @@ def main():
         strike_short_label = st.selectbox(
             "Strike SHORT",
             options=[f"{s:,.0f}" for s in strikes_short_all],
+            index=atm_idx_short,
             key='orden_strike_short'
         )
         strike_short_val = float(strike_short_label.replace(",", ""))
 
-        # Buscar mid de referencia en la cadena correspondiente
+        # Mid de referencia desde la cadena
         df_ref_short = df_short_puts if tipo_short == "PUT" else df_short_calls
-        mid_ref_short = None
+        mid_ref_short = 0.0
         if df_ref_short is not None and not df_ref_short.empty:
             fila = df_ref_short[df_ref_short['Strike'] == strike_short_val]
             if not fila.empty:
-                mid_ref_short = fila.iloc[0]['Mid']
+                mid_ref_short = float(fila.iloc[0]['Mid']) if fila.iloc[0]['Mid'] is not None else 0.0
                 bid_s = fila.iloc[0]['Bid']
                 ask_s = fila.iloc[0]['Ask']
                 st.caption(f"Bid: {bid_s}  |  Ask: {ask_s}  |  Mid referencia: **{mid_ref_short:.2f}**")
 
+        # Forzar actualización del mid en session_state cuando cambia el strike o tipo
+        clave_mid_s = f"mid_short_{strike_short_val}_{tipo_short}"
+        if st.session_state.get('_last_mid_short_key') != clave_mid_s:
+            st.session_state['orden_mid_short'] = mid_ref_short
+            st.session_state['_last_mid_short_key'] = clave_mid_s
+
         mid_short_input = st.number_input(
-            "Mid Price SHORT (editable)",
+            "Mid Price SHORT",
             min_value=0.0,
-            value=float(mid_ref_short) if mid_ref_short else 0.0,
             step=0.05,
             format="%.2f",
             key='orden_mid_short',
-            help="Podés editar el mid price manualmente"
         )
 
-        # Análisis ITM/ATM/OTM
         diff_s = strike_short_val - precio_spx
         pct_s  = (diff_s / precio_spx) * 100
         if tipo_short == "PUT":
@@ -510,16 +530,17 @@ def main():
         strike_long_label = st.selectbox(
             "Strike LONG",
             options=[f"{s:,.0f}" for s in strikes_long_all],
+            index=atm_idx_long,
             key='orden_strike_long'
         )
         strike_long_val = float(strike_long_label.replace(",", ""))
 
         df_ref_long = df_long_puts if tipo_long == "PUT" else df_long_calls
-        mid_ref_long = None
+        mid_ref_long = 0.0
         if df_ref_long is not None and not df_ref_long.empty:
             fila = df_ref_long[df_ref_long['Strike'] == strike_long_val]
             if not fila.empty:
-                mid_ref_long = fila.iloc[0]['Mid']
+                mid_ref_long = float(fila.iloc[0]['Mid']) if fila.iloc[0]['Mid'] is not None else 0.0
                 bid_l = fila.iloc[0]['Bid']
                 ask_l = fila.iloc[0]['Ask']
                 st.caption(f"Bid: {bid_l}  |  Ask: {ask_l}  |  Mid referencia: **{mid_ref_long:.2f}**")
