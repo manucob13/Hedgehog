@@ -155,7 +155,10 @@ def parsear_cadena_atm(chain_data, fecha_str, precio_spx, n_strikes=1):
         if not rows:
             return pd.DataFrame()
         df = pd.DataFrame(rows).sort_values('Strike').reset_index(drop=True)
-        atm_idx = (df['Strike'] - precio_spx).abs().idxmin()
+        # Buscar el strike más cercano al precio_spx usando distancia absoluta
+        # reset_index asegura que atm_idx es posicional
+        distancias = (df['Strike'] - precio_spx).abs()
+        atm_idx = int(distancias.idxmin())
         idx_min = max(0, atm_idx - n_strikes)
         idx_max = min(len(df) - 1, atm_idx + n_strikes)
         return df.iloc[idx_min:idx_max + 1].reset_index(drop=True)
@@ -238,7 +241,7 @@ def bloque_cadena(pata, key_fecha, key_df_puts, key_df_calls,
                 if (df_p is None or df_p.empty) and (df_c is None or df_c.empty):
                     st.warning(f"⚠️ Sin datos para {fecha_sel}.")
                 else:
-                    st.success(f"✅ Cadena {pata} cargada — {fecha_sel}")
+                    pass
 
     df_p   = st.session_state.get(key_df_puts)
     df_c   = st.session_state.get(key_df_calls)
@@ -310,13 +313,13 @@ def main():
     # =========================================================================
     # 2.2 — CADENAS: SHORT (near) y LONG (far)
     # =========================================================================
-    st.header("2.2 Cadenas — Short (near) y Long (far)")
+    st.header("2.2 Cadenas — Short y Long")
     st.caption("Cada pata muestra Puts y Calls · ATM ±1 strike · Strike azul = ATM")
 
     col_s, col_l = st.columns(2)
 
     with col_s:
-        st.markdown("### 📤 Short *(near — vendés)*")
+        st.markdown("### 📤 Short")
         df_short_puts, df_short_calls, fecha_short = bloque_cadena(
             pata          = 'SHORT',
             key_fecha     = 'te_short_fecha_cargada',
@@ -329,7 +332,7 @@ def main():
         )
 
     with col_l:
-        st.markdown("### 📥 Long *(far — comprás)*")
+        st.markdown("### 📥 Long")
         df_long_puts, df_long_calls, fecha_long = bloque_cadena(
             pata          = 'LONG',
             key_fecha     = 'te_long_fecha_cargada',
