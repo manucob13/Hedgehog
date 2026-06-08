@@ -341,24 +341,36 @@ def main():
 
     col_s, col_l = st.columns(2)
 
+    # ATM = múltiplo de 5 más cercano al precio actual del SPX
+    # Ej: SPX=7383 → 7385, SPX=7377 → 7375
+    strike_atm_global = round(precio_spx / 5) * 5
+
     with col_s:
         st.markdown("### 📤 Short")
         df_short_puts, df_short_calls, fecha_short = bloque_cadena(
-            pata          = 'SHORT',
-            key_fecha     = 'te_short_fecha_cargada',
-            key_df_puts   = 'te_short_df_puts',
-            key_df_calls  = 'te_short_df_calls',
-            expiraciones  = expiraciones,
-            client        = client,
-            precio_spx    = precio_spx,
-            color_header  = '#8B0000',
-            dte_referencia= None
+            pata           = 'SHORT',
+            key_fecha      = 'te_short_fecha_cargada',
+            key_df_puts    = 'te_short_df_puts',
+            key_df_calls   = 'te_short_df_calls',
+            expiraciones   = expiraciones,
+            client         = client,
+            precio_spx     = precio_spx,
+            color_header   = '#8B0000',
+            dte_referencia = None,
+            strike_atm_fijo= strike_atm_global
         )
 
-    # Calcular DTE del SHORT para mostrarlo en el selector del LONG
+    # DTE del SHORT seleccionado (desde el selector en tiempo real)
     hoy = date.today()
     dte_short_ref = None
-    if fecha_short:
+    fecha_short_sel = st.session_state.get('te_sel_fecha_short', '')
+    if fecha_short_sel:
+        f_str = fecha_short_sel.split(" ")[0]
+        try:
+            dte_short_ref = (date.fromisoformat(f_str) - hoy).days
+        except Exception:
+            pass
+    if dte_short_ref is None and fecha_short:
         try:
             dte_short_ref = (date.fromisoformat(fecha_short) - hoy).days
         except Exception:
@@ -367,15 +379,16 @@ def main():
     with col_l:
         st.markdown("### 📥 Long")
         df_long_puts, df_long_calls, fecha_long = bloque_cadena(
-            pata          = 'LONG',
-            key_fecha     = 'te_long_fecha_cargada',
-            key_df_puts   = 'te_long_df_puts',
-            key_df_calls  = 'te_long_df_calls',
-            expiraciones  = expiraciones,
-            client        = client,
-            precio_spx    = precio_spx,
-            color_header  = '#1a5c1a',
-            dte_referencia= dte_short_ref
+            pata           = 'LONG',
+            key_fecha      = 'te_long_fecha_cargada',
+            key_df_puts    = 'te_long_df_puts',
+            key_df_calls   = 'te_long_df_calls',
+            expiraciones   = expiraciones,
+            client         = client,
+            precio_spx     = precio_spx,
+            color_header   = '#1a5c1a',
+            dte_referencia = dte_short_ref,
+            strike_atm_fijo= strike_atm_global   # mismo ATM para ambas patas
         )
 
     st.markdown("---")
