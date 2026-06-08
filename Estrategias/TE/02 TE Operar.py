@@ -170,23 +170,16 @@ def parsear_cadena_atm(chain_data, fecha_str, precio_spx, n_strikes=1, strike_at
         df = pd.DataFrame(rows).sort_values('Strike').reset_index(drop=True)
 
         # Centro ATM fijo (múltiplo de 5 calculado externamente)
-        # Filtrar todos los strikes dentro de ±(n_strikes * intervalo) del ATM
-        # Para SPX el intervalo entre strikes es 5 pts, así que ±1 strike = ±5 pts
         centro = strike_atm_fijo if strike_atm_fijo is not None else round(precio_spx / 5) * 5
-        margen = n_strikes * 5  # 1 strike = 5 pts para el SPX
-        df_filtrado = df[
-            (df['Strike'] >= centro - margen) &
-            (df['Strike'] <= centro + margen)
-        ].reset_index(drop=True)
 
-        # Si no hay ningún strike en ese rango exacto, caer al más cercano como fallback
-        if df_filtrado.empty:
-            atm_idx = int((df['Strike'] - centro).abs().idxmin())
-            idx_min = max(0, atm_idx - n_strikes)
-            idx_max = min(len(df) - 1, atm_idx + n_strikes)
-            df_filtrado = df.iloc[idx_min:idx_max + 1].reset_index(drop=True)
-
-        return df_filtrado
+        # Tomar los n_strikes strikes por encima y por debajo del centro,
+        # buscando en toda la cadena disponible (no con margen fijo de pts)
+        # Esto garantiza 3 strikes aunque la cadena no tenga exactamente el ATM
+        distancias = (df['Strike'] - centro).abs()
+        atm_idx = int(distancias.idxmin())
+        idx_min = max(0, atm_idx - n_strikes)
+        idx_max = min(len(df) - 1, atm_idx + n_strikes)
+        return df.iloc[idx_min:idx_max + 1].reset_index(drop=True)
 
     df_puts  = extraer(chain_data.get('putExpDateMap',  {}))
     df_calls = extraer(chain_data.get('callExpDateMap', {}))
