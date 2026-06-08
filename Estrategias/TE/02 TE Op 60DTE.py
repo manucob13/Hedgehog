@@ -9,7 +9,7 @@ from utils.utils_schwab import (
 )
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-# st.set_page_config(page_title="📊 TE Operar", layout="wide")
+# st.set_page_config(page_title="📊 TE Op 60DTE", layout="wide")
 
 # ==============================================================================
 # HELPERS — SESSION STATE
