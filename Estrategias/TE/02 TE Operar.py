@@ -122,9 +122,22 @@ def cargar_cadena_para_fecha(client, fecha_str):
 # PARSER — Puts y Calls, ATM ±1 strike (3 strikes total)
 # ==============================================================================
 
-def parsear_cadena_atm(chain_data, fecha_str, precio_spx, n_strikes=1):
+def limpiar_greek(valor):
+    """Convierte -999 (sin datos) a None."""
+    if valor is None:
+        return None
+    try:
+        v = float(valor)
+        return None if v <= -999 or v >= 999 else round(v, 4)
+    except Exception:
+        return None
+
+
+def parsear_cadena_atm(chain_data, fecha_str, precio_spx, n_strikes=1, strike_atm_fijo=None):
     """
     Extrae puts Y calls para una fecha, limitado a ATM ±n_strikes.
+    strike_atm_fijo: si se pasa, se usa ese strike como centro en lugar de
+                     calcular el más cercano (garantiza consistencia entre patas).
     Retorna (df_puts, df_calls).
     """
     def extraer(exp_map):
@@ -142,22 +155,23 @@ def parsear_cadena_atm(chain_data, fecha_str, precio_spx, n_strikes=1):
                 mark = c.get('mark', 0) or 0
                 mid  = (bid + ask) / 2 if bid > 0 and ask > 0 else mark
                 rows.append({
-                    'Strike':  float(strike_key),
-                    'DTE':     dte,
-                    'Bid':     round(bid,  2),
-                    'Ask':     round(ask,  2),
-                    'Mid':     round(mid,  2),
-                    'Delta':   round(c.get('delta')       or 0, 4),
-                    'Theta':   round(c.get('theta')       or 0, 4),
-                    'Vega':    round(c.get('vega')        or 0, 4),
-                    'IV':      round((c.get('volatility') or 0) / 100, 4),
+                    'Strike': float(strike_key),
+                    'DTE':    dte,
+                    'Bid':    round(bid,  2),
+                    'Ask':    round(ask,  2),
+                    'Mid':    round(mid,  2),
+                    'Delta':  limpiar_greek(c.get('delta')),
+                    'Theta':  limpiar_greek(c.get('theta')),
+                    'Vega':   limpiar_greek(c.get('vega')),
+                    'IV':     round((c.get('volatility') or 0) / 100, 4),
                 })
         if not rows:
             return pd.DataFrame()
         df = pd.DataFrame(rows).sort_values('Strike').reset_index(drop=True)
-        # Buscar el strike más cercano al precio_spx usando distancia absoluta
-        # reset_index asegura que atm_idx es posicional
-        distancias = (df['Strike'] - precio_spx).abs()
+
+        # Centro ATM: usar strike fijo si se provee, sino el más cercano al precio
+        centro = strike_atm_fijo if strike_atm_fijo is not None else precio_spx
+        distancias = (df['Strike'] - centro).abs()
         atm_idx = int(distancias.idxmin())
         idx_min = max(0, atm_idx - n_strikes)
         idx_max = min(len(df) - 1, atm_idx + n_strikes)
@@ -202,16 +216,23 @@ def mostrar_tabla_cadena(df_puts, df_calls, precio_spx, label):
 
 
 def bloque_cadena(pata, key_fecha, key_df_puts, key_df_calls,
-                  expiraciones, client, precio_spx, color_header):
+                  expiraciones, client, precio_spx, color_header,
+                  dte_referencia=None, strike_atm_fijo=None):
     """
     Renderiza selector + botón + tabla (puts y calls) para una pata.
+    dte_referencia : DTE del SHORT → el LONG muestra solo el incremento.
+    strike_atm_fijo: strike centro fijo → garantiza mismos strikes en ambas patas.
     Retorna (df_puts, df_calls, fecha_cargada).
     """
     hoy = date.today()
 
     def label(f):
         try:
-            return f"{f}  ({(date.fromisoformat(f) - hoy).days} DTE)"
+            dte = (date.fromisoformat(f) - hoy).days
+            if dte_referencia is not None:
+                diff = dte - dte_referencia
+                return f"{f}  (+{diff} DTE)"
+            return f"{f}  ({dte} DTE)"
         except Exception:
             return f
 
@@ -234,14 +255,16 @@ def bloque_cadena(pata, key_fecha, key_df_puts, key_df_calls,
             with st.spinner(f"Bajando cadena {pata} para {fecha_sel}..."):
                 chain = cargar_cadena_para_fecha(client, fecha_sel)
             if chain:
-                df_p, df_c = parsear_cadena_atm(chain, fecha_sel, precio_spx, n_strikes=1)
+                df_p, df_c = parsear_cadena_atm(
+                    chain, fecha_sel, precio_spx,
+                    n_strikes=1,
+                    strike_atm_fijo=strike_atm_fijo
+                )
                 st.session_state[key_df_puts]  = df_p
                 st.session_state[key_df_calls] = df_c
                 st.session_state[key_fecha]    = fecha_sel
                 if (df_p is None or df_p.empty) and (df_c is None or df_c.empty):
                     st.warning(f"⚠️ Sin datos para {fecha_sel}.")
-                else:
-                    pass
 
     df_p   = st.session_state.get(key_df_puts)
     df_c   = st.session_state.get(key_df_calls)
@@ -328,8 +351,18 @@ def main():
             expiraciones  = expiraciones,
             client        = client,
             precio_spx    = precio_spx,
-            color_header  = '#8B0000'
+            color_header  = '#8B0000',
+            dte_referencia= None
         )
+
+    # Calcular DTE del SHORT para mostrarlo en el selector del LONG
+    hoy = date.today()
+    dte_short_ref = None
+    if fecha_short:
+        try:
+            dte_short_ref = (date.fromisoformat(fecha_short) - hoy).days
+        except Exception:
+            pass
 
     with col_l:
         st.markdown("### 📥 Long")
@@ -341,7 +374,8 @@ def main():
             expiraciones  = expiraciones,
             client        = client,
             precio_spx    = precio_spx,
-            color_header  = '#1a5c1a'
+            color_header  = '#1a5c1a',
+            dte_referencia= dte_short_ref
         )
 
     st.markdown("---")
@@ -363,15 +397,19 @@ def main():
         st.info("ℹ️ Cargá la cadena **Long** arriba para configurar la orden.")
         return
 
-    # Strikes disponibles por pata
-    strikes_short_all = sorted(set(
+    # Strikes disponibles por pata — mínimo ATM-50 para SHORT, ATM-30 para LONG
+    strikes_short_raw = sorted(set(
         (df_short_puts['Strike'].tolist()  if df_short_puts  is not None and not df_short_puts.empty  else []) +
         (df_short_calls['Strike'].tolist() if df_short_calls is not None and not df_short_calls.empty else [])
     ))
-    strikes_long_all = sorted(set(
+    strikes_long_raw = sorted(set(
         (df_long_puts['Strike'].tolist()   if df_long_puts   is not None and not df_long_puts.empty   else []) +
         (df_long_calls['Strike'].tolist()  if df_long_calls  is not None and not df_long_calls.empty  else [])
     ))
+    atm_aprox = min(strikes_short_raw, key=lambda x: abs(x - precio_spx)) if strikes_short_raw else precio_spx
+
+    strikes_short_all = sorted([s for s in strikes_short_raw if s >= atm_aprox - 50])
+    strikes_long_all  = sorted([s for s in strikes_long_raw  if s >= atm_aprox - 30])
 
     col_front, col_back = st.columns(2)
 
