@@ -88,7 +88,7 @@ if check_password():
     initialize_session_state_te()
     
     st.markdown(
-    "<h1><span style='font-size: 1.5em;'>🦔</span> TE Calculos - Calendar ATM</h1>", 
+    "<h1><span style='font-size: 1.5em;'>🦔</span> TE Op 21DTE - Calendar ATM</h1>", 
     unsafe_allow_html=True
     )
   
