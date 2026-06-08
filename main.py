@@ -25,15 +25,15 @@ te_signals = st.Page(
     icon="🦔", 
     default=True
 )
-te_calculos = st.Page(
-    "Estrategias/TE/01 TE Calculos.py", 
-    title="Cálculos", 
+te_op_21dte = st.Page(
+    "Estrategias/TE/01 TE Op 21DTE.py", 
+    title="Op 21DTE", 
     icon="🦔"
 )
 
-te_operar = st.Page(
-    "Estrategias/TE/02 TE Operar.py", 
-    title="Operar", 
+te_op_60dte = st.Page(
+    "Estrategias/TE/02 TE Op 60DTE.py", 
+    title="Op 60DTE", 
     icon="🦔"
 )
 
@@ -93,7 +93,7 @@ broker_test = st.Page(
 
 # 3. CREACIÓN DE LA NAVEGACIÓN JERÁRQUICA
 pg = st.navigation({
-    "Time Edge": [te_signals, te_calculos,te_operar],
+    "Time Edge": [te_signals, te_op_21dte,te_op_60dte],
     "Triple Calendar": [tc_signals, tc_calculos,tc_ajustes],
     "HERRAMIENTAS": [
         vix_term, 
