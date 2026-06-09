@@ -1,7 +1,7 @@
 # utils/risk_profile.py
 """
 Risk Profile — Calendar Put Spread SPX
-Motor: Bjerksund-Stensland 2002 + skew real de Schwab + T_rem exacto.
+Motor: Bjerksund-Stensland 2002 + IV individual fija + T_rem exacto.
 """
 
 from __future__ import annotations
@@ -37,9 +37,11 @@ def _bs2002_phi(S: float, T: float, gamma: float, H: float,
     lam = (-r + gamma * b + 0.5 * gamma * (gamma - 1) * sigma ** 2) * T
     d   = -(math.log(S / H) + (b + (gamma - 0.5) * sigma ** 2) * T) / (sigma * math.sqrt(T))
     kap = 2 * b / sigma ** 2 + (2 * gamma - 1)
-    return (math.exp(lam) * S ** gamma *
-            (_norm_cdf(d) - (I / S) ** kap *
-             _norm_cdf(d - 2 * math.log(I / S) / (sigma * math.sqrt(T)))))
+    return (
+        math.exp(lam) * S ** gamma *
+        (_norm_cdf(d) - (I / S) ** kap *
+         _norm_cdf(d - 2 * math.log(I / S) / (sigma * math.sqrt(T))))
+    )
 
 
 def _bs2002_call(S: float, K: float, T: float, r: float, b: float, sigma: float) -> float:
@@ -112,7 +114,7 @@ def bs_greeks(S: float, K: float, T: float, r: float, sigma: float,
     p_su = bs_price(S + h_s, K, T,                  r, sigma,       option_type, q)
     p_sd = bs_price(S - h_s, K, T,                  r, sigma,       option_type, q)
     p_vu = bs_price(S,       K, T,                  r, sigma + h_v, option_type, q)
-    p_td = bs_price(S,       K, max(T - h_t, 1e-7), r, sigma,      option_type, q)
+    p_td = bs_price(S,       K, max(T - h_t, 1e-7), r, sigma,       option_type, q)
 
     return {
         "delta": round((p_su - p_sd) / (2 * h_s), 4),
@@ -123,8 +125,7 @@ def bs_greeks(S: float, K: float, T: float, r: float, sigma: float,
 
 
 # ==============================================================================
-# SKEW LOCAL — interpolación cuadrática
-# skew_points = [(strike, iv_decimal), ...]
+# SKEW LOCAL — se mantiene por compatibilidad/UI, pero no se usa en el profile
 # ==============================================================================
 
 def interp_iv(S_query: float,
@@ -220,7 +221,8 @@ def calendar_pl_at_short_expiry(
     """
     Curva blanca.
     Short: valorada con T→0+ (Theo muy cerca de expiración).
-    Long : valorada con tiempo residual exacto entre fechas y su IV propia interpolada.
+    Long : valorada con tiempo residual exacto entre fechas.
+    IV fija por pata en toda la curva, alineado con 'Individual implied volatility'.
     """
     pl = np.zeros(len(S_range))
 
@@ -231,12 +233,8 @@ def calendar_pl_at_short_expiry(
         T_rem = max(T_long - T_short, 1.0 / 365)
 
     for i, S in enumerate(S_range):
-        iv_s = interp_iv(S, skew_short, iv_short)
-        iv_l = interp_iv(S, skew_long,  iv_long)
-
-        short_val = bs_price(S, K, T_tiny, r, iv_s, option_type, q)
-        long_val  = bs_price(S, K, T_rem,  r, iv_l, option_type, q)
-
+        short_val = bs_price(S, K, T_tiny, r, iv_short, option_type, q)
+        long_val  = bs_price(S, K, T_rem,  r, iv_long,  option_type, q)
         pl[i] = (long_val - short_val - debit) * 100 * contracts
 
     return pl
@@ -264,12 +262,8 @@ def calendar_pl_today(
     pl = np.zeros(len(S_range))
 
     for i, S in enumerate(S_range):
-        iv_s = interp_iv(S, skew_short, iv_short)
-        iv_l = interp_iv(S, skew_long,  iv_long)
-
-        short_val = bs_price(S, K, T_short, r, iv_s, option_type, q)
-        long_val  = bs_price(S, K, T_long,  r, iv_l, option_type, q)
-
+        short_val = bs_price(S, K, T_short, r, iv_short, option_type, q)
+        long_val  = bs_price(S, K, T_long,  r, iv_long,  option_type, q)
         pl[i] = (long_val - short_val - debit) * 100 * contracts
 
     return pl
@@ -561,9 +555,6 @@ def render_risk_profile(
 
     tiene_skew_ext = bool(skew_short_ext and len(skew_short_ext) >= 2)
 
-    # =========================================================================
-    # HEADER
-    # =========================================================================
     ts = registro.get("Timestamp", "")
     dte_s = int(T_short * 365)
     dte_l = int(T_long  * 365)
@@ -591,22 +582,20 @@ def render_risk_profile(
         st.markdown(
             f"<div style='background:#0d1a0d; border:1px solid #2e7d32; border-radius:5px; "
             f"padding:5px 12px; font-size:0.82em; margin-bottom:8px; display:inline-block;'>"
-            f"✅ <b style='color:#a5d6a7;'>Skew real cargado desde Schwab</b> — "
-            f"Short: {n_pts_s} puntos · Long: {n_pts_l} puntos</div>",
+            f"ℹ️ <b style='color:#a5d6a7;'>Skew cargado desde Schwab</b> — "
+            f"Short: {n_pts_s} puntos · Long: {n_pts_l} puntos · "
+            f"<b style='color:white;'>no se usa en esta prueba</b></div>",
             unsafe_allow_html=True,
         )
     else:
         st.markdown(
-            "<div style='background:#1a1a0d; border:1px solid #ffc107; border-radius:5px; "
+            "<div style='background:#0d1a0d; border:1px solid #1a3a5c; border-radius:5px; "
             "padding:5px 12px; font-size:0.82em; margin-bottom:8px; display:inline-block;'>"
-            "⚠️ <b style='color:#ffc107;'>Sin skew real</b> — usando IV plana. "
-            "Refrescá los mids para cargar el skew de Schwab.</div>",
+            "ℹ️ <b style='color:#a5d6a7;'>Modo prueba TOS</b> — "
+            "IV individual fija por pata en toda la curva.</div>",
             unsafe_allow_html=True,
         )
 
-    # =========================================================================
-    # FILA 1
-    # =========================================================================
     col_s, col_l, col_net, col_spx = st.columns([1, 1, 1, 1])
 
     with col_s:
@@ -645,9 +634,6 @@ def render_risk_profile(
 
     debit = debit_manual
 
-    # =========================================================================
-    # FILA 2
-    # =========================================================================
     col_ivs, col_ivl, col_ivadj, col_info = st.columns([1, 1, 1, 2])
 
     with col_ivs:
@@ -657,7 +643,7 @@ def render_risk_profile(
             value=round(iv_short_base * 100, 2),
             step=0.5, format="%.2f",
             key=f"rp_iv_short_{ts}_{K}",
-            help="IV ATM pata short — del broker si refrescaste, sino calculada"
+            help="IV individual de la pata short"
         )
 
     with col_ivl:
@@ -667,7 +653,7 @@ def render_risk_profile(
             value=round(iv_long_base * 100, 2),
             step=0.5, format="%.2f",
             key=f"rp_iv_long_{ts}_{K}",
-            help="IV ATM pata long — del broker si refrescaste, sino calculada"
+            help="IV individual de la pata long"
         )
 
     with col_ivadj:
@@ -675,19 +661,17 @@ def render_risk_profile(
             "⚙️ Ajuste IV (%)",
             min_value=-20, max_value=20, value=0, step=1,
             key=f"rp_iv_adj_{ts}_{K}",
-            help="Escenario de expansión/contracción de vol sobre ambas patas"
+            help="Ajuste paralelo sobre ambas patas"
         )
 
     with col_info:
-        origen_iv = "Schwab (real)" if tiene_skew_ext else (
-            "broker ATM" if (iv_short_broker or iv_long_broker) else "BS2002 estimada"
-        )
+        origen_iv = "broker individual" if (iv_short_broker or iv_long_broker) else "BS2002 estimada"
         signo_str = "DÉBITO" if debit > 0 else "CRÉDITO"
         color_d   = "#ffb74d" if debit > 0 else "#ef5350"
         st.markdown(
             f"<div style='background:#0d1a0d; border:1px solid #1a3a5c; border-radius:6px; "
             f"padding:8px 12px; margin-top:4px; font-size:0.85em;'>"
-            f"<span style='color:#aaa;'>Motor: <b style='color:white;'>BS2002 + skew local + T_rem exacto</b></span><br>"
+            f"<span style='color:#aaa;'>Motor: <b style='color:white;'>BS2002 + IV individual fija + T_rem exacto</b></span><br>"
             f"<span style='color:#aaa;'>IV fuente: <b style='color:white;'>{origen_iv}</b></span><br>"
             f"<span style='font-size:1.2em; font-weight:bold; color:{color_d};'>"
             f"{signo_str}: ${abs(debit):.2f} / cto &nbsp;·&nbsp; "
@@ -702,50 +686,9 @@ def render_risk_profile(
     skew_short_final = skew_short_ext if tiene_skew_ext else None
     skew_long_final  = skew_long_ext  if tiene_skew_ext else None
 
-    if not tiene_skew_ext:
-        with st.expander("📐 Skew manual (opcional — solo si no hay refresco de Schwab)", expanded=False):
-            st.caption("Pares strike,IV% separados por coma, uno por línea. Ej: 7300,17.5")
-
-            col_sk1, col_sk2 = st.columns(2)
-
-            with col_sk1:
-                skew_short_txt = st.text_area(
-                    "Skew Short (strike, IV%)",
-                    height=90,
-                    key=f"skew_short_{ts}_{K}",
-                    placeholder="7300,17.5\n7405,16.1\n7500,15.5"
-                )
-
-            with col_sk2:
-                skew_long_txt = st.text_area(
-                    "Skew Long (strike, IV%)",
-                    height=90,
-                    key=f"skew_long_{ts}_{K}",
-                    placeholder="7300,19.5\n7405,18.3\n7500,17.2"
-                )
-
-            def _parse_skew(txt):
-                if not txt.strip():
-                    return None
-                pts = []
-                for line in txt.strip().splitlines():
-                    try:
-                        k_val, iv_val = line.split(",")
-                        pts.append((float(k_val.strip()), float(iv_val.strip()) / 100))
-                    except Exception:
-                        pass
-                return pts if len(pts) >= 2 else None
-
-            skew_short_final = _parse_skew(skew_short_txt)
-            skew_long_final  = _parse_skew(skew_long_txt)
-
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # =========================================================================
-    # GRÁFICA
-    # =========================================================================
     col_ctrl, _ = st.columns([2, 3])
-
     with col_ctrl:
         margin_pct = st.slider(
             "↔️ Ancho del gráfico (margen más allá de los BE)",
@@ -773,9 +716,6 @@ def render_risk_profile(
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # =========================================================================
-    # SESSION STATE
-    # =========================================================================
     width_full = max(K * 0.18, 600)
     S_full     = np.linspace(K - width_full, K + width_full, 600)
 
@@ -815,9 +755,6 @@ def render_risk_profile(
         'T_rem_dias':       t_rem_days,
     }
 
-    # =========================================================================
-    # PANEL INFO
-    # =========================================================================
     col_be1, col_be2, col_mp, col_pl = st.columns(4)
 
     with col_be1:
@@ -841,9 +778,6 @@ def render_risk_profile(
     with col_pl:
         st.metric("💰 Max P/L", f"${max_pl_val:,.0f}")
 
-    # =========================================================================
-    # GRIEGOS
-    # =========================================================================
     g = spread_greeks_at_price(S_input, K, T_short, T_long, iv_s, iv_l, r_rate, contracts, option_type, q_rate)
 
     st.markdown(
