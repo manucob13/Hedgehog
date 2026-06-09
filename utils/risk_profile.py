@@ -539,49 +539,37 @@ def render_risk_profile(registro: dict, precio_spx_live: Optional[float] = None)
 # Llamar desde la página principal después del 2.4
 # ==============================================================================
 
-def seccion_risk_profile(precio_spx_live: Optional[float] = None):
+def seccion_risk_profile(
+    precio_spx_live:  Optional[float] = None,
+    mids_refrescados: Optional[dict]  = None,
+    idx_registro:     int             = 0,
+):
     """
-    Renderiza la sección 2.5 completa con Risk Profile
-    para cada calendar registrado en session_state['te_calendar_registros'].
-    """
-    st.header("2.5 Risk Profile — Calendars Registrados")
-    st.caption(
-        "Simulación Black-Scholes · P/L al vencimiento del short y hoy · "
-        "Editá débito/crédito para re-simular · Griegos en tiempo real"
-    )
+    Renderiza el Risk Profile del registro seleccionado.
+    Llamada desde 02 TE Operar.py — el selector de registro y el botón
+    de refresco viven en el fichero principal; aquí solo se dibuja el perfil.
 
+    mids_refrescados: dict con 'mid_short', 'mid_long', 'spx_al_refrescar'
+                      obtenido desde Schwab. Si es None usa los mids del registro.
+    idx_registro    : índice del registro seleccionado en te_calendar_registros.
+    """
     registros = st.session_state.get("te_calendar_registros", [])
 
     if not registros:
         st.info("ℹ️ No hay calendars registrados. Registrá uno en la sección 2.4.")
         return
 
-    # Selector de registro si hay más de uno
-    if len(registros) == 1:
-        idx_sel = 0
+    idx_sel  = min(idx_registro, len(registros) - 1)
+    registro = registros[idx_sel]
+
+    # Si hay mids frescos del broker, inyectarlos en una copia del registro
+    # para que render_risk_profile los use como punto de partida
+    if mids_refrescados:
+        registro = dict(registro)  # copia, no muta el original
+        registro['Short Mid'] = mids_refrescados.get('mid_short', registro.get('Short Mid'))
+        registro['Long Mid']  = mids_refrescados.get('mid_long',  registro.get('Long Mid'))
+        spx_ref = mids_refrescados.get('spx_al_refrescar', precio_spx_live)
     else:
-        opciones = [
-            f"#{i+1} · Strike {r.get('Strike','')} · "
-            f"{r.get('Short Fecha','')} / {r.get('Long Fecha','')} · "
-            f"{r.get('Timestamp','')}"
-            for i, r in enumerate(registros)
-        ]
-        seleccion = st.selectbox(
-            "Seleccioná el calendar a visualizar:",
-            options=opciones,
-            key="rp_selector_registro"
-        )
-        idx_sel = opciones.index(seleccion)
+        spx_ref = precio_spx_live
 
-        col_all, _ = st.columns([1, 3])
-        with col_all:
-            ver_todos = st.checkbox("Ver todos los registros", value=False,
-                                    key="rp_ver_todos")
-        if ver_todos:
-            for i, reg in enumerate(registros):
-                with st.container():
-                    st.markdown(f"#### Calendar #{i+1}")
-                    render_risk_profile(reg, precio_spx_live)
-            return
-
-    render_risk_profile(registros[idx_sel], precio_spx_live)
+    render_risk_profile(registro, spx_ref)
