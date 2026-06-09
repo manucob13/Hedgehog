@@ -12,6 +12,7 @@ from utils.utils_schwab import (
     get_current_price_schwab,
 )
 from utils.risk_profile import seccion_risk_profile  # ← NUEVO
+from utils.github_storage import cargar_calendars_csv, guardar_calendars_csv  # ← NUEVO
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 # st.set_page_config(page_title="📊 TE Op 60DTE", layout="wide")
@@ -33,6 +34,7 @@ def inicializar_session_state():
         'te_order_df':               None,
         'te_calendar_registros':     [],
         'te_rp_mids_refrescados':    {},   # ← NUEVO: {idx: {'mid_short': x, 'mid_long': y, 'spx': z}}
+        'te_csv_cargado':            False,  # ← si ya cargamos el CSV de GitHub al arrancar
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -379,6 +381,17 @@ def main():
 
     inicializar_session_state()
 
+    # ── Carga automática del CSV de GitHub al arrancar (solo una vez) ──────────
+    if not st.session_state.get('te_csv_cargado'):
+        with st.spinner("📂 Cargando posiciones guardadas desde GitHub..."):
+            registros_gh = cargar_calendars_csv()
+        if registros_gh:
+            st.session_state['te_calendar_registros'] = registros_gh
+            st.session_state['te_csv_cargado'] = True
+            st.toast(f"✅ {len(registros_gh)} posiciones cargadas desde GitHub", icon="📂")
+        else:
+            st.session_state['te_csv_cargado'] = True  # no hay CSV aún, no volver a intentar
+
     # =========================================================================
     # 2.1 — CONEXIÓN
     # =========================================================================
@@ -675,7 +688,13 @@ def main():
                 }
                 st.session_state['te_calendar_registros'].append(registro)
                 st.session_state['te_order_preview'] = False
-                st.success("✅ Calendar registrado.")
+                # Guardar en GitHub
+                with st.spinner("💾 Guardando en GitHub..."):
+                    ok = guardar_calendars_csv(st.session_state['te_calendar_registros'])
+                if ok:
+                    st.success("✅ Calendar registrado y guardado en GitHub.")
+                else:
+                    st.warning("✅ Calendar registrado en sesión pero no se pudo guardar en GitHub.")
                 st.rerun()
 
         with col_cancel:
@@ -689,6 +708,21 @@ def main():
     # 2.4 — REGISTRO DE CALENDARS
     # =========================================================================
     st.header("2.4 Registro de Calendars")
+
+    # Botón manual para recargar desde GitHub en cualquier momento
+    col_gh1, col_gh2 = st.columns([1, 3])
+    with col_gh1:
+        if st.button("📂 Recargar desde GitHub", use_container_width=True, key="btn_recargar_gh"):
+            with st.spinner("📂 Cargando desde GitHub..."):
+                registros_gh = cargar_calendars_csv()
+            if registros_gh:
+                st.session_state['te_calendar_registros'] = registros_gh
+                st.success(f"✅ {len(registros_gh)} posiciones cargadas desde GitHub.")
+                st.rerun()
+            else:
+                st.info("ℹ️ No hay posiciones guardadas en GitHub todavía.")
+    with col_gh2:
+        st.caption("Los registros se guardan automáticamente en `utils/data/calendars_TE.csv` del repo.")
 
     registros = st.session_state.get('te_calendar_registros', [])
 
@@ -721,6 +755,9 @@ def main():
         with col_clear:
             if st.button("🗑️ Limpiar Registro", use_container_width=True):
                 st.session_state['te_calendar_registros'] = []
+                st.session_state['te_csv_cargado'] = False
+                with st.spinner("🗑️ Limpiando en GitHub..."):
+                    guardar_calendars_csv([])
                 st.rerun()
 
     st.markdown("---")
