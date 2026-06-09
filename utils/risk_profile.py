@@ -1,12 +1,14 @@
 # utils/risk_profile.py
 """
 Risk Profile — Calendar Put Spread SPX
-Motor: Bjerksund-Stensland 2002 + Sticky Skew por slice.
+Motor: Bjerksund-Stensland 2002 + Sticky Skew por slice
++ ajuste estático global en breakevens finales.
 
-Objetivo:
-- Aproximar mejor la lógica de TOS Analyze/Risk Profile.
-- Cada slice del eje X puede usar IV distinta por pata.
-- La línea blanca usa fecha objetivo configurable.
+Ajuste fijo:
+- BE inferior ajustado = BE inferior calculado + GLOBAL_BE_LOWER_OFFSET
+- BE superior ajustado = BE superior calculado + GLOBAL_BE_UPPER_OFFSET
+
+Pensado para aproximar TOS de forma estable y simple, sin calibración dinámica.
 """
 
 from __future__ import annotations
@@ -19,6 +21,13 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+
+
+# ==============================================================================
+# AJUSTE ESTÁTICO GLOBAL
+# ==============================================================================
+GLOBAL_BE_LOWER_OFFSET = 48.0
+GLOBAL_BE_UPPER_OFFSET = -22.0
 
 
 # ==============================================================================
@@ -175,9 +184,6 @@ def iv_from_mid(price: float, S: float, K: float, T: float, r: float,
 # ==============================================================================
 
 def build_default_skew_points(K: float, base_iv: float) -> list[tuple[float, float]]:
-    """
-    Crea una skew simple tipo put skew por si no viene cadena externa.
-    """
     return [
         (K * 0.94, base_iv * 1.08),
         (K * 0.97, base_iv * 1.04),
@@ -192,10 +198,6 @@ def interp_iv_from_skew(
     skew_points: Optional[list],
     fallback_iv: float,
 ) -> float:
-    """
-    Interpola IV en función del precio hipotético del subyacente.
-    Usa lineal y extrapolación por pendiente en extremos.
-    """
     if not skew_points or len(skew_points) < 2:
         return float(np.clip(fallback_iv, 0.01, 5.0))
 
@@ -220,6 +222,35 @@ def apply_parallel_iv_adj(skew_points: Optional[list], iv_adj_pct: float) -> Opt
         return skew_points
     mult = 1.0 + iv_adj_pct / 100.0
     return [(float(k), max(float(iv) * mult, 0.01)) for k, iv in skew_points]
+
+
+# ==============================================================================
+# AJUSTE ESTÁTICO DE BE
+# ==============================================================================
+
+def apply_global_be_offsets(be_points: list[float]) -> list[float]:
+    """
+    Aplica corrección fija y global SOLO a los breakevens detectados.
+    No modifica la curva ni el max profit.
+    """
+    if not be_points:
+        return []
+
+    be_points = sorted([float(x) for x in be_points])
+
+    if len(be_points) == 1:
+        return [round(be_points[0] + GLOBAL_BE_LOWER_OFFSET, 2)]
+
+    adjusted = []
+    for i, be in enumerate(be_points):
+        if i == 0:
+            adjusted.append(round(be + GLOBAL_BE_LOWER_OFFSET, 2))
+        elif i == len(be_points) - 1:
+            adjusted.append(round(be + GLOBAL_BE_UPPER_OFFSET, 2))
+        else:
+            adjusted.append(round(be, 2))
+
+    return adjusted
 
 
 # ==============================================================================
@@ -366,8 +397,13 @@ def build_risk_profile_figure(
     skew_short: Optional[list] = None,
     skew_long: Optional[list] = None,
     use_sticky_skew: bool = True,
-) -> tuple[go.Figure, list[float]]:
-
+) -> tuple[go.Figure, list[float], list[float]]:
+    """
+    Returns:
+      fig
+      be_raw_points      -> BE matemáticos del modelo
+      be_adjusted_points -> BE ajustados con offset global fijo
+    """
     width_init = max(K * 0.18, 600)
     S_init = np.linspace(K - width_init, K + width_init, 1200)
 
@@ -448,16 +484,17 @@ def build_risk_profile_figure(
         line=dict(color="#ef5350", width=1, dash="dot"),
     )
 
-    be_points = []
+    be_raw_points = []
     for idx in np.where(np.diff(np.sign(pl_target)) != 0)[0]:
         x0, x1 = S_range[idx], S_range[idx + 1]
         y0, y1 = pl_target[idx], pl_target[idx + 1]
         if y1 != y0:
-            be_points.append(float(round(x0 - y0 * (x1 - x0) / (y1 - y0), 2)))
+            be_raw_points.append(float(round(x0 - y0 * (x1 - x0) / (y1 - y0), 2)))
 
-    be_points = sorted(be_points)
+    be_raw_points = sorted(be_raw_points)
+    be_adjusted_points = apply_global_be_offsets(be_raw_points)
 
-    for i, be in enumerate(be_points):
+    for i, be in enumerate(be_adjusted_points):
         fig.add_vline(
             x=be,
             line=dict(color="#ef5350", width=1, dash="longdash"),
@@ -505,7 +542,7 @@ def build_risk_profile_figure(
         height=560,
     )
 
-    return fig, be_points
+    return fig, be_raw_points, be_adjusted_points
 
 
 # ==============================================================================
@@ -718,6 +755,8 @@ def render_risk_profile(
             f"<div style='background:#0d1a0d; border:1px solid #1a3a5c; border-radius:6px; "
             f"padding:8px 12px; margin-top:4px; font-size:0.85em;'>"
             f"<span style='color:#aaa;'>Motor: <b style='color:white;'>BS2002 + Sticky Skew</b></span><br>"
+            f"<span style='color:#aaa;'>Ajuste BE fijo: <b style='color:white;'>"
+            f"Inferior {GLOBAL_BE_LOWER_OFFSET:+.0f} · Superior {GLOBAL_BE_UPPER_OFFSET:+.0f}</b></span><br>"
             f"<span style='color:#aaa;'>Skew short: <b style='color:white;'>{len(skew_short)} puntos</b></span><br>"
             f"<span style='color:#aaa;'>Skew long: <b style='color:white;'>{len(skew_long)} puntos</b></span><br>"
             f"<span style='font-size:1.2em; font-weight:bold; color:#ffb74d;'>"
@@ -757,7 +796,7 @@ def render_risk_profile(
 
     target_fecha_str = target_date.isoformat()
 
-    fig, be_points = build_risk_profile_figure(
+    fig, be_raw_points, be_adjusted_points = build_risk_profile_figure(
         S_current=S_input,
         K=K,
         T_short=T_short,
@@ -793,8 +832,11 @@ def render_risk_profile(
     max_pl_val   = float(pl_target_full[max_idx])
     max_pl_price = float(S_full[max_idx])
 
-    be_lower = be_points[0]  if len(be_points) >= 1 else None
-    be_upper = be_points[-1] if len(be_points) >= 2 else None
+    be_lower_raw = be_raw_points[0]  if len(be_raw_points) >= 1 else None
+    be_upper_raw = be_raw_points[-1] if len(be_raw_points) >= 2 else None
+
+    be_lower = be_adjusted_points[0]  if len(be_adjusted_points) >= 1 else None
+    be_upper = be_adjusted_points[-1] if len(be_adjusted_points) >= 2 else None
 
     pl_now = float(calendar_pl_today(
         np.array([S_input]), K, T_short, T_long,
@@ -809,25 +851,30 @@ def render_risk_profile(
     )
 
     st.session_state['te_rp_calc'][idx_registro] = {
-        'be_lower':         be_lower,
-        'be_upper':         be_upper,
-        'be_points':        be_points,
-        'max_profit_price': max_pl_price,
-        'max_profit_pl':    max_pl_val,
-        'pl_now':           pl_now,
-        'spx_usado':        S_input,
-        'debit_usado':      debit,
-        'target_fecha':     target_fecha_str,
-        'K':                K,
-        'T_short':          T_short,
-        'T_long':           T_long,
-        'iv_short':         iv_s,
-        'iv_long':          iv_l,
-        'contracts':        contracts,
-        'option_type':      option_type,
-        'use_sticky_skew':  use_sticky_skew,
-        'skew_short':       skew_short,
-        'skew_long':        skew_long,
+        'be_lower':             be_lower,
+        'be_upper':             be_upper,
+        'be_points':            be_adjusted_points,
+        'be_lower_raw':         be_lower_raw,
+        'be_upper_raw':         be_upper_raw,
+        'be_points_raw':        be_raw_points,
+        'max_profit_price':     max_pl_price,
+        'max_profit_pl':        max_pl_val,
+        'pl_now':               pl_now,
+        'spx_usado':            S_input,
+        'debit_usado':          debit,
+        'target_fecha':         target_fecha_str,
+        'K':                    K,
+        'T_short':              T_short,
+        'T_long':               T_long,
+        'iv_short':             iv_s,
+        'iv_long':              iv_l,
+        'contracts':            contracts,
+        'option_type':          option_type,
+        'use_sticky_skew':      use_sticky_skew,
+        'skew_short':           skew_short,
+        'skew_long':            skew_long,
+        'global_be_lower_off':  GLOBAL_BE_LOWER_OFFSET,
+        'global_be_upper_off':  GLOBAL_BE_UPPER_OFFSET,
     }
 
     col_be1, col_be2, col_mp, col_pl = st.columns(4)
@@ -839,6 +886,8 @@ def render_risk_profile(
             delta=f" ({be_lower - S_input:+,.0f} pts)" if be_lower is not None else None,
             delta_color="inverse",
         )
+        if be_lower_raw is not None:
+            st.caption(f"Modelo: {be_lower_raw:,.0f} · Ajustado: {be_lower:,.0f}")
 
     with col_be2:
         st.metric(
@@ -846,6 +895,8 @@ def render_risk_profile(
             f"{be_upper:,.0f}" if be_upper is not None else "—",
             delta=f" ({be_upper - S_input:+,.0f} pts)" if be_upper is not None else None,
         )
+        if be_upper_raw is not None:
+            st.caption(f"Modelo: {be_upper_raw:,.0f} · Ajustado: {be_upper:,.0f}")
 
     with col_mp:
         st.metric("🎯 Max Profit Price", f"{max_pl_price:,.0f}")
