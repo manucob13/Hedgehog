@@ -11,8 +11,8 @@ from utils.utils_schwab import (
     connect_to_schwab,
     get_current_price_schwab,
 )
-from utils.risk_profile import seccion_risk_profile  # ← NUEVO
-from utils.github_storage import cargar_calendars_csv, guardar_calendars_csv  # ← NUEVO
+from utils.risk_profile import seccion_risk_profile
+from utils.github_storage import cargar_calendars_csv, guardar_calendars_csv
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 # st.set_page_config(page_title="📊 TE Op 60DTE", layout="wide")
@@ -33,8 +33,11 @@ def inicializar_session_state():
         'te_order_preview':          False,
         'te_order_df':               None,
         'te_calendar_registros':     [],
-        'te_rp_mids_refrescados':    {},   # ← NUEVO: {idx: {'mid_short': x, 'mid_long': y, 'spx': z}}
-        'te_csv_cargado':            False,  # ← si ya cargamos el CSV de GitHub al arrancar
+        'te_rp_mids_refrescados':    {},
+        'te_csv_cargado':            False,
+        'te_modo':                   None,   # 'trading' | 'visualizar'
+        'te_viz_client':             None,   # cliente Schwab solo para modo visualización
+        'te_viz_precio_spx':         None,   # precio SPX en modo visualización
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -105,6 +108,24 @@ def conectar_y_obtener_expiraciones():
     return True
 
 
+def conectar_solo_precio():
+    """Conexión mínima para modo visualización: solo cliente + precio SPX."""
+    with st.spinner("🔌 Conectando con Schwab..."):
+        client = connect_to_schwab()
+    if client is None:
+        st.error("❌ No se pudo conectar con Schwab.")
+        return False
+    st.session_state['te_viz_client'] = client
+
+    with st.spinner("📡 Obteniendo precio del SPX..."):
+        precio = get_current_price_schwab(client, "SPX")
+    if precio is None:
+        st.error("❌ No se pudo obtener el precio del SPX.")
+        return False
+    st.session_state['te_viz_precio_spx'] = precio
+    return True
+
+
 # ==============================================================================
 # PASO 2 — Bajar cadena para una fecha (±1 día)
 # ==============================================================================
@@ -131,7 +152,6 @@ def cargar_cadena_para_fecha(client, fecha_str):
 # ==============================================================================
 
 def limpiar_greek(valor):
-    """Convierte -999 (sin datos) a None."""
     if valor is None:
         return None
     try:
@@ -142,12 +162,6 @@ def limpiar_greek(valor):
 
 
 def parsear_cadena_atm(chain_data, fecha_str, precio_spx, n_strikes=1, strike_atm_fijo=None):
-    """
-    Extrae puts Y calls para una fecha, limitado a ATM ±n_strikes.
-    strike_atm_fijo: si se pasa, se usa ese strike como centro en lugar de
-                     calcular el más cercano (garantiza consistencia entre patas).
-    Retorna (df_puts, df_calls).
-    """
     def extraer(exp_map):
         rows = []
         for date_key, strikes_dict in exp_map.items():
@@ -176,9 +190,7 @@ def parsear_cadena_atm(chain_data, fecha_str, precio_spx, n_strikes=1, strike_at
         if not rows:
             return pd.DataFrame()
         df = pd.DataFrame(rows).sort_values('Strike').reset_index(drop=True)
-
         centro = strike_atm_fijo if strike_atm_fijo is not None else round(precio_spx / 5) * 5
-
         distancias = (df['Strike'] - centro).abs()
         atm_idx = int(distancias.idxmin())
         idx_min = max(0, atm_idx - n_strikes)
@@ -202,7 +214,6 @@ def highlight_atm(df, precio_spx):
 
 
 def mostrar_tabla_cadena(df_puts, df_calls, precio_spx, label):
-    """Muestra puts y calls en tabs para una pata."""
     if (df_puts is None or df_puts.empty) and (df_calls is None or df_calls.empty):
         return
     tab_p, tab_c = st.tabs(["📉 Puts", "📈 Calls"])
@@ -291,15 +302,10 @@ def bloque_cadena(pata, key_fecha, key_df_puts, key_df_calls,
 
 
 # ==============================================================================
-# NUEVO — Refresca mids de un registro consultando Schwab
+# Refresca mids de un registro consultando Schwab
 # ==============================================================================
 
 def refrescar_mids_desde_schwab(client, registro, precio_spx_live):
-    """
-    Para un registro del 2.4, descarga las cadenas short y long desde Schwab,
-    extrae el mid del strike registrado y devuelve un dict con los valores frescos.
-    Retorna None si falla alguna pata.
-    """
     try:
         K           = float(registro.get("Strike", 0))
         short_fecha = registro.get("Short Fecha", "")
@@ -311,7 +317,6 @@ def refrescar_mids_desde_schwab(client, registro, precio_spx_live):
 
     resultado = {}
 
-    # ---- Pata SHORT ----
     with st.spinner(f"📡 Refrescando SHORT {short_fecha} · Strike {K:,.0f}..."):
         chain_short = cargar_cadena_para_fecha(client, short_fecha)
     if chain_short is None:
@@ -319,8 +324,7 @@ def refrescar_mids_desde_schwab(client, registro, precio_spx_live):
 
     df_s_puts, df_s_calls = parsear_cadena_atm(
         chain_short, short_fecha, precio_spx_live,
-        n_strikes=3,           # más strikes para asegurar que K esté incluido
-        strike_atm_fijo=K
+        n_strikes=3, strike_atm_fijo=K
     )
     df_ref_s = df_s_puts if option_type == "PUT" else df_s_calls
     mid_s = None
@@ -336,7 +340,6 @@ def refrescar_mids_desde_schwab(client, registro, precio_spx_live):
         return None
     resultado['mid_short'] = mid_s
 
-    # ---- Pata LONG ----
     with st.spinner(f"📡 Refrescando LONG {long_fecha} · Strike {K:,.0f}..."):
         chain_long = cargar_cadena_para_fecha(client, long_fecha)
     if chain_long is None:
@@ -344,8 +347,7 @@ def refrescar_mids_desde_schwab(client, registro, precio_spx_live):
 
     df_l_puts, df_l_calls = parsear_cadena_atm(
         chain_long, long_fecha, precio_spx_live,
-        n_strikes=3,
-        strike_atm_fijo=K
+        n_strikes=3, strike_atm_fijo=K
     )
     df_ref_l = df_l_puts if option_type == "PUT" else df_l_calls
     mid_l = None
@@ -359,11 +361,232 @@ def refrescar_mids_desde_schwab(client, registro, precio_spx_live):
     if mid_l is None:
         st.warning(f"⚠️ No se encontró el strike {K:,.0f} en la cadena LONG para {long_fecha}.")
         return None
-    resultado['mid_long']        = mid_l
-    resultado['spx_al_refrescar'] = precio_spx_live
-    resultado['timestamp']        = datetime.now().strftime("%H:%M:%S")
+    resultado['mid_long']          = mid_l
+    resultado['spx_al_refrescar']  = precio_spx_live
+    resultado['timestamp']         = datetime.now().strftime("%H:%M:%S")
 
     return resultado
+
+
+# ==============================================================================
+# BLOQUE 2.4 + 2.5 — compartido entre modo trading y modo visualización
+# ==============================================================================
+
+def bloque_registro_y_risk_profile(precio_spx, client, registros):
+    """
+    Renderiza la sección 2.4 (tabla de registros) y 2.5 (Risk Profile).
+    Se usa tanto en modo trading como en modo visualización.
+    precio_spx : precio SPX disponible (puede ser None si no hay conexión)
+    client     : cliente Schwab (puede ser None si no hay conexión)
+    """
+
+    # =========================================================================
+    # 2.4 — REGISTRO DE CALENDARS
+    # =========================================================================
+    st.header("2.4 Registro de Calendars")
+
+    col_gh1, col_gh2 = st.columns([1, 3])
+    with col_gh1:
+        if st.button("📂 Recargar desde GitHub", use_container_width=True, key="btn_recargar_gh"):
+            with st.spinner("📂 Cargando desde GitHub..."):
+                registros_gh = cargar_calendars_csv()
+            if registros_gh:
+                st.session_state['te_calendar_registros'] = registros_gh
+                st.success(f"✅ {len(registros_gh)} posiciones cargadas desde GitHub.")
+                st.rerun()
+            else:
+                st.info("ℹ️ No hay posiciones guardadas en GitHub todavía.")
+    with col_gh2:
+        st.caption("Los registros se guardan automáticamente en `utils/data/calendars_TE.csv` del repo.")
+
+    if not registros:
+        st.info("ℹ️ Todavía no registraste ningún calendar.")
+    else:
+        df_reg = pd.DataFrame(registros)
+
+        def highlight_last(row):
+            if row.name == len(df_reg) - 1:
+                return ['background-color: #1a3a5c; color: white'] * len(row)
+            return [''] * len(row)
+
+        st.dataframe(
+            df_reg.style.apply(highlight_last, axis=1),
+            hide_index=True,
+            use_container_width=True
+        )
+        st.caption(f"Total registros: {len(registros)}")
+
+        col_dl, col_clear = st.columns([2, 1])
+        with col_dl:
+            csv = df_reg.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Exportar CSV",
+                data=csv,
+                file_name=f"calendars_TE_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv"
+            )
+        with col_clear:
+            if st.button("🗑️ Limpiar Registro", use_container_width=True):
+                st.session_state['te_calendar_registros'] = []
+                st.session_state['te_csv_cargado'] = False
+                with st.spinner("🗑️ Limpiando en GitHub..."):
+                    guardar_calendars_csv([])
+                st.rerun()
+
+    st.markdown("---")
+
+    # =========================================================================
+    # 2.5 — RISK PROFILE
+    # =========================================================================
+    st.header("2.5 Risk Profile — Calendar Spread")
+
+    if not registros:
+        st.info("ℹ️ Registrá un calendar en el punto 2.4 para ver el Risk Profile.")
+        return
+
+    # Selector de registro
+    if len(registros) == 1:
+        idx_reg = 0
+    else:
+        opciones_reg = [
+            f"#{i+1} · Strike {r.get('Strike','')} · "
+            f"{r.get('Short Fecha','')} / {r.get('Long Fecha','')} · "
+            f"{r.get('Timestamp','')}"
+            for i, r in enumerate(registros)
+        ]
+        sel = st.selectbox(
+            "Seleccioná el calendar:",
+            options=opciones_reg,
+            key="rp_selector_25"
+        )
+        idx_reg = opciones_reg.index(sel)
+
+    registro_sel = registros[idx_reg]
+
+    # ------------------------------------------------------------------
+    # Bloque de conexión Schwab (aplica a ambos modos)
+    # En modo trading el client ya existe; en modo visualización
+    # se ofrece un botón de conexión mínima (solo precio SPX).
+    # ------------------------------------------------------------------
+    client_activo  = client or st.session_state.get('te_viz_client')
+    precio_activo  = precio_spx or st.session_state.get('te_viz_precio_spx')
+
+    if client_activo is None:
+        st.markdown(
+            "<div style='background:#1a1a0d; border:1px solid #ffc107; border-radius:6px; "
+            "padding:10px 16px; margin-bottom:12px;'>"
+            "<span style='color:#ffc107; font-weight:bold;'>⚡ Conectá a Schwab para actualizar el gráfico con precios reales</span><br>"
+            "<span style='color:#aaa; font-size:0.85em;'>Sin conexión el Risk Profile usa los mids guardados al momento del registro.</span>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        col_conn, _ = st.columns([1, 3])
+        with col_conn:
+            if st.button("🔌 Conectar a Schwab", type="primary",
+                         use_container_width=True, key="btn_viz_conectar"):
+                if conectar_solo_precio():
+                    client_activo = st.session_state['te_viz_client']
+                    precio_activo = st.session_state['te_viz_precio_spx']
+                    st.success(f"✅ Conectado · SPX: {precio_activo:,.2f}")
+                    st.rerun()
+    else:
+        # Mostrar precio activo y botón para refrescarlo
+        col_spx_info, col_spx_btn = st.columns([3, 1])
+        with col_spx_info:
+            if precio_activo:
+                st.markdown(
+                    f"<div style='background:#0d1a0d; border:1px solid #1a5c1a; border-radius:5px; "
+                    f"padding:6px 14px; display:inline-block; font-size:0.9em;'>"
+                    f"📈 <b style='color:#ffc107;'>SPX: {precio_activo:,.2f}</b>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+        with col_spx_btn:
+            if st.button("🔄 Actualizar SPX", use_container_width=True, key="btn_actualizar_spx"):
+                with st.spinner("📡 Actualizando precio SPX..."):
+                    precio_nuevo = get_current_price_schwab(client_activo, "SPX")
+                if precio_nuevo:
+                    # Actualizar en el estado correcto según el modo
+                    if st.session_state.get('te_modo') == 'trading':
+                        st.session_state['te_operar_precio_spx'] = precio_nuevo
+                    else:
+                        st.session_state['te_viz_precio_spx'] = precio_nuevo
+                    precio_activo = precio_nuevo
+                    st.rerun()
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ------------------------------------------------------------------
+    # Botón Refrescar Mids desde Schwab
+    # ------------------------------------------------------------------
+    col_btn_r, col_info_r = st.columns([1, 3])
+
+    with col_btn_r:
+        btn_disabled = client_activo is None
+        if st.button(
+            "🔄 Refrescar Mids desde Schwab",
+            type="primary",
+            use_container_width=True,
+            key="btn_refrescar_mids",
+            disabled=btn_disabled,
+            help="Conectate a Schwab primero para refrescar los mids" if btn_disabled else None,
+        ):
+            with st.spinner("📡 Actualizando precio SPX..."):
+                precio_fresco = get_current_price_schwab(client_activo, "SPX")
+            if precio_fresco:
+                if st.session_state.get('te_modo') == 'trading':
+                    st.session_state['te_operar_precio_spx'] = precio_fresco
+                else:
+                    st.session_state['te_viz_precio_spx'] = precio_fresco
+                precio_activo = precio_fresco
+
+            mids = refrescar_mids_desde_schwab(client_activo, registro_sel, precio_activo)
+            if mids:
+                st.session_state['te_rp_mids_refrescados'][idx_reg] = mids
+                st.success(
+                    f"✅ Refrescado a las {mids['timestamp']} · "
+                    f"SPX: {precio_activo:,.2f} · "
+                    f"Mid Short: {mids['mid_short']} · "
+                    f"Mid Long: {mids['mid_long']}"
+                )
+
+    mids_frescos = st.session_state['te_rp_mids_refrescados'].get(idx_reg)
+
+    with col_info_r:
+        if mids_frescos:
+            ts_r  = mids_frescos.get('timestamp', '')
+            spx_r = mids_frescos.get('spx_al_refrescar', precio_activo)
+            ms    = mids_frescos.get('mid_short', '-')
+            ml    = mids_frescos.get('mid_long',  '-')
+            bs    = mids_frescos.get('bid_short', '-')
+            as_   = mids_frescos.get('ask_short', '-')
+            bl    = mids_frescos.get('bid_long',  '-')
+            al    = mids_frescos.get('ask_long',  '-')
+            st.markdown(
+                f"<div style='background:#0d1a0d; border:1px solid #1a5c1a; border-radius:6px; "
+                f"padding:8px 14px; font-size:0.85em; color:#aaa;'>"
+                f"⏱ Último refresco: <b style='color:white'>{ts_r}</b> · "
+                f"SPX: <b style='color:#ffc107'>{spx_r:,.2f}</b><br>"
+                f"SHORT — Bid: {bs} | Ask: {as_} | "
+                f"<b style='color:#ef9a9a'>Mid: {ms}</b> &nbsp;·&nbsp; "
+                f"LONG — Bid: {bl} | Ask: {al} | "
+                f"<b style='color:#a5d6a7'>Mid: {ml}</b>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            if client_activo:
+                st.caption("Sin refresco aún — presioná 'Refrescar Mids' para actualizar con precios reales.")
+            else:
+                st.caption("Sin refresco aún — el Risk Profile usa los mids del momento de registro.")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    seccion_risk_profile(
+        precio_spx_live  = precio_activo,
+        mids_refrescados = mids_frescos,
+        idx_registro     = idx_reg,
+    )
 
 
 # ==============================================================================
@@ -381,7 +604,7 @@ def main():
 
     inicializar_session_state()
 
-    # ── Carga automática del CSV de GitHub al arrancar (solo una vez) ──────────
+    # ── Carga automática del CSV de GitHub al arrancar (solo una vez) ─────────
     if not st.session_state.get('te_csv_cargado'):
         with st.spinner("📂 Cargando posiciones guardadas desde GitHub..."):
             registros_gh = cargar_calendars_csv()
@@ -390,11 +613,56 @@ def main():
             st.session_state['te_csv_cargado'] = True
             st.toast(f"✅ {len(registros_gh)} posiciones cargadas desde GitHub", icon="📂")
         else:
-            st.session_state['te_csv_cargado'] = True  # no hay CSV aún, no volver a intentar
+            st.session_state['te_csv_cargado'] = True
+
+    registros = st.session_state.get('te_calendar_registros', [])
 
     # =========================================================================
-    # 2.1 — CONEXIÓN
+    # SELECTOR DE MODO — aparece siempre al inicio
     # =========================================================================
+    modo_opciones = {
+        "📊 Solo visualizar posiciones": "visualizar",
+        "⚡ Modo trading (conectar a Schwab y operar)": "trading",
+    }
+
+    # Pre-seleccionar según el estado actual
+    modo_actual = st.session_state.get('te_modo')
+    idx_default = 0 if modo_actual != 'trading' else 1
+
+    modo_label = st.radio(
+        "¿Qué querés hacer?",
+        options=list(modo_opciones.keys()),
+        index=idx_default,
+        horizontal=True,
+        key="te_modo_radio",
+    )
+    modo = modo_opciones[modo_label]
+    st.session_state['te_modo'] = modo
+
+    st.markdown("---")
+
+    # =========================================================================
+    # MODO VISUALIZACIÓN
+    # =========================================================================
+    if modo == "visualizar":
+        if registros:
+            n = len(registros)
+            st.success(f"📂 {n} posición{'es' if n > 1 else ''} cargada{'s' if n > 1 else ''} desde GitHub.")
+        else:
+            st.info("ℹ️ No hay posiciones guardadas. Podés recargar desde GitHub en la sección 2.4.")
+
+        bloque_registro_y_risk_profile(
+            precio_spx = st.session_state.get('te_viz_precio_spx'),
+            client     = st.session_state.get('te_viz_client'),
+            registros  = registros,
+        )
+        return
+
+    # =========================================================================
+    # MODO TRADING
+    # =========================================================================
+
+    # 2.1 — CONEXIÓN
     st.header("2.1 Conexión y Fechas Disponibles")
 
     col1, col2 = st.columns([2, 1])
@@ -428,35 +696,38 @@ def main():
 
     if not expiraciones or client is None:
         st.info("ℹ️ Primero conectate y escaneá las expiraciones.")
+        # Aun sin conexión completa mostramos 2.4 y 2.5 con lo que hay
+        bloque_registro_y_risk_profile(
+            precio_spx = precio_spx,
+            client     = client,
+            registros  = registros,
+        )
         return
 
-    # =========================================================================
-    # 2.2 — CADENAS: SHORT (near) y LONG (far)
-    # =========================================================================
+    # 2.2 — CADENAS
     st.header("2.2 Cadenas — Short y Long")
     st.caption("Cada pata muestra Puts y Calls · ATM ±1 strike · Strike azul = ATM")
 
     col_s, col_l = st.columns(2)
-
     strike_atm_global = round(precio_spx / 5) * 5
 
     with col_s:
         st.markdown("### 📤 Short")
         df_short_puts, df_short_calls, fecha_short = bloque_cadena(
-            pata           = 'SHORT',
-            key_fecha      = 'te_short_fecha_cargada',
-            key_df_puts    = 'te_short_df_puts',
-            key_df_calls   = 'te_short_df_calls',
-            expiraciones   = expiraciones,
-            client         = client,
-            precio_spx     = precio_spx,
-            color_header   = '#8B0000',
-            dte_referencia = None,
-            strike_atm_fijo= strike_atm_global
+            pata            = 'SHORT',
+            key_fecha       = 'te_short_fecha_cargada',
+            key_df_puts     = 'te_short_df_puts',
+            key_df_calls    = 'te_short_df_calls',
+            expiraciones    = expiraciones,
+            client          = client,
+            precio_spx      = precio_spx,
+            color_header    = '#8B0000',
+            dte_referencia  = None,
+            strike_atm_fijo = strike_atm_global
         )
 
     hoy = date.today()
-    dte_short_ref = None
+    dte_short_ref   = None
     fecha_short_sel = st.session_state.get('te_sel_fecha_short', '')
     if fecha_short_sel:
         f_str = fecha_short_sel.split(" ")[0]
@@ -473,35 +744,35 @@ def main():
     with col_l:
         st.markdown("### 📥 Long")
         df_long_puts, df_long_calls, fecha_long = bloque_cadena(
-            pata           = 'LONG',
-            key_fecha      = 'te_long_fecha_cargada',
-            key_df_puts    = 'te_long_df_puts',
-            key_df_calls   = 'te_long_df_calls',
-            expiraciones   = expiraciones,
-            client         = client,
-            precio_spx     = precio_spx,
-            color_header   = '#1a5c1a',
-            dte_referencia = dte_short_ref,
-            strike_atm_fijo= strike_atm_global
+            pata            = 'LONG',
+            key_fecha       = 'te_long_fecha_cargada',
+            key_df_puts     = 'te_long_df_puts',
+            key_df_calls    = 'te_long_df_calls',
+            expiraciones    = expiraciones,
+            client          = client,
+            precio_spx      = precio_spx,
+            color_header    = '#1a5c1a',
+            dte_referencia  = dte_short_ref,
+            strike_atm_fijo = strike_atm_global
         )
 
     st.markdown("---")
 
-    # =========================================================================
     # 2.3 — CONFIGURAR ORDEN
-    # =========================================================================
     st.header("2.3 Configurar Orden")
 
-    cadena_short_ok = (df_short_puts is not None and not df_short_puts.empty) or \
+    cadena_short_ok = (df_short_puts  is not None and not df_short_puts.empty)  or \
                       (df_short_calls is not None and not df_short_calls.empty)
-    cadena_long_ok  = (df_long_puts  is not None and not df_long_puts.empty)  or \
-                      (df_long_calls is not None and not df_long_calls.empty)
+    cadena_long_ok  = (df_long_puts   is not None and not df_long_puts.empty)   or \
+                      (df_long_calls  is not None and not df_long_calls.empty)
 
     if not cadena_short_ok:
         st.info("ℹ️ Cargá la cadena **Short** arriba para configurar la orden.")
+        bloque_registro_y_risk_profile(precio_spx, client, registros)
         return
     if not cadena_long_ok:
         st.info("ℹ️ Cargá la cadena **Long** arriba para configurar la orden.")
+        bloque_registro_y_risk_profile(precio_spx, client, registros)
         return
 
     strikes_short_raw = sorted(set(
@@ -530,8 +801,7 @@ def main():
     with col_front:
         st.markdown(f"### 📤 Short — `{fecha_short}`")
         st.markdown("---")
-
-        tipo_short = st.selectbox("Tipo de Opción SHORT", ["PUT", "CALL"], index=0, key='orden_tipo_short')
+        tipo_short   = st.selectbox("Tipo de Opción SHORT", ["PUT", "CALL"], index=0, key='orden_tipo_short')
         accion_short = st.selectbox("Acción SHORT", ["SELL", "BUY"], index=0, key='orden_accion_short')
         strike_short_label = st.selectbox(
             "Strike SHORT",
@@ -541,7 +811,7 @@ def main():
         )
         strike_short_val = float(strike_short_label.replace(",", ""))
 
-        df_ref_short = df_short_puts if tipo_short == "PUT" else df_short_calls
+        df_ref_short  = df_short_puts if tipo_short == "PUT" else df_short_calls
         mid_ref_short = 0.0
         if df_ref_short is not None and not df_ref_short.empty:
             fila = df_ref_short[df_ref_short['Strike'] == strike_short_val]
@@ -571,8 +841,7 @@ def main():
     with col_back:
         st.markdown(f"### 📥 Long — `{fecha_long}`")
         st.markdown("---")
-
-        tipo_long = st.selectbox("Tipo de Opción LONG", ["PUT", "CALL"], index=0, key='orden_tipo_long')
+        tipo_long   = st.selectbox("Tipo de Opción LONG", ["PUT", "CALL"], index=0, key='orden_tipo_long')
         accion_long = st.selectbox("Acción LONG", ["BUY", "SELL"], index=0, key='orden_accion_long')
         strike_long_label = st.selectbox(
             "Strike LONG",
@@ -582,7 +851,7 @@ def main():
         )
         strike_long_val = float(strike_long_label.replace(",", ""))
 
-        df_ref_long = df_long_puts if tipo_long == "PUT" else df_long_calls
+        df_ref_long  = df_long_puts if tipo_long == "PUT" else df_long_calls
         mid_ref_long = 0.0
         if df_ref_long is not None and not df_ref_long.empty:
             fila = df_ref_long[df_ref_long['Strike'] == strike_long_val]
@@ -618,9 +887,9 @@ def main():
         )
 
     with col_debito:
-        debito = round(mid_long_input - mid_short_input, 2)
+        debito       = round(mid_long_input - mid_short_input, 2)
         color_debito = "#ffb74d" if debito > 0 else "#ef5350"
-        signo = "DÉBITO" if debito > 0 else "CRÉDITO"
+        signo        = "DÉBITO" if debito > 0 else "CRÉDITO"
         st.markdown(
             f"<div style='padding:12px; background:#1a1a2e; border-radius:6px; margin-top:8px;'>"
             f"<span style='font-size:0.9em; color:#aaa;'>Resultado neto ({signo})</span><br>"
@@ -671,24 +940,23 @@ def main():
         with col_reg:
             if st.button("✅ Registrar este Calendar", type="primary", use_container_width=True):
                 registro = {
-                    'Timestamp':      datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    'SPX al abrir':   f"{precio_spx:,.2f}",
-                    'Strike':         int(strike_short_val),
-                    'Short Tipo':     tipo_short,
-                    'Short Acción':   accion_short,
-                    'Short Fecha':    fecha_short,
-                    'Short Mid':      mid_short_input,
-                    'Long Tipo':      tipo_long,
-                    'Long Acción':    accion_long,
-                    'Long Fecha':     fecha_long,
-                    'Long Mid':       mid_long_input,
-                    f'{signo}':       abs(debito),
-                    'Total ($)':      round(abs(debito) * 100 * cantidad, 2),
-                    'Contratos':      cantidad,
+                    'Timestamp':    datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    'SPX al abrir': f"{precio_spx:,.2f}",
+                    'Strike':       int(strike_short_val),
+                    'Short Tipo':   tipo_short,
+                    'Short Acción': accion_short,
+                    'Short Fecha':  fecha_short,
+                    'Short Mid':    mid_short_input,
+                    'Long Tipo':    tipo_long,
+                    'Long Acción':  accion_long,
+                    'Long Fecha':   fecha_long,
+                    'Long Mid':     mid_long_input,
+                    f'{signo}':     abs(debito),
+                    'Total ($)':    round(abs(debito) * 100 * cantidad, 2),
+                    'Contratos':    cantidad,
                 }
                 st.session_state['te_calendar_registros'].append(registro)
                 st.session_state['te_order_preview'] = False
-                # Guardar en GitHub
                 with st.spinner("💾 Guardando en GitHub..."):
                     ok = guardar_calendars_csv(st.session_state['te_calendar_registros'])
                 if ok:
@@ -704,158 +972,8 @@ def main():
 
     st.markdown("---")
 
-    # =========================================================================
-    # 2.4 — REGISTRO DE CALENDARS
-    # =========================================================================
-    st.header("2.4 Registro de Calendars")
-
-    # Botón manual para recargar desde GitHub en cualquier momento
-    col_gh1, col_gh2 = st.columns([1, 3])
-    with col_gh1:
-        if st.button("📂 Recargar desde GitHub", use_container_width=True, key="btn_recargar_gh"):
-            with st.spinner("📂 Cargando desde GitHub..."):
-                registros_gh = cargar_calendars_csv()
-            if registros_gh:
-                st.session_state['te_calendar_registros'] = registros_gh
-                st.success(f"✅ {len(registros_gh)} posiciones cargadas desde GitHub.")
-                st.rerun()
-            else:
-                st.info("ℹ️ No hay posiciones guardadas en GitHub todavía.")
-    with col_gh2:
-        st.caption("Los registros se guardan automáticamente en `utils/data/calendars_TE.csv` del repo.")
-
-    registros = st.session_state.get('te_calendar_registros', [])
-
-    if not registros:
-        st.info("ℹ️ Todavía no registraste ningún calendar.")
-    else:
-        df_reg = pd.DataFrame(registros)
-
-        def highlight_last(row):
-            if row.name == len(df_reg) - 1:
-                return ['background-color: #1a3a5c; color: white'] * len(row)
-            return [''] * len(row)
-
-        st.dataframe(
-            df_reg.style.apply(highlight_last, axis=1),
-            hide_index=True,
-            use_container_width=True
-        )
-        st.caption(f"Total registros: {len(registros)}")
-
-        col_dl, col_clear = st.columns([2, 1])
-        with col_dl:
-            csv = df_reg.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Exportar CSV",
-                data=csv,
-                file_name=f"calendars_TE_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv"
-            )
-        with col_clear:
-            if st.button("🗑️ Limpiar Registro", use_container_width=True):
-                st.session_state['te_calendar_registros'] = []
-                st.session_state['te_csv_cargado'] = False
-                with st.spinner("🗑️ Limpiando en GitHub..."):
-                    guardar_calendars_csv([])
-                st.rerun()
-
-    st.markdown("---")
-
-    # =========================================================================
-    # 2.5 — RISK PROFILE                                          ← NUEVO
-    # =========================================================================
-    st.header("2.5 Risk Profile — Calendar Spread")
-
-    if not registros:
-        st.info("ℹ️ Registrá un calendar en el punto 2.4 para ver el Risk Profile.")
-        return
-
-    # ------------------------------------------------------------------
-    # Selector de registro (si hay más de uno)
-    # ------------------------------------------------------------------
-    if len(registros) == 1:
-        idx_reg = 0
-    else:
-        opciones_reg = [
-            f"#{i+1} · Strike {r.get('Strike','')} · "
-            f"{r.get('Short Fecha','')} / {r.get('Long Fecha','')} · "
-            f"{r.get('Timestamp','')}"
-            for i, r in enumerate(registros)
-        ]
-        sel = st.selectbox(
-            "Seleccioná el calendar:",
-            options=opciones_reg,
-            key="rp_selector_25"
-        )
-        idx_reg = opciones_reg.index(sel)
-
-    registro_sel = registros[idx_reg]
-
-    # ------------------------------------------------------------------
-    # Botón Refrescar Mids desde Schwab
-    # ------------------------------------------------------------------
-    col_btn_r, col_info_r = st.columns([1, 3])
-
-    with col_btn_r:
-        if st.button("🔄 Refrescar Mids desde Schwab", type="primary",
-                     use_container_width=True, key="btn_refrescar_mids"):
-            # Refresca también el precio SPX
-            with st.spinner("📡 Actualizando precio SPX..."):
-                precio_fresco = get_current_price_schwab(client, "SPX")
-            if precio_fresco:
-                st.session_state['te_operar_precio_spx'] = precio_fresco
-                precio_spx = precio_fresco
-
-            mids = refrescar_mids_desde_schwab(client, registro_sel, precio_spx)
-            if mids:
-                st.session_state['te_rp_mids_refrescados'][idx_reg] = mids
-                st.success(
-                    f"✅ Refrescado a las {mids['timestamp']} · "
-                    f"SPX: {precio_spx:,.2f} · "
-                    f"Mid Short: {mids['mid_short']} · "
-                    f"Mid Long: {mids['mid_long']}"
-                )
-
-    # Mids frescos del registro seleccionado (si existen)
-    mids_frescos = st.session_state['te_rp_mids_refrescados'].get(idx_reg)
-
-    with col_info_r:
-        if mids_frescos:
-            ts_r = mids_frescos.get('timestamp', '')
-            spx_r = mids_frescos.get('spx_al_refrescar', precio_spx)
-            ms    = mids_frescos.get('mid_short', '-')
-            ml    = mids_frescos.get('mid_long',  '-')
-            bs    = mids_frescos.get('bid_short', '-')
-            as_   = mids_frescos.get('ask_short', '-')
-            bl    = mids_frescos.get('bid_long',  '-')
-            al    = mids_frescos.get('ask_long',  '-')
-            st.markdown(
-                f"<div style='background:#0d1a0d; border:1px solid #1a5c1a; border-radius:6px; "
-                f"padding:8px 14px; font-size:0.85em; color:#aaa;'>"
-                f"⏱ Último refresco: <b style='color:white'>{ts_r}</b> · "
-                f"SPX: <b style='color:#ffc107'>{spx_r:,.2f}</b><br>"
-                f"SHORT — Bid: {bs} | Ask: {as_} | "
-                f"<b style='color:#ef9a9a'>Mid: {ms}</b> &nbsp;·&nbsp; "
-                f"LONG — Bid: {bl} | Ask: {al} | "
-                f"<b style='color:#a5d6a7'>Mid: {ml}</b>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-        else:
-            st.caption("Sin refresco aún — el Risk Profile usa los mids del momento de registro.")
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ------------------------------------------------------------------
-    # Llamada a seccion_risk_profile de utils/risk_profile.py
-    # Pasamos precio SPX live y los mids frescos si existen
-    # ------------------------------------------------------------------
-    seccion_risk_profile(
-        precio_spx_live  = precio_spx,
-        mids_refrescados = mids_frescos,   # None si no se refrescó → usa mids del registro
-        idx_registro     = idx_reg,
-    )
+    # 2.4 + 2.5 al final del modo trading
+    bloque_registro_y_risk_profile(precio_spx, client, registros)
 
 
 # ==============================================================================
@@ -863,7 +981,6 @@ def main():
 # ==============================================================================
 
 if __name__ == "__main__":
-
     if check_password():
         main()
     else:
