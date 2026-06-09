@@ -306,64 +306,88 @@ def bloque_cadena(pata, key_fecha, key_df_puts, key_df_calls,
 # ==============================================================================
 
 def refrescar_mids_desde_schwab(client, registro, precio_spx_live):
+
     try:
         K           = float(registro.get("Strike", 0))
         short_fecha = registro.get("Short Fecha", "")
         long_fecha  = registro.get("Long Fecha",  "")
         option_type = str(registro.get("Short Tipo", "PUT")).upper()
     except Exception as e:
-        st.error(f"❌ Error leyendo registro: {e}")
+        st.error(f"Error leyendo registro: {e}")
         return None
 
     resultado = {}
 
-    with st.spinner(f"📡 Refrescando SHORT {short_fecha} · Strike {K:,.0f}..."):
+    # ── Helper: extrae lista [(strike, iv)] del DataFrame de cadena ──────────
+    def _extraer_skew(df):
+        if df is None or df.empty or 'IV' not in df.columns:
+            return []
+        pts = []
+        for _, row in df.iterrows():
+            iv  = row.get('IV')
+            stk = row.get('Strike')
+            if iv is not None and stk is not None and float(iv) > 0:
+                pts.append((float(stk), float(iv)))
+        return sorted(pts, key=lambda x: x[0])
+
+    # ── PATA SHORT ────────────────────────────────────────────────────────────
+    with st.spinner(f"Refrescando SHORT {short_fecha} Strike {K:,.0f}..."):
         chain_short = cargar_cadena_para_fecha(client, short_fecha)
-    if chain_short is None:
-        return None
+        if chain_short is None:
+            return None
 
-    df_s_puts, df_s_calls = parsear_cadena_atm(
-        chain_short, short_fecha, precio_spx_live,
-        n_strikes=3, strike_atm_fijo=K
-    )
-    df_ref_s = df_s_puts if option_type == "PUT" else df_s_calls
-    mid_s = None
-    if df_ref_s is not None and not df_ref_s.empty:
-        fila = df_ref_s[df_ref_s['Strike'] == K]
-        if not fila.empty:
-            mid_s = round(float(fila.iloc[0]['Mid']), 2)
-            resultado['bid_short'] = float(fila.iloc[0]['Bid'])
-            resultado['ask_short'] = float(fila.iloc[0]['Ask'])
+        df_sp, df_sc = parsear_cadena_atm(
+            chain_short, short_fecha, precio_spx_live,
+            nstrikes=4,           # ±4 strikes → 9 puntos de skew
+            strike_atm_fijo=K,
+        )
+        df_refs = df_sp if option_type == "PUT" else df_sc
 
-    if mid_s is None:
-        st.warning(f"⚠️ No se encontró el strike {K:,.0f} en la cadena SHORT para {short_fecha}.")
-        return None
-    resultado['mid_short'] = mid_s
+        if df_refs is None or df_refs.empty:
+            st.warning(f"Sin datos de cadena SHORT para {short_fecha}.")
+            return None
 
-    with st.spinner(f"📡 Refrescando LONG {long_fecha} · Strike {K:,.0f}..."):
+        fila_s = df_refs[df_refs['Strike'] == K]
+        if fila_s.empty:
+            st.warning(f"No se encontró el strike {K:,.0f} en la cadena SHORT para {short_fecha}.")
+            return None
+
+        resultado['mid_short']  = round(float(fila_s.iloc[0]['Mid']), 2)
+        resultado['bid_short']  = float(fila_s.iloc[0]['Bid'])
+        resultado['ask_short']  = float(fila_s.iloc[0]['Ask'])
+        resultado['iv_short']   = float(fila_s.iloc[0]['IV']) if fila_s.iloc[0]['IV'] else None
+        resultado['skew_short'] = _extraer_skew(df_refs)   # ← NUEVO: skew completo
+
+    # ── PATA LONG ─────────────────────────────────────────────────────────────
+    with st.spinner(f"Refrescando LONG {long_fecha} Strike {K:,.0f}..."):
         chain_long = cargar_cadena_para_fecha(client, long_fecha)
-    if chain_long is None:
-        return None
+        if chain_long is None:
+            return None
 
-    df_l_puts, df_l_calls = parsear_cadena_atm(
-        chain_long, long_fecha, precio_spx_live,
-        n_strikes=3, strike_atm_fijo=K
-    )
-    df_ref_l = df_l_puts if option_type == "PUT" else df_l_calls
-    mid_l = None
-    if df_ref_l is not None and not df_ref_l.empty:
-        fila = df_ref_l[df_ref_l['Strike'] == K]
-        if not fila.empty:
-            mid_l = round(float(fila.iloc[0]['Mid']), 2)
-            resultado['bid_long'] = float(fila.iloc[0]['Bid'])
-            resultado['ask_long'] = float(fila.iloc[0]['Ask'])
+        df_lp, df_lc = parsear_cadena_atm(
+            chain_long, long_fecha, precio_spx_live,
+            nstrikes=4,           # ±4 strikes → 9 puntos de skew
+            strike_atm_fijo=K,
+        )
+        df_refl = df_lp if option_type == "PUT" else df_lc
 
-    if mid_l is None:
-        st.warning(f"⚠️ No se encontró el strike {K:,.0f} en la cadena LONG para {long_fecha}.")
-        return None
-    resultado['mid_long']          = mid_l
-    resultado['spx_al_refrescar']  = precio_spx_live
-    resultado['timestamp']         = datetime.now().strftime("%H:%M:%S")
+        if df_refl is None or df_refl.empty:
+            st.warning(f"Sin datos de cadena LONG para {long_fecha}.")
+            return None
+
+        fila_l = df_refl[df_refl['Strike'] == K]
+        if fila_l.empty:
+            st.warning(f"No se encontró el strike {K:,.0f} en la cadena LONG para {long_fecha}.")
+            return None
+
+        resultado['mid_long']   = round(float(fila_l.iloc[0]['Mid']), 2)
+        resultado['bid_long']   = float(fila_l.iloc[0]['Bid'])
+        resultado['ask_long']   = float(fila_l.iloc[0]['Ask'])
+        resultado['iv_long']    = float(fila_l.iloc[0]['IV']) if fila_l.iloc[0]['IV'] else None
+        resultado['skew_long']  = _extraer_skew(df_refl)    # ← NUEVO: skew completo
+
+    resultado['spx_al_refrescar'] = precio_spx_live
+    resultado['timestamp']        = datetime.now().strftime("%H:%M:%S")
 
     return resultado
 
