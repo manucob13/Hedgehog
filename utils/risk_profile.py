@@ -283,7 +283,7 @@ def build_risk_profile_figure(
             tickprefix="$",
             tickformat=",",
         ),
-        height=420,
+        height=560,
     )
 
     return fig
@@ -329,13 +329,8 @@ def build_price_slices(
 
 def render_risk_profile(registro: dict, precio_spx_live: Optional[float] = None):
     """
-    Renderiza el Risk Profile completo para un registro del 2.4.
-
-    Parámetros esperados en `registro` (mismos que genera el 2.4):
-        Timestamp, SPX al abrir, Strike,
-        Short Tipo, Short Fecha, Short Mid,
-        Long Tipo,  Long Fecha,  Long Mid,
-        DÉBITO / CRÉDITO, Total ($), Contratos
+    Renderiza el Risk Profile para un registro del 2.4.
+    Sin Price Slices. Controles editables: mid short/long, net débito, SPX, IV.
     """
     hoy = date.today()
 
@@ -353,18 +348,18 @@ def render_risk_profile(registro: dict, precio_spx_live: Optional[float] = None)
         st.error(f"❌ Error al parsear el registro: {e}")
         return
 
-    # Precio SPX de referencia
     spx_abrir = float(str(registro.get("SPX al abrir", "5000")).replace(",", ""))
     S_current = precio_spx_live if precio_spx_live else spx_abrir
 
     # ---- Mids originales ----
     mid_short_orig = float(registro.get("Short Mid", 0) or 0)
     mid_long_orig  = float(registro.get("Long Mid",  0) or 0)
-    debit_orig     = round(mid_long_orig - mid_short_orig, 2)
 
-    # ---- IV implícita: derivada del mid via BS (aproximación) ----
-    def iv_from_mid(price: float, S: float, K: float, T: float,
-                    r: float, otype: str, fallback: float = 0.17) -> float:
+    # ---- IV del broker si existe, sino calcular via BS ----
+    iv_short_broker = registro.get("Short IV")   # guardado en el registro si viene de Schwab
+    iv_long_broker  = registro.get("Long IV")
+
+    def iv_from_mid(price, S, K, T, r, otype, fallback=0.17):
         if price <= 0 or T <= 0:
             return fallback
         lo, hi = 0.001, 5.0
@@ -381,87 +376,129 @@ def render_risk_profile(registro: dict, precio_spx_live: Optional[float] = None)
 
     r_rate = 0.0375
 
-    iv_short = iv_from_mid(mid_short_orig, spx_abrir, K, T_short, r_rate, option_type, fallback=0.17)
-    iv_long  = iv_from_mid(mid_long_orig,  spx_abrir, K, T_long,  r_rate, option_type, fallback=0.17)
+    iv_short_calc = iv_from_mid(mid_short_orig, spx_abrir, K, T_short, r_rate, option_type, 0.17)
+    iv_long_calc  = iv_from_mid(mid_long_orig,  spx_abrir, K, T_long,  r_rate, option_type, 0.17)
+
+    # Usar IV del broker si disponible, sino la calculada
+    iv_short_base = float(iv_short_broker) / 100 if iv_short_broker else iv_short_calc
+    iv_long_base  = float(iv_long_broker)  / 100 if iv_long_broker  else iv_long_calc
 
     # =========================================================================
     # HEADER
     # =========================================================================
     ts = registro.get("Timestamp", "")
+    dte_s = int(T_short * 365)
+    dte_l = int(T_long  * 365)
     st.markdown(
         f"<div style='background:#0d0d1a; border:1px solid #1a3a5c; border-radius:8px; "
         f"padding:12px 18px; margin-bottom:12px;'>"
         f"<span style='font-size:1.1em; color:#ffc107; font-weight:bold;'>📊 Risk Profile — Calendar {option_type.upper()}</span>"
         f"&nbsp;&nbsp;<span style='color:#888; font-size:0.85em;'>Registrado: {ts}</span>"
-        f"<br><span style='color:#aaa; font-size:0.9em;'>Strike: <b style='color:white'>{K:,.0f}</b>"
-        f" · Short: <b style='color:#ef9a9a'>{short_fecha}</b>"
-        f" · Long: <b style='color:#a5d6a7'>{long_fecha}</b>"
-        f" · Contratos: <b style='color:white'>{contracts}</b></span>"
-        f"</div>",
+        f"<br><span style='color:#aaa; font-size:0.9em;'>"
+        f"Strike: <b style='color:white'>{K:,.0f}</b>"
+        f" · Short: <b style='color:#ef9a9a'>{short_fecha}</b> ({dte_s}d)"
+        f" · Long: <b style='color:#a5d6a7'>{long_fecha}</b> ({dte_l}d)"
+        f" · Contratos: <b style='color:white'>{contracts}</b>"
+        f" · SPX entrada: <b style='color:#ffc107'>{spx_abrir:,.2f}</b>"
+        f"</span></div>",
         unsafe_allow_html=True,
     )
 
     # =========================================================================
-    # CONTROLES EDITABLES
+    # FILA 1: Mid Short | Mid Long | Net Débito (editable) | SPX actual
     # =========================================================================
-    col_s, col_l, col_spx, col_iv = st.columns([1, 1, 1, 1])
+    col_s, col_l, col_net, col_spx = st.columns([1, 1, 1, 1])
 
     with col_s:
         mid_short = st.number_input(
-            "Mid Short (editable)",
-            min_value=0.0,
-            value=float(mid_short_orig),
+            "💰 Mid Short",
+            min_value=0.0, value=float(mid_short_orig),
             step=0.05, format="%.2f",
             key=f"rp_mid_short_{ts}_{K}",
-            help="Modificá el mid del short para re-simular el P/L"
+            help="Mid price pata short — editable para ajustar al precio real de ejecución"
         )
     with col_l:
         mid_long = st.number_input(
-            "Mid Long (editable)",
-            min_value=0.0,
-            value=float(mid_long_orig),
+            "💰 Mid Long",
+            min_value=0.0, value=float(mid_long_orig),
             step=0.05, format="%.2f",
             key=f"rp_mid_long_{ts}_{K}",
+            help="Mid price pata long — editable para ajustar al precio real de ejecución"
+        )
+
+    # Net débito calculado automáticamente pero también editable manualmente
+    debit_auto = round(mid_long - mid_short, 2)
+    with col_net:
+        debit_manual = st.number_input(
+            "📌 Net Débito (fijar)",
+            value=float(debit_auto),
+            step=0.05, format="%.2f",
+            key=f"rp_debit_{ts}_{K}",
+            help="Podés fijar el débito/crédito real pagado independientemente de los mids"
         )
     with col_spx:
         S_input = st.number_input(
-            "SPX precio actual",
-            min_value=1000.0,
-            value=float(S_current),
+            "📈 SPX actual",
+            min_value=1000.0, value=float(S_current),
             step=1.0, format="%.2f",
             key=f"rp_spx_{ts}_{K}",
         )
-    with col_iv:
+
+    # Usar el débito manual como base del P/L
+    debit = debit_manual
+
+    # =========================================================================
+    # FILA 2: IV Short | IV Long | Ajuste IV | info
+    # =========================================================================
+    col_ivs, col_ivl, col_ivadj, col_info = st.columns([1, 1, 1, 2])
+
+    with col_ivs:
+        iv_short_pct = st.number_input(
+            "📊 IV Short (%)",
+            min_value=1.0, max_value=200.0,
+            value=round(iv_short_base * 100, 2),
+            step=0.5, format="%.2f",
+            key=f"rp_iv_short_{ts}_{K}",
+            help="IV de la pata short — se obtiene del broker al refrescar, o calculada via BS"
+        )
+    with col_ivl:
+        iv_long_pct = st.number_input(
+            "📊 IV Long (%)",
+            min_value=1.0, max_value=200.0,
+            value=round(iv_long_base * 100, 2),
+            step=0.5, format="%.2f",
+            key=f"rp_iv_long_{ts}_{K}",
+            help="IV de la pata long — se obtiene del broker al refrescar, o calculada via BS"
+        )
+    with col_ivadj:
         iv_adj = st.slider(
-            "Ajuste IV (%)",
-            min_value=-10, max_value=10, value=0, step=1,
-            key=f"rp_iv_{ts}_{K}",
-            help="Ajuste relativo de IV para escenarios de vol"
+            "⚙️ Ajuste IV (%)",
+            min_value=-20, max_value=20, value=0, step=1,
+            key=f"rp_iv_adj_{ts}_{K}",
+            help="Escenario de expansión/contracción de vol sobre ambas patas"
+        )
+    with col_info:
+        origen_iv = "broker" if (iv_short_broker or iv_long_broker) else "BS estimada"
+        signo_str = "DÉBITO" if debit > 0 else "CRÉDITO"
+        color_d   = "#ffb74d" if debit > 0 else "#ef5350"
+        st.markdown(
+            f"<div style='background:#0d1a0d; border:1px solid #1a3a5c; border-radius:6px; "
+            f"padding:8px 12px; margin-top:4px; font-size:0.85em;'>"
+            f"<span style='color:#aaa;'>IV fuente: <b style='color:white;'>{origen_iv}</b></span><br>"
+            f"<span style='font-size:1.2em; font-weight:bold; color:{color_d};'>"
+            f"{signo_str}: ${abs(debit):.2f} / cto &nbsp;·&nbsp; "
+            f"Total: ${abs(debit) * 100 * contracts:,.2f}"
+            f"</span></div>",
+            unsafe_allow_html=True,
         )
 
-    debit = round(mid_long - mid_short, 2)
-    iv_s  = max(iv_short * (1 + iv_adj / 100), 0.01)
-    iv_l  = max(iv_long  * (1 + iv_adj / 100), 0.01)
-
-    # Débito / Crédito display
-    signo_str = "DÉBITO" if debit > 0 else "CRÉDITO"
-    color_d   = "#ffb74d" if debit > 0 else "#ef5350"
-    col_d1, col_d2, col_d3 = st.columns([1, 1, 2])
-    with col_d1:
-        st.metric("Net " + signo_str, f"${abs(debit):.2f} / cto")
-    with col_d2:
-        st.metric("Total", f"${abs(debit) * 100 * contracts:,.2f}")
-    with col_d3:
-        iv_pct_s = round(iv_s * 100, 1)
-        iv_pct_l = round(iv_l * 100, 1)
-        st.caption(
-            f"IV implícita estimada — Short: **{iv_pct_s}%** · Long: **{iv_pct_l}%** · r: 3.75%"
-        )
+    iv_s = max((iv_short_pct / 100) * (1 + iv_adj / 100), 0.01)
+    iv_l = max((iv_long_pct  / 100) * (1 + iv_adj / 100), 0.01)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
     # =========================================================================
-    # GRÁFICA RISK PROFILE
+    # GRÁFICA RISK PROFILE — ancho completo, altura generosa
     # =========================================================================
     fig = build_risk_profile_figure(
         S_current=S_input,
@@ -476,60 +513,30 @@ def render_risk_profile(registro: dict, precio_spx_live: Optional[float] = None)
     st.plotly_chart(fig, use_container_width=True)
 
     # =========================================================================
-    # GRIEGOS AGREGADOS (Price Slices header)
+    # GRIEGOS + P/L AL PRECIO ACTUAL
     # =========================================================================
     g = spread_greeks_at_price(
         S_input, K, T_short, T_long, iv_s, iv_l, r_rate, contracts, option_type
     )
-
-    # P/L actual
     pl_now = float(calendar_pl_today(
         np.array([S_input]), K, T_short, T_long, iv_s, iv_l, r_rate, debit, option_type, contracts
     )[0])
 
     st.markdown(
         "<div style='background:#0d0d1a; border:1px solid #1a3a5c; border-radius:6px; "
-        "padding:10px 16px; font-family:monospace; font-size:0.9em;'>"
-        "<b style='color:#ffc107;'>▶ Price Slices — Griegos al precio actual</b>"
+        "padding:8px 16px; font-family:monospace; font-size:0.85em; margin-bottom:8px;'>"
+        "<b style='color:#ffc107;'>▶ Griegos al precio actual del SPX</b>"
         "</div>",
         unsafe_allow_html=True,
     )
 
     col_g1, col_g2, col_g3, col_g4, col_g5 = st.columns(5)
+    pl_color = "#00c853" if pl_now >= 0 else "#ef5350"
     col_g1.metric("P/L Open", f"${pl_now:,.2f}")
     col_g2.metric("Delta",    f"{g['Delta']:+.2f}")
     col_g3.metric("Gamma",    f"{g['Gamma']:+.4f}")
     col_g4.metric("Theta",    f"{g['Theta']:+.2f}")
     col_g5.metric("Vega",     f"{g['Vega']:+.2f}")
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # =========================================================================
-    # TABLA PRICE SLICES
-    # =========================================================================
-    with st.expander("📋 Price Slices — Tabla de escenarios", expanded=False):
-        df_slices = build_price_slices(
-            S_current=S_input,
-            K=K,
-            T_short=T_short, T_long=T_long,
-            iv_short=iv_s, iv_long=iv_l,
-            r=r_rate, debit=debit, contracts=contracts,
-            option_type=option_type,
-        )
-
-        def color_pl(val):
-            if isinstance(val, (int, float)):
-                if val > 0:
-                    return "color: #00c853; font-weight: bold"
-                elif val < 0:
-                    return "color: #ef5350"
-            return ""
-
-        st.dataframe(
-            df_slices.style.map(color_pl, subset=["P/L Hoy", "P/L Exp"]),
-            hide_index=True,
-            use_container_width=True,
-        )
 
     st.markdown("---")
 
