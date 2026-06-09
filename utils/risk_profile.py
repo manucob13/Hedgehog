@@ -179,6 +179,7 @@ def build_risk_profile_figure(
     debit: float,
     contracts: int,
     option_type: str = "put",
+    margin_pct: float = 0.05,   # margen extra más allá de cada BE (0.0 = BEs en el borde exacto)
 ) -> tuple[go.Figure, list[float]]:
     """
     Returns (fig, be_points).
@@ -198,8 +199,7 @@ def build_risk_profile_figure(
         if y1 != y0:
             be_preview.append(x0 - y0 * (x1 - x0) / (y1 - y0))
 
-    # ── Paso 2: ajustar rango X para que los BEs queden en los bordes (5% margen)
-    margin_pct = 0.05
+    # ── Paso 2: ajustar rango X para que los BEs queden en los bordes
     if len(be_preview) >= 2:
         be_min  = min(be_preview)
         be_max  = max(be_preview)
@@ -578,6 +578,16 @@ def render_risk_profile(
     # =========================================================================
     # GRÁFICA RISK PROFILE
     # =========================================================================
+    col_chart_ctrl, _ = st.columns([2, 3])
+    with col_chart_ctrl:
+        margin_pct = st.slider(
+            "↔️ Ancho del gráfico (margen más allá de los BE)",
+            min_value=0, max_value=100, value=5, step=5,
+            format="%d%%",
+            key=f"rp_margin_{ts}_{K}",
+            help="0% = BEs exactamente en los bordes · 100% = mucho espacio extra a los lados",
+        ) / 100.0
+
     fig, be_points = build_risk_profile_figure(
         S_current=S_input,
         K=K,
@@ -587,6 +597,7 @@ def render_risk_profile(
         debit=debit,
         contracts=contracts,
         option_type=option_type,
+        margin_pct=margin_pct,
     )
     st.plotly_chart(fig, use_container_width=True)
 
