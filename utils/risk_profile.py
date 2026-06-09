@@ -1,7 +1,12 @@
 # utils/risk_profile.py
 """
 Risk Profile — Calendar Put Spread SPX
-Motor: Bjerksund-Stensland 2002 + fecha objetivo configurable estilo TOS Analyze.
+Motor: Bjerksund-Stensland 2002 + Sticky Skew por slice.
+
+Objetivo:
+- Aproximar mejor la lógica de TOS Analyze/Risk Profile.
+- Cada slice del eje X puede usar IV distinta por pata.
+- La línea blanca usa fecha objetivo configurable.
 """
 
 from __future__ import annotations
@@ -17,7 +22,7 @@ import streamlit as st
 
 
 # ==============================================================================
-# HELPERS MATEMÁTICOS
+# HELPERS
 # ==============================================================================
 
 def _norm_cdf(x: float) -> float:
@@ -76,10 +81,6 @@ def _bs2002_call(S: float, K: float, T: float, r: float, b: float, sigma: float)
 
 def bs_price(S: float, K: float, T: float, r: float, sigma: float,
              option_type: str = "put", q: float = 0.0) -> float:
-    """
-    Precio usando BS2002 como motor base.
-    Para puts usamos paridad europea, consistente con SPX.
-    """
     if T <= 1e-7 or sigma <= 1e-6:
         return max(K - S, 0.0) if option_type.lower() == "put" else max(S - K, 0.0)
 
@@ -98,7 +99,7 @@ def bs_price(S: float, K: float, T: float, r: float, sigma: float,
 
 
 # ==============================================================================
-# GRIEGOS
+# GREEKS
 # ==============================================================================
 
 def bs_greeks(S: float, K: float, T: float, r: float, sigma: float,
@@ -106,7 +107,7 @@ def bs_greeks(S: float, K: float, T: float, r: float, sigma: float,
     if T <= 1e-7 or sigma <= 1e-6:
         return {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
 
-    h_s = S * 0.001
+    h_s = max(S * 0.001, 0.5)
     h_v = 0.001
     h_t = 1 / 365
 
@@ -144,7 +145,7 @@ def exact_T(exp_date_str: str) -> float:
 
 
 # ==============================================================================
-# IV FROM MID
+# IV DESDE MID
 # ==============================================================================
 
 def iv_from_mid(price: float, S: float, K: float, T: float, r: float,
@@ -170,7 +171,59 @@ def iv_from_mid(price: float, S: float, K: float, T: float, r: float,
 
 
 # ==============================================================================
-# VALOR DE CADA PATA EN FECHA OBJETIVO
+# SKEW / SMILE
+# ==============================================================================
+
+def build_default_skew_points(K: float, base_iv: float) -> list[tuple[float, float]]:
+    """
+    Crea una skew simple tipo put skew por si no viene cadena externa.
+    """
+    return [
+        (K * 0.94, base_iv * 1.08),
+        (K * 0.97, base_iv * 1.04),
+        (K * 1.00, base_iv * 1.00),
+        (K * 1.03, base_iv * 0.97),
+        (K * 1.06, base_iv * 0.94),
+    ]
+
+
+def interp_iv_from_skew(
+    S_query: float,
+    skew_points: Optional[list],
+    fallback_iv: float,
+) -> float:
+    """
+    Interpola IV en función del precio hipotético del subyacente.
+    Usa lineal y extrapolación por pendiente en extremos.
+    """
+    if not skew_points or len(skew_points) < 2:
+        return float(np.clip(fallback_iv, 0.01, 5.0))
+
+    pts = sorted([(float(x), float(y)) for x, y in skew_points], key=lambda z: z[0])
+    xs = np.array([p[0] for p in pts], dtype=float)
+    ys = np.array([p[1] for p in pts], dtype=float)
+
+    if S_query <= xs[0]:
+        slope = (ys[1] - ys[0]) / max(xs[1] - xs[0], 1e-9)
+        iv = ys[0] + slope * (S_query - xs[0])
+    elif S_query >= xs[-1]:
+        slope = (ys[-1] - ys[-2]) / max(xs[-1] - xs[-2], 1e-9)
+        iv = ys[-1] + slope * (S_query - xs[-1])
+    else:
+        iv = np.interp(S_query, xs, ys)
+
+    return float(np.clip(iv, 0.01, 5.0))
+
+
+def apply_parallel_iv_adj(skew_points: Optional[list], iv_adj_pct: float) -> Optional[list]:
+    if not skew_points:
+        return skew_points
+    mult = 1.0 + iv_adj_pct / 100.0
+    return [(float(k), max(float(iv) * mult, 0.01)) for k, iv in skew_points]
+
+
+# ==============================================================================
+# VALOR DE OPCIÓN EN FECHA OBJETIVO
 # ==============================================================================
 
 def option_value_at_target_date(
@@ -183,11 +236,6 @@ def option_value_at_target_date(
     option_type: str = "put",
     q: float = 0.0,
 ) -> float:
-    """
-    Valor teórico de una opción en una fecha objetivo.
-    - Si target >= expiry: valor intrínseco.
-    - Si target < expiry : valor BS2002 con tiempo remanente.
-    """
     if target_dt >= expiry_dt:
         if option_type.lower() == "put":
             return max(K - S, 0.0)
@@ -207,20 +255,17 @@ def calendar_pl_at_target_date(
     short_fecha_str: str,
     long_fecha_str: str,
     target_fecha_str: str,
-    iv_short: float,
-    iv_long: float,
+    iv_short_flat: float,
+    iv_long_flat: float,
     r: float,
     debit: float,
     option_type: str = "put",
     contracts: int = 1,
     q: float = 0.0,
+    skew_short: Optional[list] = None,
+    skew_long: Optional[list] = None,
+    use_sticky_skew: bool = True,
 ) -> np.ndarray:
-    """
-    P/L del calendar en la fecha objetivo.
-    - Si target < short expiry: ambas patas con valor temporal.
-    - Si target = short expiry: short intrínseco, long con T_rem.
-    - Si target > short expiry: short ya expirada, long según remanente o intrínseco.
-    """
     short_dt  = combine_expiry_dt(date.fromisoformat(short_fecha_str))
     long_dt   = combine_expiry_dt(date.fromisoformat(long_fecha_str))
     target_dt = combine_expiry_dt(date.fromisoformat(target_fecha_str))
@@ -228,12 +273,12 @@ def calendar_pl_at_target_date(
     pl = np.zeros(len(S_range))
 
     for i, S in enumerate(S_range):
-        short_val = option_value_at_target_date(
-            S, K, target_dt, short_dt, iv_short, r, option_type, q
-        )
-        long_val = option_value_at_target_date(
-            S, K, target_dt, long_dt, iv_long, r, option_type, q
-        )
+        iv_s = interp_iv_from_skew(S, skew_short, iv_short_flat) if use_sticky_skew else iv_short_flat
+        iv_l = interp_iv_from_skew(S, skew_long,  iv_long_flat)  if use_sticky_skew else iv_long_flat
+
+        short_val = option_value_at_target_date(S, K, target_dt, short_dt, iv_s, r, option_type, q)
+        long_val  = option_value_at_target_date(S, K, target_dt, long_dt,  iv_l, r, option_type, q)
+
         pl[i] = (long_val - short_val - debit) * 100 * contracts
 
     return pl
@@ -244,19 +289,28 @@ def calendar_pl_today(
     K: float,
     T_short: float,
     T_long: float,
-    iv_short: float,
-    iv_long: float,
+    iv_short_flat: float,
+    iv_long_flat: float,
     r: float,
     debit: float,
     option_type: str = "put",
     contracts: int = 1,
     q: float = 0.0,
+    skew_short: Optional[list] = None,
+    skew_long: Optional[list] = None,
+    use_sticky_skew: bool = True,
 ) -> np.ndarray:
     pl = np.zeros(len(S_range))
+
     for i, S in enumerate(S_range):
-        short_val = bs_price(S, K, T_short, r, iv_short, option_type, q)
-        long_val  = bs_price(S, K, T_long,  r, iv_long,  option_type, q)
+        iv_s = interp_iv_from_skew(S, skew_short, iv_short_flat) if use_sticky_skew else iv_short_flat
+        iv_l = interp_iv_from_skew(S, skew_long,  iv_long_flat)  if use_sticky_skew else iv_long_flat
+
+        short_val = bs_price(S, K, T_short, r, iv_s, option_type, q)
+        long_val  = bs_price(S, K, T_long,  r, iv_l, option_type, q)
+
         pl[i] = (long_val - short_val - debit) * 100 * contracts
+
     return pl
 
 
@@ -267,13 +321,19 @@ def calendar_pl_today(
 def spread_greeks_at_price(
     S: float, K: float,
     T_short: float, T_long: float,
-    iv_short: float, iv_long: float,
+    iv_short_flat: float, iv_long_flat: float,
     r: float, contracts: int,
     option_type: str = "put",
     q: float = 0.0,
+    skew_short: Optional[list] = None,
+    skew_long: Optional[list] = None,
+    use_sticky_skew: bool = True,
 ) -> dict:
-    g_s = bs_greeks(S, K, T_short, r, iv_short, option_type, q)
-    g_l = bs_greeks(S, K, T_long,  r, iv_long,  option_type, q)
+    iv_s = interp_iv_from_skew(S, skew_short, iv_short_flat) if use_sticky_skew else iv_short_flat
+    iv_l = interp_iv_from_skew(S, skew_long,  iv_long_flat)  if use_sticky_skew else iv_long_flat
+
+    g_s = bs_greeks(S, K, T_short, r, iv_s, option_type, q)
+    g_l = bs_greeks(S, K, T_long,  r, iv_l, option_type, q)
 
     return {
         "Delta": round((g_l["delta"] - g_s["delta"]) * contracts * 100, 2),
@@ -295,22 +355,26 @@ def build_risk_profile_figure(
     short_fecha_str: str,
     long_fecha_str: str,
     target_fecha_str: str,
-    iv_short: float,
-    iv_long: float,
+    iv_short_flat: float,
+    iv_long_flat: float,
     r: float,
     debit: float,
     contracts: int,
     option_type: str = "put",
     margin_pct: float = 0.10,
     q: float = 0.0,
+    skew_short: Optional[list] = None,
+    skew_long: Optional[list] = None,
+    use_sticky_skew: bool = True,
 ) -> tuple[go.Figure, list[float]]:
 
     width_init = max(K * 0.18, 600)
-    S_init     = np.linspace(K - width_init, K + width_init, 1000)
+    S_init = np.linspace(K - width_init, K + width_init, 1200)
 
     pl_init = calendar_pl_at_target_date(
         S_init, K, short_fecha_str, long_fecha_str, target_fecha_str,
-        iv_short, iv_long, r, debit, option_type, contracts, q
+        iv_short_flat, iv_long_flat, r, debit, option_type, contracts, q,
+        skew_short, skew_long, use_sticky_skew
     )
 
     be_preview = []
@@ -331,16 +395,19 @@ def build_risk_profile_figure(
         x_left  = K - width_init
         x_right = K + width_init
 
-    S_range = np.linspace(x_left, x_right, 800)
+    S_range = np.linspace(x_left, x_right, 900)
 
     pl_today = calendar_pl_today(
-        S_range, K, T_short, T_long, iv_short, iv_long,
-        r, debit, option_type, contracts, q
+        S_range, K, T_short, T_long,
+        iv_short_flat, iv_long_flat,
+        r, debit, option_type, contracts, q,
+        skew_short, skew_long, use_sticky_skew
     )
 
     pl_target = calendar_pl_at_target_date(
         S_range, K, short_fecha_str, long_fecha_str, target_fecha_str,
-        iv_short, iv_long, r, debit, option_type, contracts, q
+        iv_short_flat, iv_long_flat, r, debit, option_type, contracts, q,
+        skew_short, skew_long, use_sticky_skew
     )
 
     fig = go.Figure()
@@ -449,11 +516,14 @@ def build_price_slices(
     S_current: float, K: float,
     T_short: float, T_long: float,
     short_fecha_str: str, long_fecha_str: str, target_fecha_str: str,
-    iv_short: float, iv_long: float,
+    iv_short_flat: float, iv_long_flat: float,
     r: float, debit: float, contracts: int,
     option_type: str = "put",
     n_slices: int = 9,
     q: float = 0.0,
+    skew_short: Optional[list] = None,
+    skew_long: Optional[list] = None,
+    use_sticky_skew: bool = True,
 ) -> pd.DataFrame:
     offsets = np.linspace(-K * 0.08, K * 0.08, n_slices)
     rows = []
@@ -462,17 +532,24 @@ def build_price_slices(
         S = S_current + off
 
         pl_t = float(calendar_pl_today(
-            np.array([S]), K, T_short, T_long, iv_short, iv_long,
-            r, debit, option_type, contracts, q
+            np.array([S]), K, T_short, T_long,
+            iv_short_flat, iv_long_flat,
+            r, debit, option_type, contracts, q,
+            skew_short, skew_long, use_sticky_skew
         )[0])
 
         pl_e = float(calendar_pl_at_target_date(
             np.array([S]), K, short_fecha_str, long_fecha_str, target_fecha_str,
-            iv_short, iv_long, r, debit, option_type, contracts, q
+            iv_short_flat, iv_long_flat,
+            r, debit, option_type, contracts, q,
+            skew_short, skew_long, use_sticky_skew
         )[0])
 
         g = spread_greeks_at_price(
-            S, K, T_short, T_long, iv_short, iv_long, r, contracts, option_type, q
+            S, K, T_short, T_long,
+            iv_short_flat, iv_long_flat,
+            r, contracts, option_type, q,
+            skew_short, skew_long, use_sticky_skew
         )
 
         rows.append({
@@ -498,6 +575,8 @@ def render_risk_profile(
     idx_registro: int = 0,
     iv_short_ext: Optional[float] = None,
     iv_long_ext: Optional[float] = None,
+    skew_short_ext: Optional[list] = None,
+    skew_long_ext: Optional[list] = None,
 ):
     if 'te_rp_calc' not in st.session_state:
         st.session_state['te_rp_calc'] = {}
@@ -622,26 +701,34 @@ def render_risk_profile(
             key=f"rp_iv_adj_{ts}_{K}",
         )
 
+    iv_s = max((iv_short_pct / 100) * (1 + iv_adj / 100), 0.01)
+    iv_l = max((iv_long_pct  / 100) * (1 + iv_adj / 100), 0.01)
+
+    default_skew_short = build_default_skew_points(K, iv_s)
+    default_skew_long  = build_default_skew_points(K, iv_l)
+
+    skew_short = skew_short_ext if (skew_short_ext and len(skew_short_ext) >= 2) else default_skew_short
+    skew_long  = skew_long_ext  if (skew_long_ext  and len(skew_long_ext)  >= 2) else default_skew_long
+
+    skew_short = apply_parallel_iv_adj(skew_short, iv_adj)
+    skew_long  = apply_parallel_iv_adj(skew_long,  iv_adj)
+
     with col_info:
-        signo_str = "DÉBITO" if debit > 0 else "CRÉDITO"
-        color_d   = "#ffb74d" if debit > 0 else "#ef5350"
         st.markdown(
             f"<div style='background:#0d1a0d; border:1px solid #1a3a5c; border-radius:6px; "
             f"padding:8px 12px; margin-top:4px; font-size:0.85em;'>"
-            f"<span style='color:#aaa;'>Motor: <b style='color:white;'>BS2002 + fecha objetivo configurable</b></span><br>"
-            f"<span style='font-size:1.2em; font-weight:bold; color:{color_d};'>"
-            f"{signo_str}: ${abs(debit):.2f} / cto &nbsp;·&nbsp; "
-            f"Total: ${abs(debit) * 100 * contracts:,.2f}"
+            f"<span style='color:#aaa;'>Motor: <b style='color:white;'>BS2002 + Sticky Skew</b></span><br>"
+            f"<span style='color:#aaa;'>Skew short: <b style='color:white;'>{len(skew_short)} puntos</b></span><br>"
+            f"<span style='color:#aaa;'>Skew long: <b style='color:white;'>{len(skew_long)} puntos</b></span><br>"
+            f"<span style='font-size:1.2em; font-weight:bold; color:#ffb74d;'>"
+            f"Net: ${debit:+.2f} / cto &nbsp;·&nbsp; Total: ${debit * 100 * contracts:,.2f}"
             f"</span></div>",
             unsafe_allow_html=True,
         )
 
-    iv_s = max((iv_short_pct / 100) * (1 + iv_adj / 100), 0.01)
-    iv_l = max((iv_long_pct  / 100) * (1 + iv_adj / 100), 0.01)
-
     st.markdown("<br>", unsafe_allow_html=True)
 
-    col_target, col_ctrl = st.columns([2, 2])
+    col_target, col_mode, col_ctrl = st.columns([2, 2, 2])
 
     with col_target:
         target_date = st.date_input(
@@ -650,12 +737,19 @@ def render_risk_profile(
             min_value=date.today(),
             max_value=date.fromisoformat(long_fecha),
             key=target_key,
-            help="Alineado con la fecha usada por TOS en Positions and Simulated Trades."
+        )
+
+    with col_mode:
+        use_sticky_skew = st.toggle(
+            "🌀 Usar Sticky Skew",
+            value=True,
+            key=f"rp_use_sticky_skew_{ts}_{K}",
+            help="Si está apagado, usa IV plana por pata."
         )
 
     with col_ctrl:
         margin_pct = st.slider(
-            "↔️ Ancho del gráfico (margen más allá de los BE)",
+            "↔️ Ancho del gráfico",
             min_value=0, max_value=100, value=10, step=5,
             format="%d%%",
             key=f"rp_margin_{ts}_{K}",
@@ -671,24 +765,28 @@ def render_risk_profile(
         short_fecha_str=short_fecha,
         long_fecha_str=long_fecha,
         target_fecha_str=target_fecha_str,
-        iv_short=iv_s,
-        iv_long=iv_l,
+        iv_short_flat=iv_s,
+        iv_long_flat=iv_l,
         r=r_rate,
         debit=debit,
         contracts=contracts,
         option_type=option_type,
         margin_pct=margin_pct,
         q=q_rate,
+        skew_short=skew_short,
+        skew_long=skew_long,
+        use_sticky_skew=use_sticky_skew,
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
     width_full = max(K * 0.18, 600)
-    S_full     = np.linspace(K - width_full, K + width_full, 800)
+    S_full     = np.linspace(K - width_full, K + width_full, 900)
 
     pl_target_full = calendar_pl_at_target_date(
         S_full, K, short_fecha, long_fecha, target_fecha_str,
-        iv_s, iv_l, r_rate, debit, option_type, contracts, q_rate
+        iv_s, iv_l, r_rate, debit, option_type, contracts, q_rate,
+        skew_short, skew_long, use_sticky_skew
     )
 
     max_idx      = int(np.argmax(pl_target_full))
@@ -699,9 +797,16 @@ def render_risk_profile(
     be_upper = be_points[-1] if len(be_points) >= 2 else None
 
     pl_now = float(calendar_pl_today(
-        np.array([S_input]), K, T_short, T_long, iv_s, iv_l, r_rate, debit,
-        option_type, contracts, q_rate
+        np.array([S_input]), K, T_short, T_long,
+        iv_s, iv_l, r_rate, debit, option_type, contracts, q_rate,
+        skew_short, skew_long, use_sticky_skew
     )[0])
+
+    g = spread_greeks_at_price(
+        S_input, K, T_short, T_long,
+        iv_s, iv_l, r_rate, contracts, option_type, q_rate,
+        skew_short, skew_long, use_sticky_skew
+    )
 
     st.session_state['te_rp_calc'][idx_registro] = {
         'be_lower':         be_lower,
@@ -720,6 +825,9 @@ def render_risk_profile(
         'iv_long':          iv_l,
         'contracts':        contracts,
         'option_type':      option_type,
+        'use_sticky_skew':  use_sticky_skew,
+        'skew_short':       skew_short,
+        'skew_long':        skew_long,
     }
 
     col_be1, col_be2, col_mp, col_pl = st.columns(4)
@@ -744,10 +852,6 @@ def render_risk_profile(
 
     with col_pl:
         st.metric("💰 Max P/L", f"${max_pl_val:,.0f}")
-
-    g = spread_greeks_at_price(
-        S_input, K, T_short, T_long, iv_s, iv_l, r_rate, contracts, option_type, q_rate
-    )
 
     st.markdown(
         "<div style='background:#0d0d1a; border:1px solid #1a3a5c; border-radius:6px; "
@@ -787,15 +891,19 @@ def seccion_risk_profile(
 
     iv_short_ext = None
     iv_long_ext  = None
-    spx_ref      = precio_spx_live
+    skew_short_ext = None
+    skew_long_ext  = None
+    spx_ref = precio_spx_live
 
     if mids_refrescados:
         registro = dict(registro)
         registro["Short Mid"] = mids_refrescados.get("mid_short", registro.get("Short Mid"))
         registro["Long Mid"]  = mids_refrescados.get("mid_long",  registro.get("Long Mid"))
-        spx_ref      = mids_refrescados.get("spx_al_refrescar", precio_spx_live)
-        iv_short_ext = mids_refrescados.get("iv_short")
-        iv_long_ext  = mids_refrescados.get("iv_long")
+        spx_ref        = mids_refrescados.get("spx_al_refrescar", precio_spx_live)
+        iv_short_ext   = mids_refrescados.get("iv_short")
+        iv_long_ext    = mids_refrescados.get("iv_long")
+        skew_short_ext = mids_refrescados.get("skew_short")
+        skew_long_ext  = mids_refrescados.get("skew_long")
 
     render_risk_profile(
         registro,
@@ -803,4 +911,6 @@ def seccion_risk_profile(
         idx_registro=idx_sel,
         iv_short_ext=iv_short_ext,
         iv_long_ext=iv_long_ext,
+        skew_short_ext=skew_short_ext,
+        skew_long_ext=skew_long_ext,
     )
