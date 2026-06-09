@@ -526,7 +526,7 @@ def render_risk_profile(registro: dict, precio_spx_live: Optional[float] = None)
             return ""
 
         st.dataframe(
-            df_slices.style.applymap(color_pl, subset=["P/L Hoy", "P/L Exp"]),
+            df_slices.style.map(color_pl, subset=["P/L Hoy", "P/L Exp"]),
             hide_index=True,
             use_container_width=True,
         )
