@@ -184,9 +184,36 @@ def build_risk_profile_figure(
     Returns (fig, be_points).
     be_points: sorted list of breakeven prices at short expiry (normally 2 values).
     """
-    # Price range: K ± ~10%
-    width = max(K * 0.12, 400)
-    S_range = np.linspace(K - width, K + width, 400)
+    # ── Paso 1: rango amplio para detectar los BEs ────────────────────────────
+    width_init   = max(K * 0.18, 600)
+    S_range_init = np.linspace(K - width_init, K + width_init, 600)
+    pl_expiry_init = calendar_pl_at_short_expiry(
+        S_range_init, K, T_short, T_long, iv_short, iv_long, r, debit, option_type, contracts
+    )
+    be_mask_init = np.diff(np.sign(pl_expiry_init))
+    be_preview   = []
+    for idx in np.where(be_mask_init != 0)[0]:
+        x0, x1 = S_range_init[idx], S_range_init[idx + 1]
+        y0, y1 = pl_expiry_init[idx], pl_expiry_init[idx + 1]
+        if y1 != y0:
+            be_preview.append(x0 - y0 * (x1 - x0) / (y1 - y0))
+
+    # ── Paso 2: ajustar rango X para que los BEs queden en los bordes (5% margen)
+    margin_pct = 0.05
+    if len(be_preview) >= 2:
+        be_min  = min(be_preview)
+        be_max  = max(be_preview)
+        span    = be_max - be_min
+        x_left  = be_min - span * margin_pct
+        x_right = be_max + span * margin_pct
+    elif len(be_preview) == 1:
+        x_left  = be_preview[0] - width_init * 0.5
+        x_right = be_preview[0] + width_init * 0.5
+    else:
+        x_left  = K - width_init
+        x_right = K + width_init
+
+    S_range = np.linspace(x_left, x_right, 400)
 
     pl_today  = calendar_pl_today(
         S_range, K, T_short, T_long, iv_short, iv_long, r, debit, option_type, contracts
@@ -566,9 +593,11 @@ def render_risk_profile(
     # =========================================================================
     # GUARDAR VALORES CALCULADOS EN SESSION STATE
     # Disponibles para el ajuste automático bajo st.session_state['te_rp_calc']
+    # Reutilizamos be_points ya calculados por build_risk_profile_figure;
+    # para max_profit usamos un rango amplio centrado en K.
     # =========================================================================
-    width = max(K * 0.12, 400)
-    S_range_full = np.linspace(K - width, K + width, 400)
+    width_full   = max(K * 0.18, 600)
+    S_range_full = np.linspace(K - width_full, K + width_full, 600)
     pl_expiry_full = calendar_pl_at_short_expiry(
         S_range_full, K, T_short, T_long, iv_s, iv_l, r_rate, debit, option_type, contracts
     )
