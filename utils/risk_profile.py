@@ -8,6 +8,9 @@ Incluye:
   · Edición de débito/crédito post-registro
   · Prob ITM / breakevens estimados
   · Price Slices (tabla de escenarios)
+
+Breakevens (be_lower, be_upper) y max_profit_price se guardan en
+st.session_state['te_rp_calc'][idx_registro] para uso en ajuste automático.
 """
 
 from __future__ import annotations
@@ -162,6 +165,7 @@ def spread_greeks_at_price(
 
 # ==============================================================================
 # BUILD PLOTLY FIGURE (mimics TOS Risk Profile)
+# Returns (fig, be_points) where be_points is a sorted list of breakeven prices
 # ==============================================================================
 
 def build_risk_profile_figure(
@@ -175,7 +179,11 @@ def build_risk_profile_figure(
     debit: float,
     contracts: int,
     option_type: str = "put",
-) -> go.Figure:
+) -> tuple[go.Figure, list[float]]:
+    """
+    Returns (fig, be_points).
+    be_points: sorted list of breakeven prices at short expiry (normally 2 values).
+    """
     # Price range: K ± ~10%
     width = max(K * 0.12, 400)
     S_range = np.linspace(K - width, K + width, 400)
@@ -232,20 +240,47 @@ def build_risk_profile_figure(
         line=dict(color="#ef5350", width=1, dash="dot"),
     )
 
-    # Breakevens (where expiry line crosses zero)
-    be_mask = np.diff(np.sign(pl_expiry))
+    # ------------------------------------------------------------------
+    # Breakevens — línea vertical en posición real,
+    # etiqueta pegada al borde lateral del gráfico
+    # ------------------------------------------------------------------
+    be_mask   = np.diff(np.sign(pl_expiry))
+    be_points = []
     for idx in np.where(be_mask != 0)[0]:
         x0, x1 = S_range[idx], S_range[idx + 1]
         y0, y1 = pl_expiry[idx], pl_expiry[idx + 1]
         if y1 != y0:
             be = x0 - y0 * (x1 - x0) / (y1 - y0)
-            fig.add_vline(
-                x=be,
-                line=dict(color="#ef5350", width=1, dash="longdash"),
-                annotation_text=f"BE {be:,.0f}",
-                annotation_position="bottom right",
-                annotation_font=dict(color="#ef5350", size=10),
-            )
+            be_points.append(float(round(be, 2)))
+
+    be_points = sorted(be_points)
+
+    for i, be in enumerate(be_points):
+        # Línea vertical en el BE real
+        fig.add_vline(
+            x=be,
+            line=dict(color="#ef5350", width=1, dash="longdash"),
+        )
+        # Etiqueta: BE izquierdo → borde izquierdo; BE derecho → borde derecho
+        if i == 0:
+            x_label  = S_range[0]
+            xanchor  = "left"
+        else:
+            x_label  = S_range[-1]
+            xanchor  = "right"
+
+        fig.add_annotation(
+            x=x_label,
+            y=0,
+            xref="x", yref="y",
+            text=f"BE {be:,.0f}",
+            showarrow=False,
+            font=dict(color="#ef5350", size=10),
+            xanchor=xanchor,
+            yanchor="bottom",
+            bgcolor="rgba(13,13,26,0.75)",
+            borderpad=3,
+        )
 
     # Max profit annotation
     max_idx = int(np.argmax(pl_expiry))
@@ -286,7 +321,7 @@ def build_risk_profile_figure(
         height=560,
     )
 
-    return fig
+    return fig, be_points
 
 
 # ==============================================================================
@@ -327,12 +362,31 @@ def build_price_slices(
 # STREAMLIT COMPONENT — llamar desde la página principal
 # ==============================================================================
 
-def render_risk_profile(registro: dict, precio_spx_live: Optional[float] = None):
+def render_risk_profile(
+    registro: dict,
+    precio_spx_live: Optional[float] = None,
+    idx_registro: int = 0,
+):
     """
     Renderiza el Risk Profile para un registro del 2.4.
-    Sin Price Slices. Controles editables: mid short/long, net débito, SPX, IV.
+
+    Los valores calculados se guardan en:
+        st.session_state['te_rp_calc'][idx_registro] = {
+            'be_lower':          float | None,   # breakeven inferior (a expiración short)
+            'be_upper':          float | None,   # breakeven superior (a expiración short)
+            'be_points':         list[float],    # lista completa de BEs
+            'max_profit_price':  float,          # precio SPX de máximo beneficio
+            'max_profit_pl':     float,          # P/L máximo en $
+            'pl_now':            float,          # P/L actual
+            'spx_usado':         float,          # SPX usado para el cálculo
+            'debit_usado':       float,          # débito/crédito usado
+        }
     """
     hoy = date.today()
+
+    # Inicializar dict de cálculos si no existe
+    if 'te_rp_calc' not in st.session_state:
+        st.session_state['te_rp_calc'] = {}
 
     # ---- Extraer datos del registro ----
     try:
@@ -356,7 +410,7 @@ def render_risk_profile(registro: dict, precio_spx_live: Optional[float] = None)
     mid_long_orig  = float(registro.get("Long Mid",  0) or 0)
 
     # ---- IV del broker si existe, sino calcular via BS ----
-    iv_short_broker = registro.get("Short IV")   # guardado en el registro si viene de Schwab
+    iv_short_broker = registro.get("Short IV")
     iv_long_broker  = registro.get("Long IV")
 
     def iv_from_mid(price, S, K, T, r, otype, fallback=0.17):
@@ -379,7 +433,6 @@ def render_risk_profile(registro: dict, precio_spx_live: Optional[float] = None)
     iv_short_calc = iv_from_mid(mid_short_orig, spx_abrir, K, T_short, r_rate, option_type, 0.17)
     iv_long_calc  = iv_from_mid(mid_long_orig,  spx_abrir, K, T_long,  r_rate, option_type, 0.17)
 
-    # Usar IV del broker si disponible, sino la calculada
     iv_short_base = float(iv_short_broker) / 100 if iv_short_broker else iv_short_calc
     iv_long_base  = float(iv_long_broker)  / 100 if iv_long_broker  else iv_long_calc
 
@@ -426,7 +479,6 @@ def render_risk_profile(registro: dict, precio_spx_live: Optional[float] = None)
             help="Mid price pata long — editable para ajustar al precio real de ejecución"
         )
 
-    # Net débito calculado automáticamente pero también editable manualmente
     debit_auto = round(mid_long - mid_short, 2)
     with col_net:
         debit_manual = st.number_input(
@@ -444,7 +496,6 @@ def render_risk_profile(registro: dict, precio_spx_live: Optional[float] = None)
             key=f"rp_spx_{ts}_{K}",
         )
 
-    # Usar el débito manual como base del P/L
     debit = debit_manual
 
     # =========================================================================
@@ -498,9 +549,9 @@ def render_risk_profile(registro: dict, precio_spx_live: Optional[float] = None)
     st.markdown("<br>", unsafe_allow_html=True)
 
     # =========================================================================
-    # GRÁFICA RISK PROFILE — ancho completo, altura generosa
+    # GRÁFICA RISK PROFILE
     # =========================================================================
-    fig = build_risk_profile_figure(
+    fig, be_points = build_risk_profile_figure(
         S_current=S_input,
         K=K,
         T_short=T_short, T_long=T_long,
@@ -513,14 +564,76 @@ def render_risk_profile(registro: dict, precio_spx_live: Optional[float] = None)
     st.plotly_chart(fig, use_container_width=True)
 
     # =========================================================================
+    # GUARDAR VALORES CALCULADOS EN SESSION STATE
+    # Disponibles para el ajuste automático bajo st.session_state['te_rp_calc']
+    # =========================================================================
+    width = max(K * 0.12, 400)
+    S_range_full = np.linspace(K - width, K + width, 400)
+    pl_expiry_full = calendar_pl_at_short_expiry(
+        S_range_full, K, T_short, T_long, iv_s, iv_l, r_rate, debit, option_type, contracts
+    )
+    max_idx      = int(np.argmax(pl_expiry_full))
+    max_pl_val   = float(pl_expiry_full[max_idx])
+    max_pl_price = float(S_range_full[max_idx])
+
+    be_lower = be_points[0]  if len(be_points) >= 1 else None
+    be_upper = be_points[-1] if len(be_points) >= 2 else None
+
+    pl_now = float(calendar_pl_today(
+        np.array([S_input]), K, T_short, T_long, iv_s, iv_l, r_rate, debit, option_type, contracts
+    )[0])
+
+    st.session_state['te_rp_calc'][idx_registro] = {
+        'be_lower':         be_lower,        # BE inferior (precio SPX)
+        'be_upper':         be_upper,        # BE superior (precio SPX)
+        'be_points':        be_points,       # lista completa de BEs
+        'max_profit_price': max_pl_price,    # precio SPX de máximo beneficio
+        'max_profit_pl':    max_pl_val,      # P/L máximo en $
+        'pl_now':           pl_now,          # P/L actual de la posición
+        'spx_usado':        S_input,         # SPX usado en el render
+        'debit_usado':      debit,           # débito/crédito usado
+        'K':                K,
+        'T_short':          T_short,
+        'T_long':           T_long,
+        'iv_short':         iv_s,
+        'iv_long':          iv_l,
+        'contracts':        contracts,
+        'option_type':      option_type,
+    }
+
+    # =========================================================================
+    # DISPLAY BE + MAX PROFIT (panel informativo)
+    # =========================================================================
+    col_be1, col_be2, col_mp, col_pl = st.columns(4)
+
+    with col_be1:
+        be_l_str = f"{be_lower:,.0f}" if be_lower is not None else "—"
+        delta_be_l = f" ({be_lower - S_input:+,.0f} pts)" if be_lower is not None else ""
+        st.metric(
+            "📉 BE Inferior",
+            be_l_str,
+            delta=delta_be_l if be_lower is not None else None,
+            delta_color="inverse",
+        )
+    with col_be2:
+        be_u_str = f"{be_upper:,.0f}" if be_upper is not None else "—"
+        delta_be_u = f" ({be_upper - S_input:+,.0f} pts)" if be_upper is not None else ""
+        st.metric(
+            "📈 BE Superior",
+            be_u_str,
+            delta=delta_be_u if be_upper is not None else None,
+        )
+    with col_mp:
+        st.metric("🎯 Max Profit Price", f"{max_pl_price:,.0f}")
+    with col_pl:
+        st.metric("💰 Max P/L", f"${max_pl_val:,.0f}")
+
+    # =========================================================================
     # GRIEGOS + P/L AL PRECIO ACTUAL
     # =========================================================================
     g = spread_greeks_at_price(
         S_input, K, T_short, T_long, iv_s, iv_l, r_rate, contracts, option_type
     )
-    pl_now = float(calendar_pl_today(
-        np.array([S_input]), K, T_short, T_long, iv_s, iv_l, r_rate, debit, option_type, contracts
-    )[0])
 
     st.markdown(
         "<div style='background:#0d0d1a; border:1px solid #1a3a5c; border-radius:6px; "
@@ -531,7 +644,6 @@ def render_risk_profile(registro: dict, precio_spx_live: Optional[float] = None)
     )
 
     col_g1, col_g2, col_g3, col_g4, col_g5 = st.columns(5)
-    pl_color = "#00c853" if pl_now >= 0 else "#ef5350"
     col_g1.metric("P/L Open", f"${pl_now:,.2f}")
     col_g2.metric("Delta",    f"{g['Delta']:+.2f}")
     col_g3.metric("Gamma",    f"{g['Gamma']:+.4f}")
@@ -553,12 +665,13 @@ def seccion_risk_profile(
 ):
     """
     Renderiza el Risk Profile del registro seleccionado.
-    Llamada desde 02 TE Operar.py — el selector de registro y el botón
-    de refresco viven en el fichero principal; aquí solo se dibuja el perfil.
 
     mids_refrescados: dict con 'mid_short', 'mid_long', 'spx_al_refrescar'
                       obtenido desde Schwab. Si es None usa los mids del registro.
     idx_registro    : índice del registro seleccionado en te_calendar_registros.
+
+    Los valores clave (BEs, max profit, P/L) quedan en:
+        st.session_state['te_rp_calc'][idx_registro]
     """
     registros = st.session_state.get("te_calendar_registros", [])
 
@@ -569,14 +682,12 @@ def seccion_risk_profile(
     idx_sel  = min(idx_registro, len(registros) - 1)
     registro = registros[idx_sel]
 
-    # Si hay mids frescos del broker, inyectarlos en una copia del registro
-    # para que render_risk_profile los use como punto de partida
     if mids_refrescados:
-        registro = dict(registro)  # copia, no muta el original
+        registro = dict(registro)
         registro['Short Mid'] = mids_refrescados.get('mid_short', registro.get('Short Mid'))
         registro['Long Mid']  = mids_refrescados.get('mid_long',  registro.get('Long Mid'))
         spx_ref = mids_refrescados.get('spx_al_refrescar', precio_spx_live)
     else:
         spx_ref = precio_spx_live
 
-    render_risk_profile(registro, spx_ref)
+    render_risk_profile(registro, spx_ref, idx_registro=idx_sel)
