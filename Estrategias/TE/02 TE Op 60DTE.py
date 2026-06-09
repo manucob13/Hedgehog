@@ -312,69 +312,65 @@ def refrescar_mids_desde_schwab(client, registro, precio_spx_live):
         long_fecha  = registro.get("Long Fecha", "")
         option_type = str(registro.get("Short Tipo", "PUT")).upper()
     except Exception as e:
-        st.error(f"Error leyendo registro: {e}")
+        st.error(f"❌ Error leyendo registro: {e}")
         return None
 
     resultado = {}
 
-    with st.spinner(f"Refrescando SHORT {short_fecha} Strike {K:,.0f}..."):
+    with st.spinner(f"📡 Refrescando SHORT {short_fecha} · Strike {K:,.0f}..."):
         chain_short = cargar_cadena_para_fecha(client, short_fecha)
-        if chain_short is None:
-            return None
+    if chain_short is None:
+        return None
 
-        df_sp, df_sc = parsear_cadena_atm(
-            chain_short,
-            short_fecha,
-            precio_spx_live,
-            nstrikes=4,
-            strikeatmfijo=K,
-        )
+    df_s_puts, df_s_calls = parsear_cadena_atm(
+        chain_short,
+        short_fecha,
+        precio_spx_live,
+        n_strikes=3,
+        strike_atm_fijo=K,
+    )
 
-        df_ref_s = df_sp if option_type == "PUT" else df_sc
-        mid_s = None
+    df_ref_s = df_s_puts if option_type == "PUT" else df_s_calls
+    mid_s = None
+    if df_ref_s is not None and not df_ref_s.empty:
+        fila = df_ref_s[df_ref_s["Strike"] == K]
+        if not fila.empty:
+            mid_s = round(float(fila.iloc[0]["Mid"]), 2)
+            resultado["bid_short"] = float(fila.iloc[0]["Bid"])
+            resultado["ask_short"] = float(fila.iloc[0]["Ask"])
 
-        if df_ref_s is not None and not df_ref_s.empty:
-            fila = df_ref_s[df_ref_s["Strike"] == K]
-            if not fila.empty:
-                mid_s = round(float(fila.iloc[0]["Mid"]), 2)
-                resultado["bid_short"] = float(fila.iloc[0]["Bid"])
-                resultado["ask_short"] = float(fila.iloc[0]["Ask"])
+    if mid_s is None:
+        st.warning(f"⚠️ No se encontró el strike {K:,.0f} en la cadena SHORT para {short_fecha}.")
+        return None
+    resultado["mid_short"] = mid_s
 
-        if mid_s is None:
-            st.warning(f"No se encontró el strike {K:,.0f} en la cadena SHORT para {short_fecha}.")
-            return None
-
-        resultado["mid_short"] = mid_s
-
-    with st.spinner(f"Refrescando LONG {long_fecha} Strike {K:,.0f}..."):
+    with st.spinner(f"📡 Refrescando LONG {long_fecha} · Strike {K:,.0f}..."):
         chain_long = cargar_cadena_para_fecha(client, long_fecha)
-        if chain_long is None:
-            return None
+    if chain_long is None:
+        return None
 
-        df_lp, df_lc = parsear_cadena_atm(
-            chain_long,
-            long_fecha,
-            precio_spx_live,
-            nstrikes=4,
-            strikeatmfijo=K,
-        )
+    df_l_puts, df_l_calls = parsear_cadena_atm(
+        chain_long,
+        long_fecha,
+        precio_spx_live,
+        n_strikes=3,
+        strike_atm_fijo=K,
+    )
 
-        df_ref_l = df_lp if option_type == "PUT" else df_lc
-        mid_l = None
+    df_ref_l = df_l_puts if option_type == "PUT" else df_l_calls
+    mid_l = None
+    if df_ref_l is not None and not df_ref_l.empty:
+        fila = df_ref_l[df_ref_l["Strike"] == K]
+        if not fila.empty:
+            mid_l = round(float(fila.iloc[0]["Mid"]), 2)
+            resultado["bid_long"] = float(fila.iloc[0]["Bid"])
+            resultado["ask_long"] = float(fila.iloc[0]["Ask"])
 
-        if df_ref_l is not None and not df_ref_l.empty:
-            fila = df_ref_l[df_ref_l["Strike"] == K]
-            if not fila.empty:
-                mid_l = round(float(fila.iloc[0]["Mid"]), 2)
-                resultado["bid_long"] = float(fila.iloc[0]["Bid"])
-                resultado["ask_long"] = float(fila.iloc[0]["Ask"])
+    if mid_l is None:
+        st.warning(f"⚠️ No se encontró el strike {K:,.0f} en la cadena LONG para {long_fecha}.")
+        return None
 
-        if mid_l is None:
-            st.warning(f"No se encontró el strike {K:,.0f} en la cadena LONG para {long_fecha}.")
-            return None
-
-        resultado["mid_long"] = mid_l
-
+    resultado["mid_long"] = mid_l
     resultado["spx_al_refrescar"] = precio_spx_live
     resultado["timestamp"] = datetime.now().strftime("%H:%M:%S")
 
