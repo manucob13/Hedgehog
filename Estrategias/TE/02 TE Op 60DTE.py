@@ -949,8 +949,12 @@ def main():
                     st.caption(f"Bid: {bid_s}  |  Ask: {ask_s}  |  Mid referencia: **{mid_ref_short:.2f}**")
 
         clave_mid_s = f"mid_short_{strike_short_val}_{tipo_short}_{modo_strike_short}"
-        if st.session_state.get("_last_mid_short_key") != clave_mid_s:
-            st.session_state["orden_mid_short"] = mid_ref_short
+        actualizar_mid_s = (
+            st.session_state.get("_last_mid_short_key") != clave_mid_s
+            or (modo_strike_short == "Manual" and buscar_short)
+        )
+        if actualizar_mid_s:
+            st.session_state["orden_mid_short"] = float(mid_ref_short) if mid_ref_short else 0.0
             st.session_state["_last_mid_short_key"] = clave_mid_s
 
         mid_short_input = st.number_input(
@@ -1052,7 +1056,11 @@ def main():
                     st.caption(f"Bid: {bid_l}  |  Ask: {ask_l}  |  Mid referencia: **{mid_ref_long:.2f}**")
 
         clave_mid_l = f"mid_long_{strike_long_val}_{tipo_long}_{modo_strike_long}"
-        if st.session_state.get("_last_mid_long_key") != clave_mid_l:
+        actualizar_mid_l = (
+            st.session_state.get("_last_mid_long_key") != clave_mid_l
+            or (modo_strike_long == "Manual" and buscar_long)
+        )
+        if actualizar_mid_l:
             st.session_state["orden_mid_long"] = float(mid_ref_long) if mid_ref_long else 0.0
             st.session_state["_last_mid_long_key"] = clave_mid_l
 
