@@ -1,4 +1,3 @@
-# 02 TE Operar.py
 import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
@@ -14,8 +13,37 @@ from utils.utils_schwab import (
 from utils.risk_profile import seccion_risk_profile
 from utils.github_storage import cargar_calendars_csv, guardar_calendars_csv
 
-# --- CONFIGURACIÓN DE PÁGINA ---
-# st.set_page_config(page_title="📊 TE Op 60DTE", layout="wide")
+# ==============================================================================
+# CONFIGURACIÓN POR SUBYACENTE
+# ==============================================================================
+
+SUBYACENTES = {
+    "SPX": {
+        "symbol":         "SPX",          # para get_current_price_schwab
+        "chain_symbol":   "$SPX",         # para get_option_chain
+        "display":        "SPX (S&P 500 Index)",
+        "atm_multiplo":   5,              # ATM se redondea al múltiplo más cercano
+        "dte_min":        60,
+        "dte_max":        120,
+        "csv_filename":   "calendars_TE.csv",   # nombre del archivo en GitHub
+        "color_header":   "#1a3a5c",
+    },
+    "SPY": {
+        "symbol":         "SPY",
+        "chain_symbol":   "SPY",
+        "display":        "SPY (S&P 500 ETF)",
+        "atm_multiplo":   1,              # SPY cotiza ~$550, múltiplo de $1
+        "dte_min":        30,
+        "dte_max":        90,
+        "csv_filename":   "calendars_TE_SPY.csv",
+        "color_header":   "#1a4a2a",
+    },
+}
+
+def get_cfg() -> dict:
+    """Devuelve la config del subyacente actualmente seleccionado."""
+    return SUBYACENTES[st.session_state.get("te_subyacente", "SPX")]
+
 
 # ==============================================================================
 # HELPERS — SESSION STATE
@@ -23,21 +51,26 @@ from utils.github_storage import cargar_calendars_csv, guardar_calendars_csv
 
 def inicializar_session_state():
     defaults = {
-        'te_operar_client':          None,
-        'te_operar_precio_spx':      None,
-        'te_operar_expiraciones':    [],
-        'te_short_fecha_cargada':    None,
-        'te_short_df_puts':          None,
-        'te_long_fecha_cargada':     None,
-        'te_long_df_puts':           None,
-        'te_order_preview':          False,
-        'te_order_df':               None,
-        'te_calendar_registros':     [],
-        'te_rp_mids_refrescados':    {},
-        'te_csv_cargado':            False,
-        'te_modo':                   None,   # 'trading' | 'visualizar'
-        'te_viz_client':             None,   # cliente Schwab solo para modo visualización
-        'te_viz_precio_spx':         None,   # precio SPX en modo visualización
+        "te_subyacente":             "SPX",
+        "te_operar_client":          None,
+        "te_operar_precio":          None,
+        "te_operar_expiraciones":    [],
+        "te_short_fecha_cargada":    None,
+        "te_short_df_puts":          None,
+        "te_short_df_calls":         None,
+        "te_long_fecha_cargada":     None,
+        "te_long_df_puts":           None,
+        "te_long_df_calls":          None,
+        "te_order_preview":          False,
+        "te_order_df":               None,
+        "te_calendar_registros":     [],
+        "te_rp_mids_refrescados":    {},
+        "te_csv_cargado":            False,
+        "te_modo":                   None,   # 'trading' | 'visualizar'
+        "te_viz_client":             None,
+        "te_viz_precio":             None,
+        # Para detectar cambio de subyacente y limpiar estado
+        "_te_ultimo_subyacente":     None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -45,48 +78,68 @@ def inicializar_session_state():
 
 
 def limpiar_todo():
-    keys = ['te_operar_client', 'te_operar_precio_spx', 'te_operar_expiraciones',
-            'te_short_fecha_cargada', 'te_short_df_puts',
-            'te_long_fecha_cargada',  'te_long_df_puts',
-            'te_order_preview',       'te_order_df']
+    keys = [
+        "te_operar_client", "te_operar_precio", "te_operar_expiraciones",
+        "te_short_fecha_cargada", "te_short_df_puts", "te_short_df_calls",
+        "te_long_fecha_cargada",  "te_long_df_puts",  "te_long_df_calls",
+        "te_order_preview", "te_order_df",
+        "te_viz_client", "te_viz_precio",
+        "te_rp_mids_refrescados",
+    ]
     for k in keys:
-        if k == 'te_operar_expiraciones':
+        if k == "te_operar_expiraciones":
             st.session_state[k] = []
-        elif k == 'te_order_preview':
+        elif k == "te_order_preview":
             st.session_state[k] = False
+        elif k == "te_rp_mids_refrescados":
+            st.session_state[k] = {}
         else:
             st.session_state[k] = None
 
 
+def limpiar_si_cambio_subyacente():
+    """Limpia cadenas y conexión si el usuario cambió de subyacente."""
+    actual   = st.session_state.get("te_subyacente", "SPX")
+    anterior = st.session_state.get("_te_ultimo_subyacente")
+    if anterior is not None and anterior != actual:
+        limpiar_todo()
+        st.session_state["te_csv_cargado"] = False
+        st.session_state["te_calendar_registros"] = []
+    st.session_state["_te_ultimo_subyacente"] = actual
+
+
 # ==============================================================================
-# PASO 1 — Conectar y escanear expiraciones 60–120 DTE
+# PASO 1 — Conectar y escanear expiraciones según DTE del subyacente
 # ==============================================================================
 
 def conectar_y_obtener_expiraciones():
+    cfg = get_cfg()
     with st.spinner("🔌 Conectando con Schwab..."):
         client = connect_to_schwab()
     if client is None:
         st.error("❌ No se pudo conectar con Schwab. Verificá los secrets y el token.")
         return False
-    st.session_state['te_operar_client'] = client
+    st.session_state["te_operar_client"] = client
 
-    with st.spinner("📡 Obteniendo precio actual del SPX..."):
-        precio = get_current_price_schwab(client, "SPX")
+    with st.spinner(f"📡 Obteniendo precio actual de {cfg['symbol']}..."):
+        precio = get_current_price_schwab(client, cfg["symbol"])
     if precio is None:
-        st.error("❌ No se pudo obtener el precio del SPX.")
+        st.error(f"❌ No se pudo obtener el precio de {cfg['symbol']}.")
         return False
-    st.session_state['te_operar_precio_spx'] = precio
+    st.session_state["te_operar_precio"] = precio
 
-    with st.spinner("📅 Escaneando expiraciones entre 60 y 120 DTE..."):
+    dte_min = cfg["dte_min"]
+    dte_max = cfg["dte_max"]
+    with st.spinner(f"📅 Escaneando expiraciones entre {dte_min} y {dte_max} DTE..."):
         hoy = date.today()
         expiraciones_encontradas = set()
-        for delta in range(60, 121):
+        for delta in range(dte_min, dte_max + 1):
             target = hoy + timedelta(days=delta)
             if target.weekday() >= 5:
                 continue
             try:
                 resp = client.get_option_chain(
-                    "$SPX",
+                    cfg["chain_symbol"],
                     from_date=target - timedelta(days=1),
                     to_date=target + timedelta(days=1)
                 )
@@ -97,32 +150,33 @@ def conectar_y_obtener_expiraciones():
                             fecha_str = date_key.split(":")[0]
                             try:
                                 dte_real = (date.fromisoformat(fecha_str) - hoy).days
-                                if 60 <= dte_real <= 120:
+                                if dte_min <= dte_real <= dte_max:
                                     expiraciones_encontradas.add(fecha_str)
                             except Exception:
                                 pass
             except Exception:
                 continue
 
-    st.session_state['te_operar_expiraciones'] = sorted(list(expiraciones_encontradas))
+    st.session_state["te_operar_expiraciones"] = sorted(list(expiraciones_encontradas))
     return True
 
 
 def conectar_solo_precio():
-    """Conexión mínima para modo visualización: solo cliente + precio SPX."""
+    """Conexión mínima para modo visualización: solo cliente + precio."""
+    cfg = get_cfg()
     with st.spinner("🔌 Conectando con Schwab..."):
         client = connect_to_schwab()
     if client is None:
         st.error("❌ No se pudo conectar con Schwab.")
         return False
-    st.session_state['te_viz_client'] = client
+    st.session_state["te_viz_client"] = client
 
-    with st.spinner("📡 Obteniendo precio del SPX..."):
-        precio = get_current_price_schwab(client, "SPX")
+    with st.spinner(f"📡 Obteniendo precio de {cfg['symbol']}..."):
+        precio = get_current_price_schwab(client, cfg["symbol"])
     if precio is None:
-        st.error("❌ No se pudo obtener el precio del SPX.")
+        st.error(f"❌ No se pudo obtener el precio de {cfg['symbol']}.")
         return False
-    st.session_state['te_viz_precio_spx'] = precio
+    st.session_state["te_viz_precio"] = precio
     return True
 
 
@@ -131,10 +185,11 @@ def conectar_solo_precio():
 # ==============================================================================
 
 def cargar_cadena_para_fecha(client, fecha_str):
+    cfg = get_cfg()
     try:
         target = date.fromisoformat(fecha_str)
         resp = client.get_option_chain(
-            "$SPX",
+            cfg["chain_symbol"],
             from_date=target - timedelta(days=1),
             to_date=target + timedelta(days=1)
         )
@@ -148,7 +203,7 @@ def cargar_cadena_para_fecha(client, fecha_str):
 
 
 # ==============================================================================
-# PARSER — Puts y Calls, ATM ±1 strike (3 strikes total)
+# PARSER — Puts y Calls, ATM ±1 strike
 # ==============================================================================
 
 def limpiar_greek(valor):
@@ -161,7 +216,10 @@ def limpiar_greek(valor):
         return None
 
 
-def parsear_cadena_atm(chain_data, fecha_str, precio_spx, n_strikes=1, strike_atm_fijo=None):
+def parsear_cadena_atm(chain_data, fecha_str, precio, n_strikes=1, strike_atm_fijo=None):
+    cfg = get_cfg()
+    multiplo = cfg["atm_multiplo"]
+
     def extraer(exp_map):
         rows = []
         for date_key, strikes_dict in exp_map.items():
@@ -172,70 +230,70 @@ def parsear_cadena_atm(chain_data, fecha_str, precio_spx, n_strikes=1, strike_at
                 if not contratos:
                     continue
                 c    = contratos[0]
-                bid  = c.get('bid',  0) or 0
-                ask  = c.get('ask',  0) or 0
-                mark = c.get('mark', 0) or 0
+                bid  = c.get("bid",  0) or 0
+                ask  = c.get("ask",  0) or 0
+                mark = c.get("mark", 0) or 0
                 mid  = (bid + ask) / 2 if bid > 0 and ask > 0 else mark
                 rows.append({
-                    'Strike': float(strike_key),
-                    'DTE':    dte,
-                    'Bid':    round(bid,  2),
-                    'Ask':    round(ask,  2),
-                    'Mid':    round(mid,  2),
-                    'Delta':  limpiar_greek(c.get('delta')),
-                    'Theta':  limpiar_greek(c.get('theta')),
-                    'Vega':   limpiar_greek(c.get('vega')),
-                    'IV':     limpiar_greek(c.get('volatility')),
+                    "Strike": float(strike_key),
+                    "DTE":    dte,
+                    "Bid":    round(bid,  2),
+                    "Ask":    round(ask,  2),
+                    "Mid":    round(mid,  2),
+                    "Delta":  limpiar_greek(c.get("delta")),
+                    "Theta":  limpiar_greek(c.get("theta")),
+                    "Vega":   limpiar_greek(c.get("vega")),
+                    "IV":     limpiar_greek(c.get("volatility")),
                 })
         if not rows:
             return pd.DataFrame()
-        df = pd.DataFrame(rows).sort_values('Strike').reset_index(drop=True)
-        centro = strike_atm_fijo if strike_atm_fijo is not None else round(precio_spx / 5) * 5
-        distancias = (df['Strike'] - centro).abs()
+        df = pd.DataFrame(rows).sort_values("Strike").reset_index(drop=True)
+        centro = strike_atm_fijo if strike_atm_fijo is not None else round(precio / multiplo) * multiplo
+        distancias = (df["Strike"] - centro).abs()
         atm_idx = int(distancias.idxmin())
         idx_min = max(0, atm_idx - n_strikes)
         idx_max = min(len(df) - 1, atm_idx + n_strikes)
         return df.iloc[idx_min:idx_max + 1].reset_index(drop=True)
 
-    df_puts  = extraer(chain_data.get('putExpDateMap',  {}))
-    df_calls = extraer(chain_data.get('callExpDateMap', {}))
+    df_puts  = extraer(chain_data.get("putExpDateMap",  {}))
+    df_calls = extraer(chain_data.get("callExpDateMap", {}))
     return df_puts, df_calls
 
 
-def highlight_atm(df, precio_spx):
-    if df.empty or 'Strike' not in df.columns:
+def highlight_atm(df, precio):
+    if df.empty or "Strike" not in df.columns:
         return df.style
-    atm_idx = (df['Strike'] - precio_spx).abs().idxmin()
+    atm_idx = (df["Strike"] - precio).abs().idxmin()
     def resaltar(row):
         if row.name == atm_idx:
-            return ['background-color: #1a3a5c; color: white; font-weight: bold'] * len(row)
-        return [''] * len(row)
+            return ["background-color: #1a3a5c; color: white; font-weight: bold"] * len(row)
+        return [""] * len(row)
     return df.style.apply(resaltar, axis=1)
 
 
-def mostrar_tabla_cadena(df_puts, df_calls, precio_spx, label):
+def mostrar_tabla_cadena(df_puts, df_calls, precio, label):
     if (df_puts is None or df_puts.empty) and (df_calls is None or df_calls.empty):
         return
     tab_p, tab_c = st.tabs(["📉 Puts", "📈 Calls"])
-    cols = ['Strike', 'DTE', 'Bid', 'Ask', 'Mid', 'Delta', 'Theta', 'Vega', 'IV']
+    cols = ["Strike", "DTE", "Bid", "Ask", "Mid", "Delta", "Theta", "Vega", "IV"]
     with tab_p:
         if df_puts is not None and not df_puts.empty:
             cols_ok = [c for c in cols if c in df_puts.columns]
-            st.dataframe(highlight_atm(df_puts[cols_ok], precio_spx),
+            st.dataframe(highlight_atm(df_puts[cols_ok], precio),
                          hide_index=True, use_container_width=True)
         else:
             st.info("Sin puts disponibles.")
     with tab_c:
         if df_calls is not None and not df_calls.empty:
             cols_ok = [c for c in cols if c in df_calls.columns]
-            st.dataframe(highlight_atm(df_calls[cols_ok], precio_spx),
+            st.dataframe(highlight_atm(df_calls[cols_ok], precio),
                          hide_index=True, use_container_width=True)
         else:
             st.info("Sin calls disponibles.")
 
 
 def bloque_cadena(pata, key_fecha, key_df_puts, key_df_calls,
-                  expiraciones, client, precio_spx, color_header,
+                  expiraciones, client, precio, color_header,
                   dte_referencia=None, strike_atm_fijo=None):
     hoy = date.today()
 
@@ -269,7 +327,7 @@ def bloque_cadena(pata, key_fecha, key_df_puts, key_df_calls,
                 chain = cargar_cadena_para_fecha(client, fecha_sel)
             if chain:
                 df_p, df_c = parsear_cadena_atm(
-                    chain, fecha_sel, precio_spx,
+                    chain, fecha_sel, precio,
                     n_strikes=1,
                     strike_atm_fijo=strike_atm_fijo
                 )
@@ -296,7 +354,7 @@ def bloque_cadena(pata, key_fecha, key_df_puts, key_df_calls,
             f"border-radius:4px; font-size:0.85em;'>Cadena {pata}: {f_carg}</span>",
             unsafe_allow_html=True
         )
-        mostrar_tabla_cadena(df_p, df_c, precio_spx, pata)
+        mostrar_tabla_cadena(df_p, df_c, precio, pata)
 
     return df_p, df_c, f_carg
 
@@ -305,7 +363,7 @@ def bloque_cadena(pata, key_fecha, key_df_puts, key_df_calls,
 # Refresca mids de un registro consultando Schwab
 # ==============================================================================
 
-def refrescar_mids_desde_schwab(client, registro, precio_spx_live):
+def refrescar_mids_desde_schwab(client, registro, precio_live):
     try:
         K           = float(registro.get("Strike", 0))
         short_fecha = registro.get("Short Fecha", "")
@@ -323,13 +381,8 @@ def refrescar_mids_desde_schwab(client, registro, precio_spx_live):
         return None
 
     df_s_puts, df_s_calls = parsear_cadena_atm(
-        chain_short,
-        short_fecha,
-        precio_spx_live,
-        n_strikes=3,
-        strike_atm_fijo=K,
+        chain_short, short_fecha, precio_live, n_strikes=3, strike_atm_fijo=K,
     )
-
     df_ref_s = df_s_puts if option_type == "PUT" else df_s_calls
     mid_s = None
     if df_ref_s is not None and not df_ref_s.empty:
@@ -338,9 +391,8 @@ def refrescar_mids_desde_schwab(client, registro, precio_spx_live):
             mid_s = round(float(fila.iloc[0]["Mid"]), 2)
             resultado["bid_short"] = float(fila.iloc[0]["Bid"])
             resultado["ask_short"] = float(fila.iloc[0]["Ask"])
-
     if mid_s is None:
-        st.warning(f"⚠️ No se encontró el strike {K:,.0f} en la cadena SHORT para {short_fecha}.")
+        st.warning(f"⚠️ No se encontró el strike {K:,.0f} en cadena SHORT para {short_fecha}.")
         return None
     resultado["mid_short"] = mid_s
 
@@ -350,13 +402,8 @@ def refrescar_mids_desde_schwab(client, registro, precio_spx_live):
         return None
 
     df_l_puts, df_l_calls = parsear_cadena_atm(
-        chain_long,
-        long_fecha,
-        precio_spx_live,
-        n_strikes=3,
-        strike_atm_fijo=K,
+        chain_long, long_fecha, precio_live, n_strikes=3, strike_atm_fijo=K,
     )
-
     df_ref_l = df_l_puts if option_type == "PUT" else df_l_calls
     mid_l = None
     if df_ref_l is not None and not df_ref_l.empty:
@@ -365,28 +412,23 @@ def refrescar_mids_desde_schwab(client, registro, precio_spx_live):
             mid_l = round(float(fila.iloc[0]["Mid"]), 2)
             resultado["bid_long"] = float(fila.iloc[0]["Bid"])
             resultado["ask_long"] = float(fila.iloc[0]["Ask"])
-
     if mid_l is None:
-        st.warning(f"⚠️ No se encontró el strike {K:,.0f} en la cadena LONG para {long_fecha}.")
+        st.warning(f"⚠️ No se encontró el strike {K:,.0f} en cadena LONG para {long_fecha}.")
         return None
 
-    resultado["mid_long"] = mid_l
-    resultado["spx_al_refrescar"] = precio_spx_live
-    resultado["timestamp"] = datetime.now().strftime("%H:%M:%S")
-
+    resultado["mid_long"]          = mid_l
+    resultado["spx_al_refrescar"]  = precio_live
+    resultado["timestamp"]         = datetime.now().strftime("%H:%M:%S")
     return resultado
+
 
 # ==============================================================================
 # BLOQUE 2.4 + 2.5 — compartido entre modo trading y modo visualización
 # ==============================================================================
 
-def bloque_registro_y_risk_profile(precio_spx, client, registros):
-    """
-    Renderiza la sección 2.4 (tabla de registros) y 2.5 (Risk Profile).
-    Se usa tanto en modo trading como en modo visualización.
-    precio_spx : precio SPX disponible (puede ser None si no hay conexión)
-    client     : cliente Schwab (puede ser None si no hay conexión)
-    """
+def bloque_registro_y_risk_profile(precio, client, registros):
+    cfg    = get_cfg()
+    symbol = cfg["symbol"]
 
     # =========================================================================
     # 2.4 — REGISTRO DE CALENDARS
@@ -397,15 +439,15 @@ def bloque_registro_y_risk_profile(precio_spx, client, registros):
     with col_gh1:
         if st.button("📂 Recargar desde GitHub", use_container_width=True, key="btn_recargar_gh"):
             with st.spinner("📂 Cargando desde GitHub..."):
-                registros_gh = cargar_calendars_csv()
+                registros_gh = cargar_calendars_csv(cfg["csv_filename"])
             if registros_gh:
-                st.session_state['te_calendar_registros'] = registros_gh
+                st.session_state["te_calendar_registros"] = registros_gh
                 st.success(f"✅ {len(registros_gh)} posiciones cargadas desde GitHub.")
                 st.rerun()
             else:
                 st.info("ℹ️ No hay posiciones guardadas en GitHub todavía.")
     with col_gh2:
-        st.caption("Los registros se guardan automáticamente en `utils/data/calendars_TE.csv` del repo.")
+        st.caption(f"Los registros se guardan en `utils/data/{cfg['csv_filename']}` del repo.")
 
     if not registros:
         st.info("ℹ️ Todavía no registraste ningún calendar.")
@@ -414,8 +456,8 @@ def bloque_registro_y_risk_profile(precio_spx, client, registros):
 
         def highlight_last(row):
             if row.name == len(df_reg) - 1:
-                return ['background-color: #1a3a5c; color: white'] * len(row)
-            return [''] * len(row)
+                return ["background-color: #1a3a5c; color: white"] * len(row)
+            return [""] * len(row)
 
         st.dataframe(
             df_reg.style.apply(highlight_last, axis=1),
@@ -426,19 +468,19 @@ def bloque_registro_y_risk_profile(precio_spx, client, registros):
 
         col_dl, col_clear = st.columns([2, 1])
         with col_dl:
-            csv = df_reg.to_csv(index=False).encode('utf-8')
+            csv = df_reg.to_csv(index=False).encode("utf-8")
             st.download_button(
                 label="📥 Exportar CSV",
                 data=csv,
-                file_name=f"calendars_TE_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                file_name=f"calendars_TE_{symbol}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                 mime="text/csv"
             )
         with col_clear:
             if st.button("🗑️ Limpiar Registro", use_container_width=True):
-                st.session_state['te_calendar_registros'] = []
-                st.session_state['te_csv_cargado'] = False
+                st.session_state["te_calendar_registros"] = []
+                st.session_state["te_csv_cargado"] = False
                 with st.spinner("🗑️ Limpiando en GitHub..."):
-                    guardar_calendars_csv([])
+                    guardar_calendars_csv([], cfg["csv_filename"])
                 st.rerun()
 
     st.markdown("---")
@@ -462,28 +504,22 @@ def bloque_registro_y_risk_profile(precio_spx, client, registros):
             f"{r.get('Timestamp','')}"
             for i, r in enumerate(registros)
         ]
-        sel = st.selectbox(
-            "Seleccioná el calendar:",
-            options=opciones_reg,
-            key="rp_selector_25"
-        )
+        sel = st.selectbox("Seleccioná el calendar:", options=opciones_reg, key="rp_selector_25")
         idx_reg = opciones_reg.index(sel)
 
     registro_sel = registros[idx_reg]
 
     # ------------------------------------------------------------------
-    # Bloque de conexión Schwab (aplica a ambos modos)
-    # En modo trading el client ya existe; en modo visualización
-    # se ofrece un botón de conexión mínima (solo precio SPX).
+    # Bloque de conexión Schwab
     # ------------------------------------------------------------------
-    client_activo  = client or st.session_state.get('te_viz_client')
-    precio_activo  = precio_spx or st.session_state.get('te_viz_precio_spx')
+    client_activo = client or st.session_state.get("te_viz_client")
+    precio_activo = precio or st.session_state.get("te_viz_precio")
 
     if client_activo is None:
         st.markdown(
             "<div style='background:#1a1a0d; border:1px solid #ffc107; border-radius:6px; "
             "padding:10px 16px; margin-bottom:12px;'>"
-            "<span style='color:#ffc107; font-weight:bold;'>⚡ Conectá a Schwab para actualizar el gráfico con precios reales</span><br>"
+            f"<span style='color:#ffc107; font-weight:bold;'>⚡ Conectá a Schwab para actualizar el gráfico con precios reales</span><br>"
             "<span style='color:#aaa; font-size:0.85em;'>Sin conexión el Risk Profile usa los mids guardados al momento del registro.</span>"
             "</div>",
             unsafe_allow_html=True,
@@ -493,39 +529,37 @@ def bloque_registro_y_risk_profile(precio_spx, client, registros):
             if st.button("🔌 Conectar a Schwab", type="primary",
                          use_container_width=True, key="btn_viz_conectar"):
                 if conectar_solo_precio():
-                    client_activo = st.session_state['te_viz_client']
-                    precio_activo = st.session_state['te_viz_precio_spx']
-                    st.success(f"✅ Conectado · SPX: {precio_activo:,.2f}")
+                    client_activo = st.session_state["te_viz_client"]
+                    precio_activo = st.session_state["te_viz_precio"]
+                    st.success(f"✅ Conectado · {symbol}: {precio_activo:,.2f}")
                     st.rerun()
     else:
-        # Mostrar precio activo y botón para refrescarlo
         col_spx_info, col_spx_btn = st.columns([3, 1])
         with col_spx_info:
             if precio_activo:
                 st.markdown(
                     f"<div style='background:#0d1a0d; border:1px solid #1a5c1a; border-radius:5px; "
                     f"padding:6px 14px; display:inline-block; font-size:0.9em;'>"
-                    f"📈 <b style='color:#ffc107;'>SPX: {precio_activo:,.2f}</b>"
+                    f"📈 <b style='color:#ffc107;'>{symbol}: {precio_activo:,.2f}</b>"
                     f"</div>",
                     unsafe_allow_html=True,
                 )
         with col_spx_btn:
-            if st.button("🔄 Actualizar SPX", use_container_width=True, key="btn_actualizar_spx"):
-                with st.spinner("📡 Actualizando precio SPX..."):
-                    precio_nuevo = get_current_price_schwab(client_activo, "SPX")
+            if st.button("🔄 Actualizar precio", use_container_width=True, key="btn_actualizar_precio"):
+                with st.spinner(f"📡 Actualizando precio {symbol}..."):
+                    precio_nuevo = get_current_price_schwab(client_activo, symbol)
                 if precio_nuevo:
-                    # Actualizar en el estado correcto según el modo
-                    if st.session_state.get('te_modo') == 'trading':
-                        st.session_state['te_operar_precio_spx'] = precio_nuevo
+                    if st.session_state.get("te_modo") == "trading":
+                        st.session_state["te_operar_precio"] = precio_nuevo
                     else:
-                        st.session_state['te_viz_precio_spx'] = precio_nuevo
+                        st.session_state["te_viz_precio"] = precio_nuevo
                     precio_activo = precio_nuevo
                     st.rerun()
 
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ------------------------------------------------------------------
-    # Botón Refrescar Mids desde Schwab
+    # Botón Refrescar Mids
     # ------------------------------------------------------------------
     col_btn_r, col_info_r = st.columns([1, 3])
 
@@ -539,42 +573,42 @@ def bloque_registro_y_risk_profile(precio_spx, client, registros):
             disabled=btn_disabled,
             help="Conectate a Schwab primero para refrescar los mids" if btn_disabled else None,
         ):
-            with st.spinner("📡 Actualizando precio SPX..."):
-                precio_fresco = get_current_price_schwab(client_activo, "SPX")
+            with st.spinner(f"📡 Actualizando precio {symbol}..."):
+                precio_fresco = get_current_price_schwab(client_activo, symbol)
             if precio_fresco:
-                if st.session_state.get('te_modo') == 'trading':
-                    st.session_state['te_operar_precio_spx'] = precio_fresco
+                if st.session_state.get("te_modo") == "trading":
+                    st.session_state["te_operar_precio"] = precio_fresco
                 else:
-                    st.session_state['te_viz_precio_spx'] = precio_fresco
+                    st.session_state["te_viz_precio"] = precio_fresco
                 precio_activo = precio_fresco
 
             mids = refrescar_mids_desde_schwab(client_activo, registro_sel, precio_activo)
             if mids:
-                st.session_state['te_rp_mids_refrescados'][idx_reg] = mids
+                st.session_state["te_rp_mids_refrescados"][idx_reg] = mids
                 st.success(
                     f"✅ Refrescado a las {mids['timestamp']} · "
-                    f"SPX: {precio_activo:,.2f} · "
+                    f"{symbol}: {precio_activo:,.2f} · "
                     f"Mid Short: {mids['mid_short']} · "
                     f"Mid Long: {mids['mid_long']}"
                 )
 
-    mids_frescos = st.session_state['te_rp_mids_refrescados'].get(idx_reg)
+    mids_frescos = st.session_state["te_rp_mids_refrescados"].get(idx_reg)
 
     with col_info_r:
         if mids_frescos:
-            ts_r  = mids_frescos.get('timestamp', '')
-            spx_r = mids_frescos.get('spx_al_refrescar', precio_activo)
-            ms    = mids_frescos.get('mid_short', '-')
-            ml    = mids_frescos.get('mid_long',  '-')
-            bs    = mids_frescos.get('bid_short', '-')
-            as_   = mids_frescos.get('ask_short', '-')
-            bl    = mids_frescos.get('bid_long',  '-')
-            al    = mids_frescos.get('ask_long',  '-')
+            ts_r  = mids_frescos.get("timestamp", "")
+            spx_r = mids_frescos.get("spx_al_refrescar", precio_activo)
+            ms    = mids_frescos.get("mid_short", "-")
+            ml    = mids_frescos.get("mid_long",  "-")
+            bs    = mids_frescos.get("bid_short", "-")
+            as_   = mids_frescos.get("ask_short", "-")
+            bl    = mids_frescos.get("bid_long",  "-")
+            al    = mids_frescos.get("ask_long",  "-")
             st.markdown(
                 f"<div style='background:#0d1a0d; border:1px solid #1a5c1a; border-radius:6px; "
                 f"padding:8px 14px; font-size:0.85em; color:#aaa;'>"
                 f"⏱ Último refresco: <b style='color:white'>{ts_r}</b> · "
-                f"SPX: <b style='color:#ffc107'>{spx_r:,.2f}</b><br>"
+                f"{symbol}: <b style='color:#ffc107'>{spx_r:,.2f}</b><br>"
                 f"SHORT — Bid: {bs} | Ask: {as_} | "
                 f"<b style='color:#ef9a9a'>Mid: {ms}</b> &nbsp;·&nbsp; "
                 f"LONG — Bid: {bl} | Ask: {al} | "
@@ -603,39 +637,65 @@ def bloque_registro_y_risk_profile(precio_spx, client, registros):
 
 def main():
 
-    st.markdown(
-        "<h1><span style='font-size: 1.5em;'>📊</span> TE Operar — Calendar Put Spread SPX</h1>",
-        unsafe_allow_html=True
-    )
-    st.markdown("Cadena SPX en tiempo real · 60–120 DTE · ATM ±1 strike")
-    st.markdown("---")
-
     inicializar_session_state()
 
-    # ── Carga automática del CSV de GitHub al arrancar (solo una vez) ─────────
-    if not st.session_state.get('te_csv_cargado'):
-        with st.spinner("📂 Cargando posiciones guardadas desde GitHub..."):
-            registros_gh = cargar_calendars_csv()
-        if registros_gh:
-            st.session_state['te_calendar_registros'] = registros_gh
-            st.session_state['te_csv_cargado'] = True
-            st.toast(f"✅ {len(registros_gh)} posiciones cargadas desde GitHub", icon="📂")
-        else:
-            st.session_state['te_csv_cargado'] = True
+    # =========================================================================
+    # SELECTOR DE SUBYACENTE — al tope de todo
+    # =========================================================================
+    col_titulo, col_sub = st.columns([3, 1])
+    with col_titulo:
+        st.markdown(
+            "<h1><span style='font-size: 1.5em;'>📊</span> TE Operar — Calendar Put Spread</h1>",
+            unsafe_allow_html=True
+        )
+    with col_sub:
+        subyacente_sel = st.selectbox(
+            "🎯 Subyacente",
+            options=list(SUBYACENTES.keys()),
+            index=list(SUBYACENTES.keys()).index(st.session_state.get("te_subyacente", "SPX")),
+            key="te_subyacente_selector",
+            help="Cambiá el subyacente — limpia cadenas y registros de sesión",
+        )
+        if subyacente_sel != st.session_state.get("te_subyacente"):
+            st.session_state["te_subyacente"] = subyacente_sel
 
-    registros = st.session_state.get('te_calendar_registros', [])
+    # Limpiar estado si cambió el subyacente
+    limpiar_si_cambio_subyacente()
+
+    cfg    = get_cfg()
+    symbol = cfg["symbol"]
+
+    st.markdown(
+        f"<span style='color:#aaa; font-size:0.9em;'>"
+        f"{cfg['display']} · Cadena en tiempo real · "
+        f"{cfg['dte_min']}–{cfg['dte_max']} DTE · ATM ±1 strike"
+        f"</span>",
+        unsafe_allow_html=True
+    )
+    st.markdown("---")
+
+    # ── Carga automática del CSV de GitHub al arrancar (solo una vez por subyacente) ──
+    if not st.session_state.get("te_csv_cargado"):
+        with st.spinner(f"📂 Cargando posiciones {symbol} desde GitHub..."):
+            registros_gh = cargar_calendars_csv(cfg["csv_filename"])
+        if registros_gh:
+            st.session_state["te_calendar_registros"] = registros_gh
+            st.session_state["te_csv_cargado"] = True
+            st.toast(f"✅ {len(registros_gh)} posiciones {symbol} cargadas desde GitHub", icon="📂")
+        else:
+            st.session_state["te_csv_cargado"] = True
+
+    registros = st.session_state.get("te_calendar_registros", [])
 
     # =========================================================================
-    # SELECTOR DE MODO — aparece siempre al inicio
+    # SELECTOR DE MODO
     # =========================================================================
     modo_opciones = {
         "📊 Solo visualizar posiciones": "visualizar",
         "⚡ Modo trading (conectar a Schwab y operar)": "trading",
     }
-
-    # Pre-seleccionar según el estado actual
-    modo_actual = st.session_state.get('te_modo')
-    idx_default = 0 if modo_actual != 'trading' else 1
+    modo_actual = st.session_state.get("te_modo")
+    idx_default = 0 if modo_actual != "trading" else 1
 
     modo_label = st.radio(
         "¿Qué querés hacer?",
@@ -645,7 +705,7 @@ def main():
         key="te_modo_radio",
     )
     modo = modo_opciones[modo_label]
-    st.session_state['te_modo'] = modo
+    st.session_state["te_modo"] = modo
 
     st.markdown("---")
 
@@ -655,14 +715,14 @@ def main():
     if modo == "visualizar":
         if registros:
             n = len(registros)
-            st.success(f"📂 {n} posición{'es' if n > 1 else ''} cargada{'s' if n > 1 else ''} desde GitHub.")
+            st.success(f"📂 {n} posición{'es' if n > 1 else ''} {symbol} cargada{'s' if n > 1 else ''} desde GitHub.")
         else:
             st.info("ℹ️ No hay posiciones guardadas. Podés recargar desde GitHub en la sección 2.4.")
 
         bloque_registro_y_risk_profile(
-            precio_spx = st.session_state.get('te_viz_precio_spx'),
-            client     = st.session_state.get('te_viz_client'),
-            registros  = registros,
+            precio    = st.session_state.get("te_viz_precio"),
+            client    = st.session_state.get("te_viz_client"),
+            registros = registros,
         )
         return
 
@@ -678,23 +738,24 @@ def main():
         if st.button("🔌 Conectar y Escanear Expiraciones", type="primary", use_container_width=True):
             limpiar_todo()
             if conectar_y_obtener_expiraciones():
-                n = len(st.session_state['te_operar_expiraciones'])
+                n = len(st.session_state["te_operar_expiraciones"])
                 st.success(f"✅ Conectado — {n} expiraciones encontradas")
     with col2:
         if st.button("🧹 Limpiar Todo", use_container_width=True):
             limpiar_todo()
             st.rerun()
 
-    precio_spx   = st.session_state.get('te_operar_precio_spx')
-    expiraciones = st.session_state.get('te_operar_expiraciones', [])
-    client       = st.session_state.get('te_operar_client')
+    precio       = st.session_state.get("te_operar_precio")
+    expiraciones = st.session_state.get("te_operar_expiraciones", [])
+    client       = st.session_state.get("te_operar_client")
 
-    if precio_spx:
-        strike_atm_display = round(precio_spx / 5) * 5
+    if precio:
+        multiplo         = cfg["atm_multiplo"]
+        strike_atm_display = round(precio / multiplo) * multiplo
         st.markdown(
             f"<div style='font-size:1.1em; padding:8px 14px; background:#1a3a5c; "
             f"color:white; border-radius:5px; display:inline-block; margin-top:8px;'>"
-            f"📈 <strong>SPX:</strong> {precio_spx:,.2f} &nbsp;·&nbsp; "
+            f"📈 <strong>{symbol}:</strong> {precio:,.2f} &nbsp;·&nbsp; "
             f"🎯 <strong>ATM:</strong> {strike_atm_display:,.0f}</div>",
             unsafe_allow_html=True
         )
@@ -704,39 +765,35 @@ def main():
 
     if not expiraciones or client is None:
         st.info("ℹ️ Primero conectate y escaneá las expiraciones.")
-        # Aun sin conexión completa mostramos 2.4 y 2.5 con lo que hay
-        bloque_registro_y_risk_profile(
-            precio_spx = precio_spx,
-            client     = client,
-            registros  = registros,
-        )
+        bloque_registro_y_risk_profile(precio=precio, client=client, registros=registros)
         return
 
     # 2.2 — CADENAS
     st.header("2.2 Cadenas — Short y Long")
-    st.caption("Cada pata muestra Puts y Calls · ATM ±1 strike · Strike azul = ATM")
+    st.caption(f"Cada pata muestra Puts y Calls · ATM ±1 strike · Strike azul = ATM · {symbol}")
 
     col_s, col_l = st.columns(2)
-    strike_atm_global = round(precio_spx / 5) * 5
+    multiplo         = cfg["atm_multiplo"]
+    strike_atm_global = round(precio / multiplo) * multiplo
 
     with col_s:
         st.markdown("### 📤 Short")
         df_short_puts, df_short_calls, fecha_short = bloque_cadena(
-            pata            = 'SHORT',
-            key_fecha       = 'te_short_fecha_cargada',
-            key_df_puts     = 'te_short_df_puts',
-            key_df_calls    = 'te_short_df_calls',
+            pata            = "SHORT",
+            key_fecha       = "te_short_fecha_cargada",
+            key_df_puts     = "te_short_df_puts",
+            key_df_calls    = "te_short_df_calls",
             expiraciones    = expiraciones,
             client          = client,
-            precio_spx      = precio_spx,
-            color_header    = '#8B0000',
+            precio          = precio,
+            color_header    = "#8B0000",
             dte_referencia  = None,
             strike_atm_fijo = strike_atm_global
         )
 
     hoy = date.today()
     dte_short_ref   = None
-    fecha_short_sel = st.session_state.get('te_sel_fecha_short', '')
+    fecha_short_sel = st.session_state.get("te_sel_fecha_short", "")
     if fecha_short_sel:
         f_str = fecha_short_sel.split(" ")[0]
         try:
@@ -752,14 +809,14 @@ def main():
     with col_l:
         st.markdown("### 📥 Long")
         df_long_puts, df_long_calls, fecha_long = bloque_cadena(
-            pata            = 'LONG',
-            key_fecha       = 'te_long_fecha_cargada',
-            key_df_puts     = 'te_long_df_puts',
-            key_df_calls    = 'te_long_df_calls',
+            pata            = "LONG",
+            key_fecha       = "te_long_fecha_cargada",
+            key_df_puts     = "te_long_df_puts",
+            key_df_calls    = "te_long_df_calls",
             expiraciones    = expiraciones,
             client          = client,
-            precio_spx      = precio_spx,
-            color_header    = '#1a5c1a',
+            precio          = precio,
+            color_header    = "#1a5c1a",
             dte_referencia  = dte_short_ref,
             strike_atm_fijo = strike_atm_global
         )
@@ -776,25 +833,28 @@ def main():
 
     if not cadena_short_ok:
         st.info("ℹ️ Cargá la cadena **Short** arriba para configurar la orden.")
-        bloque_registro_y_risk_profile(precio_spx, client, registros)
+        bloque_registro_y_risk_profile(precio, client, registros)
         return
     if not cadena_long_ok:
         st.info("ℹ️ Cargá la cadena **Long** arriba para configurar la orden.")
-        bloque_registro_y_risk_profile(precio_spx, client, registros)
+        bloque_registro_y_risk_profile(precio, client, registros)
         return
 
     strikes_short_raw = sorted(set(
-        (df_short_puts['Strike'].tolist()  if df_short_puts  is not None and not df_short_puts.empty  else []) +
-        (df_short_calls['Strike'].tolist() if df_short_calls is not None and not df_short_calls.empty else [])
+        (df_short_puts["Strike"].tolist()  if df_short_puts  is not None and not df_short_puts.empty  else []) +
+        (df_short_calls["Strike"].tolist() if df_short_calls is not None and not df_short_calls.empty else [])
     ))
     strikes_long_raw = sorted(set(
-        (df_long_puts['Strike'].tolist()   if df_long_puts   is not None and not df_long_puts.empty   else []) +
-        (df_long_calls['Strike'].tolist()  if df_long_calls  is not None and not df_long_calls.empty  else [])
+        (df_long_puts["Strike"].tolist()   if df_long_puts   is not None and not df_long_puts.empty   else []) +
+        (df_long_calls["Strike"].tolist()  if df_long_calls  is not None and not df_long_calls.empty  else [])
     ))
-    atm_aprox = min(strikes_short_raw, key=lambda x: abs(x - precio_spx)) if strikes_short_raw else precio_spx
+    atm_aprox = min(strikes_short_raw, key=lambda x: abs(x - precio)) if strikes_short_raw else precio
 
-    strikes_short_all = sorted([s for s in strikes_short_raw if s >= atm_aprox - 50])
-    strikes_long_all  = sorted([s for s in strikes_long_raw  if s >= atm_aprox - 30])
+    # SPX: filtro looser (±50 pts); SPY: ±10 pts
+    margen_short = 50 if multiplo >= 5 else 10
+    margen_long  = 30 if multiplo >= 5 else 10
+    strikes_short_all = sorted([s for s in strikes_short_raw if s >= atm_aprox - margen_short])
+    strikes_long_all  = sorted([s for s in strikes_long_raw  if s >= atm_aprox - margen_long])
 
     col_front, col_back = st.columns(2)
 
@@ -809,37 +869,37 @@ def main():
     with col_front:
         st.markdown(f"### 📤 Short — `{fecha_short}`")
         st.markdown("---")
-        tipo_short   = st.selectbox("Tipo de Opción SHORT", ["PUT", "CALL"], index=0, key='orden_tipo_short')
-        accion_short = st.selectbox("Acción SHORT", ["SELL", "BUY"], index=0, key='orden_accion_short')
+        tipo_short   = st.selectbox("Tipo de Opción SHORT", ["PUT", "CALL"], index=0, key="orden_tipo_short")
+        accion_short = st.selectbox("Acción SHORT", ["SELL", "BUY"], index=0, key="orden_accion_short")
         strike_short_label = st.selectbox(
             "Strike SHORT",
             options=[f"{s:,.0f}" for s in strikes_short_all],
             index=atm_idx_short,
-            key='orden_strike_short'
+            key="orden_strike_short"
         )
         strike_short_val = float(strike_short_label.replace(",", ""))
 
         df_ref_short  = df_short_puts if tipo_short == "PUT" else df_short_calls
         mid_ref_short = 0.0
         if df_ref_short is not None and not df_ref_short.empty:
-            fila = df_ref_short[df_ref_short['Strike'] == strike_short_val]
+            fila = df_ref_short[df_ref_short["Strike"] == strike_short_val]
             if not fila.empty:
-                mid_ref_short = float(fila.iloc[0]['Mid']) if fila.iloc[0]['Mid'] is not None else 0.0
-                bid_s = fila.iloc[0]['Bid']
-                ask_s = fila.iloc[0]['Ask']
+                mid_ref_short = float(fila.iloc[0]["Mid"]) if fila.iloc[0]["Mid"] is not None else 0.0
+                bid_s = fila.iloc[0]["Bid"]
+                ask_s = fila.iloc[0]["Ask"]
                 st.caption(f"Bid: {bid_s}  |  Ask: {ask_s}  |  Mid referencia: **{mid_ref_short:.2f}**")
 
         clave_mid_s = f"mid_short_{strike_short_val}_{tipo_short}"
-        if st.session_state.get('_last_mid_short_key') != clave_mid_s:
-            st.session_state['orden_mid_short'] = mid_ref_short
-            st.session_state['_last_mid_short_key'] = clave_mid_s
+        if st.session_state.get("_last_mid_short_key") != clave_mid_s:
+            st.session_state["orden_mid_short"] = mid_ref_short
+            st.session_state["_last_mid_short_key"] = clave_mid_s
 
         mid_short_input = st.number_input(
-            "Mid Price SHORT", min_value=0.0, step=0.05, format="%.2f", key='orden_mid_short'
+            "Mid Price SHORT", min_value=0.0, step=0.05, format="%.2f", key="orden_mid_short"
         )
 
-        diff_s = strike_short_val - precio_spx
-        pct_s  = (diff_s / precio_spx) * 100
+        diff_s = strike_short_val - precio
+        pct_s  = (diff_s / precio) * 100
         if tipo_short == "PUT":
             estado_s = "ITM 🔴" if diff_s > 0 else ("ATM 🟡" if abs(diff_s) <= 10 else "OTM 🟢")
         else:
@@ -849,24 +909,24 @@ def main():
     with col_back:
         st.markdown(f"### 📥 Long — `{fecha_long}`")
         st.markdown("---")
-        tipo_long   = st.selectbox("Tipo de Opción LONG", ["PUT", "CALL"], index=0, key='orden_tipo_long')
-        accion_long = st.selectbox("Acción LONG", ["BUY", "SELL"], index=0, key='orden_accion_long')
+        tipo_long   = st.selectbox("Tipo de Opción LONG", ["PUT", "CALL"], index=0, key="orden_tipo_long")
+        accion_long = st.selectbox("Acción LONG", ["BUY", "SELL"], index=0, key="orden_accion_long")
         strike_long_label = st.selectbox(
             "Strike LONG",
             options=[f"{s:,.0f}" for s in strikes_long_all],
             index=atm_idx_long,
-            key='orden_strike_long'
+            key="orden_strike_long"
         )
         strike_long_val = float(strike_long_label.replace(",", ""))
 
         df_ref_long  = df_long_puts if tipo_long == "PUT" else df_long_calls
         mid_ref_long = 0.0
         if df_ref_long is not None and not df_ref_long.empty:
-            fila = df_ref_long[df_ref_long['Strike'] == strike_long_val]
+            fila = df_ref_long[df_ref_long["Strike"] == strike_long_val]
             if not fila.empty:
-                mid_ref_long = float(fila.iloc[0]['Mid']) if fila.iloc[0]['Mid'] is not None else 0.0
-                bid_l = fila.iloc[0]['Bid']
-                ask_l = fila.iloc[0]['Ask']
+                mid_ref_long = float(fila.iloc[0]["Mid"]) if fila.iloc[0]["Mid"] is not None else 0.0
+                bid_l = fila.iloc[0]["Bid"]
+                ask_l = fila.iloc[0]["Ask"]
                 st.caption(f"Bid: {bid_l}  |  Ask: {ask_l}  |  Mid referencia: **{mid_ref_long:.2f}**")
 
         mid_long_input = st.number_input(
@@ -874,12 +934,12 @@ def main():
             min_value=0.0,
             value=float(mid_ref_long) if mid_ref_long else 0.0,
             step=0.05, format="%.2f",
-            key='orden_mid_long',
+            key="orden_mid_long",
             help="Podés editar el mid price manualmente"
         )
 
-        diff_l = strike_long_val - precio_spx
-        pct_l  = (diff_l / precio_spx) * 100
+        diff_l = strike_long_val - precio
+        pct_l  = (diff_l / precio) * 100
         if tipo_long == "PUT":
             estado_l = "ITM 🔴" if diff_l > 0 else ("ATM 🟡" if abs(diff_l) <= 10 else "OTM 🟢")
         else:
@@ -891,18 +951,19 @@ def main():
 
     with col_qty:
         cantidad = st.number_input(
-            "Cantidad de contratos", min_value=1, value=1, step=1, key='orden_cantidad'
+            "Cantidad de contratos", min_value=1, value=1, step=1, key="orden_cantidad"
         )
 
     with col_debito:
         debito       = round(mid_long_input - mid_short_input, 2)
         color_debito = "#ffb74d" if debito > 0 else "#ef5350"
         signo        = "DÉBITO" if debito > 0 else "CRÉDITO"
+        multiplicador = 100  # SPX y SPY usan x100
         st.markdown(
             f"<div style='padding:12px; background:#1a1a2e; border-radius:6px; margin-top:8px;'>"
             f"<span style='font-size:0.9em; color:#aaa;'>Resultado neto ({signo})</span><br>"
             f"<span style='font-size:1.5em; font-weight:bold; color:{color_debito};'>"
-            f"${abs(debito):.2f} / contrato &nbsp;·&nbsp; ${abs(debito)*100*cantidad:.2f} total</span>"
+            f"${abs(debito):.2f} / contrato &nbsp;·&nbsp; ${abs(debito)*multiplicador*cantidad:.2f} total</span>"
             f"</div>",
             unsafe_allow_html=True
         )
@@ -912,21 +973,21 @@ def main():
     if st.button("📝 Generar Vista Previa de Orden", type="primary", use_container_width=True):
         orders = [
             {
-                'Pata': 'SHORT', 'Acción': accion_short, 'Tipo': tipo_short,
-                'Strike': int(strike_short_val), 'Expiración': fecha_short,
-                'Mid Price': mid_short_input, 'Contratos': cantidad,
+                "Pata": "SHORT", "Acción": accion_short, "Tipo": tipo_short,
+                "Strike": int(strike_short_val), "Expiración": fecha_short,
+                "Mid Price": mid_short_input, "Contratos": cantidad,
             },
             {
-                'Pata': 'LONG', 'Acción': accion_long, 'Tipo': tipo_long,
-                'Strike': int(strike_long_val), 'Expiración': fecha_long,
-                'Mid Price': mid_long_input, 'Contratos': cantidad,
+                "Pata": "LONG", "Acción": accion_long, "Tipo": tipo_long,
+                "Strike": int(strike_long_val), "Expiración": fecha_long,
+                "Mid Price": mid_long_input, "Contratos": cantidad,
             },
         ]
-        st.session_state['te_order_df']      = pd.DataFrame(orders)
-        st.session_state['te_order_preview'] = True
+        st.session_state["te_order_df"]      = pd.DataFrame(orders)
+        st.session_state["te_order_preview"] = True
 
-    if st.session_state.get('te_order_preview') and st.session_state.get('te_order_df') is not None:
-        df_order = st.session_state['te_order_df']
+    if st.session_state.get("te_order_preview") and st.session_state.get("te_order_df") is not None:
+        df_order = st.session_state["te_order_df"]
 
         st.markdown("---")
         st.markdown("### 📋 Vista Previa de Orden")
@@ -934,13 +995,13 @@ def main():
 
         col_r1, col_r2, col_r3, col_r4 = st.columns(4)
         with col_r1:
-            st.metric("SPX al momento", f"{precio_spx:,.2f}")
+            st.metric(f"{symbol} al momento", f"{precio:,.2f}")
         with col_r2:
             st.metric("Strike", f"{int(strike_short_val):,}")
         with col_r3:
             st.metric(signo, f"${abs(debito):.2f} / cto")
         with col_r4:
-            st.metric("Total", f"${abs(debito)*100*cantidad:.2f}")
+            st.metric("Total", f"${abs(debito)*multiplicador*cantidad:.2f}")
 
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -948,40 +1009,43 @@ def main():
         with col_reg:
             if st.button("✅ Registrar este Calendar", type="primary", use_container_width=True):
                 registro = {
-                    'Timestamp':    datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    'SPX al abrir': f"{precio_spx:,.2f}",
-                    'Strike':       int(strike_short_val),
-                    'Short Tipo':   tipo_short,
-                    'Short Acción': accion_short,
-                    'Short Fecha':  fecha_short,
-                    'Short Mid':    mid_short_input,
-                    'Long Tipo':    tipo_long,
-                    'Long Acción':  accion_long,
-                    'Long Fecha':   fecha_long,
-                    'Long Mid':     mid_long_input,
-                    f'{signo}':     abs(debito),
-                    'Total ($)':    round(abs(debito) * 100 * cantidad, 2),
-                    'Contratos':    cantidad,
+                    "Timestamp":    datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "Subyacente":   symbol,
+                    f"{symbol} al abrir": f"{precio:,.2f}",
+                    "Strike":       int(strike_short_val),
+                    "Short Tipo":   tipo_short,
+                    "Short Acción": accion_short,
+                    "Short Fecha":  fecha_short,
+                    "Short Mid":    mid_short_input,
+                    "Long Tipo":    tipo_long,
+                    "Long Acción":  accion_long,
+                    "Long Fecha":   fecha_long,
+                    "Long Mid":     mid_long_input,
+                    f"{signo}":     abs(debito),
+                    "Total ($)":    round(abs(debito) * multiplicador * cantidad, 2),
+                    "Contratos":    cantidad,
                 }
-                st.session_state['te_calendar_registros'].append(registro)
-                st.session_state['te_order_preview'] = False
+                st.session_state["te_calendar_registros"].append(registro)
+                st.session_state["te_order_preview"] = False
                 with st.spinner("💾 Guardando en GitHub..."):
-                    ok = guardar_calendars_csv(st.session_state['te_calendar_registros'])
+                    ok = guardar_calendars_csv(
+                        st.session_state["te_calendar_registros"],
+                        cfg["csv_filename"]
+                    )
                 if ok:
-                    st.success("✅ Calendar registrado y guardado en GitHub.")
+                    st.success(f"✅ Calendar {symbol} registrado y guardado en GitHub.")
                 else:
                     st.warning("✅ Calendar registrado en sesión pero no se pudo guardar en GitHub.")
                 st.rerun()
 
         with col_cancel:
             if st.button("✖ Cancelar", use_container_width=True):
-                st.session_state['te_order_preview'] = False
+                st.session_state["te_order_preview"] = False
                 st.rerun()
 
     st.markdown("---")
 
-    # 2.4 + 2.5 al final del modo trading
-    bloque_registro_y_risk_profile(precio_spx, client, registros)
+    bloque_registro_y_risk_profile(precio, client, registros)
 
 
 # ==============================================================================
