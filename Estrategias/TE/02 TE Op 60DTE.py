@@ -954,19 +954,132 @@ def main():
             "Cantidad de contratos", min_value=1, value=1, step=1, key="orden_cantidad"
         )
 
+    # ------------------------------------------------------------------
+    # Resultado neto teórico (a partir de los mids de referencia)
+    # ------------------------------------------------------------------
+    debito_teorico = round(mid_long_input - mid_short_input, 2)
+    multiplicador  = 100  # SPX y SPY usan x100
+
+    # ------------------------------------------------------------------
+    # Ajuste manual del resultado neto (según precio real del broker)
+    # Si cambia el contexto de la orden (strikes/fechas/tipos/cantidad),
+    # reseteamos el ajuste manual para no arrastrar valores viejos.
+    # ------------------------------------------------------------------
+    clave_ajuste = (
+        f"{strike_short_val}_{tipo_short}_{fecha_short}_"
+        f"{strike_long_val}_{tipo_long}_{fecha_long}_{cantidad}"
+    )
+    if st.session_state.get("_last_ajuste_key") != clave_ajuste:
+        st.session_state["orden_resultado_neto_real"] = abs(debito_teorico)
+        st.session_state["_last_ajuste_key"] = clave_ajuste
+
     with col_debito:
-        debito       = round(mid_long_input - mid_short_input, 2)
-        color_debito = "#ffb74d" if debito > 0 else "#ef5350"
-        signo        = "DÉBITO" if debito > 0 else "CRÉDITO"
-        multiplicador = 100  # SPX y SPY usan x100
+        signo_teorico = "DÉBITO" if debito_teorico > 0 else "CRÉDITO"
+        color_teorico = "#ffb74d" if debito_teorico > 0 else "#ef5350"
         st.markdown(
             f"<div style='padding:12px; background:#1a1a2e; border-radius:6px; margin-top:8px;'>"
-            f"<span style='font-size:0.9em; color:#aaa;'>Resultado neto ({signo})</span><br>"
-            f"<span style='font-size:1.5em; font-weight:bold; color:{color_debito};'>"
-            f"${abs(debito):.2f} / contrato &nbsp;·&nbsp; ${abs(debito)*multiplicador*cantidad:.2f} total</span>"
+            f"<span style='font-size:0.9em; color:#aaa;'>Resultado neto teórico ({signo_teorico}, según mids)</span><br>"
+            f"<span style='font-size:1.5em; font-weight:bold; color:{color_teorico};'>"
+            f"${abs(debito_teorico):.2f} / contrato &nbsp;·&nbsp; ${abs(debito_teorico)*multiplicador*cantidad:.2f} total</span>"
             f"</div>",
             unsafe_allow_html=True
         )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ------------------------------------------------------------------
+    # Resultado neto REAL (editable) — ajusta los mids equitativamente
+    # ------------------------------------------------------------------
+    st.markdown("##### 🎯 Resultado neto real (según ejecución en el broker)")
+    st.caption(
+        "Si el fill real difiere del teórico (por desplazamiento de mercado), "
+        "ingresá aquí el débito/crédito real por contrato. El sistema repartirá "
+        "la diferencia equitativamente entre el Mid SHORT y el Mid LONG, "
+        "manteniendo el signo original de la operación (débito o crédito), "
+        "para que el registro quede coherente."
+    )
+
+    col_signo_real, col_valor_real, col_resumen_real = st.columns([1, 1, 2])
+
+    # El signo de la operación lo determina el resultado teórico (Calendar
+    # típico = débito). Si el teórico fuera 0 (caso borde), default a débito.
+    signo_operacion = "DÉBITO" if debito_teorico >= 0 else "CRÉDITO"
+    factor_signo    = 1 if signo_operacion == "DÉBITO" else -1
+
+    with col_signo_real:
+        st.markdown(
+            f"<div style='padding:8px 12px; background:#222; border-radius:6px; "
+            f"text-align:center; margin-top:6px;'>"
+            f"<span style='font-size:0.85em; color:#aaa;'>Signo</span><br>"
+            f"<span style='font-size:1.1em; font-weight:bold;'>{signo_operacion}</span>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    with col_valor_real:
+        resultado_neto_real = st.number_input(
+            f"{signo_operacion} real / contrato",
+            min_value=0.0,
+            step=0.05,
+            format="%.2f",
+            key="orden_resultado_neto_real",
+            help="Valor absoluto del débito o crédito real por contrato, según el broker."
+        )
+
+    # Diferencia con signo (teórico vs real), y reparto equitativo
+    debito_real_signed = factor_signo * resultado_neto_real
+    diferencia         = round(debito_real_signed - debito_teorico, 2)
+    ajuste_por_pata    = round(diferencia / 2, 2)
+
+    # debito = mid_long - mid_short  =>  para mover el débito en +diferencia,
+    # repartimos: mid_long sube la mitad, mid_short baja la mitad
+    mid_long_ajustado  = round(mid_long_input  + ajuste_por_pata, 2)
+    mid_short_ajustado = round(mid_short_input - ajuste_por_pata, 2)
+
+    # Evitar mids negativos: si el ajuste lleva alguno por debajo de 0,
+    # recortamos a 0 y dejamos el resto en la otra pata (mejor esfuerzo).
+    aviso_clip = False
+    if mid_long_ajustado < 0:
+        falta = -mid_long_ajustado
+        mid_long_ajustado = 0.0
+        mid_short_ajustado = round(mid_short_ajustado - falta, 2)
+        aviso_clip = True
+    if mid_short_ajustado < 0:
+        falta = -mid_short_ajustado
+        mid_short_ajustado = 0.0
+        mid_long_ajustado = round(mid_long_ajustado + falta, 2)
+        aviso_clip = True
+
+    debito_final = round(mid_long_ajustado - mid_short_ajustado, 2)
+
+    with col_resumen_real:
+        color_final = "#ffb74d" if debito_final > 0 else "#ef5350"
+        signo_final = "DÉBITO" if debito_final > 0 else "CRÉDITO"
+        st.markdown(
+            f"<div style='padding:8px 12px; background:#1a1a2e; border-radius:6px; margin-top:6px;'>"
+            f"<span style='font-size:0.85em; color:#aaa;'>Ajuste por pata: "
+            f"<b>{ajuste_por_pata:+.2f}</b> &nbsp;|&nbsp; "
+            f"Mid SHORT ajustado: <b style='color:#ef9a9a'>{mid_short_ajustado:.2f}</b> "
+            f"&nbsp;|&nbsp; Mid LONG ajustado: <b style='color:#a5d6a7'>{mid_long_ajustado:.2f}</b></span><br>"
+            f"<span style='font-size:1.2em; font-weight:bold; color:{color_final};'>"
+            f"Resultado final ({signo_final}): ${abs(debito_final):.2f} / cto &nbsp;·&nbsp; "
+            f"${abs(debito_final)*multiplicador*cantidad:.2f} total</span>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
+    if aviso_clip:
+        st.warning(
+            "⚠️ El ajuste hizo que uno de los mids llegara a 0; se recortó y la "
+            "diferencia restante se aplicó a la otra pata. Revisá los valores."
+        )
+
+    # Estos son los valores que se usarán de acá en adelante (vista previa y registro)
+    mid_short_final = mid_short_ajustado
+    mid_long_final  = mid_long_ajustado
+    debito          = debito_final
+    color_debito    = color_final
+    signo           = signo_final
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -975,12 +1088,12 @@ def main():
             {
                 "Pata": "SHORT", "Acción": accion_short, "Tipo": tipo_short,
                 "Strike": int(strike_short_val), "Expiración": fecha_short,
-                "Mid Price": mid_short_input, "Contratos": cantidad,
+                "Mid Price": mid_short_final, "Contratos": cantidad,
             },
             {
                 "Pata": "LONG", "Acción": accion_long, "Tipo": tipo_long,
                 "Strike": int(strike_long_val), "Expiración": fecha_long,
-                "Mid Price": mid_long_input, "Contratos": cantidad,
+                "Mid Price": mid_long_final, "Contratos": cantidad,
             },
         ]
         st.session_state["te_order_df"]      = pd.DataFrame(orders)
@@ -1016,11 +1129,11 @@ def main():
                     "Short Tipo":   tipo_short,
                     "Short Acción": accion_short,
                     "Short Fecha":  fecha_short,
-                    "Short Mid":    mid_short_input,
+                    "Short Mid":    mid_short_final,
                     "Long Tipo":    tipo_long,
                     "Long Acción":  accion_long,
                     "Long Fecha":   fecha_long,
-                    "Long Mid":     mid_long_input,
+                    "Long Mid":     mid_long_final,
                     f"{signo}":     abs(debito),
                     "Total ($)":    round(abs(debito) * multiplicador * cantidad, 2),
                     "Contratos":    cantidad,
