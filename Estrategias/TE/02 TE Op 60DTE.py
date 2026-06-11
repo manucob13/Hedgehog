@@ -867,25 +867,88 @@ def main():
         st.markdown("---")
         tipo_short   = st.selectbox("Tipo de Opción SHORT", ["PUT", "CALL"], index=0, key="orden_tipo_short")
         accion_short = st.selectbox("Acción SHORT", ["SELL", "BUY"], index=0, key="orden_accion_short")
-        strike_short_label = st.selectbox(
-            "Strike SHORT",
-            options=[f"{s:,.0f}" for s in strikes_short_all],
-            index=atm_idx_short,
-            key="orden_strike_short"
+
+        modo_strike_short = st.radio(
+            "Selección de Strike SHORT",
+            options=["Lista (ATM ±)", "Manual"],
+            index=0,
+            horizontal=True,
+            key="orden_modo_strike_short",
         )
-        strike_short_val = float(strike_short_label.replace(",", ""))
 
-        df_ref_short  = df_short_puts if tipo_short == "PUT" else df_short_calls
-        mid_ref_short = 0.0
-        if df_ref_short is not None and not df_ref_short.empty:
-            fila = df_ref_short[df_ref_short["Strike"] == strike_short_val]
-            if not fila.empty:
-                mid_ref_short = float(fila.iloc[0]["Mid"]) if fila.iloc[0]["Mid"] is not None else 0.0
-                bid_s = fila.iloc[0]["Bid"]
-                ask_s = fila.iloc[0]["Ask"]
+        if modo_strike_short == "Manual":
+            col_ms1, col_ms2 = st.columns([2, 1])
+            with col_ms1:
+                strike_short_val = st.number_input(
+                    "Strike SHORT manual",
+                    min_value=0.0,
+                    value=float(strikes_short_all[atm_idx_short]) if strikes_short_all else float(strike_atm_global),
+                    step=float(multiplo),
+                    format="%.1f",
+                    key="orden_strike_short_manual",
+                )
+            with col_ms2:
+                st.markdown("<br>", unsafe_allow_html=True)
+                buscar_short = st.button(
+                    "🔎 Buscar mid", use_container_width=True, key="btn_buscar_strike_short"
+                )
+
+            mid_ref_short = 0.0
+            bid_s = ask_s = None
+            if buscar_short:
+                with st.spinner(f"📡 Buscando strike {strike_short_val:,.0f} en cadena SHORT..."):
+                    chain_s = cargar_cadena_para_fecha(client, fecha_short)
+                if chain_s:
+                    df_cs_puts, df_cs_calls = parsear_cadena_atm(
+                        chain_s, fecha_short, precio,
+                        n_strikes=1,
+                        strike_atm_fijo=strike_short_val,
+                    )
+                    df_ref_cs = df_cs_puts if tipo_short == "PUT" else df_cs_calls
+                    if df_ref_cs is not None and not df_ref_cs.empty:
+                        fila = df_ref_cs.iloc[(df_ref_cs["Strike"] - strike_short_val).abs().idxmin()]
+                        mid_ref_short  = float(fila["Mid"]) if fila["Mid"] is not None else 0.0
+                        bid_s, ask_s   = fila["Bid"], fila["Ask"]
+                        strike_short_val = float(fila["Strike"])
+                        st.session_state["_manual_short_mid"] = {
+                            "strike": strike_short_val, "mid": mid_ref_short,
+                            "bid": bid_s, "ask": ask_s, "tipo": tipo_short,
+                        }
+                        st.success(f"✅ Strike {strike_short_val:,.0f} · Mid: {mid_ref_short:.2f}")
+                    else:
+                        st.warning("⚠️ No se encontró ese strike en la cadena SHORT.")
+
+            cache_ms = st.session_state.get("_manual_short_mid")
+            if cache_ms and cache_ms.get("tipo") == tipo_short and not buscar_short \
+               and cache_ms.get("strike") == strike_short_val:
+                mid_ref_short = cache_ms["mid"]
+                bid_s, ask_s  = cache_ms["bid"], cache_ms["ask"]
+
+            if bid_s is not None:
                 st.caption(f"Bid: {bid_s}  |  Ask: {ask_s}  |  Mid referencia: **{mid_ref_short:.2f}**")
+            else:
+                st.caption("ℹ️ Ingresá el strike y presioná 'Buscar mid' para traer el valor real de Schwab.")
 
-        clave_mid_s = f"mid_short_{strike_short_val}_{tipo_short}"
+        else:
+            strike_short_label = st.selectbox(
+                "Strike SHORT",
+                options=[f"{s:,.0f}" for s in strikes_short_all],
+                index=atm_idx_short,
+                key="orden_strike_short"
+            )
+            strike_short_val = float(strike_short_label.replace(",", ""))
+
+            df_ref_short  = df_short_puts if tipo_short == "PUT" else df_short_calls
+            mid_ref_short = 0.0
+            if df_ref_short is not None and not df_ref_short.empty:
+                fila = df_ref_short[df_ref_short["Strike"] == strike_short_val]
+                if not fila.empty:
+                    mid_ref_short = float(fila.iloc[0]["Mid"]) if fila.iloc[0]["Mid"] is not None else 0.0
+                    bid_s = fila.iloc[0]["Bid"]
+                    ask_s = fila.iloc[0]["Ask"]
+                    st.caption(f"Bid: {bid_s}  |  Ask: {ask_s}  |  Mid referencia: **{mid_ref_short:.2f}**")
+
+        clave_mid_s = f"mid_short_{strike_short_val}_{tipo_short}_{modo_strike_short}"
         if st.session_state.get("_last_mid_short_key") != clave_mid_s:
             st.session_state["orden_mid_short"] = mid_ref_short
             st.session_state["_last_mid_short_key"] = clave_mid_s
@@ -907,28 +970,95 @@ def main():
         st.markdown("---")
         tipo_long   = st.selectbox("Tipo de Opción LONG", ["PUT", "CALL"], index=0, key="orden_tipo_long")
         accion_long = st.selectbox("Acción LONG", ["BUY", "SELL"], index=0, key="orden_accion_long")
-        strike_long_label = st.selectbox(
-            "Strike LONG",
-            options=[f"{s:,.0f}" for s in strikes_long_all],
-            index=atm_idx_long,
-            key="orden_strike_long"
-        )
-        strike_long_val = float(strike_long_label.replace(",", ""))
 
-        df_ref_long  = df_long_puts if tipo_long == "PUT" else df_long_calls
-        mid_ref_long = 0.0
-        if df_ref_long is not None and not df_ref_long.empty:
-            fila = df_ref_long[df_ref_long["Strike"] == strike_long_val]
-            if not fila.empty:
-                mid_ref_long = float(fila.iloc[0]["Mid"]) if fila.iloc[0]["Mid"] is not None else 0.0
-                bid_l = fila.iloc[0]["Bid"]
-                ask_l = fila.iloc[0]["Ask"]
+        modo_strike_long = st.radio(
+            "Selección de Strike LONG",
+            options=["Lista (ATM ±)", "Manual"],
+            index=0,
+            horizontal=True,
+            key="orden_modo_strike_long",
+        )
+
+        if modo_strike_long == "Manual":
+            col_ml1, col_ml2 = st.columns([2, 1])
+            with col_ml1:
+                strike_long_val = st.number_input(
+                    "Strike LONG manual",
+                    min_value=0.0,
+                    value=float(strikes_long_all[atm_idx_long]) if strikes_long_all else float(strike_atm_global),
+                    step=float(multiplo),
+                    format="%.1f",
+                    key="orden_strike_long_manual",
+                )
+            with col_ml2:
+                st.markdown("<br>", unsafe_allow_html=True)
+                buscar_long = st.button(
+                    "🔎 Buscar mid", use_container_width=True, key="btn_buscar_strike_long"
+                )
+
+            mid_ref_long = 0.0
+            bid_l = ask_l = None
+            if buscar_long:
+                with st.spinner(f"📡 Buscando strike {strike_long_val:,.0f} en cadena LONG..."):
+                    chain_l = cargar_cadena_para_fecha(client, fecha_long)
+                if chain_l:
+                    df_cl_puts, df_cl_calls = parsear_cadena_atm(
+                        chain_l, fecha_long, precio,
+                        n_strikes=1,
+                        strike_atm_fijo=strike_long_val,
+                    )
+                    df_ref_cl = df_cl_puts if tipo_long == "PUT" else df_cl_calls
+                    if df_ref_cl is not None and not df_ref_cl.empty:
+                        fila = df_ref_cl.iloc[(df_ref_cl["Strike"] - strike_long_val).abs().idxmin()]
+                        mid_ref_long  = float(fila["Mid"]) if fila["Mid"] is not None else 0.0
+                        bid_l, ask_l  = fila["Bid"], fila["Ask"]
+                        strike_long_val = float(fila["Strike"])
+                        st.session_state["_manual_long_mid"] = {
+                            "strike": strike_long_val, "mid": mid_ref_long,
+                            "bid": bid_l, "ask": ask_l, "tipo": tipo_long,
+                        }
+                        st.success(f"✅ Strike {strike_long_val:,.0f} · Mid: {mid_ref_long:.2f}")
+                    else:
+                        st.warning("⚠️ No se encontró ese strike en la cadena LONG.")
+
+            cache_ml = st.session_state.get("_manual_long_mid")
+            if cache_ml and cache_ml.get("tipo") == tipo_long and not buscar_long \
+               and cache_ml.get("strike") == strike_long_val:
+                mid_ref_long = cache_ml["mid"]
+                bid_l, ask_l = cache_ml["bid"], cache_ml["ask"]
+
+            if bid_l is not None:
                 st.caption(f"Bid: {bid_l}  |  Ask: {ask_l}  |  Mid referencia: **{mid_ref_long:.2f}**")
+            else:
+                st.caption("ℹ️ Ingresá el strike y presioná 'Buscar mid' para traer el valor real de Schwab.")
+
+        else:
+            strike_long_label = st.selectbox(
+                "Strike LONG",
+                options=[f"{s:,.0f}" for s in strikes_long_all],
+                index=atm_idx_long,
+                key="orden_strike_long"
+            )
+            strike_long_val = float(strike_long_label.replace(",", ""))
+
+            df_ref_long  = df_long_puts if tipo_long == "PUT" else df_long_calls
+            mid_ref_long = 0.0
+            if df_ref_long is not None and not df_ref_long.empty:
+                fila = df_ref_long[df_ref_long["Strike"] == strike_long_val]
+                if not fila.empty:
+                    mid_ref_long = float(fila.iloc[0]["Mid"]) if fila.iloc[0]["Mid"] is not None else 0.0
+                    bid_l = fila.iloc[0]["Bid"]
+                    ask_l = fila.iloc[0]["Ask"]
+                    st.caption(f"Bid: {bid_l}  |  Ask: {ask_l}  |  Mid referencia: **{mid_ref_long:.2f}**")
+
+        clave_mid_l = f"mid_long_{strike_long_val}_{tipo_long}_{modo_strike_long}"
+        if st.session_state.get("_last_mid_long_key") != clave_mid_l:
+            st.session_state["orden_mid_long"] = float(mid_ref_long) if mid_ref_long else 0.0
+            st.session_state["_last_mid_long_key"] = clave_mid_l
 
         mid_long_input = st.number_input(
             "Mid Price LONG (editable)",
             min_value=0.0,
-            value=float(mid_ref_long) if mid_ref_long else 0.0,
             step=0.05, format="%.2f",
             key="orden_mid_long",
             help="Podés editar el mid price manualmente"
