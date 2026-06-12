@@ -1,14 +1,13 @@
 """
 Utilidades para interactuar con la API de Schwab.
-- api_key y app_secret se leen desde st.secrets (nunca cambian)
-- El token se lee desde GitHub (utils/data/schwab_token.json) y se renueva en memoria
+- El access_token se lee directamente desde GitHub (utils/data/schwab_token.json)
+- Sin refresh, sin caché — el notebook diario es el único responsable de renovar el token
 """
 
 import streamlit as st
 import requests
 import base64
 import json
-import time
 from datetime import datetime, date, timedelta
 
 
@@ -52,78 +51,21 @@ def _get_token_from_github() -> dict | None:
 
 
 # ==============================================================================
-# REFRESH DEL ACCESS TOKEN
+# OBTENER ACCESS TOKEN — solo desde GitHub, sin refresh
 # ==============================================================================
-
-def _get_credentials():
-    try:
-        api_key    = st.secrets["schwab"]["api_key"]
-        app_secret = st.secrets["schwab"]["app_secret"]
-        return api_key, app_secret
-    except KeyError as e:
-        st.error(f"❌ Falta configurar secrets de Schwab: {e}")
-        return None, None
-
-
-def _refresh_access_token(api_key: str, app_secret: str, refresh_token: str) -> dict | None:
-    credentials = base64.b64encode(f"{api_key}:{app_secret}".encode()).decode()
-    try:
-        resp = requests.post(
-            "https://api.schwabapi.com/v1/oauth/token",
-            headers={
-                "Authorization": f"Basic {credentials}",
-                "Content-Type":  "application/x-www-form-urlencoded",
-            },
-            data={"grant_type": "refresh_token", "refresh_token": refresh_token},
-            timeout=15,
-        )
-        if resp.status_code == 200:
-            return resp.json()
-        st.error(f"❌ Error renovando token Schwab (HTTP {resp.status_code}): {resp.text[:200]}")
-        return None
-    except Exception as e:
-        st.error(f"❌ Excepción renovando token: {e}")
-        return None
-
 
 def _get_valid_access_token() -> str | None:
     """
-    Devuelve un access_token válido.
-    Reutiliza el de session_state si tiene menos de 25 minutos.
-    Si no, hace refresh usando el refresh_token de GitHub.
+    Lee el access_token directamente desde GitHub.
+    Sin caché, sin refresh — eso lo hace el notebook diario.
     """
-    cached = st.session_state.get("_schwab_token_cache")
-    if cached:
-        age = time.time() - cached.get("fetched_at", 0)
-        if age < 25 * 60:
-            return cached["access_token"]
-
-    api_key, app_secret = _get_credentials()
-    if not api_key:
-        return None
-
     token_data = _get_token_from_github()
     if not token_data:
         return None
-
-    refresh_token = token_data["token"]["refresh_token"]
-    new_tokens    = _refresh_access_token(api_key, app_secret, refresh_token)
-
-    if not new_tokens:
-        existing = token_data["token"].get("access_token")
-        if existing:
-            st.warning("⚠️ No se pudo renovar el token — usando el existente.")
-            return existing
-        return None
-
-    access_token = new_tokens.get("access_token")
+    access_token = token_data["token"].get("access_token")
     if not access_token:
+        st.error("❌ No se encontró access_token en el token de GitHub.")
         return None
-
-    st.session_state["_schwab_token_cache"] = {
-        "access_token": access_token,
-        "fetched_at":   time.time(),
-    }
     return access_token
 
 
@@ -188,28 +130,23 @@ class _FakeResponse:
 
 
 # ==============================================================================
-# connect_to_schwab — interfaz pública, igual que antes
+# connect_to_schwab — interfaz pública
 # ==============================================================================
 
 def connect_to_schwab(*args, **kwargs):
     """
-    Reemplaza easy_client(). Lee token desde GitHub, refresca en memoria.
-    No toca el disco ni necesita schwab-py para autenticación.
+    Lee el access_token desde GitHub y devuelve un SchwabClient listo para usar.
+    El refresh del token es responsabilidad exclusiva del notebook diario.
     """
-    api_key, app_secret = _get_credentials()
-    if not api_key:
-        return None
-
     access_token = _get_valid_access_token()
     if not access_token:
-        st.error("❌ No se pudo obtener un access_token válido desde GitHub.")
+        st.error("❌ No se pudo obtener el access_token desde GitHub.")
         return None
-
     return SchwabClient()
 
 
 # ==============================================================================
-# Helpers — sin cambios respecto a la versión original
+# Helpers
 # ==============================================================================
 
 def normalize_ticker(ticker: str) -> str:
