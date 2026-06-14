@@ -1,35 +1,53 @@
 """
 Utilidades para interactuar con la API de Schwab.
-- El access_token se lee directamente desde GitHub (utils/data/schwab_token.json)
-- Sin refresh, sin caché — el notebook diario es el único responsable de renovar el token
+
+Sincronización con GitHub:
+- El notebook diario (Jupyter) renueva refresh_token + access_token y los sube a GitHub.
+- Streamlit lee el access_token de GitHub. Si está vencido, usa el refresh_token
+  de GitHub para pedir uno nuevo a Schwab y SOLO actualiza access_token + expires_at
+  de vuelta en GitHub (nunca toca refresh_token).
 """
 
 import streamlit as st
 import requests
 import base64
 import json
+import time
 from datetime import datetime, date, timedelta
 
 
 # ==============================================================================
-# LEER TOKEN DESDE GITHUB
+# LEER / ESCRIBIR TOKEN EN GITHUB
 # ==============================================================================
 
-def _get_token_from_github() -> dict | None:
-    """
-    Descarga schwab_token.json desde GitHub y lo devuelve como dict.
-    """
+def _github_config():
     try:
         owner  = st.secrets["github"]["repo_owner"]
         repo   = st.secrets["github"]["repo_name"]
         branch = st.secrets["github"].get("branch", "main")
         token  = st.secrets["github"]["token"]
+        return owner, repo, branch, token
+    except KeyError as e:
+        st.error(f"❌ Falta configurar secrets de GitHub: {e}")
+        return None, None, None, None
+
+
+def _get_token_from_github():
+    """
+    Descarga schwab_token.json desde GitHub.
+    Devuelve (token_data, sha) o (None, None) si falla.
+    El sha es necesario para poder sobreescribir el archivo después.
+    """
+    try:
+        owner, repo, branch, gh_token = _github_config()
+        if not owner:
+            return None, None
 
         url  = f"https://api.github.com/repos/{owner}/{repo}/contents/utils/data/schwab_token.json"
         resp = requests.get(
             url,
             headers={
-                "Authorization": f"token {token}",
+                "Authorization": f"token {gh_token}",
                 "Accept": "application/vnd.github.v3+json",
             },
             params={"ref": branch},
@@ -37,36 +55,143 @@ def _get_token_from_github() -> dict | None:
         )
         if resp.status_code == 404:
             st.error("❌ No se encontró schwab_token.json en GitHub. Corré el notebook de renovación.")
-            return None
+            return None, None
         if resp.status_code != 200:
             st.error(f"❌ Error leyendo token desde GitHub (HTTP {resp.status_code})")
-            return None
+            return None, None
 
-        contenido = base64.b64decode(resp.json()["content"]).decode("utf-8")
-        return json.loads(contenido)
+        data = resp.json()
+        contenido = base64.b64decode(data["content"]).decode("utf-8")
+        return json.loads(contenido), data["sha"]
 
     except Exception as e:
         st.error(f"❌ Excepción leyendo token desde GitHub: {e}")
+        return None, None
+
+
+def _save_token_to_github(token_data, sha):
+    """
+    Sube el token_data actualizado a GitHub, sobreescribiendo el archivo existente.
+    """
+    try:
+        owner, repo, branch, gh_token = _github_config()
+        if not owner:
+            return False
+
+        url = f"https://api.github.com/repos/{owner}/{repo}/contents/utils/data/schwab_token.json"
+        gh_headers = {
+            "Authorization": f"token {gh_token}",
+            "Accept": "application/vnd.github.v3+json",
+        }
+        content_b64 = base64.b64encode(json.dumps(token_data, indent=2).encode()).decode()
+        payload = {
+            "message": f"Refresh access_token (Streamlit) — {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            "content": content_b64,
+            "branch":  branch,
+            "sha":     sha,
+        }
+        resp = requests.put(url, headers=gh_headers, json=payload, timeout=15)
+        if resp.status_code in (200, 201):
+            return True
+        st.warning(f"⚠️ No se pudo guardar el access_token renovado en GitHub (HTTP {resp.status_code})")
+        return False
+
+    except Exception as e:
+        st.warning(f"⚠️ Excepción guardando token en GitHub: {e}")
+        return False
+
+
+# ==============================================================================
+# RENOVAR ACCESS TOKEN CON SCHWAB (usando refresh_token)
+# ==============================================================================
+
+def _get_credentials():
+    try:
+        api_key    = st.secrets["schwab"]["api_key"]
+        app_secret = st.secrets["schwab"]["app_secret"]
+        return api_key, app_secret
+    except KeyError as e:
+        st.error(f"❌ Falta configurar secrets de Schwab: {e}")
+        return None, None
+
+
+def _refresh_access_token(api_key, app_secret, refresh_token):
+    credentials = base64.b64encode(f"{api_key}:{app_secret}".encode()).decode()
+    try:
+        resp = requests.post(
+            "https://api.schwabapi.com/v1/oauth/token",
+            headers={
+                "Authorization": f"Basic {credentials}",
+                "Content-Type":  "application/x-www-form-urlencoded",
+            },
+            data={"grant_type": "refresh_token", "refresh_token": refresh_token},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            return resp.json()
+        st.error(f"❌ Error renovando access_token (HTTP {resp.status_code}): {resp.text[:200]}")
+        return None
+    except Exception as e:
+        st.error(f"❌ Excepción renovando access_token: {e}")
         return None
 
 
 # ==============================================================================
-# OBTENER ACCESS TOKEN — solo desde GitHub, sin refresh
+# OBTENER ACCESS TOKEN VÁLIDO
 # ==============================================================================
 
-def _get_valid_access_token() -> str | None:
+def _get_valid_access_token():
     """
-    Lee el access_token directamente desde GitHub.
-    Sin caché, sin refresh — eso lo hace el notebook diario.
+    Lee el token desde GitHub.
+    - Si el access_token todavía tiene margen (>2 min), lo usa directamente.
+    - Si está vencido, usa el refresh_token (también de GitHub) para pedir uno
+      nuevo a Schwab, y guarda SOLO access_token + expires_at de vuelta en GitHub.
+    - NUNCA modifica ni sobreescribe el refresh_token.
     """
-    token_data = _get_token_from_github()
+    token_data, sha = _get_token_from_github()
     if not token_data:
         return None
+
     access_token = token_data["token"].get("access_token")
-    if not access_token:
-        st.error("❌ No se encontró access_token en el token de GitHub.")
+    expires_at   = token_data["token"].get("expires_at", 0)
+
+    # Margen de seguridad de 2 minutos
+    if access_token and time.time() < expires_at - 120:
+        return access_token
+
+    # Access token vencido (o casi) -> renovar con refresh_token
+    api_key, app_secret = _get_credentials()
+    if not api_key:
+        return access_token  # mejor esfuerzo: devolver el viejo si no hay credenciales
+
+    refresh_token = token_data["token"].get("refresh_token")
+    if not refresh_token:
+        st.error("❌ No hay refresh_token en GitHub.")
+        return access_token
+
+    new_tokens = _refresh_access_token(api_key, app_secret, refresh_token)
+    if not new_tokens:
+        if access_token:
+            st.warning("⚠️ No se pudo renovar el access_token — usando el existente (puede estar vencido).")
+            return access_token
         return None
-    return access_token
+
+    new_access_token = new_tokens.get("access_token")
+    if not new_access_token:
+        return access_token
+
+    now = int(time.time())
+    token_data["token"]["access_token"] = new_access_token
+    token_data["token"]["expires_in"]   = new_tokens.get("expires_in", 1800)
+    token_data["token"]["expires_at"]   = now + new_tokens.get("expires_in", 1800)
+    # IMPORTANTE: no tocar token_data["token"]["refresh_token"]
+    if "id_token" in new_tokens:
+        token_data["token"]["id_token"] = new_tokens["id_token"]
+
+    if sha:
+        _save_token_to_github(token_data, sha)
+
+    return new_access_token
 
 
 # ==============================================================================
@@ -121,7 +246,7 @@ class SchwabClient:
 
 
 class _FakeResponse:
-    def __init__(self, status_code: int, data: dict):
+    def __init__(self, status_code, data):
         self.status_code = status_code
         self._data = data
 
@@ -135,12 +260,12 @@ class _FakeResponse:
 
 def connect_to_schwab(*args, **kwargs):
     """
-    Lee el access_token desde GitHub y devuelve un SchwabClient listo para usar.
-    El refresh del token es responsabilidad exclusiva del notebook diario.
+    Obtiene un access_token válido (desde GitHub, renovando si es necesario)
+    y devuelve un SchwabClient listo para usar.
     """
     access_token = _get_valid_access_token()
     if not access_token:
-        st.error("❌ No se pudo obtener el access_token desde GitHub.")
+        st.error("❌ No se pudo obtener un access_token válido desde GitHub.")
         return None
     return SchwabClient()
 
