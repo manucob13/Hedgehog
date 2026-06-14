@@ -2,7 +2,8 @@
 download_tickers.py
 
 Descarga y combina:
-- Russell 1000 (top 1000 acciones USA por capitalización)
+- S&P 500 + S&P 400 (903 acciones large/mid-cap USA) — sustituye a Russell 1000
+  (la descarga directa desde iShares/IWB quedó descontinuada)
 - Top Índices por volumen de opciones
 - Top ETFs por volumen de opciones
 
@@ -26,84 +27,70 @@ import os
 
 def download_russell1000():
     """
-    Descarga los ~1000 tickers del Russell 1000 desde iShares ETF (IWB)
-    GRATIS - No requiere API key
-    
+    Descarga el universo S&P 500 + S&P 400 (Mid Cap) desde Wikipedia.
+
+    Sustituye a la descarga de Russell 1000 desde iShares (IWB), que dejó
+    de funcionar porque iShares ya no expone el CSV de holdings via .ajax.
+
+    S&P 500 + S&P 400 = ~903 tickers de large/mid-cap USA, un universo
+    muy similar en composición a Russell 1000.
+
     Returns:
-        list: Lista de tickers únicos del Russell 1000
+        list: Lista de tickers únicos (S&P 500 + S&P 400)
     """
-    print("\n📥 Descargando Russell 1000 desde iShares (IWB)...")
-    
-    try:
-        # URL del CSV de holdings de iShares Russell 1000 ETF
-        url = "https://www.ishares.com/us/products/239707/ishares-russell-1000-etf/1467271812596.ajax"
-        
-        params = {
-            'fileType': 'csv',
-            'fileName': 'IWB_holdings',
-            'dataType': 'fund'
-        }
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-        
-        # Descargar con timeout de 30 segundos
-        response = requests.get(url, params=params, headers=headers, timeout=30)
-        response.raise_for_status()
-        
-        # Decodificar contenido (UTF-8 con BOM)
-        content = response.content.decode('utf-8-sig')
-        
-        # Procesar líneas
-        lines = content.split('\n')
-        
-        # Encontrar la línea de headers (contiene 'Ticker')
-        header_idx = None
-        for i, line in enumerate(lines):
-            if 'Ticker' in line and 'Name' in line:
-                header_idx = i
-                break
-        
-        if header_idx is None:
-            raise ValueError("❌ No se encontró la línea de headers en el CSV")
-        
-        # Extraer datos desde la línea de headers hasta 'Total'
-        data_lines = [lines[header_idx]]  # Header
-        
-        for line in lines[header_idx + 1:]:
-            line_stripped = line.strip()
-            if line_stripped and not line_stripped.startswith('Total'):
-                data_lines.append(line)
-            elif line_stripped.startswith('Total'):
-                break  # Fin de datos
-        
-        # Crear DataFrame desde las líneas procesadas
-        df = pd.read_csv(StringIO('\n'.join(data_lines)))
-        
-        # Limpiar y filtrar tickers válidos
-        df = df[df['Ticker'].notna()]  # Eliminar NaN
-        df = df[df['Ticker'] != '-']   # Eliminar guiones
-        
-        # Filtrar solo tickers que sean letras mayúsculas (sin números ni símbolos)
-        df = df[df['Ticker'].str.match(r'^[A-Z]+$', na=False)]
-        
-        # Obtener lista única de tickers y ordenar alfabéticamente
-        tickers = sorted(df['Ticker'].unique().tolist())
-        
-        print(f"✅ Russell 1000: {len(tickers)} tickers descargados")
-        
-        return tickers
-        
-    except requests.exceptions.Timeout:
-        print("❌ Error: Timeout al conectar con iShares. Intenta de nuevo.")
+    print("\n📥 Descargando S&P 500 + S&P 400 desde Wikipedia (sustituye Russell 1000)...")
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                      '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+
+    urls = {
+        'SP500': "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+        'SP400': "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies",
+    }
+
+    all_tickers = []
+
+    for name, url in urls.items():
+        try:
+            resp = requests.get(url, headers=headers, timeout=15)
+            resp.raise_for_status()
+
+            tables = pd.read_html(StringIO(resp.text))
+
+            df = None
+            for t in tables:
+                if 'Symbol' in t.columns:
+                    df = t
+                    break
+
+            if df is None:
+                print(f"⚠️ {name}: no se encontró columna 'Symbol'")
+                continue
+
+            tickers = df['Symbol'].astype(str).str.strip().tolist()
+            # Normalizar formato para yfinance (ej: BRK.B -> BRK-B)
+            tickers = [t.replace('.', '-') for t in tickers]
+
+            all_tickers.extend(tickers)
+            print(f"✅ {name}: {len(tickers)} tickers")
+
+        except requests.exceptions.Timeout:
+            print(f"❌ {name}: Timeout al conectar con Wikipedia.")
+        except requests.exceptions.RequestException as e:
+            print(f"❌ {name}: Error de conexión: {e}")
+        except Exception as e:
+            print(f"❌ {name}: Error procesando datos: {e}")
+
+    if not all_tickers:
+        print("❌ No se pudo descargar ningún índice")
         return []
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Error de conexión: {e}")
-        return []
-    except Exception as e:
-        print(f"❌ Error procesando Russell 1000: {e}")
-        return []
+
+    tickers = sorted(set(all_tickers))
+    print(f"✅ Total S&P 500 + S&P 400: {len(tickers)} tickers únicos")
+
+    return tickers
 
 
 def get_all_index_names():
@@ -317,7 +304,7 @@ def get_top_etfs():
 def create_tickers_universe(output_filename='Tks.csv'):
     """
     Crea el universo completo de tickers combinando:
-    - Russell 1000 (acciones)
+    - S&P 500 + S&P 400 (acciones large/mid-cap USA, sustituye Russell 1000)
     - Top Índices por volumen de opciones
     - Top ETFs por volumen de opciones
     
@@ -333,7 +320,7 @@ def create_tickers_universe(output_filename='Tks.csv'):
     print("🚀 DESCARGANDO UNIVERSO COMPLETO DE TICKERS")
     print("=" * 70)
     
-    # 1. Descargar Russell 1000
+    # 1. Descargar S&P 500 + S&P 400 (sustituye a Russell 1000)
     stocks = download_russell1000()
     stocks_df = pd.DataFrame({
         'Ticker': stocks,
@@ -376,7 +363,7 @@ def create_tickers_universe(output_filename='Tks.csv'):
     print("\n" + "=" * 70)
     print("📊 RESUMEN DEL UNIVERSO DE TICKERS")
     print("=" * 70)
-    print(f"📈 Acciones (Russell 1000): {len(stocks_df):,}")
+    print(f"📈 Acciones (S&P 500 + S&P 400): {len(stocks_df):,}")
     print(f"📉 Índices: {len(indices_df):,}")
     print(f"📊 ETFs: {len(etfs_df):,}")
     print("-" * 70)
