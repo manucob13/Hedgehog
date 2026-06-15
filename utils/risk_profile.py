@@ -1,6 +1,6 @@
 # utils/risk_profile.py
 """
-Risk Profile — Calendar Put Spread SPX
+Risk Profile — Calendar Put Spread SPX/SPY
 Motor: Bjerksund-Stensland 2002 + Sticky Skew por slice
 + ajuste estático global en breakevens finales.
 
@@ -455,7 +455,7 @@ def build_risk_profile_figure(
         mode="lines",
         name=f"Hoy  {today_label}",
         line=dict(color="#00c853", width=2),
-        hovertemplate="SPX: %{x:,.0f}<br>P/L: $%{y:,.0f}<extra></extra>",
+        hovertemplate="Precio: %{x:,.2f}<br>P/L: $%{y:,.0f}<extra></extra>",
     ))
 
     try:
@@ -468,7 +468,7 @@ def build_risk_profile_figure(
         mode="lines",
         name=f"Fecha  {target_label}",
         line=dict(color="#ffffff", width=2.5),
-        hovertemplate="SPX: %{x:,.0f}<br>P/L: $%{y:,.0f}<extra></extra>",
+        hovertemplate="Precio: %{x:,.2f}<br>P/L: $%{y:,.0f}<extra></extra>",
     ))
 
     fig.add_vline(
@@ -505,7 +505,7 @@ def build_risk_profile_figure(
             x=x_label,
             y=0,
             xref="x", yref="y",
-            text=f"BE {be:,.0f}",
+            text=f"BE {be:,.2f}",
             showarrow=False,
             font=dict(color="#ef5350", size=10),
             xanchor=xanchor,
@@ -537,7 +537,7 @@ def build_risk_profile_figure(
         ),
         margin=dict(l=60, r=30, t=40, b=50),
         hovermode="x unified",
-        xaxis=dict(title="SPX Price", gridcolor="#222244", tickformat=",", zeroline=False),
+        xaxis=dict(title="Precio", gridcolor="#222244", tickformat=",", zeroline=False),
         yaxis=dict(title="P/L ($)", gridcolor="#222244", zeroline=False, tickprefix="$", tickformat=","),
         height=560,
     )
@@ -590,8 +590,8 @@ def build_price_slices(
         )
 
         rows.append({
-            "SPX Price": round(S, 0),
-            "Offset":    f"{off:+,.0f}",
+            "Precio":    round(S, 2),
+            "Offset":    f"{off:+,.2f}",
             "P/L Hoy":   round(pl_t, 2),
             "P/L Fecha": round(pl_e, 2),
             "Delta":     g["Delta"],
@@ -631,7 +631,25 @@ def render_risk_profile(
         st.error(f"❌ Error al parsear el registro: {e}")
         return
 
-    spx_abrir = float(str(registro.get("SPX al abrir", "5000")).replace(",", ""))
+    # ------------------------------------------------------------------
+    # Precio de entrada del registro (puede ser SPX o SPY, según el
+    # subyacente con el que se registró). Buscamos la columna que
+    # empiece con "<algo> al abrir" para soportar ambos casos.
+    # ------------------------------------------------------------------
+    spx_abrir = None
+    for k, v in registro.items():
+        if isinstance(k, str) and k.endswith("al abrir"):
+            try:
+                spx_abrir = float(str(v).replace(",", ""))
+            except (ValueError, TypeError):
+                spx_abrir = None
+            break
+
+    if spx_abrir is None or spx_abrir <= 0:
+        # Fallback: usar el strike como referencia de escala si no
+        # encontramos un precio de entrada válido en el registro.
+        spx_abrir = K if K > 0 else 5000.0
+
     S_current = precio_spx_live if precio_spx_live else spx_abrir
 
     r_rate = 0.0375
@@ -668,7 +686,7 @@ def render_risk_profile(
         f" · Short: <b style='color:#ef9a9a'>{short_fecha}</b> ({dte_s}d)"
         f" · Long: <b style='color:#a5d6a7'>{long_fecha}</b> ({dte_l}d)"
         f" · Contratos: <b style='color:white'>{contracts}</b>"
-        f" · SPX entrada: <b style='color:#ffc107'>{spx_abrir:,.2f}</b>"
+        f" · Precio entrada: <b style='color:#ffc107'>{spx_abrir:,.2f}</b>"
         f"</span></div>",
         unsafe_allow_html=True,
     )
@@ -702,9 +720,12 @@ def render_risk_profile(
         )
 
     with col_spx:
+        # min_value dinámico: soporta tanto SPX (~5000-7000) como
+        # SPY (~500-700) u otros subyacentes sin romper el widget.
+        spx_min = max(1.0, round(S_current * 0.5, 2))
         S_input = st.number_input(
-            "📈 SPX actual",
-            min_value=1000.0, value=float(S_current),
+            "📈 Precio actual",
+            min_value=spx_min, value=float(S_current),
             step=1.0, format="%.2f",
             key=f"rp_spx_{ts}_{K}",
         )
@@ -882,24 +903,24 @@ def render_risk_profile(
     with col_be1:
         st.metric(
             "📉 BE Inferior",
-            f"{be_lower:,.0f}" if be_lower is not None else "—",
-            delta=f" ({be_lower - S_input:+,.0f} pts)" if be_lower is not None else None,
+            f"{be_lower:,.2f}" if be_lower is not None else "—",
+            delta=f" ({be_lower - S_input:+,.2f})" if be_lower is not None else None,
             delta_color="inverse",
         )
         if be_lower_raw is not None:
-            st.caption(f"Modelo: {be_lower_raw:,.0f} · Ajustado: {be_lower:,.0f}")
+            st.caption(f"Modelo: {be_lower_raw:,.2f} · Ajustado: {be_lower:,.2f}")
 
     with col_be2:
         st.metric(
             "📈 BE Superior",
-            f"{be_upper:,.0f}" if be_upper is not None else "—",
-            delta=f" ({be_upper - S_input:+,.0f} pts)" if be_upper is not None else None,
+            f"{be_upper:,.2f}" if be_upper is not None else "—",
+            delta=f" ({be_upper - S_input:+,.2f})" if be_upper is not None else None,
         )
         if be_upper_raw is not None:
-            st.caption(f"Modelo: {be_upper_raw:,.0f} · Ajustado: {be_upper:,.0f}")
+            st.caption(f"Modelo: {be_upper_raw:,.2f} · Ajustado: {be_upper:,.2f}")
 
     with col_mp:
-        st.metric("🎯 Max Profit Price", f"{max_pl_price:,.0f}")
+        st.metric("🎯 Max Profit Price", f"{max_pl_price:,.2f}")
 
     with col_pl:
         st.metric("💰 Max P/L", f"${max_pl_val:,.0f}")
@@ -907,7 +928,7 @@ def render_risk_profile(
     st.markdown(
         "<div style='background:#0d0d1a; border:1px solid #1a3a5c; border-radius:6px; "
         "padding:8px 16px; font-family:monospace; font-size:0.85em; margin-bottom:8px;'>"
-        "<b style='color:#ffc107;'>▶ Griegos al precio actual del SPX</b>"
+        "<b style='color:#ffc107;'>▶ Griegos al precio actual</b>"
         "</div>",
         unsafe_allow_html=True,
     )
