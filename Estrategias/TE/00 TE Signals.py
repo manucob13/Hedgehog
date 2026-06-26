@@ -35,7 +35,7 @@ def get_default_config_df(rv5d_ayer_val):
             '0.9000', 
             '0.1500', 
             'RV_AYER',
-            '0.9000'
+            '0.9500'
         ], 
         'Activa': [True, True, True, False, True],
         'ID': ['r1_nr_wr', 'r2_k2_70', 'r6_rv5d_10', 'r7_rv5d_menor', 'r8_vix_ts']
@@ -114,7 +114,7 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
             else:
                 df_config_calc.loc[index, 'Cumple'] = "NO"
         else:
-             df_config_calc.loc[index, 'Cumple'] = "INACTIVA"
+            df_config_calc.loc[index, 'Cumple'] = "INACTIVA"
 
         if row['Activa']:
             num_reglas_activas += 1
@@ -124,13 +124,10 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
     df_presentacion = df_config_calc[['Activa', 'Regla', 'Operador', 'Umbral', 'Valor Actual', 'Cumple', 'ID']].copy()
     
     if num_reglas_activas == 0:
-        res_final_texto = "INACTIVA (0 Reglas Activas)"
         senal_color = "background-color: #AAAAAA; color: black"
     elif senal_entrada_global_interactiva:
-        res_final_texto = ""
         senal_color = "background-color: #008000; color: white"
     else:
-        res_final_texto = "" 
         senal_color = "background-color: #8B0000; color: white"
         
     fila_resumen = pd.DataFrame([{
@@ -203,6 +200,9 @@ def main_comparison():
     st.dataframe(spx.tail(2))
     st.markdown("---")
 
+    # ------------------------------------------------------------------
+    # 1.2 NR/WR
+    # ------------------------------------------------------------------
     st.header("1.2 Indicador NR/WR (Narrow Range after Wide Range)")
     
     if nr_wr_signal_on:
@@ -229,20 +229,22 @@ def main_comparison():
         with col_ts2:
             st.metric("VIX3M (93 días)", f"{vix3m_hoy:.2f}")
         with col_ts3:
-            delta_color = "normal" if vix_vix3m_hoy <= 1.0 else "inverse"
-            st.metric("Ratio VIX/VIX3M", f"{vix_vix3m_hoy:.4f}",
-                      delta=f"{'Contango' if vix_vix3m_hoy < 1.0 else 'Backwardation'}",
-                      delta_color=delta_color)
+            st.metric(
+                "Ratio VIX/VIX3M", 
+                f"{vix_vix3m_hoy:.4f}",
+                delta=f"{'Contango' if vix_vix3m_hoy < 1.0 else 'Backwardation'}",
+                delta_color="normal" if vix_vix3m_hoy <= 1.0 else "inverse"
+            )
 
-        if vix_vix3m_hoy <= 0.90:
+        if vix_vix3m_hoy <= 0.95:
             st.success(
-                f"🟢 **Contango pronunciado** — Ratio: **{vix_vix3m_hoy:.4f}** ≤ 0.90. "
-                f"El mercado no anticipa volatilidad inmediata. Estructura **muy favorable** para calendars."
+                f"🟢 **Contango** — Ratio: **{vix_vix3m_hoy:.4f}** ≤ 0.95. "
+                f"El mercado no anticipa volatilidad inmediata. Estructura **favorable** para calendars."
             )
         elif vix_vix3m_hoy <= 1.0:
             st.warning(
-                f"🟡 **Contango moderado** — Ratio: **{vix_vix3m_hoy:.4f}** (entre 0.90 y 1.0). "
-                f"Estructura aceptable pero no óptima. Evaluar con el resto de filtros."
+                f"🟡 **Contango débil** — Ratio: **{vix_vix3m_hoy:.4f}** (entre 0.95 y 1.0). "
+                f"Estructura marginal. Evaluar con el resto de filtros antes de entrar."
             )
         else:
             st.error(
@@ -254,7 +256,10 @@ def main_comparison():
         st.warning("⚠️ VIX3M no disponible. Verifica que `fetch_data()` incluye `^VIX3M`. La regla R5 quedará inactiva.")
 
     st.markdown("---")
-    
+
+    # ------------------------------------------------------------------
+    # 1.4 MODELO MARKOV K=2
+    # ------------------------------------------------------------------
     st.header("1.4 Modelo de Markov K=2")
     
     if 'error' in results_k2:
@@ -324,8 +329,8 @@ def main_comparison():
     )
 
     df_config = st.session_state['config_df'].copy()
-    
-    # Asegurar que r8_vix_ts existe en config (compatibilidad con sesiones antiguas)
+
+    # Guard: compatibilidad con sesiones abiertas antes de añadir r8_vix_ts
     if 'r8_vix_ts' not in df_config['ID'].values:
         st.session_state['config_df'] = get_default_config_df(rv5d_ayer_val)
         df_config = st.session_state['config_df'].copy()
@@ -364,8 +369,8 @@ def main_comparison():
     
     st.markdown("### Tabla Consolidada de Lógica y Resultado 🚦")
     
-    df_body   = st.session_state['df_semaforo_body']
-    df_footer = st.session_state['df_semaforo_footer']
+    df_body     = st.session_state['df_semaforo_body']
+    df_footer   = st.session_state['df_semaforo_footer']
     senal_color = st.session_state['senal_color']
     
     def color_cumple_body(row):
@@ -377,8 +382,10 @@ def main_comparison():
         return styles
 
     styled_df_body = df_body.style.apply(color_cumple_body, axis=1)
-    styled_df_body = styled_df_body.set_properties(**{'text-align': 'center'}, 
-                                 subset=['Operador', 'Umbral', 'Valor Actual', 'Cumple'])
+    styled_df_body = styled_df_body.set_properties(
+        **{'text-align': 'center'}, 
+        subset=['Operador', 'Umbral', 'Valor Actual', 'Cumple']
+    )
     
     st.dataframe(
         styled_df_body,
