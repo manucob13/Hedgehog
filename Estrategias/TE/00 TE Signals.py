@@ -10,55 +10,40 @@ from utils.utils import (
     calculate_nr_wr_signal,
     calculate_nr_wr_signal_series,
     markov_calculation_k2,
-    markov_calculation_k3,
     check_password 
 )
-
-# ==============================================================================
-# FUNCIÓN AUXILIAR: CÁLCULO DEL UMBRAL DINÁMICO K3
-# ==============================================================================
-
-def calcular_umbral_k3(prob_baja_serie, percentil=50):
-    """Calcula el umbral dinámico para K3 Baja Vol. basado en un percentil histórico."""
-    return float(np.percentile(prob_baja_serie.dropna().values, percentil))
 
 
 # ==============================================================================
 # LÓGICA DE CONFIGURACIÓN Y VALORES POR DEFECTO
 # ==============================================================================
 
-def get_default_config_df(rv5d_ayer_val, umbral_k3_baja):
+def get_default_config_df(rv5d_ayer_val):
     """Genera el DataFrame de configuración de reglas con los valores por defecto."""
     
     default_config_data = {
         'Regla': [
             '1. Señal NR/WR Activa', 
             '2. Prob. K=2 Baja Vol.', 
-            '3. Prob. K=3 Media Vol.', 
-            '4. Prob. K=3 Baja Vol.', 
-            '5. Prob. K=3 Consolidada', 
-            '6. RV_5d Actual', 
-            f'7. RV_5d HOY vs. AYER ({rv5d_ayer_val:.4f})'
+            '3. RV_5d Actual', 
+            f'4. RV_5d HOY vs. AYER ({rv5d_ayer_val:.4f})'
         ],
-        'Operador': ['==', '>=', '>=', '>=', '>=', '<=', '<'],
+        'Operador': ['==', '>=', '<=', '<'],
         'Umbral': [
             'ON', 
             '0.9000', 
-            '0.7500', 
-            f'{umbral_k3_baja:.4f}',  # Umbral dinámico calculado
-            '0.9500', 
             '0.1500', 
             'RV_AYER'
         ], 
-        'Activa': [True, True, False, True, False, True, False],  # R4=True, R5=False
-        'ID': ['r1_nr_wr', 'r2_k2_70', 'r3_k3_media_75', 'r4_k3_baja_15', 'r5_k3_consol_95', 'r6_rv5d_10', 'r7_rv5d_menor']
+        'Activa': [True, True, True, False],
+        'ID': ['r1_nr_wr', 'r2_k2_70', 'r6_rv5d_10', 'r7_rv5d_menor']
     }
     return pd.DataFrame(default_config_data)
 
 
-def reset_config_callback(rv5d_ayer_val, umbral_k3_baja):
+def reset_config_callback(rv5d_ayer_val):
     """Callback para el botón de reset."""
-    st.session_state['config_df'] = get_default_config_df(rv5d_ayer_val, umbral_k3_baja)
+    st.session_state['config_df'] = get_default_config_df(rv5d_ayer_val)
     for key in ['df_semaforo_body', 'df_semaforo_footer', 'senal_color']:
         if key in st.session_state:
             del st.session_state[key]
@@ -158,9 +143,9 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
 
 def main_comparison():
     
-    st.markdown("<h1><span style='font-size: 1.5em;'>🦔</span> Time Edge Signals v 1.1 Mod. Vola - Markov-Switching K=2-3 - NR/WR</h1>", unsafe_allow_html=True)
+    st.markdown("<h1><span style='font-size: 1.5em;'>🦔</span> Time Edge Signals v 1.1 Mod. Vola - Markov-Switching K=2 - NR/WR</h1>", unsafe_allow_html=True)
     st.markdown("""
-    Esta herramienta ejecuta y compara dos modelos de Regresión de Markov sobre la Volatilidad Realizada ($\text{RV}_{5d}$) 
+    Esta herramienta ejecuta el modelo de Regresión de Markov K=2 sobre la Volatilidad Realizada ($\\text{RV}_{5d}$) 
     del S&P 500 y añade la señal de compresión **NR/WR (Narrow Range after Wide Range)** como indicador auxiliar.
     """)
     st.markdown("---")
@@ -185,9 +170,8 @@ def main_comparison():
             st.error("❌ Error: No se pudieron preparar los datos para el análisis Markov.")
             return
         
-        with st.spinner("Ejecutando modelos Markov K=2 y K=3..."):
+        with st.spinner("Ejecutando modelo Markov K=2..."):
             results_k2 = markov_calculation_k2(endog_final, exog_tvtp_final)
-            results_k3 = markov_calculation_k3(endog_final, exog_tvtp_final)
         
         with st.spinner("Calculando indicador NR/WR..."):
             nr_wr_signal_on = calculate_nr_wr_signal(df_raw)
@@ -195,8 +179,8 @@ def main_comparison():
         
         st.session_state['datos_calculados'] = {
             'df_raw': df_raw, 'spx': spx, 'endog_final': endog_final, 
-            'exog_tvtp_final': exog_tvtp_final, 'results_k2': results_k2, 
-            'results_k3': results_k3, 'nr_wr_signal_on': nr_wr_signal_on, 
+            'exog_tvtp_final': exog_tvtp_final, 'results_k2': results_k2,
+            'nr_wr_signal_on': nr_wr_signal_on, 
             'nr_wr_series': nr_wr_series
         }
         st.success("✅ Todos los cálculos completados y guardados en memoria.")
@@ -208,7 +192,6 @@ def main_comparison():
     spx = datos['spx']
     endog_final = datos['endog_final']
     results_k2 = datos['results_k2']
-    results_k3 = datos['results_k3']
     nr_wr_signal_on = datos['nr_wr_signal_on']
     
     st.dataframe(spx.tail(2))
@@ -222,137 +205,42 @@ def main_comparison():
         st.info("⚪ **SEÑAL NR/WR:** La compresión de volatilidad está **INACTIVA**. La volatilidad puede ser normal o ya ha explotado.")
     st.markdown("---")
     
-    st.header("1.3 Modelos de Markov")
+    st.header("1.3 Modelo de Markov K=2")
     
     if 'error' in results_k2:
         st.error(f"❌ Error K=2: {results_k2['error']}")
         return
-    if 'error' in results_k3:
-        st.error(f"❌ Error K=3: {results_k3['error']}")
-        return
     
     st.markdown(f"**Fecha del Último Cálculo:** {endog_final.index[-1].strftime('%Y-%m-%d')}")
 
-    # --------------------------------------------------------------------------
-    # ANÁLISIS ESTADÍSTICO DE K3 BAJA VOL. + SELECTOR DE UMBRAL
-    # --------------------------------------------------------------------------
-    st.markdown("---")
-    st.subheader("📊 Análisis Histórico K=3 Régimen Baja Volatilidad")
-    
-    prob_baja_serie_k3 = results_k3['prob_baja_serie']
-    
-    # Estadísticas clave
-    serie_values = prob_baja_serie_k3.dropna().values
-    stats = {
-        'Media': np.mean(serie_values),
-        'Mediana (P50)': np.percentile(serie_values, 50),
-        'Percentil 40': np.percentile(serie_values, 40),
-        'Percentil 50': np.percentile(serie_values, 50),
-        'Percentil 60': np.percentile(serie_values, 60),
-        'Percentil 75': np.percentile(serie_values, 75),
-        'Máximo': np.max(serie_values),
-    }
-    
-    pct_sobre_40 = (serie_values >= np.percentile(serie_values, 40)).mean() * 100
-    pct_sobre_50 = (serie_values >= np.percentile(serie_values, 50)).mean() * 100
-    pct_sobre_60 = (serie_values >= np.percentile(serie_values, 60)).mean() * 100
-    pct_sobre_75 = (serie_values >= np.percentile(serie_values, 75)).mean() * 100
-
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("**Distribución histórica de Prob. K=3 Baja:**")
-        df_stats = pd.DataFrame({
-            'Estadístico': ['Media', 'Mediana', 'Máximo'],
-            'Valor': [f"{stats['Media']:.4f}", f"{stats['Mediana (P50)']:.4f}", f"{stats['Máximo']:.4f}"]
-        })
-        st.dataframe(df_stats, hide_index=True, use_container_width=True)
-    
-    with col2:
-        st.markdown("**% de días históricos que supera cada umbral:**")
-        df_freq = pd.DataFrame({
-            'Percentil': ['P40', 'P50 (defecto)', 'P60', 'P75'],
-            'Umbral': [
-                f"{stats['Percentil 40']:.4f}",
-                f"{stats['Percentil 50']:.4f}",
-                f"{stats['Percentil 60']:.4f}",
-                f"{stats['Percentil 75']:.4f}"
-            ],
-            '% días activos': [
-                f"{pct_sobre_40:.1f}%",
-                f"{pct_sobre_50:.1f}%",
-                f"{pct_sobre_60:.1f}%",
-                f"{pct_sobre_75:.1f}%"
-            ]
-        })
-        st.dataframe(df_freq, hide_index=True, use_container_width=True)
-
-    # Slider para seleccionar el percentil
-    st.markdown("**Selecciona el nivel de exigencia para R4 (Prob. K=3 Baja Vol.):**")
-    
-    percentil_seleccionado = st.select_slider(
-        "Percentil histórico como umbral:",
-        options=[40, 50, 60, 75],
-        value=st.session_state.get('percentil_k3_baja', 50),
-        format_func=lambda x: {
-            40: "40 — Permisivo",
-            50: "50 — Moderado (defecto)",
-            60: "60 — Estricto",
-            75: "75 — Muy estricto"
-        }[x],
-        key='percentil_k3_baja_slider'
-    )
-    
-    # Guardar el percentil seleccionado en session_state
-    umbral_k3_baja_calculado = calcular_umbral_k3(prob_baja_serie_k3, percentil_seleccionado)
-    st.session_state['percentil_k3_baja'] = percentil_seleccionado
-    st.session_state['umbral_k3_baja_calculado'] = umbral_k3_baja_calculado
-    
-    st.info(f"📐 Umbral calculado para R4: **{umbral_k3_baja_calculado:.4f}** "
-            f"(P{percentil_seleccionado} histórico → activo el **{100 - percentil_seleccionado}%** de los días)")
-
-    # Si el percentil cambia, forzar recálculo del config_df
-    if 'ultimo_percentil_aplicado' not in st.session_state or \
-       st.session_state['ultimo_percentil_aplicado'] != percentil_seleccionado:
-        st.session_state['ultimo_percentil_aplicado'] = percentil_seleccionado
-        # Resetear config para que se regenere con el nuevo umbral
-        if 'config_df' in st.session_state:
-            del st.session_state['config_df']
-        for key in ['df_semaforo_body', 'df_semaforo_footer', 'senal_color']:
-            if key in st.session_state:
-                del st.session_state[key]
-
-    st.markdown("---")
-
-    prob_k3_consolidada = results_k3['prob_baja'] + results_k3['prob_media']
-
-    data_comparativa = {
-        'Métrica': ['Probabilidad Baja (HOY)', 'Probabilidad Media (HOY)', 'Probabilidad Consolidada (Baja + Media)', 'Umbral de Señal de Entrada (70%)', 'Varianza Régimen Baja', 'Varianza Régimen Media', 'Varianza Régimen Alta', 'Umbral RV_5d Estimado (Para el Régimen Baja)'],
-        'K=2 (Original)': [f"{results_k2['prob_baja']:.4f}", 'N/A (No existe)', f"{results_k2['prob_baja']:.4f}", f"{results_k2['UMBRAL_COMPRESION']:.2f}", f"{results_k2['varianzas_regimen']['Baja']:.5f}", 'N/A (No existe)', f"{results_k2['varianzas_regimen']['Alta']:.5f}", f"{results_k2['UMBRAL_RV5D_P_OBJETIVO']:.4f}"],
-        'K=3 (Propuesto)': [f"{results_k3['prob_baja']:.4f}", f"{results_k3['prob_media']:.4f}", f"**{prob_k3_consolidada:.4f}**", f"{results_k3['UMBRAL_COMPRESION']:.2f}", f"{results_k3['varianzas_regimen']['Baja']:.5f}", f"{results_k3['varianzas_regimen']['Media']:.5f}", f"{results_k3['varianzas_regimen']['Alta']:.5f}", 'Determinado por Varianza']
+    data_k2 = {
+        'Métrica': [
+            'Probabilidad Baja Vol. (HOY)', 
+            'Umbral de Señal de Entrada (70%)', 
+            'Varianza Régimen Baja', 
+            'Varianza Régimen Alta', 
+            'Umbral RV_5d Estimado (Régimen Baja)'
+        ],
+        'K=2': [
+            f"{results_k2['prob_baja']:.4f}",
+            f"{results_k2['UMBRAL_COMPRESION']:.2f}",
+            f"{results_k2['varianzas_regimen']['Baja']:.5f}",
+            f"{results_k2['varianzas_regimen']['Alta']:.5f}",
+            f"{results_k2['UMBRAL_RV5D_P_OBJETIVO']:.4f}"
+        ]
     }
 
-    df_comparativa = pd.DataFrame(data_comparativa)
-    st.dataframe(df_comparativa, hide_index=True, use_container_width=True)
+    df_k2 = pd.DataFrame(data_k2)
+    st.dataframe(df_k2, hide_index=True, use_container_width=True)
     
     st.markdown("---")
     st.subheader("Conclusión Operativa")
 
-    if prob_k3_consolidada >= results_k3['UMBRAL_COMPRESION']:
-        st.success(f"**SEÑAL DE ENTRADA FUERTE (K=3):** El riesgo de Alta Volatilidad es bajo. La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, mayor de 0.70. Condición Favorable para estrategias de Theta.")
+    if results_k2['prob_baja'] >= results_k2['UMBRAL_COMPRESION']:
+        st.success(f"**SEÑAL DE ENTRADA (K=2):** El riesgo de Alta Volatilidad es bajo. La probabilidad de Baja Vol. es **{results_k2['prob_baja']:.4f}**, mayor de 0.70. Condición Favorable para estrategias de Theta.")
     else:
-        st.warning(f"**RIESGO ACTIVO (K=3):** La probabilidad consolidada es **{prob_k3_consolidada:.4f}**, menor de 0.70. El Régimen de Alta Volatilidad ha tomado peso. Evitar entrar o considerar salir.")
-    
-    st.markdown("""
-    ---
-    ### Entendiendo la Diferencia Clave
-    
-    El **Modelo K=2** combina toda la volatilidad no-crisis en una única señal de 'Baja', lo que le hace propenso a **falsos positivos**.
-    
-    El **Modelo K=3** descompone la 'Baja' volatilidad en dos estados: 'Baja' (Calma Extrema) y 'Media' (Consolidación). 
-    
-    La **Probabilidad Consolidada (Baja + Media)** del K=3 ofrece una señal de entrada/salida más robusta: solo da luz verde cuando la suma de los dos estados favorables supera el 70%, actuando como un **filtro más estricto contra el ruido** que el K=2 ignora.
-    """)
+        st.warning(f"**RIESGO ACTIVO (K=2):** La probabilidad de Baja Vol. es **{results_k2['prob_baja']:.4f}**, menor de 0.70. El Régimen de Alta Volatilidad ha tomado peso. Evitar entrar o considerar salir.")
+
     st.markdown("---")
     
     # ----------------------------------------------------------------------
@@ -362,30 +250,26 @@ def main_comparison():
 
     rv5d_ayer_val = spx["RV_5d"].iloc[-2]
     
-    # Inicializar config_df con el umbral dinámico actual
     if 'config_df' not in st.session_state:
-        st.session_state['config_df'] = get_default_config_df(
-            rv5d_ayer_val, 
-            st.session_state.get('umbral_k3_baja_calculado', umbral_k3_baja_calculado)
-        )
+        st.session_state['config_df'] = get_default_config_df(rv5d_ayer_val)
 
     rv5d_hoy = spx['RV_5d'].iloc[-1]
     rv5d_ayer = spx['RV_5d'].iloc[-2]
     
     metricas_actuales = {
-        'r1_nr_wr': nr_wr_signal_on, 'r2_k2_70': results_k2['prob_baja'],
-        'r3_k3_media_75': results_k3['prob_media'], 'r4_k3_baja_15': results_k3['prob_baja'],
-        'r5_k3_consol_95': prob_k3_consolidada, 'r6_rv5d_10': rv5d_hoy,
+        'r1_nr_wr': nr_wr_signal_on,
+        'r2_k2_70': results_k2['prob_baja'],
+        'r6_rv5d_10': rv5d_hoy,
         'r7_rv5d_menor': rv5d_hoy, 
     }
     
-    st.markdown("##### Configuración de Reglas (NR/WR, Volatilidad y Markov)")
+    st.markdown("##### Configuración de Reglas (NR/WR y Volatilidad Markov K=2)")
 
     st.button(
         "⚙️ Resetear a Valores por Defecto", 
         help="Restaura la configuración de reglas a los umbrales predefinidos.", 
         on_click=reset_config_callback, 
-        args=(rv5d_ayer_val, st.session_state.get('umbral_k3_baja_calculado', umbral_k3_baja_calculado))
+        args=(rv5d_ayer_val,)
     )
 
     df_config = st.session_state['config_df'].copy()
