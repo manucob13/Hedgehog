@@ -47,7 +47,7 @@ def get_default_config_df(rv5d_ayer_val, umbral_k3_baja):
             '0.7500', 
             f'{umbral_k3_baja:.4f}',  # Umbral dinámico calculado
             '0.9500', 
-            '0.1000', 
+            '0.1500', 
             'RV_AYER'
         ], 
         'Activa': [True, True, False, True, False, True, False],  # R4=True, R5=False
