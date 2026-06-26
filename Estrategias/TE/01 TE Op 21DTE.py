@@ -75,21 +75,9 @@ if check_password():
         spx = datos['spx']
         endog_final = datos['endog_final']
         results_k2 = datos['results_k2']
-        results_k3 = datos['results_k3']
         nr_wr_series = datos['nr_wr_series']
 
         st.success(f"✅ Datos cargados desde memoria. ({len(spx)} días disponibles)")
-
-        # --- UMBRAL K3 BAJA: desde session_state o fallback P50 ---
-        if 'umbral_k3_baja_calculado' in st.session_state:
-            umbral_k3_baja = st.session_state['umbral_k3_baja_calculado']
-            percentil_usado = st.session_state.get('percentil_k3_baja', 50)
-            st.info(f"📐 Umbral K=3 Baja Vol. (P{percentil_usado} desde Signals): **{umbral_k3_baja:.4f}**")
-        else:
-            umbral_k3_baja = float(np.percentile(
-                results_k3['prob_baja_serie'].dropna().values, 50
-            ))
-            st.info(f"📐 Umbral K=3 Baja Vol. (P50 calculado automáticamente): **{umbral_k3_baja:.4f}** — Ve a Signals para personalizarlo.")
 
         # --- CONTROLES DE FECHA ---
         st.sidebar.header("⚙️ Configuración del Gráfico")
@@ -115,24 +103,21 @@ if check_password():
         date_labels[-1] = spx_filtered.index[-1].strftime('%b %d')
 
         spx_filtered['RV_5d_pct'] = spx_filtered['RV_5d'] * 100
-        UMBRAL_RV = 0.15  # Actualizado de 0.10 a 0.15
+        UMBRAL_RV = 0.15
         spx_filtered['RV_change'] = spx_filtered['RV_5d_pct'].diff()
         is_up = spx_filtered['RV_change'] >= 0
 
         prob_baja_serie_k2 = results_k2['prob_baja_serie'].loc[spx_filtered.index].ffill()
-        # K3: solo serie BAJA pura (no consolidada)
-        prob_baja_serie_k3 = results_k3['prob_baja_serie'].loc[spx_filtered.index].ffill()
-
         nr_wr_filtered = nr_wr_series.reindex(spx_filtered.index).fillna(0)
 
         UMBRAL_ALERTA = 0.50
         UMBRAL_COMPRESION_K2 = results_k2['UMBRAL_COMPRESION']
         fechas_formateadas = spx_filtered.index.strftime('%d-%m-%Y').tolist()
 
-        # --- CREAR SUBPLOTS (5 FILAS) ---
+        # --- CREAR SUBPLOTS (4 FILAS) ---
         fig_combined = make_subplots(
-            rows=5, cols=1, shared_xaxes=True, vertical_spacing=0.02,
-            row_heights=[0.45, 0.13, 0.14, 0.14, 0.14],
+            rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.02,
+            row_heights=[0.45, 0.18, 0.19, 0.18],
         )
 
         # 1. VELAS
@@ -207,56 +192,26 @@ if check_password():
         fig_combined.update_yaxes(title_text='Prob. K=2', row=3, col=1, tickformat=".2f", range=[0, 1])
         fig_combined.update_xaxes(showticklabels=False, row=3, col=1)
 
-        # 4. MARKOV K=3 BAJA PURA — umbral dinámico desde Signals
-        fig_combined.add_trace(go.Scatter(
-            x=list(range(len(spx_filtered))), y=prob_baja_serie_k3,
-            mode='lines', name='Prob. K=3 (Baja Vol. Pura)',
-            line=dict(color='#00FF7F', width=2), fill='tozeroy',
-            fillcolor='rgba(0, 255, 127, 0.3)',
-            customdata=[[fecha] for fecha in fechas_formateadas],
-            hovertemplate='<b>%{customdata[0]}</b><br>Prob. Baja K=3: %{y:.4f}<extra></extra>',
-            showlegend=True
-        ), row=4, col=1)
-
-        # Umbral dinámico (el elegido en Signals)
-        fig_combined.add_shape(type="line", x0=0, y0=umbral_k3_baja,
-            x1=len(spx_filtered) - 1, y1=umbral_k3_baja,
-            line=dict(color="#FFD700", width=2, dash="dash"), layer="below", row=4, col=1)
-        fig_combined.add_shape(type="line", x0=0, y0=UMBRAL_ALERTA,
-            x1=len(spx_filtered) - 1, y1=UMBRAL_ALERTA,
-            line=dict(color="#FFFFFF", width=1, dash="dot"), layer="below", row=4, col=1)
-
-        percentil_label = st.session_state.get('percentil_k3_baja', 50)
-        fig_combined.add_annotation(x=0, y=umbral_k3_baja,
-            text=f'Umbral P{percentil_label} ({umbral_k3_baja:.2f})',
-            showarrow=False, xref='x4', yref='y4', xanchor='left', yanchor='bottom',
-            font=dict(size=12, color="#FFD700"), xshift=5, yshift=5, row=4, col=1)
-        fig_combined.add_annotation(x=0, y=UMBRAL_ALERTA, text=f'Alerta ({UMBRAL_ALERTA*100:.0f}%)',
-            showarrow=False, xref='x4', yref='y4', xanchor='left', yanchor='bottom',
-            font=dict(size=12, color="#FFFFFF"), xshift=5, yshift=5, row=4, col=1)
-        fig_combined.update_yaxes(title_text='Prob. K=3 Baja', row=4, col=1, tickformat=".2f", range=[0, 1])
-        fig_combined.update_xaxes(showticklabels=False, row=4, col=1)
-
-        # 5. NR/WR
+        # 4. NR/WR
         fig_combined.add_trace(go.Bar(
             x=list(range(len(spx_filtered))), y=nr_wr_filtered,
             name='Señal NR/WR', marker=dict(color='#FF6B35', line=dict(width=0)),
             customdata=[[fecha, 'ACTIVA' if s > 0 else 'INACTIVA'] for fecha, s in zip(fechas_formateadas, nr_wr_filtered)],
             hovertemplate='<b>%{customdata[0]}</b><br>NR/WR: %{customdata[1]}<extra></extra>',
             showlegend=True, width=0.8
-        ), row=5, col=1)
+        ), row=4, col=1)
 
         fig_combined.add_shape(type="line", x0=-0.5, y0=0.5, x1=len(spx_filtered) - 0.5, y1=0.5,
-            line=dict(color="#AAAAAA", width=1, dash="dot"), layer="below", row=5, col=1)
+            line=dict(color="#AAAAAA", width=1, dash="dot"), layer="below", row=4, col=1)
         fig_combined.add_annotation(x=0, y=0.9, text='COMPRESIÓN ACTIVA',
-            showarrow=False, xref='x5', yref='y5', xanchor='left', yanchor='top',
-            font=dict(size=11, color="#FF6B35"), xshift=5, yshift=-5, row=5, col=1)
-        fig_combined.update_yaxes(title_text='NR/WR', row=5, col=1, range=[0, 1.05],
+            showarrow=False, xref='x4', yref='y4', xanchor='left', yanchor='top',
+            font=dict(size=11, color="#FF6B35"), xshift=5, yshift=-5, row=4, col=1)
+        fig_combined.update_yaxes(title_text='NR/WR', row=4, col=1, range=[0, 1.05],
             tickvals=[0, 1], ticktext=['OFF', 'ON'])
 
         # CONFIGURACIÓN FINAL
         fig_combined.update_layout(
-            template='plotly_dark', height=1100, xaxis_rangeslider_visible=False,
+            template='plotly_dark', height=950, xaxis_rangeslider_visible=False,
             hovermode='x', plot_bgcolor='#131722', paper_bgcolor='#131722',
             font=dict(color='#AAAAAA'), margin=dict(t=50, b=100, l=60, r=40),
             showlegend=True, legend=dict(orientation="v", yanchor="top", y=1,
@@ -264,15 +219,15 @@ if check_password():
                 bordercolor="rgba(255,255,255,0.1)", borderwidth=1, font=dict(size=10))
         )
 
-        for i in range(1, 6):
+        for i in range(1, 5):
             fig_combined.update_xaxes(showspikes=True, spikemode='across', spikesnap='cursor',
                 spikecolor='#AAAAAA', spikethickness=1, spikedash='dash', row=i, col=1)
             fig_combined.update_yaxes(showspikes=False, row=i, col=1)
 
         fig_combined.update_xaxes(tickmode='array', tickvals=list(range(len(spx_filtered))),
-            ticktext=date_labels, tickangle=-45, row=5, col=1, showgrid=False)
+            ticktext=date_labels, tickangle=-45, row=4, col=1, showgrid=False)
 
-        for i in range(1, 6):
+        for i in range(1, 5):
             fig_combined.update_xaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=i, col=1)
             fig_combined.update_yaxes(gridcolor='#2A2E39', linecolor='#383C44', mirror=True, row=i, col=1)
 
