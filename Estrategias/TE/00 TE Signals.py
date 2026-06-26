@@ -26,17 +26,19 @@ def get_default_config_df(rv5d_ayer_val):
             '1. Señal NR/WR Activa', 
             '2. Prob. K=2 Baja Vol.', 
             '3. RV_5d Actual', 
-            f'4. RV_5d HOY vs. AYER ({rv5d_ayer_val:.4f})'
+            f'4. RV_5d HOY vs. AYER ({rv5d_ayer_val:.4f})',
+            '5. VIX/VIX3M (Term Structure)'
         ],
-        'Operador': ['==', '>=', '<=', '<'],
+        'Operador': ['==', '>=', '<=', '<', '<='],
         'Umbral': [
             'ON', 
             '0.9000', 
             '0.1500', 
-            'RV_AYER'
+            'RV_AYER',
+            '0.9000'
         ], 
-        'Activa': [True, True, True, False],
-        'ID': ['r1_nr_wr', 'r2_k2_70', 'r6_rv5d_10', 'r7_rv5d_menor']
+        'Activa': [True, True, True, False, True],
+        'ID': ['r1_nr_wr', 'r2_k2_70', 'r6_rv5d_10', 'r7_rv5d_menor', 'r8_vix_ts']
     }
     return pd.DataFrame(default_config_data)
 
@@ -101,6 +103,10 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
                     regla_cumplida = metrica_actual >= umbral_calc
                 elif operador == '<=':
                     regla_cumplida = metrica_actual <= umbral_calc
+                elif operador == '<':
+                    regla_cumplida = metrica_actual < umbral_calc
+                elif operador == '>':
+                    regla_cumplida = metrica_actual > umbral_calc
 
         if row['Activa']:
             if regla_cumplida:
@@ -143,10 +149,10 @@ def calcular_y_mostrar_semaforo(df_config, metricas_actuales, rv5d_ayer):
 
 def main_comparison():
     
-    st.markdown("<h1><span style='font-size: 1.5em;'>🦔</span> Time Edge Signals v 1.1 Mod. Vola - Markov-Switching K=2 - NR/WR</h1>", unsafe_allow_html=True)
+    st.markdown("<h1><span style='font-size: 1.5em;'>🦔</span> Time Edge Signals v 1.2 - Markov K=2 · NR/WR · VIX Term Structure</h1>", unsafe_allow_html=True)
     st.markdown("""
     Esta herramienta ejecuta el modelo de Regresión de Markov K=2 sobre la Volatilidad Realizada ($\\text{RV}_{5d}$) 
-    del S&P 500 y añade la señal de compresión **NR/WR (Narrow Range after Wide Range)** como indicador auxiliar.
+    del S&P 500, añade la señal de compresión **NR/WR** y el filtro de **VIX Term Structure (VIX/VIX3M)**.
     """)
     st.markdown("---")
     
@@ -204,8 +210,52 @@ def main_comparison():
     else:
         st.info("⚪ **SEÑAL NR/WR:** La compresión de volatilidad está **INACTIVA**. La volatilidad puede ser normal o ya ha explotado.")
     st.markdown("---")
+
+    # ------------------------------------------------------------------
+    # 1.3 VIX TERM STRUCTURE
+    # ------------------------------------------------------------------
+    st.header("1.3 VIX Term Structure (VIX / VIX3M)")
+
+    tiene_vix3m = 'VIX_VIX3M' in spx.columns and spx['VIX_VIX3M'].notna().any()
+
+    if tiene_vix3m:
+        vix_vix3m_hoy = spx['VIX_VIX3M'].iloc[-1]
+        vix_hoy       = spx['VIX'].iloc[-1]
+        vix3m_hoy     = spx['VIX3M'].iloc[-1]
+
+        col_ts1, col_ts2, col_ts3 = st.columns(3)
+        with col_ts1:
+            st.metric("VIX (Spot)", f"{vix_hoy:.2f}")
+        with col_ts2:
+            st.metric("VIX3M (93 días)", f"{vix3m_hoy:.2f}")
+        with col_ts3:
+            delta_color = "normal" if vix_vix3m_hoy <= 1.0 else "inverse"
+            st.metric("Ratio VIX/VIX3M", f"{vix_vix3m_hoy:.4f}",
+                      delta=f"{'Contango' if vix_vix3m_hoy < 1.0 else 'Backwardation'}",
+                      delta_color=delta_color)
+
+        if vix_vix3m_hoy <= 0.90:
+            st.success(
+                f"🟢 **Contango pronunciado** — Ratio: **{vix_vix3m_hoy:.4f}** ≤ 0.90. "
+                f"El mercado no anticipa volatilidad inmediata. Estructura **muy favorable** para calendars."
+            )
+        elif vix_vix3m_hoy <= 1.0:
+            st.warning(
+                f"🟡 **Contango moderado** — Ratio: **{vix_vix3m_hoy:.4f}** (entre 0.90 y 1.0). "
+                f"Estructura aceptable pero no óptima. Evaluar con el resto de filtros."
+            )
+        else:
+            st.error(
+                f"🔴 **Backwardation** — Ratio: **{vix_vix3m_hoy:.4f}** > 1.0. "
+                f"Estrés de mercado activo. **Evitar entrada** en calendars."
+            )
+    else:
+        vix_vix3m_hoy = None
+        st.warning("⚠️ VIX3M no disponible. Verifica que `fetch_data()` incluye `^VIX3M`. La regla R5 quedará inactiva.")
+
+    st.markdown("---")
     
-    st.header("1.3 Modelo de Markov K=2")
+    st.header("1.4 Modelo de Markov K=2")
     
     if 'error' in results_k2:
         st.error(f"❌ Error K=2: {results_k2['error']}")
@@ -244,26 +294,27 @@ def main_comparison():
     st.markdown("---")
     
     # ----------------------------------------------------------------------
-    # 1.4 LÓGICA HEDGEHOG Y SEMÁFORO GLOBAL
+    # 1.5 LÓGICA HEDGEHOG Y SEMÁFORO GLOBAL
     # ----------------------------------------------------------------------
-    st.header("1.4 Lógica HEDGEHOG y Semáforo Global 🚥")
+    st.header("1.5 Lógica HEDGEHOG y Semáforo Global 🚥")
 
     rv5d_ayer_val = spx["RV_5d"].iloc[-2]
     
     if 'config_df' not in st.session_state:
         st.session_state['config_df'] = get_default_config_df(rv5d_ayer_val)
 
-    rv5d_hoy = spx['RV_5d'].iloc[-1]
+    rv5d_hoy  = spx['RV_5d'].iloc[-1]
     rv5d_ayer = spx['RV_5d'].iloc[-2]
-    
+
     metricas_actuales = {
-        'r1_nr_wr': nr_wr_signal_on,
-        'r2_k2_70': results_k2['prob_baja'],
-        'r6_rv5d_10': rv5d_hoy,
-        'r7_rv5d_menor': rv5d_hoy, 
+        'r1_nr_wr':      nr_wr_signal_on,
+        'r2_k2_70':      results_k2['prob_baja'],
+        'r6_rv5d_10':    rv5d_hoy,
+        'r7_rv5d_menor': rv5d_hoy,
+        'r8_vix_ts':     vix_vix3m_hoy if vix_vix3m_hoy is not None else 999.0,
     }
     
-    st.markdown("##### Configuración de Reglas (NR/WR y Volatilidad Markov K=2)")
+    st.markdown("##### Configuración de Reglas (NR/WR · Markov K=2 · VIX Term Structure)")
 
     st.button(
         "⚙️ Resetear a Valores por Defecto", 
@@ -274,6 +325,11 @@ def main_comparison():
 
     df_config = st.session_state['config_df'].copy()
     
+    # Asegurar que r8_vix_ts existe en config (compatibilidad con sesiones antiguas)
+    if 'r8_vix_ts' not in df_config['ID'].values:
+        st.session_state['config_df'] = get_default_config_df(rv5d_ayer_val)
+        df_config = st.session_state['config_df'].copy()
+
     df_config['Valor Actual'] = df_config['ID'].apply(lambda id: 
         (metricas_actuales[id] and '🟢 ACTIVA' or '⚪ INACTIVA') if id == 'r1_nr_wr' else 
         f"{metricas_actuales[id]:.4f}"
@@ -308,7 +364,7 @@ def main_comparison():
     
     st.markdown("### Tabla Consolidada de Lógica y Resultado 🚦")
     
-    df_body = st.session_state['df_semaforo_body']
+    df_body   = st.session_state['df_semaforo_body']
     df_footer = st.session_state['df_semaforo_footer']
     senal_color = st.session_state['senal_color']
     
