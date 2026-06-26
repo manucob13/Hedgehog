@@ -65,18 +65,24 @@ def check_password():
 
 @st.cache_data(ttl=86400)
 def fetch_data():
-    """Descarga datos históricos del ^GSPC (SPX) y ^VIX (VIX)."""
+    """Descarga datos históricos del ^GSPC (SPX), ^VIX y ^VIX3M."""
     start = "2010-01-01" 
     end = datetime.now() + timedelta(days=1) 
 
     spx = yf.download("^GSPC", start=start, end=end, auto_adjust=False, multi_level_index=False, progress=False)
     vix = yf.download("^VIX", start=start, end=end, auto_adjust=False, multi_level_index=False, progress=False)
+    vix3m = yf.download("^VIX3M", start=start, end=end, auto_adjust=False, multi_level_index=False, progress=False)
 
     spx.index = pd.to_datetime(spx.index)
+    
     vix_series = vix['Close'].rename('VIX')
     vix_series.index = pd.to_datetime(vix_series.index)
+    
+    vix3m_series = vix3m['Close'].rename('VIX3M')
+    vix3m_series.index = pd.to_datetime(vix3m_series.index)
 
     df_merged = spx.merge(vix_series, how='left', left_index=True, right_index=True)
+    df_merged = df_merged.merge(vix3m_series, how='left', left_index=True, right_index=True)
     df_merged.dropna(subset=['VIX'], inplace=True)
     
     return df_merged
@@ -106,6 +112,14 @@ def calculate_indicators(df_raw: pd.DataFrame):
     
     # 4. Ratio de volatilidad en el VIX
     spx['VIX_pct_change'] = spx['VIX'].pct_change()
+
+    # 5. VIX Term Structure Ratio (VIX/VIX3M)
+    #    < 1.0 = contango (estructura normal, favorable para calendars)
+    #    > 1.0 = backwardation (stress, evitar entrada)
+    if 'VIX3M' in spx.columns:
+        spx['VIX_VIX3M'] = spx['VIX'] / spx['VIX3M']
+    else:
+        spx['VIX_VIX3M'] = np.nan
     
     return spx.dropna()
 
