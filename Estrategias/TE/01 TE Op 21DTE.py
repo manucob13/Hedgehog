@@ -279,17 +279,23 @@ if check_password():
                 showlegend=True
             ), row=5, col=1)
 
-            # Anotación del estado actual
-            ultimo_estado = "CONTANGO ✅" if vix_filtered.iloc[-1] <= vix3m_filtered.iloc[-1] else "BACKWARDATION ⚠️"
-            ultimo_color  = "#00B06B" if vix_filtered.iloc[-1] <= vix3m_filtered.iloc[-1] else "#F13A50"
+            # Anotación del estado actual — esquina superior derecha con fondo
+            es_contango_actual = vix_filtered.iloc[-1] <= vix3m_filtered.iloc[-1]
+            ultimo_estado = "CONTANGO ✅" if es_contango_actual else "BACKWARDATION ⚠️"
+            ultimo_color  = "#00B06B" if es_contango_actual else "#F13A50"
+            bgcolor_label = "rgba(0, 176, 107, 0.20)" if es_contango_actual else "rgba(241, 58, 80, 0.20)"
             fig_combined.add_annotation(
-                x=len(spx_filtered) - 1, y=vix_filtered.iloc[-1],
-                text=ultimo_estado,
+                x=1, y=1,
+                text=f"<b>{ultimo_estado}</b>",
                 showarrow=False,
-                xref=f'x{n_rows}', yref=f'y{n_rows}',
-                xanchor='right', yanchor='bottom',
-                font=dict(size=11, color=ultimo_color),
-                xshift=-5, yshift=5,
+                xref='x5 domain', yref='y5 domain',
+                xanchor='right', yanchor='top',
+                font=dict(size=12, color=ultimo_color),
+                bgcolor=bgcolor_label,
+                bordercolor=ultimo_color,
+                borderwidth=1,
+                borderpad=5,
+                xshift=-8, yshift=-8,
                 row=5, col=1
             )
 
