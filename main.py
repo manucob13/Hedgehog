@@ -54,6 +54,14 @@ tc_ajustes = st.Page(
     icon="🦉"
 )
 
+# --- Sección ESTRATEGIAS → WEIC ---
+weic_calculos = st.Page(
+    "Estrategias/WEIC/00 WEIC Calculos.py", 
+    title="Cálculos", 
+    icon="🦉"
+
+)
+
 # --- Sección HERRAMIENTAS ---
 vix_term = st.Page(
     "Herramientas/01 VIX Term Structure.py", 
@@ -95,6 +103,7 @@ broker_test = st.Page(
 pg = st.navigation({
     "Time Edge": [te_signals, te_op_21dte,te_op_60dte],
     "Triple Calendar": [tc_signals, tc_calculos,tc_ajustes],
+    "WEIC": [weic_calculos],
     "HERRAMIENTAS": [
         vix_term, 
         trend_Zscore,
