@@ -12,11 +12,10 @@ Weekly Iron Condor — Calculadora de movimiento esperado SPX.
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date, timedelta
-import yfinance as yf
 import warnings
 warnings.filterwarnings("ignore")
 
-from utils.utils import check_password
+from utils.utils import check_password, fetch_data
 from utils.volatility import calcular_bandas_ic
 
 
@@ -42,34 +41,34 @@ def get_next_friday() -> date:
 
 def calcular_dte(entrada: str, salida: str) -> int:
     """
-    Calcula los DTE según día de entrada y día de salida.
-    Entrada: lunes=0, martes=1, miércoles=2
-    Salida:  jueves=3, viernes=4
+    DTE = días desde entrada (inclusive) hasta salida (inclusive).
+    Lunes→Viernes = 5, Lunes→Jueves = 4
+    Martes→Viernes = 4, Martes→Jueves = 3
+    Miércoles→Viernes = 3, Miércoles→Jueves = 2
     """
     dias = {"Lunes": 0, "Martes": 1, "Miércoles": 2, "Jueves": 3, "Viernes": 4}
-    return dias[salida] - dias[entrada]
+    return dias[salida] - dias[entrada] + 1
 
 
-@st.cache_data(ttl=3600)
-def descargar_datos_yf(ticker_spx: str = "^GSPC", ticker_vix: str = "^VIX") -> dict:
-    end   = datetime.now() + timedelta(days=1)
-    start = end - timedelta(days=10)
-
-    df_spx = yf.download(ticker_spx, start=start, end=end,
-                         auto_adjust=False, multi_level_index=False, progress=False)
-    df_vix = yf.download(ticker_vix, start=start, end=end,
-                         auto_adjust=False, multi_level_index=False, progress=False)
-
-    if df_spx.empty or df_vix.empty:
-        return {"error": "No se pudieron descargar datos de Yahoo Finance."}
-
-    return {
-        "spx_close": float(df_spx["Close"].iloc[-1]),
-        "spx_open":  float(df_spx["Open"].iloc[-1]),
-        "vix":       float(df_vix["Close"].iloc[-1]),
-        "last_date": df_spx.index[-1].strftime("%Y-%m-%d"),
-        "error":     None,
-    }
+def obtener_datos_actuales() -> dict:
+    """
+    Usa fetch_data() de utils.py (cacheada) y extrae el último dato disponible.
+    fetch_data() descarga ^GSPC + ^VIX + ^VIX3M desde 2010.
+    """
+    try:
+        df = fetch_data()
+        if df.empty:
+            return {"error": "No se pudieron obtener datos."}
+        last = df.iloc[-1]
+        return {
+            "spx_close": float(last["Close"]),
+            "spx_open":  float(last["Open"]),
+            "vix":       float(last["VIX"]),
+            "last_date": df.index[-1].strftime("%Y-%m-%d"),
+            "error":     None,
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # ==============================================================================
@@ -96,8 +95,8 @@ def main_weic_calculos():
             st.cache_data.clear()
             st.rerun()
 
-    with st.spinner("Descargando SPX y VIX..."):
-        datos = descargar_datos_yf("^GSPC", "^VIX")
+    with st.spinner("Cargando SPX y VIX..."):
+        datos = obtener_datos_actuales()
 
     if datos["error"]:
         st.error(f"❌ {datos['error']}")
@@ -203,69 +202,106 @@ def main_weic_calculos():
             st.stop()
 
     # Tomamos la vol diaria GK del régimen activo
-    vol_diaria  = resultado.vol_daily
+    vol_diaria   = resultado.vol_daily
     vol_escalada = vol_diaria * (dte ** 0.5)
-    movimiento  = spot * vol_escalada * stdn
-    move_pct    = vol_escalada * stdn * 100
-    banda_inf   = spot - movimiento
-    banda_sup   = spot + movimiento
-
-    # Régimen informativo
-    st.caption(
-        f"Régimen VIX activo: **{resultado.regime_label}**  |  "
-        f"Vol diaria GK: **{vol_diaria:.5f}**  |  "
-        f"Vol escalada ×√{dte}: **{vol_escalada:.5f}**  |  "
-        f"σ aplicado: **{stdn}**"
-    )
-
-    # Métricas principales
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric(
-            label="Movimiento esperado ±",
-            value=f"± {move_pct:.2f}%",
-            delta=f"± {movimiento:,.0f} pts",
-            delta_color="off",
-        )
-    with col2:
-        st.metric(
-            label="Banda inferior",
-            value=f"{banda_inf:,.2f}",
-            delta=f"−{movimiento:,.0f} pts vs spot",
-            delta_color="inverse",
-        )
-    with col3:
-        st.metric(
-            label="Banda superior",
-            value=f"{banda_sup:,.2f}",
-            delta=f"+{movimiento:,.0f} pts vs spot",
-            delta_color="normal",
-        )
+    movimiento   = spot * vol_escalada * stdn
+    move_pct     = vol_escalada * stdn * 100
+    banda_inf    = spot - movimiento
+    banda_sup    = spot + movimiento
 
     st.markdown("---")
 
-    # Tabla resumen
-    st.subheader("Resumen")
-    df = pd.DataFrame([{
-        "Entrada"           : f"{dia_entrada} {fecha_entrada.strftime('%d/%m/%Y')}",
-        "Salida"            : f"{dia_salida} {fecha_salida.strftime('%d/%m/%Y')}",
-        "DTE"               : dte,
-        "Spot"              : f"${spot:,.2f}",
-        "VIX"               : f"{current_vix:.2f}",
-        "Régimen"           : resultado.regime_label,
-        "Vol diaria GK"     : f"{vol_diaria:.5f}",
-        "Vol escalada ×√DTE": f"{vol_escalada:.5f}",
-        "σ"                 : stdn,
-        "Movimiento ±%"     : f"{move_pct:.2f}%",
-        "Movimiento ±pts"   : f"{movimiento:,.0f}",
-        "Banda inferior"    : f"{banda_inf:,.2f}",
-        "Banda superior"    : f"{banda_sup:,.2f}",
-    }])
-
-    st.dataframe(df.T.rename(columns={0: "Valor"}), use_container_width=True)
+    # --------------------------------------------------------------------------
+    # RESUMEN VISUAL — tarjetas grandes
+    # --------------------------------------------------------------------------
+    st.header("3. Movimiento esperado")
 
     st.caption(
-        "Las bandas son estimaciones basadas en volatilidad histórica Garman-Klass. "
+        f"Régimen VIX: **{resultado.regime_label}**  |  "
+        f"Vol diaria GK: **{vol_diaria:.5f}**  |  "
+        f"Vol escalada ×√{dte}: **{vol_escalada:.5f}**  |  "
+        f"σ: **{stdn}**"
+    )
+
+    st.markdown(
+        f"""
+        <div style="display:grid; grid-template-columns: repeat(3,1fr); gap:16px; margin: 1rem 0 1.5rem;">
+
+            <div style="background:var(--secondary-background-color); border-radius:12px;
+                        padding:1.5rem; text-align:center; border:1px solid rgba(128,128,128,0.2);">
+                <div style="font-size:13px; color:gray; margin-bottom:8px; text-transform:uppercase; letter-spacing:.05em;">
+                    Movimiento esperado
+                </div>
+                <div style="font-size:36px; font-weight:700; color:var(--text-color);">
+                    ± {move_pct:.2f}%
+                </div>
+                <div style="font-size:18px; color:gray; margin-top:6px;">
+                    ± {movimiento:,.0f} pts
+                </div>
+            </div>
+
+            <div style="background:var(--secondary-background-color); border-radius:12px;
+                        padding:1.5rem; text-align:center; border:2px solid #1baf7a;">
+                <div style="font-size:13px; color:#1baf7a; margin-bottom:8px; text-transform:uppercase; letter-spacing:.05em;">
+                    Banda inferior
+                </div>
+                <div style="font-size:36px; font-weight:700; color:#1baf7a;">
+                    {banda_inf:,.2f}
+                </div>
+                <div style="font-size:15px; color:gray; margin-top:6px;">
+                    − {movimiento:,.0f} pts vs spot
+                </div>
+            </div>
+
+            <div style="background:var(--secondary-background-color); border-radius:12px;
+                        padding:1.5rem; text-align:center; border:2px solid #e05c5c;">
+                <div style="font-size:13px; color:#e05c5c; margin-bottom:8px; text-transform:uppercase; letter-spacing:.05em;">
+                    Banda superior
+                </div>
+                <div style="font-size:36px; font-weight:700; color:#e05c5c;">
+                    {banda_sup:,.2f}
+                </div>
+                <div style="font-size:15px; color:gray; margin-top:6px;">
+                    + {movimiento:,.0f} pts vs spot
+                </div>
+            </div>
+
+        </div>
+
+        <div style="display:grid; grid-template-columns: repeat(4,1fr); gap:12px; margin-bottom:1rem;">
+
+            <div style="background:var(--secondary-background-color); border-radius:10px;
+                        padding:1rem; text-align:center; border:1px solid rgba(128,128,128,0.15);">
+                <div style="font-size:11px; color:gray; margin-bottom:4px; text-transform:uppercase;">Spot SPX</div>
+                <div style="font-size:22px; font-weight:600;">${spot:,.2f}</div>
+            </div>
+
+            <div style="background:var(--secondary-background-color); border-radius:10px;
+                        padding:1rem; text-align:center; border:1px solid rgba(128,128,128,0.15);">
+                <div style="font-size:11px; color:gray; margin-bottom:4px; text-transform:uppercase;">VIX</div>
+                <div style="font-size:22px; font-weight:600;">{current_vix:.2f}</div>
+            </div>
+
+            <div style="background:var(--secondary-background-color); border-radius:10px;
+                        padding:1rem; text-align:center; border:1px solid rgba(128,128,128,0.15);">
+                <div style="font-size:11px; color:gray; margin-bottom:4px; text-transform:uppercase;">DTE</div>
+                <div style="font-size:22px; font-weight:600;">{dte} días</div>
+                <div style="font-size:11px; color:gray;">{dia_entrada} → {dia_salida}</div>
+            </div>
+
+            <div style="background:var(--secondary-background-color); border-radius:10px;
+                        padding:1rem; text-align:center; border:1px solid rgba(128,128,128,0.15);">
+                <div style="font-size:11px; color:gray; margin-bottom:4px; text-transform:uppercase;">Régimen</div>
+                <div style="font-size:16px; font-weight:600;">{resultado.regime_label}</div>
+            </div>
+
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.caption(
+        "Estimación basada en volatilidad histórica Garman-Klass. "
         "Verificá siempre los precios reales antes de operar."
     )
 
