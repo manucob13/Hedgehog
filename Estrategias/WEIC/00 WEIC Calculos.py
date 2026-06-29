@@ -169,10 +169,8 @@ def main_weic_calculos():
 
     dias_map = {"Lunes": 0, "Martes": 1, "Miércoles": 2}
     hoy = date.today()
-    # Calcular fecha de entrada dentro de esta semana (próxima ocurrencia)
     dias_hasta_entrada = (dias_map[dia_entrada] - hoy.weekday()) % 7
-    if dias_hasta_entrada == 0:
-        dias_hasta_entrada = 7
+    # Si dias_hasta_entrada == 0 significa que hoy ES ese día → usar hoy
     fecha_entrada = hoy + timedelta(days=dias_hasta_entrada)
 
     st.info(
@@ -184,7 +182,7 @@ def main_weic_calculos():
     st.markdown("---")
 
     # --------------------------------------------------------------------------
-    # SECCIÓN 3 — Cálculo de bandas
+    # SECCIÓN 3 — Cálculo de bandas y resumen visual
     # --------------------------------------------------------------------------
     st.header("3. Movimiento esperado")
 
@@ -208,13 +206,6 @@ def main_weic_calculos():
     move_pct     = vol_escalada * stdn * 100
     banda_inf    = spot - movimiento
     banda_sup    = spot + movimiento
-
-    st.markdown("---")
-
-    # --------------------------------------------------------------------------
-    # RESUMEN VISUAL — tarjetas grandes
-    # --------------------------------------------------------------------------
-    st.header("3. Movimiento esperado")
 
     st.caption(
         f"Régimen VIX: **{resultado.regime_label}**  |  "
