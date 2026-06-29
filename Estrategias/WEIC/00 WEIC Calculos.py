@@ -223,82 +223,74 @@ def main_weic_calculos():
         f"σ: **{stdn}**"
     )
 
-    st.markdown(
-        f"""
-        <div style="display:grid; grid-template-columns: repeat(3,1fr); gap:16px; margin: 1rem 0 1.5rem;">
+    # Precalcular strings para evitar conflictos con f-string y formato de comas
+    s_move_pct  = f"{move_pct:.2f}%"
+    s_move_pts  = f"{int(round(movimiento)):,} pts".replace(",", ".")
+    s_banda_inf = f"{int(round(banda_inf)):,}".replace(",", ".")
+    s_banda_sup = f"{int(round(banda_sup)):,}".replace(",", ".")
+    s_spot      = f"{int(round(spot)):,}".replace(",", ".")
+    s_vix       = f"{current_vix:.2f}"
+    s_dte       = f"{dte} días"
+    s_rango     = f"{dia_entrada} → {dia_salida}"
+    s_regimen   = resultado.regime_label
 
-            <div style="background:var(--secondary-background-color); border-radius:12px;
-                        padding:1.5rem; text-align:center; border:1px solid rgba(128,128,128,0.2);">
-                <div style="font-size:13px; color:gray; margin-bottom:8px; text-transform:uppercase; letter-spacing:.05em;">
-                    Movimiento esperado
-                </div>
-                <div style="font-size:36px; font-weight:700; color:var(--text-color);">
-                    ± {move_pct:.2f}%
-                </div>
-                <div style="font-size:18px; color:gray; margin-top:6px;">
-                    ± {movimiento:,.0f} pts
-                </div>
-            </div>
+    html_cards = (
+        '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:1rem 0 1.5rem;">'
 
-            <div style="background:var(--secondary-background-color); border-radius:12px;
-                        padding:1.5rem; text-align:center; border:2px solid #1baf7a;">
-                <div style="font-size:13px; color:#1baf7a; margin-bottom:8px; text-transform:uppercase; letter-spacing:.05em;">
-                    Banda inferior
-                </div>
-                <div style="font-size:36px; font-weight:700; color:#1baf7a;">
-                    {banda_inf:,.2f}
-                </div>
-                <div style="font-size:15px; color:gray; margin-top:6px;">
-                    − {movimiento:,.0f} pts vs spot
-                </div>
-            </div>
+        '<div style="background:var(--secondary-background-color);border-radius:12px;'
+        'padding:1.5rem;text-align:center;border:1px solid rgba(128,128,128,0.2);">'
+        '<div style="font-size:13px;color:gray;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em;">Movimiento esperado</div>'
+        '<div style="font-size:36px;font-weight:700;">± ' + s_move_pct + '</div>'
+        '<div style="font-size:18px;color:gray;margin-top:6px;">± ' + s_move_pts + '</div>'
+        '</div>'
 
-            <div style="background:var(--secondary-background-color); border-radius:12px;
-                        padding:1.5rem; text-align:center; border:2px solid #e05c5c;">
-                <div style="font-size:13px; color:#e05c5c; margin-bottom:8px; text-transform:uppercase; letter-spacing:.05em;">
-                    Banda superior
-                </div>
-                <div style="font-size:36px; font-weight:700; color:#e05c5c;">
-                    {banda_sup:,.2f}
-                </div>
-                <div style="font-size:15px; color:gray; margin-top:6px;">
-                    + {movimiento:,.0f} pts vs spot
-                </div>
-            </div>
+        '<div style="background:var(--secondary-background-color);border-radius:12px;'
+        'padding:1.5rem;text-align:center;border:2px solid #1baf7a;">'
+        '<div style="font-size:13px;color:#1baf7a;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em;">Banda inferior</div>'
+        '<div style="font-size:36px;font-weight:700;color:#1baf7a;">' + s_banda_inf + '</div>'
+        '<div style="font-size:15px;color:gray;margin-top:6px;">− ' + s_move_pts + ' vs spot</div>'
+        '</div>'
 
-        </div>
+        '<div style="background:var(--secondary-background-color);border-radius:12px;'
+        'padding:1.5rem;text-align:center;border:2px solid #e05c5c;">'
+        '<div style="font-size:13px;color:#e05c5c;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em;">Banda superior</div>'
+        '<div style="font-size:36px;font-weight:700;color:#e05c5c;">' + s_banda_sup + '</div>'
+        '<div style="font-size:15px;color:gray;margin-top:6px;">+ ' + s_move_pts + ' vs spot</div>'
+        '</div>'
 
-        <div style="display:grid; grid-template-columns: repeat(4,1fr); gap:12px; margin-bottom:1rem;">
+        '</div>'
 
-            <div style="background:var(--secondary-background-color); border-radius:10px;
-                        padding:1rem; text-align:center; border:1px solid rgba(128,128,128,0.15);">
-                <div style="font-size:11px; color:gray; margin-bottom:4px; text-transform:uppercase;">Spot SPX</div>
-                <div style="font-size:22px; font-weight:600;">${spot:,.2f}</div>
-            </div>
+        '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:1rem;">'
 
-            <div style="background:var(--secondary-background-color); border-radius:10px;
-                        padding:1rem; text-align:center; border:1px solid rgba(128,128,128,0.15);">
-                <div style="font-size:11px; color:gray; margin-bottom:4px; text-transform:uppercase;">VIX</div>
-                <div style="font-size:22px; font-weight:600;">{current_vix:.2f}</div>
-            </div>
+        '<div style="background:var(--secondary-background-color);border-radius:10px;'
+        'padding:1rem;text-align:center;border:1px solid rgba(128,128,128,0.15);">'
+        '<div style="font-size:11px;color:gray;margin-bottom:4px;text-transform:uppercase;">Spot SPX</div>'
+        '<div style="font-size:22px;font-weight:600;">' + s_spot + '</div>'
+        '</div>'
 
-            <div style="background:var(--secondary-background-color); border-radius:10px;
-                        padding:1rem; text-align:center; border:1px solid rgba(128,128,128,0.15);">
-                <div style="font-size:11px; color:gray; margin-bottom:4px; text-transform:uppercase;">DTE</div>
-                <div style="font-size:22px; font-weight:600;">{dte} días</div>
-                <div style="font-size:11px; color:gray;">{dia_entrada} → {dia_salida}</div>
-            </div>
+        '<div style="background:var(--secondary-background-color);border-radius:10px;'
+        'padding:1rem;text-align:center;border:1px solid rgba(128,128,128,0.15);">'
+        '<div style="font-size:11px;color:gray;margin-bottom:4px;text-transform:uppercase;">VIX</div>'
+        '<div style="font-size:22px;font-weight:600;">' + s_vix + '</div>'
+        '</div>'
 
-            <div style="background:var(--secondary-background-color); border-radius:10px;
-                        padding:1rem; text-align:center; border:1px solid rgba(128,128,128,0.15);">
-                <div style="font-size:11px; color:gray; margin-bottom:4px; text-transform:uppercase;">Régimen</div>
-                <div style="font-size:16px; font-weight:600;">{resultado.regime_label}</div>
-            </div>
+        '<div style="background:var(--secondary-background-color);border-radius:10px;'
+        'padding:1rem;text-align:center;border:1px solid rgba(128,128,128,0.15);">'
+        '<div style="font-size:11px;color:gray;margin-bottom:4px;text-transform:uppercase;">DTE</div>'
+        '<div style="font-size:22px;font-weight:600;">' + s_dte + '</div>'
+        '<div style="font-size:11px;color:gray;">' + s_rango + '</div>'
+        '</div>'
 
-        </div>
-        """,
-        unsafe_allow_html=True,
+        '<div style="background:var(--secondary-background-color);border-radius:10px;'
+        'padding:1rem;text-align:center;border:1px solid rgba(128,128,128,0.15);">'
+        '<div style="font-size:11px;color:gray;margin-bottom:4px;text-transform:uppercase;">Régimen</div>'
+        '<div style="font-size:16px;font-weight:600;">' + s_regimen + '</div>'
+        '</div>'
+
+        '</div>'
     )
+
+    st.markdown(html_cards, unsafe_allow_html=True)
 
     st.caption(
         "Estimación basada en volatilidad histórica Garman-Klass. "
