@@ -1,227 +1,216 @@
 """
-download_tickers.py
+tickers.py
 
-Descarga y combina:
-- S&P 500 + S&P 400 (903 acciones large/mid-cap USA) — sustituye a Russell 1000
-  (la descarga directa desde iShares/IWB quedó descontinuada)
-- Top Índices por volumen de opciones
-- Top ETFs por volumen de opciones
+Universo FIJO de tickers para el Trend Stocks Screener.
 
-Guarda todo en Tks.csv en el directorio actual
+Contiene una lista curada de 210 activos de alta liquidez:
+- 5 Índices
+- 72 ETFs
+- 133 Acciones (Semiconductores, Big Tech, Financiero/Fintech/Cripto,
+  Energía/Industria/Aeroespacial, Consumo, Salud/Biotech, Telecom/Meme/ADRs)
 
-NUEVAS FUNCIONES PÚBLICAS:
+Ya NO se descarga nada de Wikipedia/iShares: el universo se genera
+directamente desde las listas fijas definidas en este archivo.
+
+FUNCIONES PÚBLICAS (mismas firmas que antes, compatibles con app.py):
+- create_tickers_universe(): Retorna pd.DataFrame con todo el universo
 - get_all_etf_tickers(): Retorna lista de todos los tickers de ETFs
 - get_all_index_tickers(): Retorna lista de todos los tickers de índices
 - get_etf_name(ticker): Retorna el nombre de un ETF específico
 - get_index_name(ticker): Retorna el nombre de un índice específico
 - get_all_etf_names(): Retorna diccionario completo {ticker: nombre} de ETFs
 - get_all_index_names(): Retorna diccionario completo {ticker: nombre} de índices
+- get_stock_tickers(): Retorna lista de todos los tickers de acciones
 """
 
 import pandas as pd
-import requests
-from io import StringIO
 from datetime import datetime
 import os
 
 
-def download_russell1000():
-    """
-    Descarga el universo S&P 500 + S&P 400 (Mid Cap) desde Wikipedia.
-
-    Sustituye a la descarga de Russell 1000 desde iShares (IWB), que dejó
-    de funcionar porque iShares ya no expone el CSV de holdings via .ajax.
-
-    S&P 500 + S&P 400 = ~903 tickers de large/mid-cap USA, un universo
-    muy similar en composición a Russell 1000.
-
-    Returns:
-        list: Lista de tickers únicos (S&P 500 + S&P 400)
-    """
-    print("\n📥 Descargando S&P 500 + S&P 400 desde Wikipedia (sustituye Russell 1000)...")
-
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                      '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-
-    urls = {
-        'SP500': "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
-        'SP400': "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies",
-    }
-
-    all_tickers = []
-
-    for name, url in urls.items():
-        try:
-            resp = requests.get(url, headers=headers, timeout=15)
-            resp.raise_for_status()
-
-            tables = pd.read_html(StringIO(resp.text))
-
-            df = None
-            for t in tables:
-                if 'Symbol' in t.columns:
-                    df = t
-                    break
-
-            if df is None:
-                print(f"⚠️ {name}: no se encontró columna 'Symbol'")
-                continue
-
-            tickers = df['Symbol'].astype(str).str.strip().tolist()
-            # Normalizar formato para yfinance (ej: BRK.B -> BRK-B)
-            tickers = [t.replace('.', '-') for t in tickers]
-
-            all_tickers.extend(tickers)
-            print(f"✅ {name}: {len(tickers)} tickers")
-
-        except requests.exceptions.Timeout:
-            print(f"❌ {name}: Timeout al conectar con Wikipedia.")
-        except requests.exceptions.RequestException as e:
-            print(f"❌ {name}: Error de conexión: {e}")
-        except Exception as e:
-            print(f"❌ {name}: Error procesando datos: {e}")
-
-    if not all_tickers:
-        print("❌ No se pudo descargar ningún índice")
-        return []
-
-    tickers = sorted(set(all_tickers))
-    print(f"✅ Total S&P 500 + S&P 400: {len(tickers)} tickers únicos")
-
-    return tickers
-
+# ============================================================
+# 1. ÍNDICES (5)
+# ============================================================
 
 def get_all_index_names():
     """
     Retorna diccionario completo con nombres de índices
-    
+
     Returns:
         dict: Diccionario {ticker: nombre_completo}
     """
     index_names = {
         "SPX": "S&P 500 Index",
+        "NDX": "Nasdaq 100 Index",
         "VIX": "CBOE Volatility Index",
-        "XSP": "Mini S&P 500",
-        "RUT": "Russell 2000",
-        "NDX": "Nasdaq 100",
-        "DJX": "Dow Jones",
-        "NANOS": "Nano S&P 500",
-        "OEX": "S&P 100",
-        "XEO": "S&P 100 European",
-        "MXEF": "MSCI Emerging Markets",
-        "MXEA": "MSCI EAFE",
+        "RUT": "Russell 2000 Index",
+        "XSP": "Mini S&P 500 Index",
     }
     return index_names
 
 
+# ============================================================
+# 2. ETFs (72)
+# ============================================================
+
 def get_all_etf_names():
     """
     Retorna diccionario completo con nombres de ETFs
-    
+
     Returns:
         dict: Diccionario {ticker: nombre_completo}
     """
     etf_names = {
-        # MEGA CAPS
-        "SPY": "SPDR S&P 500",
-        "QQQ": "Invesco QQQ",
-        "IWM": "iShares Russell 2000",
-        
-        # LEVERAGED/INVERSE
+        # --- Mercado General (17) ---
+        "SPY": "SPDR S&P 500 ETF Trust",
+        "QQQ": "Invesco QQQ Trust",
+        "IWM": "iShares Russell 2000 ETF",
+        "DIA": "SPDR Dow Jones Industrial Average ETF",
+        "ONEQ": "Fidelity Nasdaq Composite ETF",
+        "VOO": "Vanguard S&P 500 ETF",
+        "IVV": "iShares Core S&P 500 ETF",
+        "MDY": "SPDR S&P MidCap 400 ETF",
+        "SPLG": "SPDR Portfolio S&P 500 ETF",
+        "VT": "Vanguard Total World Stock ETF",
+        "VTI": "Vanguard Total Stock Market ETF",
+        "OEF": "iShares S&P 100 ETF",
+        "RSP": "Invesco S&P 500 Equal Weight ETF",
+        "VIXY": "ProShares VIX Short-Term Futures ETF",
+        "UVXY": "ProShares Ultra VIX Short-Term Futures ETF",
+        "VXX": "iPath Series B S&P 500 VIX Short-Term Futures ETN",
+        "SVXY": "ProShares Short VIX Short-Term Futures ETF",
+
+        # --- Semiconductores / Hardware (5) ---
+        "SOXL": "Direxion Daily Semiconductor Bull 3X",
+        "SOXS": "Direxion Daily Semiconductor Bear 3X",
+        "SMH": "VanEck Semiconductor ETF",
+        "SOXX": "iShares Semiconductor ETF",
+        "NVDL": "GraniteShares 2x Long NVDA Daily ETF",
+
+        # --- Sectoriales (21) ---
+        "XLF": "Financial Select Sector SPDR",
+        "XLE": "Energy Select Sector SPDR",
+        "XLK": "Technology Select Sector SPDR",
+        "KRE": "SPDR S&P Regional Banking ETF",
+        "XBI": "SPDR S&P Biotech ETF",
+        "XLV": "Health Care Select Sector SPDR",
+        "XLY": "Consumer Discretionary Select Sector SPDR",
+        "XLP": "Consumer Staples Select Sector SPDR",
+        "XLI": "Industrial Select Sector SPDR",
+        "XLB": "Materials Select Sector SPDR",
+        "XLU": "Utilities Select Sector SPDR",
+        "XLRE": "Real Estate Select Sector SPDR",
+        "IYR": "iShares U.S. Real Estate ETF",
+        "VNQ": "Vanguard Real Estate ETF",
+        "IBB": "iShares Biotechnology ETF",
+        "ITB": "iShares U.S. Home Construction ETF",
+        "XHB": "SPDR S&P Homebuilders ETF",
+        "XOP": "SPDR S&P Oil & Gas Exploration & Production ETF",
+        "OIH": "VanEck Oil Services ETF",
+        "XRT": "SPDR S&P Retail ETF",
+        "IYT": "iShares U.S. Transportation ETF",
+
+        # --- Cripto (3) ---
+        "IBIT": "iShares Bitcoin Trust",
+        "FBTC": "Fidelity Wise Origin Bitcoin Fund",
+        "GBTC": "Grayscale Bitcoin Trust",
+
+        # --- Apalancado individual (1) ---
+        "TSLL": "Direxion Daily TSLA Bull 2X Shares",
+
+        # --- Internacionales / Materias Primas (14) ---
+        "FXI": "iShares China Large-Cap ETF",
+        "EEM": "iShares MSCI Emerging Markets ETF",
+        "EWZ": "iShares MSCI Brazil ETF",
+        "ASHR": "Xtrackers Harvest CSI 300 China A-Shares ETF",
+        "GLD": "SPDR Gold Shares",
+        "SLV": "iShares Silver Trust",
+        "GDX": "VanEck Gold Miners ETF",
+        "GDXJ": "VanEck Junior Gold Miners ETF",
+        "USO": "United States Oil Fund",
+        "UNG": "United States Natural Gas Fund",
+        "EFA": "iShares MSCI EAFE ETF",
+        "INDA": "iShares MSCI India ETF",
+        "EWJ": "iShares MSCI Japan ETF",
+        "KWEB": "KraneShares CSI China Internet ETF",
+
+        # --- Renta Fija y Apalancados Mercado General (11) ---
+        "TLT": "iShares 20+ Year Treasury Bond ETF",
+        "HYG": "iShares iBoxx High Yield Corporate Bond ETF",
+        "LQD": "iShares iBoxx Investment Grade Corporate Bond ETF",
+        "IEF": "iShares 7-10 Year Treasury Bond ETF",
+        "SHY": "iShares 1-3 Year Treasury Bond ETF",
         "TQQQ": "ProShares UltraPro QQQ 3x",
         "SQQQ": "ProShares UltraPro Short QQQ -3x",
-        
-        # FIXED INCOME & COMMODITIES
-        "TLT": "iShares 20+ Year Treasury",
-        "GLD": "SPDR Gold Shares",
-        "HYG": "iShares High Yield Corporate Bond",
-        "UNG": "United States Natural Gas Fund",
-        "USO": "United States Oil Fund",
-        "SLV": "iShares Silver Trust",
-        "LQD": "iShares Investment Grade Corporate",
-        
-        # INTERNATIONAL
-        "EEM": "iShares MSCI Emerging Markets",
-        "FXI": "iShares China Large-Cap",
-        "EFA": "iShares MSCI EAFE",
-        "KWEB": "KraneShares CSI China Internet",
-        "EWZ": "iShares MSCI Brazil",
-        "EWJ": "iShares MSCI Japan",
-        "EWU": "iShares MSCI United Kingdom",
-        "EWG": "iShares MSCI Germany",
-        "EWC": "iShares MSCI Canada",
-        
-        # SECTOR SPDR
-        "XLF": "Financial Select Sector",
-        "XLE": "Energy Select Sector",
-        "XLI": "Industrial Select Sector",
-        "XLK": "Technology Select Sector",
-        "XLV": "Health Care Select Sector",
-        "XLU": "Utilities Select Sector",
-        "XLP": "Consumer Staples Select Sector",
-        "XLY": "Consumer Discretionary Select Sector",
-        "XLB": "Materials Select Sector",
-        "XLRE": "Real Estate Select Sector",
-        "XLC": "Communication Services Select Sector",
-        
-        # SPECIALIZED SECTORS
-        "GDX": "VanEck Gold Miners",
-        "XBI": "SPDR Biotech",
-        "SMH": "VanEck Semiconductor",
-        "XOP": "SPDR Oil & Gas Exploration",
-        "XRT": "SPDR Retail",
-        "XHB": "SPDR Homebuilders",
-        "XME": "SPDR Metals & Mining",
-        "GDXJ": "VanEck Junior Gold Miners",
-        "OIH": "VanEck Oil Services",
-        
-        # VOLATILITY
-        "VXX": "iPath Series B S&P 500 VIX",
-        "UVXY": "ProShares Ultra VIX Short-Term",
-        "SVXY": "ProShares Short VIX Short-Term",
-        
-        # THEMATIC & SPECIALIZED
-        "DIA": "SPDR Dow Jones Industrial Average",
-        "BITO": "ProShares Bitcoin Strategy",
-        "ARKK": "ARK Innovation ETF",
-        "JETS": "U.S. Global Jets",
-        "MSOS": "AdvisorShares Pure US Cannabis",
-        "SOXX": "iShares Semiconductor",
-        
-        # LEVERAGED SPECIALIZED
-        "LABU": "Direxion Daily S&P Biotech Bull 3X",
-        "BOIL": "ProShares Ultra Bloomberg Natural Gas 2x",
-        "TNA": "Direxion Daily Small Cap Bull 3X",
-        "SPXS": "Direxion Daily S&P 500 Bear -3X",
-        "SPXU": "ProShares UltraPro Short S&P 500",
-        "SOXS": "Direxion Daily Semiconductor Bear 3X",
-        "TZA": "Direxion Daily Small Cap Bear 3X",
+        "SPXL": "Direxion Daily S&P 500 Bull 3X",
+        "SPXS": "Direxion Daily S&P 500 Bear 3X",
+        "UPRO": "ProShares UltraPro S&P 500 3x",
         "TMF": "Direxion Daily 20+ Year Treasury Bull 3X",
-        "TSLL": "Direxion Daily TSLA Bull 1.5X",
-        
-        # ADDITIONAL LIQUID ETFs
-        "IYR": "iShares U.S. Real Estate",
-        "ASHR": "Xtrackers Harvest CSI 300 China",
-        "UUP": "Invesco DB US Dollar Index Bullish",
     }
     return etf_names
 
 
+# ============================================================
+# 3. ACCIONES (133)
+# ============================================================
+
+def get_stock_tickers():
+    """
+    Retorna lista fija de acciones del universo.
+    NOTA: TSMC se mapea al ticker real 'TSM' (Yahoo Finance no reconoce 'TSMC').
+
+    Returns:
+        list: Lista de tickers de acciones
+    """
+    stocks = [
+        # --- Semiconductores, Hardware y Supercomputación (22) ---
+        "NVDA", "AMD", "INTC", "SMCI", "AVGO", "MU", "ARM", "TSM", "QCOM",
+        "ASML", "AMAT", "LRCX", "ADI", "NXPI", "TXN", "KLAC", "MRVL",
+        "DELL", "HPQ", "HPE", "WDC", "STX",
+
+        # --- Big Tech, Software, IA y Cloud (25) ---
+        "AAPL", "MSFT", "AMZN", "META", "GOOGL", "GOOG", "PLTR", "NFLX",
+        "CRM", "ORCL", "NOW", "PANW", "CSCO", "IBM", "UBER", "PATH",
+        "SNOW", "NET", "WDAY", "DDOG", "CRWD", "ZS", "ADBE", "TEAM", "MSI",
+
+        # --- Financiero, Fintech y Cripto-Activos (23) ---
+        "BAC", "JPM", "GS", "MS", "C", "WFC", "V", "MA", "AXP", "COIN",
+        "MSTR", "HOOD", "PYPL", "SQ", "SOFI", "MARA", "RIOT", "SCHW",
+        "BLK", "NU", "AFRM", "AIG", "MET",
+
+        # --- Energía, Automoción, Industria y Aeroespacial (23) ---
+        "TSLA", "F", "GM", "XOM", "CVX", "GE", "BA", "CAT", "FDX", "UPS",
+        "RIVN", "LCID", "NIO", "COP", "SLB", "HAL", "RTX", "LMT", "DE",
+        "MMM", "HON", "UNP", "FCX",
+
+        # --- Consumo Masivo, Retail y Entretenimiento (20) ---
+        "WMT", "TGT", "HD", "NKE", "DIS", "SBUX", "KO", "PEP", "COST",
+        "MCD", "CMG", "LOW", "TJX", "EL", "CL", "PGR", "CVS", "WBA",
+        "LVS", "MGM",
+
+        # --- Salud, Farmacéuticas y Biotecnología (13) ---
+        "LLY", "PFE", "UNH", "JNJ", "ABBV", "MRK", "AMGN", "GILD", "BMY",
+        "MRNA", "BIIB", "VRTX", "REGN",
+
+        # --- Telecom, Meme Stocks y ADRs especulativos (7) ---
+        "T", "VZ", "GME", "AMC", "BABA", "PDD", "JD",
+    ]
+    return stocks
+
+
+# ============================================================
+# 4. FUNCIONES DE ACCESO (mismo interfaz que antes)
+# ============================================================
+
 def get_index_name(ticker):
     """
     Obtiene el nombre completo de un índice dado su ticker
-    
+
     Args:
         ticker (str): Símbolo del índice (ej: 'SPX', 'VIX')
-    
+
     Returns:
         str: Nombre completo del índice, o None si no se encuentra
-    
-    Ejemplo:
-        >>> get_index_name('SPX')
-        'S&P 500 Index'
     """
     index_names = get_all_index_names()
     return index_names.get(ticker.upper())
@@ -230,16 +219,12 @@ def get_index_name(ticker):
 def get_etf_name(ticker):
     """
     Obtiene el nombre completo de un ETF dado su ticker
-    
+
     Args:
         ticker (str): Símbolo del ETF (ej: 'SPY', 'QQQ')
-    
+
     Returns:
         str: Nombre completo del ETF, o None si no se encuentra
-    
-    Ejemplo:
-        >>> get_etf_name('SPY')
-        'SPDR S&P 500'
     """
     etf_names = get_all_etf_names()
     return etf_names.get(ticker.upper())
@@ -248,14 +233,9 @@ def get_etf_name(ticker):
 def get_all_index_tickers():
     """
     Retorna lista de todos los tickers de índices disponibles
-    
+
     Returns:
         list: Lista de símbolos de índices
-    
-    Ejemplo:
-        >>> tickers = get_all_index_tickers()
-        >>> print(tickers[:3])
-        ['SPX', 'VIX', 'XSP']
     """
     return list(get_all_index_names().keys())
 
@@ -263,23 +243,17 @@ def get_all_index_tickers():
 def get_all_etf_tickers():
     """
     Retorna lista de todos los tickers de ETFs disponibles
-    
+
     Returns:
         list: Lista de símbolos de ETFs
-    
-    Ejemplo:
-        >>> tickers = get_all_etf_tickers()
-        >>> print(len(tickers))
-        72
     """
     return list(get_all_etf_names().keys())
 
 
 def get_top_indices():
     """
-    Retorna lista de índices con mayor volumen de opciones
-    Basado en datos de CBOE 2023-2024
-    
+    Retorna lista de índices del universo fijo
+
     Returns:
         list: Lista de símbolos de índices
     """
@@ -290,9 +264,8 @@ def get_top_indices():
 
 def get_top_etfs():
     """
-    Retorna lista de ETFs con mayor volumen de opciones
-    Ordenados por volumen promedio diario de contratos (2023-2024)
-    
+    Retorna lista de ETFs del universo fijo
+
     Returns:
         list: Lista de símbolos de ETFs
     """
@@ -301,99 +274,107 @@ def get_top_etfs():
     return etfs
 
 
+def get_top_stocks():
+    """
+    Retorna lista de acciones del universo fijo
+
+    Returns:
+        list: Lista de símbolos de acciones
+    """
+    stocks = get_stock_tickers()
+    print(f"✅ Acciones: {len(stocks)} símbolos agregados")
+    return stocks
+
+
+# ============================================================
+# 5. CONSTRUCCIÓN DEL UNIVERSO
+# ============================================================
+
 def create_tickers_universe(output_filename='Tks.csv'):
     """
-    Crea el universo completo de tickers combinando:
-    - S&P 500 + S&P 400 (acciones large/mid-cap USA, sustituye Russell 1000)
-    - Top Índices por volumen de opciones
-    - Top ETFs por volumen de opciones
-    
-    Guarda el resultado en un archivo CSV en el directorio actual
-    
+    Crea el universo completo de tickers combinando la lista fija de:
+    - Acciones (Semiconductores, Big Tech, Financiero, Energía/Industria,
+      Consumo, Salud, Telecom/Meme)
+    - Índices
+    - ETFs
+
+    Ya no descarga nada externamente: todo proviene de listas fijas
+    definidas en este mismo archivo.
+
+    Guarda el resultado en un archivo CSV en el directorio actual.
+
     Args:
         output_filename (str): Nombre del archivo CSV de salida
-    
+
     Returns:
         pd.DataFrame: DataFrame con todos los tickers
     """
     print("=" * 70)
-    print("🚀 DESCARGANDO UNIVERSO COMPLETO DE TICKERS")
+    print("🚀 CONSTRUYENDO UNIVERSO FIJO DE TICKERS")
     print("=" * 70)
-    
-    # 1. Descargar S&P 500 + S&P 400 (sustituye a Russell 1000)
-    stocks = download_russell1000()
+
+    # 1. Acciones
+    stocks = get_top_stocks()
     stocks_df = pd.DataFrame({
         'Ticker': stocks,
         'Type': 'Stock'
     })
-    
-    # 2. Obtener índices
+
+    # 2. Índices
     indices = get_top_indices()
     indices_df = pd.DataFrame({
         'Ticker': indices,
         'Type': 'Index'
     })
-    
-    # 3. Obtener ETFs
+
+    # 3. ETFs
     etfs = get_top_etfs()
     etfs_df = pd.DataFrame({
         'Ticker': etfs,
         'Type': 'ETF'
     })
-    
+
     # 4. Combinar todos
     all_df = pd.concat([stocks_df, indices_df, etfs_df], ignore_index=True)
-    
+
     # 5. Eliminar duplicados (por si acaso)
     all_df = all_df.drop_duplicates(subset='Ticker', keep='first')
-    
+
     # 6. Ordenar alfabéticamente
     all_df = all_df.sort_values('Ticker').reset_index(drop=True)
-    
+
     # 7. Agregar metadata
     all_df['LastUpdate'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    
+
     # 8. Guardar en el directorio actual
     current_dir = os.path.dirname(os.path.abspath(__file__))
     output_path = os.path.join(current_dir, output_filename)
-    
-    all_df.to_csv(output_path, index=False)
-    
+
+    try:
+        all_df.to_csv(output_path, index=False)
+        print(f"\n💾 Archivo guardado en: {output_path}")
+    except Exception as e:
+        print(f"\n⚠️ No se pudo guardar el CSV ({e}), continuando en memoria...")
+
     # 9. Estadísticas finales
     print("\n" + "=" * 70)
     print("📊 RESUMEN DEL UNIVERSO DE TICKERS")
     print("=" * 70)
-    print(f"📈 Acciones (S&P 500 + S&P 400): {len(stocks_df):,}")
+    print(f"📈 Acciones: {len(stocks_df):,}")
     print(f"📉 Índices: {len(indices_df):,}")
     print(f"📊 ETFs: {len(etfs_df):,}")
     print("-" * 70)
     print(f"🎯 TOTAL DE TICKERS: {len(all_df):,}")
     print("=" * 70)
-    print(f"\n💾 Archivo guardado en: {output_path}")
     print(f"📅 Fecha de actualización: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("\n✅ Proceso completado exitosamente!")
-    
-    # 10. Mostrar muestra
-    print("\n" + "=" * 70)
-    print("📋 MUESTRA DE DATOS (primeros 20 registros):")
-    print("=" * 70)
-    print(all_df.head(20).to_string(index=False))
-    
-    # Mostrar distribución por tipo
-    print("\n" + "=" * 70)
-    print("📊 DISTRIBUCIÓN POR TIPO:")
-    print("=" * 70)
-    type_counts = all_df['Type'].value_counts()
-    for ticker_type, count in type_counts.items():
-        percentage = (count / len(all_df)) * 100
-        print(f"{ticker_type:10s}: {count:5,} ({percentage:5.1f}%)")
-    
+
     return all_df
 
 
 def main():
     """
-    Función principal para ejecutar el script
+    Función principal para ejecutar el script de forma independiente
     """
     try:
         df = create_tickers_universe(output_filename='Tks.csv')
@@ -406,10 +387,9 @@ def main():
 
 
 if __name__ == "__main__":
-    # Ejecutar descarga
     result_df = main()
-    
+
     if result_df is not None:
-        print("\n🎉 ¡Descarga completada con éxito!")
+        print("\n🎉 ¡Universo generado con éxito!")
     else:
-        print("\n⚠️ La descarga falló. Revisa los errores arriba.")
+        print("\n⚠️ La generación falló. Revisa los errores arriba.")
