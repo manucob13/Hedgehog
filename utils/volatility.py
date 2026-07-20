@@ -1,96 +1,71 @@
 """
 volatility.py
 =============
-Calcula volatilidad histórica segmentada por régimen de VIX (Garman-Klass)
-y devuelve bandas de precio para los tres tranches semanales del IC.
+Cálculo del rango esperado semanal del SPX — fijo a 5 DTE (Lunes → Viernes),
+basado en el régimen de VIX actual. Replica la lógica del notebook
+Vol_SPX_5DTE_2_0_prep.ipynb (Manuel Izquierdo).
+
+Metodología
+-----------
+- Datos SEMANALES de SPX (^GSPC), VIX (^VIX) y VIX3M (^VIX3M) vía yfinance,
+  con sesión curl_cffi (impersonate Chrome) para evitar bloqueos.
+- Segmentación histórica en 4 regímenes de VIX: 10-15, 15-18, 18-20, 20-25.
+- Para cada régimen se calcula el std de los log-returns semanales (Std_logret).
+- El régimen activo se determina con el VIX de la semana YA CERRADA (shift),
+  sin look-ahead: se corre asumiendo que es domingo/lunes antes de la apertura.
+- Banda = Last_Close * (1 ± stdn * Std_logret_del_regimen)
 
 Uso desde la página principal
 ------------------------------
-from utils.volatility import calcular_bandas_ic
+from utils.volatility import calcular_rango_esperado
 
-resultado = calcular_bandas_ic(
-    current_vix = 16.5,   # VIX actual obtenido en la página
-    current_spx = 5580.0, # Precio SPX actual obtenido en la página
-    stdn        = 2.3,    # Desviaciones estándar (ajustable)
-)
+resultado = calcular_rango_esperado(stdn=2.5)
 
-# resultado es un dict con las tres tranches:
-# resultado["T1"]  → lunes→viernes   (5 DTE)
-# resultado["T2"]  → martes→viernes  (4 DTE)
-# resultado["T3"]  → miércoles→viernes (3 DTE)
-# resultado["meta"] → info del régimen, vol diaria, señal, etc.
+resultado.last_close      # último cierre semanal (viernes)
+resultado.band_dw / band_up
+resultado.regime_label
+resultado.hist_df         # histórico semanal completo, para graficar
 
-Autor  : Manuel Izquierdo
-Versión: 1.0
+Autor  : Manuel Izquierdo (notebook)
+Adaptado a Streamlit — v2.0
 """
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
+from curl_cffi import requests as curl_requests
 from datetime import datetime, timedelta
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 import warnings
 warnings.filterwarnings("ignore")
 
 
-# ---------------------------------------------------------------------------
-# REGÍMENES DE VIX — mismos rangos que en tu notebook
-# ---------------------------------------------------------------------------
-VIX_REGIMES = [
-    {"label": "VIX 10-15", "lo": 10, "hi": 15},
-    {"label": "VIX 15-18", "lo": 15, "hi": 18},
-    {"label": "VIX 18-20", "lo": 18, "hi": 20},
-    {"label": "VIX 20-25", "lo": 20, "hi": 25},
+# ==============================================================================
+# CONFIGURACION
+# ==============================================================================
+YEARS_BACK = 15
+
+WMA_SP500_WEEKS       = 5    # WMA del SP500 (equiv. 30d diarios)
+VOL_WINDOW_WEEKS      = 4    # ventana volatilidad (equiv. 21d diarios)
+VOL_MEAN_WINDOW_WEEKS = 50   # media movil de la volatilidad (equiv. 252d diarios)
+VIX_WMA_WEEKS         = 52   # WMA del VIX (equiv. 252d aprox)
+
+VIX_RANGES = [
+    (10, 15),
+    (15, 18),
+    (18, 20),
+    (20, 25),
 ]
 
-
-# ---------------------------------------------------------------------------
-# DATACLASS — resultado por tranche
-# ---------------------------------------------------------------------------
-@dataclass
-class TrancheResult:
-    label:          str    # "T1 - Lunes→Viernes"
-    dte:            int    # días al vencimiento
-    vol_daily:      float  # Avg_252_Vol21 del régimen (diaria)
-    vol_scaled:     float  # vol_daily × √DTE
-    band_dw:        float  # banda inferior absoluta (precio)
-    band_up:        float  # banda superior absoluta (precio)
-    move_pct:       float  # movimiento esperado en % del spot
+TICKER_SPX   = "^GSPC"
+TICKER_VIX   = "^VIX"
+TICKER_VIX3M = "^VIX3M"
 
 
-@dataclass
-class VolatilityResult:
-    # Contexto del mercado
-    current_vix:    float
-    current_spx:    float
-    stdn:           float
-    regime_label:   str
-    regime_lo:      float
-    regime_hi:      float
-    regime_rows:    int
-    vol_daily:      float  # Avg_252_Vol21 del régimen
-    
-    # Señal de operación
-    signal:         int    # 1 = operar, 0 = no operar
-    trend:          str    # "Alcista" / "Bajista"
-    vix_lt_25:      bool
-    vix_lt_wma21:   bool
-    wma21_falling:  bool
-    last_date:      str
-
-    # Tres tranches
-    T1:             TrancheResult  # 5 DTE — lunes→viernes
-    T2:             TrancheResult  # 4 DTE — martes→viernes
-    T3:             TrancheResult  # 3 DTE — miércoles→viernes
-
-    # Timestamp
-    timestamp:      str
-
-
-# ---------------------------------------------------------------------------
-# WMA manual (sin dependencia de 'ta')
-# ---------------------------------------------------------------------------
+# ==============================================================================
+# WMA manual (equivalente a ta.trend.WMAIndicator, sin dependencia de 'ta')
+# ==============================================================================
 def _wma(series: pd.Series, window: int) -> pd.Series:
     weights = np.arange(1, window + 1, dtype=float)
     return series.rolling(window).apply(
@@ -98,202 +73,196 @@ def _wma(series: pd.Series, window: int) -> pd.Series:
     )
 
 
-# ---------------------------------------------------------------------------
-# DESCARGA DE DATOS HISTÓRICOS
-# ---------------------------------------------------------------------------
-def _descargar_historico(
-    ticker: str = "^GSPC",
-    vix_ticker: str = "^VIX",
-    start: str = "2010-01-01",
-) -> pd.DataFrame:
-    """
-    Descarga OHLCV del ticker y VIX desde yfinance.
-    Añade WMA30, WMA21 del VIX y desplazamientos de un día.
-    """
-    end = (datetime.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+# ==============================================================================
+# RESULTADO
+# ==============================================================================
+@dataclass
+class RangoEsperadoResult:
+    last_date:      str
+    last_close:     float
+    last_open:      float
+    current_vix:    float              # VIX de la última semana cerrada
+    regime_label:   Optional[str]
+    regime_rows:    int
+    sigma_regimen:  float              # Std_logret del régimen (semanal)
+    stdn:           float
+    band_dw:        float
+    band_up:        float
+    move_pct:       float              # amplitud total de la banda, en %
+    trend:          str                # "Alcista" / "Bajista"
+    term_structure: str                # "Contango" / "Backwardation"
+    stats_df:       pd.DataFrame       # tabla resumen de todos los regímenes VIX
+    hist_df:        pd.DataFrame       # histórico semanal completo (para graficar)
 
-    df_p = yf.download(ticker,     start=start, end=end,
-                       auto_adjust=False, multi_level_index=False, progress=False)
-    df_v = yf.download(vix_ticker, start=start, end=end,
-                       auto_adjust=False, multi_level_index=False, progress=False)
 
-    if df_p.empty or df_v.empty:
+# ==============================================================================
+# DESCARGA + PROCESAMIENTO SEMANAL COMPLETO
+# ==============================================================================
+def _descargar_y_procesar(years_back: int = YEARS_BACK) -> pd.DataFrame:
+    session = curl_requests.Session(impersonate="chrome")
+
+    end_dt     = datetime.today()
+    start_date = (end_dt - timedelta(days=365 * years_back)).strftime("%Y-%m-%d")
+    end_date   = end_dt.strftime("%Y-%m-%d")
+
+    df_spy = yf.download(
+        TICKER_SPX, start=start_date, end=end_date, auto_adjust=False,
+        multi_level_index=False, session=session, interval="1wk", progress=False,
+    )
+    df_vix = yf.download(
+        TICKER_VIX, start=start_date, end=end_date, auto_adjust=False,
+        multi_level_index=False, session=session, interval="1wk", progress=False,
+    )
+    df_vix3m = yf.download(
+        TICKER_VIX3M, start=start_date, end=end_date, auto_adjust=False,
+        multi_level_index=False, session=session, interval="1wk", progress=False,
+    )
+
+    if df_spy.empty or df_vix.empty or df_vix3m.empty:
         raise ValueError(
-            f"No se pudieron descargar datos de {ticker} o {vix_ticker}. "
-            "Verifica la conexión a internet."
+            "No se pudieron descargar datos semanales de SPX/VIX/VIX3M. "
+            "Verificá la conexión a internet."
         )
 
-    df_p.index = pd.to_datetime(df_p.index)
-    df_v.index = pd.to_datetime(df_v.index)
+    df_spy["WMA_30"]          = _wma(df_spy["Close"], WMA_SP500_WEEKS)
+    df_spy["log_return"]      = np.log(df_spy["Close"] / df_spy["Close"].shift(1))
+    df_spy["vol_21"]          = df_spy["log_return"].rolling(window=VOL_WINDOW_WEEKS).std()
+    df_spy["mean_vol_21_252"] = df_spy["vol_21"].rolling(window=VOL_MEAN_WINDOW_WEEKS).mean()
 
-    vix_close  = df_v["Close"].rename("VIX")
-    vix_wma21  = _wma(vix_close, 21).rename("VIX_WMA_21")
-    spx_wma30  = _wma(df_p["Close"], 30).rename("SP500_WMA_30")
+    df2 = pd.DataFrame({
+        "Open":          df_spy["Open"],
+        "Close":         df_spy["Close"],
+        "log_return":    df_spy["log_return"],
+        "Vol21":         df_spy["vol_21"],
+        "Avg_252_Vol21": df_spy["mean_vol_21_252"],
+        "SP500_WMA_30":  df_spy["WMA_30"],
+    })
 
-    df = pd.DataFrame({
-        "Open":         df_p["Open"],
-        "High":         df_p["High"],
-        "Low":          df_p["Low"],
-        "Close":        df_p["Close"],
-        "SP500_WMA_30": spx_wma30,
-        "VIX":          vix_close,
-        "VIX_WMA_21":   vix_wma21,
-    }).dropna()
+    df_v = df_vix[["Close"]].rename(columns={"Close": "VIX"})
+    df_v["VIX_WMA_21"] = _wma(df_v["VIX"], VIX_WMA_WEEKS)
 
-    # Valores de "ayer" — necesarios para la señal de operación
-    df["Close_y"]        = df["Close"].shift(1)
-    df["SP500_WMA_30_y"] = df["SP500_WMA_30"].shift(1)
-    df["VIX_C_y"]        = df["VIX"].shift(1)
-    df["VIX_WMA_21_y"]   = df["VIX_WMA_21"].shift(1)
-    df["VIX_WMA_21_2dy"] = df["VIX_WMA_21"].shift(2)
-    df["TREND"]          = np.where(
-        df["Close_y"] > df["SP500_WMA_30_y"], "Alcista", "Bajista"
+    df_v3 = df_vix3m[["Close"]].rename(columns={"Close": "VIX3M"})
+
+    df = df2.join(df_v, how="left").join(df_v3, how="left")
+    df = df.dropna()
+
+    # --- SHIFT: solo usamos lo conocido ANTES de que empiece la semana a operar ---
+    df["Close_y"]         = df["Close"].shift(1)
+    df["Avg_252_Vol21_y"] = df["Avg_252_Vol21"].shift(1)
+    df["SP500_WMA_30_y"]  = df["SP500_WMA_30"].shift(1)
+    df["VIX_y"]           = df["VIX"].shift(1)
+    df["VIX_WMA_21_y"]    = df["VIX_WMA_21"].shift(1)
+    df["VIX_WMA_21_2y"]   = df["VIX_WMA_21"].shift(2)
+    df["VIX3M_y"]         = df["VIX3M"].shift(1)
+
+    df = df.dropna()
+
+    df["TREND"] = np.where(df["Close_y"] > df["SP500_WMA_30_y"], "Alcista", "Bajista")
+
+    df["VIX_WMA_DOWN"] = (
+        (df["VIX_y"] < df["VIX_WMA_21_y"]) &
+        (df["VIX_WMA_21_y"] < df["VIX_WMA_21_2y"])
     )
 
-    return df.dropna()
+    df["VIX_VIX3M_Ratio"] = df["VIX_y"] / df["VIX3M_y"]
+    df["Term_Structure"]  = np.where(df["VIX_VIX3M_Ratio"] < 1, "Contango", "Backwardation")
+
+    return df
 
 
-# ---------------------------------------------------------------------------
-# GARMAN-KLASS sobre un subconjunto
-# ---------------------------------------------------------------------------
-def _garman_klass(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    GK_daily    = √[ 0.5·ln(H/L)² − (2ln2−1)·ln(C/O)² ]
-    Vol_21      = rolling mean 21d de GK_daily
-    Avg_252_Vol21 = rolling mean 252d de Vol_21
-    """
-    d = df.copy()
-    d["GK_daily"]       = np.sqrt(
-        0.5  * np.log(d["High"] / d["Low"]) ** 2
-        - (2 * np.log(2) - 1) * np.log(d["Close"] / d["Open"]) ** 2
-    )
-    d["Vol_21"]         = d["GK_daily"].rolling(21).mean()
-    d["Avg_252_Vol21"]  = d["Vol_21"].rolling(252).mean()
-    return d
+# ==============================================================================
+# SEGMENTACION POR RANGO DE VIX
+# ==============================================================================
+def _segmentar_por_vix(df: pd.DataFrame) -> pd.DataFrame:
+    vix_stats = {}
+    for low, high in VIX_RANGES:
+        label  = f"{low}-{high}"
+        subset = df[(df["VIX_y"] >= low) & (df["VIX_y"] < high)]
+
+        if len(subset) > 0:
+            vix_stats[label] = {
+                "N_semanas":   len(subset),
+                "Mean_logret": subset["log_return"].mean(),
+                "Std_logret":  subset["log_return"].std(),
+                "P5_logret":   subset["log_return"].quantile(0.05),
+                "P95_logret":  subset["log_return"].quantile(0.95),
+            }
+        else:
+            vix_stats[label] = {
+                "N_semanas": 0, "Mean_logret": np.nan, "Std_logret": np.nan,
+                "P5_logret": np.nan, "P95_logret": np.nan,
+            }
+
+    stats_df = pd.DataFrame(vix_stats).T
+    stats_df.index.name = "VIX_Range"
+    return stats_df
 
 
-# ---------------------------------------------------------------------------
+# ==============================================================================
 # FUNCIÓN PRINCIPAL
-# ---------------------------------------------------------------------------
-def calcular_bandas_ic(
-    current_vix: float,
-    current_spx: float,
-    stdn:        float = 2.3,
-    ticker:      str   = "^GSPC",
-    vix_ticker:  str   = "^VIX",
-    start:       str   = "2010-01-01",
-) -> VolatilityResult:
+# ==============================================================================
+def calcular_rango_esperado(stdn: float = 2.5, years_back: int = YEARS_BACK) -> RangoEsperadoResult:
     """
-    Función principal. Recibe el VIX y SPX actuales desde la página,
-    calcula toda la volatilidad histórica por régimen en memoria y
-    devuelve las bandas para los tres tranches del IC semanal.
+    Función principal. Descarga el histórico semanal completo, segmenta por
+    régimen de VIX y devuelve el rango esperado del SPX para la semana
+    próxima (5 DTE, Lunes → Viernes), en base al régimen de VIX vigente.
 
     Parámetros
     ----------
-    current_vix : VIX actual (lo pasa la página principal)
-    current_spx : Precio SPX actual (lo pasa la página principal)
-    stdn        : Desviaciones estándar para las bandas (default 2.3)
-    ticker      : Ticker del subyacente (default '^GSPC')
-    vix_ticker  : Ticker del VIX (default '^VIX')
-    start       : Inicio del histórico (default '2010-01-01')
+    stdn       : Desviaciones estándar para las bandas (default 2.5)
+    years_back : Años de histórico a descargar (default 15)
 
     Retorna
     -------
-    VolatilityResult con T1 (5 DTE), T2 (4 DTE), T3 (3 DTE) y metadata
+    RangoEsperadoResult
     """
+    df = _descargar_y_procesar(years_back)
+    stats_df = _segmentar_por_vix(df)
 
-    # 1. Descargar histórico completo
-    df_raw = _descargar_historico(ticker, vix_ticker, start)
+    last_row    = df.iloc[-1]
+    current_vix = float(last_row["VIX_y"])   # VIX de la última semana cerrada (sin look-ahead)
 
-    # 2. Señal de operación — basada en el último día del histórico
-    last         = df_raw.iloc[-1]
-    trend        = "Alcista" if last["Close_y"] > last["SP500_WMA_30_y"] else "Bajista"
-    vix_lt_25    = bool(last["VIX_C_y"] <= 25)
-    vix_lt_wma21 = bool(last["VIX_C_y"] < last["VIX_WMA_21_y"])
-    wma21_fall   = bool(last["VIX_WMA_21_y"] < last["VIX_WMA_21_2dy"])
-    signal       = 1 if (trend == "Alcista" and vix_lt_25 and vix_lt_wma21 and wma21_fall) else 0
-
-    # 3. Seleccionar régimen según el current_vix que llega de la página
-    matched = None
-    for r in VIX_REGIMES:
-        if r["lo"] <= current_vix < r["hi"]:
-            matched = r
+    current_label = None
+    for low, high in VIX_RANGES:
+        if low <= current_vix < high:
+            current_label = f"{low}-{high}"
             break
 
-    # Fallback: régimen más cercano por diferencia de punto medio
-    if matched is None:
-        def dist(r):
-            mid = (r["lo"] + r["hi"]) / 2
-            return abs(current_vix - mid)
-        matched = min(VIX_REGIMES, key=dist)
+    last_close = float(last_row["Close"])
 
-    # 4. Filtrar histórico por régimen y calcular GK
-    df_regime = df_raw[
-        (df_raw["VIX"] >= matched["lo"]) &
-        (df_raw["VIX"] <  matched["hi"])
-    ].copy()
-
-    if len(df_regime) < 30:
+    if current_label is None:
         raise ValueError(
-            f"El régimen {matched['label']} solo tiene {len(df_regime)} filas. "
-            "Insuficiente para calcular Avg_252_Vol21."
+            f"El VIX actual ({current_vix:.2f}) está fuera de los rangos definidos "
+            f"(10-25). No se puede estimar el rango esperado."
         )
 
-    df_gk = _garman_klass(df_regime)
-    df_valid = df_gk.dropna(subset=["Avg_252_Vol21"])
+    sigma_regimen = float(stats_df.loc[current_label, "Std_logret"])
+    regime_rows   = int(stats_df.loc[current_label, "N_semanas"])
 
-    if df_valid.empty:
+    if pd.isna(sigma_regimen) or regime_rows < 10:
         raise ValueError(
-            f"No hay suficiente historia en el régimen {matched['label']} "
-            "para calcular Avg_252_Vol21 (necesita 252 + 21 días mínimo)."
+            f"El régimen {current_label} tiene muy pocas observaciones "
+            f"({regime_rows}) para estimar un sigma confiable."
         )
 
-    vol_daily = float(df_valid["Avg_252_Vol21"].iloc[-1])
+    band_dw  = round(last_close * (1 - stdn * sigma_regimen), 2)
+    band_up  = round(last_close * (1 + stdn * sigma_regimen), 2)
+    move_pct = round((band_up - band_dw) / last_close * 100, 2)
 
-    # 5. Calcular los tres tranches
-    #    vol_scaled = vol_diaria × √DTE  (regla de la raíz del tiempo)
-    #    band_dw    = spx × (1 − stdn × vol_scaled)
-    #    band_up    = spx × (1 + stdn × vol_scaled)
-
-    tranches_def = [
-        ("T1", "Lunes → Viernes",     5),
-        ("T2", "Martes → Viernes",    4),
-        ("T3", "Miércoles → Viernes", 3),
-    ]
-
-    tranches = {}
-    for key, label, dte in tranches_def:
-        vol_scaled = vol_daily * np.sqrt(dte)
-        band_dw    = round(current_spx * (1 - stdn * vol_scaled), 2)
-        band_up    = round(current_spx * (1 + stdn * vol_scaled), 2)
-        move_pct   = round(stdn * vol_scaled * 100, 2)
-        tranches[key] = TrancheResult(
-            label      = f"{key} – {label}",
-            dte        = dte,
-            vol_daily  = round(vol_daily, 6),
-            vol_scaled = round(vol_scaled, 6),
-            band_dw    = band_dw,
-            band_up    = band_up,
-            move_pct   = move_pct,
-        )
-
-    return VolatilityResult(
-        current_vix   = current_vix,
-        current_spx   = current_spx,
-        stdn          = stdn,
-        regime_label  = matched["label"],
-        regime_lo     = matched["lo"],
-        regime_hi     = matched["hi"],
-        regime_rows   = len(df_regime),
-        vol_daily     = round(vol_daily, 6),
-        signal        = signal,
-        trend         = trend,
-        vix_lt_25     = vix_lt_25,
-        vix_lt_wma21  = vix_lt_wma21,
-        wma21_falling = wma21_fall,
-        last_date     = df_raw.index[-1].strftime("%Y-%m-%d"),
-        T1            = tranches["T1"],
-        T2            = tranches["T2"],
-        T3            = tranches["T3"],
-        timestamp     = datetime.now().strftime("%Y-%m-%d %H:%M"),
+    return RangoEsperadoResult(
+        last_date      = df.index[-1].strftime("%Y-%m-%d"),
+        last_close     = last_close,
+        last_open      = float(last_row["Open"]),
+        current_vix    = current_vix,
+        regime_label   = current_label,
+        regime_rows    = regime_rows,
+        sigma_regimen  = round(sigma_regimen, 6),
+        stdn           = stdn,
+        band_dw        = band_dw,
+        band_up        = band_up,
+        move_pct       = move_pct,
+        trend          = str(last_row["TREND"]),
+        term_structure = str(last_row["Term_Structure"]),
+        stats_df       = stats_df,
+        hist_df        = df,
     )
