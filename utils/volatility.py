@@ -64,13 +64,24 @@ TICKER_VIX3M = "^VIX3M"
 
 
 # ==============================================================================
-# WMA manual (equivalente a ta.trend.WMAIndicator, sin dependencia de 'ta')
+# HELPERS
 # ==============================================================================
 def _wma(series: pd.Series, window: int) -> pd.Series:
     weights = np.arange(1, window + 1, dtype=float)
     return series.rolling(window).apply(
         lambda x: np.dot(x, weights) / weights.sum(), raw=True
     )
+
+
+def _week_ending_friday(ts: pd.Timestamp) -> pd.Timestamp:
+    """
+    Normaliza cualquier timestamp semanal a su viernes de cierre.
+    Si ya es viernes, lo deja igual; si no, lo lleva al próximo viernes.
+    """
+    ts = pd.Timestamp(ts)
+    if ts.weekday() == 4:
+        return ts.normalize()
+    return (ts + pd.offsets.Week(weekday=4)).normalize()
 
 
 # ==============================================================================
@@ -86,21 +97,21 @@ class SenalEntrada:
     """
     new_date:               str     # próximo día hábil (lunes) al que aplica la señal
     signal:                 int     # 1 = abrir IC 5DTE, 0 = no operar
-    last_close:              float
-    last_sp500_wma30:        float
-    tendencia:               str    # "Alcista" / "Bajista"
-    last_vix:                float
-    last_vix_wma21:           float
-    vix_en_rango:            bool   # VIX dentro de algún rango definido (10-25)
-    vix_lt_wma21:            bool   # VIX < VIX_WMA_21 (relajándose)
-    term_structure:          str    # "Contango" / "Backwardation" (sin shift)
-    vix_wma21_bajando:       bool   # informativo, no entra en la señal
-    realized_vol_anual_pct:  float  # informativo
-    vrp_positive:            bool   # informativo: VIX > vol realizada
-    cond_tendencia:          bool
-    cond_vix_rango:          bool
-    cond_vix_wma:            bool
-    cond_contango:           bool
+    last_close:             float
+    last_sp500_wma30:       float
+    tendencia:              str     # "Alcista" / "Bajista"
+    last_vix:               float
+    last_vix_wma21:         float
+    vix_en_rango:           bool    # VIX dentro de algún rango definido (10-25)
+    vix_lt_wma21:           bool    # VIX < VIX_WMA_21 (relajándose)
+    term_structure:         str     # "Contango" / "Backwardation" (sin shift)
+    vix_wma21_bajando:      bool    # informativo, no entra en la señal
+    realized_vol_anual_pct: float   # informativo
+    vrp_positive:           bool    # informativo: VIX > vol realizada
+    cond_tendencia:         bool
+    cond_vix_rango:         bool
+    cond_vix_wma:           bool
+    cond_contango:          bool
 
 
 @dataclass
@@ -218,19 +229,22 @@ def _calcular_senal(df: pd.DataFrame) -> SenalEntrada:
     Informativas (no entran en la señal): VIX_WMA_21 bajando 2 semanas
     consecutivas, y VRP (VIX > vol. realizada anualizada).
     """
-    last_row  = df.iloc[-1]
-    last_date = df.index[-1]
+    last_row = df.iloc[-1]
 
-    next_business_day = last_date + timedelta(days=1)
+    # Normalizamos la fecha semanal al viernes real de cierre
+    last_date = _week_ending_friday(df.index[-1])
+
+    # Próximo lunes aplicable a la señal
+    next_business_day = last_date + timedelta(days=3)  # viernes -> lunes
     while next_business_day.weekday() >= 5:
         next_business_day += timedelta(days=1)
 
     # --- Contango/backwardation actual (VIX y VIX3M de la última semana cerrada, sin shift) ---
-    current_ratio          = last_row["VIX"] / last_row["VIX3M"]
+    current_ratio = last_row["VIX"] / last_row["VIX3M"]
     current_term_structure = "Contango" if current_ratio < 1 else "Backwardation"
 
     # --- VIX dentro de alguno de los rangos definidos ---
-    current_vix  = last_row["VIX"]
+    current_vix = last_row["VIX"]
     vix_in_range = any(low <= current_vix < high for low, high in VIX_RANGES)
 
     # --- VIX WMA bajando 2 semanas consecutivas (solo informativo) ---
@@ -238,7 +252,7 @@ def _calcular_senal(df: pd.DataFrame) -> SenalEntrada:
 
     # --- VRP: VIX (implícita) vs volatilidad realizada anualizada (solo informativo) ---
     realized_vol_annualized = float(last_row["Vol21"] * np.sqrt(52) * 100)
-    vrp_positive             = bool(current_vix > realized_vol_annualized)
+    vrp_positive = bool(current_vix > realized_vol_annualized)
 
     # --- Condiciones individuales que forman la señal ---
     cond_tendencia = bool(last_row["Close"] > last_row["SP500_WMA_30"])
@@ -250,22 +264,22 @@ def _calcular_senal(df: pd.DataFrame) -> SenalEntrada:
 
     return SenalEntrada(
         new_date               = next_business_day.strftime("%Y-%m-%d"),
-        signal                  = opera,
-        last_close               = round(float(last_row["Close"]), 2),
-        last_sp500_wma30         = round(float(last_row["SP500_WMA_30"]), 2),
-        tendencia                = "Alcista" if cond_tendencia else "Bajista",
-        last_vix                 = round(float(current_vix), 2),
-        last_vix_wma21            = round(float(last_row["VIX_WMA_21"]), 2),
-        vix_en_rango             = vix_in_range,
-        vix_lt_wma21             = cond_vix_wma,
-        term_structure            = current_term_structure,
-        vix_wma21_bajando        = vix_wma_down,
-        realized_vol_anual_pct   = round(realized_vol_annualized, 2),
-        vrp_positive              = vrp_positive,
-        cond_tendencia           = cond_tendencia,
-        cond_vix_rango           = cond_vix_rango,
-        cond_vix_wma             = cond_vix_wma,
-        cond_contango            = cond_contango,
+        signal                 = opera,
+        last_close             = round(float(last_row["Close"]), 2),
+        last_sp500_wma30       = round(float(last_row["SP500_WMA_30"]), 2),
+        tendencia              = "Alcista" if cond_tendencia else "Bajista",
+        last_vix               = round(float(current_vix), 2),
+        last_vix_wma21         = round(float(last_row["VIX_WMA_21"]), 2),
+        vix_en_rango           = vix_in_range,
+        vix_lt_wma21           = cond_vix_wma,
+        term_structure         = current_term_structure,
+        vix_wma21_bajando      = vix_wma_down,
+        realized_vol_anual_pct = round(realized_vol_annualized, 2),
+        vrp_positive           = vrp_positive,
+        cond_tendencia         = cond_tendencia,
+        cond_vix_rango         = cond_vix_rango,
+        cond_vix_wma           = cond_vix_wma,
+        cond_contango          = cond_contango,
     )
 
 
@@ -275,7 +289,7 @@ def _calcular_senal(df: pd.DataFrame) -> SenalEntrada:
 def _segmentar_por_vix(df: pd.DataFrame) -> pd.DataFrame:
     vix_stats = {}
     for low, high in VIX_RANGES:
-        label  = f"{low}-{high}"
+        label = f"{low}-{high}"
         subset = df[(df["VIX_y"] >= low) & (df["VIX_y"] < high)]
 
         if len(subset) > 0:
@@ -288,8 +302,11 @@ def _segmentar_por_vix(df: pd.DataFrame) -> pd.DataFrame:
             }
         else:
             vix_stats[label] = {
-                "N_semanas": 0, "Mean_logret": np.nan, "Std_logret": np.nan,
-                "P5_logret": np.nan, "P95_logret": np.nan,
+                "N_semanas": 0,
+                "Mean_logret": np.nan,
+                "Std_logret": np.nan,
+                "P5_logret": np.nan,
+                "P95_logret": np.nan,
             }
 
     stats_df = pd.DataFrame(vix_stats).T
@@ -319,7 +336,7 @@ def calcular_rango_esperado(stdn: float = 2.5, years_back: int = YEARS_BACK) -> 
     stats_df = _segmentar_por_vix(df)
     senal = _calcular_senal(df)
 
-    last_row    = df.iloc[-1]
+    last_row = df.iloc[-1]
     current_vix = float(last_row["VIX_y"])   # VIX de la última semana cerrada (sin look-ahead)
 
     current_label = None
@@ -349,8 +366,10 @@ def calcular_rango_esperado(stdn: float = 2.5, years_back: int = YEARS_BACK) -> 
     band_up  = round(last_close * (1 + stdn * sigma_regimen), 2)
     move_pct = round((band_up - band_dw) / last_close * 100, 2)
 
+    last_week_close_date = _week_ending_friday(df.index[-1])
+
     return RangoEsperadoResult(
-        last_date      = df.index[-1].strftime("%Y-%m-%d"),
+        last_date      = last_week_close_date.strftime("%Y-%m-%d"),
         last_close     = last_close,
         last_open      = float(last_row["Open"]),
         current_vix    = current_vix,
