@@ -193,9 +193,9 @@ def main_weic_calculos():
     st.markdown("---")
 
     # --------------------------------------------------------------------------
-    # SECCIÓN 2 — Cálculo del rango esperado
+    # SECCIÓN 2 — Señal de entrada
     # --------------------------------------------------------------------------
-    st.header("2. Movimiento esperado")
+    st.header("2. Señal de entrada")
 
     with st.spinner("Descargando datos semanales y calculando régimen de VIX..."):
         try:
@@ -203,6 +203,93 @@ def main_weic_calculos():
         except Exception as e:
             st.error(f"❌ {e}")
             st.stop()
+
+    senal = resultado.senal
+
+    if senal.signal == 1:
+        st.success(
+            f"✅ **Signal = 1** — se cumplen las 4 condiciones "
+            f"(Tendencia Alcista, VIX en rango, VIX < VIX_WMA_21, Contango). "
+            f"Aplica al lunes **{senal.new_date}**."
+        )
+    else:
+        fallidas = []
+        if not senal.cond_tendencia:
+            fallidas.append("Tendencia no es Alcista")
+        if not senal.cond_vix_rango:
+            fallidas.append("VIX fuera del rango 10-25")
+        if not senal.cond_vix_wma:
+            fallidas.append("VIX no está por debajo de su VIX_WMA_21")
+        if not senal.cond_contango:
+            fallidas.append("Term Structure no está en Contango")
+        st.error(
+            f"⛔ **Signal = 0** — falla: {', '.join(fallidas)}. "
+            f"Aplica al lunes **{senal.new_date}**."
+        )
+
+    valores_ordenados = {
+        "New Date":                  senal.new_date,
+        "Signal":                    senal.signal,
+        "Last Close":                senal.last_close,
+        "Last SP500_WMA_30":         senal.last_sp500_wma30,
+        "Tendencia":                 senal.tendencia,
+        "Last VIX":                  senal.last_vix,
+        "Last VIX_WMA_21":           senal.last_vix_wma21,
+        "VIX en rango (10-25)":      senal.vix_en_rango,
+        "VIX < VIX WMA21":           senal.vix_lt_wma21,
+        "Term Structure":            senal.term_structure,
+        "VIX WMA21 bajando (info)":  senal.vix_wma21_bajando,
+        "Realized Vol (anual %)":    senal.realized_vol_anual_pct,
+        "VRP (info)":                senal.vrp_positive,
+    }
+
+    condicion_senal = {
+        "New Date":                 "",
+        "Signal":                   "",
+        "Tendencia":                "Cumple" if senal.cond_tendencia else "No cumple",
+        "Last Close":               "",
+        "Last SP500_WMA_30":        "",
+        "Last VIX":                 "",
+        "Last VIX_WMA_21":          "",
+        "VIX en rango (10-25)":     "Cumple" if senal.cond_vix_rango else "No cumple",
+        "VIX < VIX WMA21":          "Cumple" if senal.cond_vix_wma else "No cumple",
+        "Term Structure":           "Cumple" if senal.cond_contango else "No cumple",
+        "VIX WMA21 bajando (info)": "-- info --",
+        "Realized Vol (anual %)":   "",
+        "VRP (info)":               "-- info --",
+    }
+
+    descripciones = {
+        "New Date":                 "Fecha del próximo día hábil (lunes) al que aplica la señal",
+        "Signal":                   "Señal binaria: 1 = abrir Iron Condor 5DTE, 0 = no operar",
+        "Last Close":               "Cierre del SP500 en la última semana cerrada",
+        "Last SP500_WMA_30":        "Media móvil ponderada del SP500 (5 semanas), referencia de tendencia",
+        "Tendencia":                "Alcista si el cierre está por encima de su WMA_30, si no Bajista",
+        "Last VIX":                 "Cierre del VIX en la última semana",
+        "Last VIX_WMA_21":          "Media móvil ponderada del VIX (aprox 1 año)",
+        "VIX en rango (10-25)":     "VIX dentro del rango operativo definido (ni muy bajo ni muy alto)",
+        "VIX < VIX WMA21":          "Volatilidad implícita actual por debajo de su propia media (relajándose)",
+        "Term Structure":           "Contango (VIX<VIX3M, calma) o Backwardation (VIX>VIX3M, estrés)",
+        "VIX WMA21 bajando (info)": "La media del VIX lleva bajando respecto a la semana anterior. No entra en la señal",
+        "Realized Vol (anual %)":   "Volatilidad realizada anualizada del SP500 (últimas 4 semanas)",
+        "VRP (info)":               "VIX > Vol. Realizada: prima de riesgo de volatilidad positiva, favorable para vender opciones. No entra en la señal",
+    }
+
+    tabla_senal = pd.DataFrame({
+        "Field":        list(valores_ordenados.keys()),
+        "Value":        list(valores_ordenados.values()),
+        "Cumple Señal": [condicion_senal.get(k, "") for k in valores_ordenados.keys()],
+        "Description":  [descripciones.get(k, "") for k in valores_ordenados.keys()],
+    })
+
+    st.dataframe(tabla_senal, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # --------------------------------------------------------------------------
+    # SECCIÓN 3 — Cálculo del rango esperado
+    # --------------------------------------------------------------------------
+    st.header("3. Movimiento esperado")
 
     spot         = resultado.last_close
     current_vix  = resultado.current_vix
@@ -291,7 +378,7 @@ def main_weic_calculos():
     # --------------------------------------------------------------------------
     # SECCIÓN 3 — Gráfico
     # --------------------------------------------------------------------------
-    st.header("3. Gráfico del rango proyectado")
+    st.header("4. Gráfico del rango proyectado")
 
     fig = construir_grafico(resultado, fecha_salida)
     st.plotly_chart(fig, use_container_width=True)
