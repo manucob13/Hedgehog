@@ -77,11 +77,38 @@ def _wma(series: pd.Series, window: int) -> pd.Series:
 # RESULTADO
 # ==============================================================================
 @dataclass
+class SenalEntrada:
+    """
+    Señal binaria de entrada para el Iron Condor 5DTE, calculada con los
+    valores YA CONOCIDOS de la última semana cerrada (sin shift, porque nos
+    paramos justo después del cierre del viernes, antes de la apertura del
+    lunes). Replica el bloque "PREDICCION DEL MERCADO" del notebook.
+    """
+    new_date:               str     # próximo día hábil (lunes) al que aplica la señal
+    signal:                 int     # 1 = abrir IC 5DTE, 0 = no operar
+    last_close:              float
+    last_sp500_wma30:        float
+    tendencia:               str    # "Alcista" / "Bajista"
+    last_vix:                float
+    last_vix_wma21:           float
+    vix_en_rango:            bool   # VIX dentro de algún rango definido (10-25)
+    vix_lt_wma21:            bool   # VIX < VIX_WMA_21 (relajándose)
+    term_structure:          str    # "Contango" / "Backwardation" (sin shift)
+    vix_wma21_bajando:       bool   # informativo, no entra en la señal
+    realized_vol_anual_pct:  float  # informativo
+    vrp_positive:            bool   # informativo: VIX > vol realizada
+    cond_tendencia:          bool
+    cond_vix_rango:          bool
+    cond_vix_wma:            bool
+    cond_contango:           bool
+
+
+@dataclass
 class RangoEsperadoResult:
     last_date:      str
     last_close:     float
     last_open:      float
-    current_vix:    float              # VIX de la última semana cerrada
+    current_vix:    float              # VIX de la última semana cerrada (shifted, sin look-ahead)
     regime_label:   Optional[str]
     regime_rows:    int
     sigma_regimen:  float              # Std_logret del régimen (semanal)
@@ -93,6 +120,7 @@ class RangoEsperadoResult:
     term_structure: str                # "Contango" / "Backwardation"
     stats_df:       pd.DataFrame       # tabla resumen de todos los regímenes VIX
     hist_df:        pd.DataFrame       # histórico semanal completo (para graficar)
+    senal:          SenalEntrada       # señal de entrada del Iron Condor 5DTE
 
 
 # ==============================================================================
@@ -171,6 +199,77 @@ def _descargar_y_procesar(years_back: int = YEARS_BACK) -> pd.DataFrame:
 
 
 # ==============================================================================
+# SEÑAL DE ENTRADA (bloque "PREDICCION DEL MERCADO" del notebook)
+# ==============================================================================
+def _calcular_senal(df: pd.DataFrame) -> SenalEntrada:
+    """
+    Calcula la señal binaria de apertura del Iron Condor 5DTE con los
+    valores YA CONOCIDOS de la última semana cerrada (sin shift): estamos
+    parados justo después del cierre del viernes, antes de que abra el
+    mercado el lunes, así que 'VIX', 'VIX3M', 'Close', etc. de la última
+    fila son datos reales, no proyectados.
+
+    Condiciones que forman la señal (las 4 deben cumplirse para Signal = 1):
+      1. Tendencia = Alcista       -> Close > SP500_WMA_30
+      2. VIX dentro de rango 10-25 -> ni muy bajo ni muy alto
+      3. VIX < VIX_WMA_21          -> volatilidad implícita relajándose
+      4. Term Structure = Contango -> VIX < VIX3M, mercado calmado
+
+    Informativas (no entran en la señal): VIX_WMA_21 bajando 2 semanas
+    consecutivas, y VRP (VIX > vol. realizada anualizada).
+    """
+    last_row  = df.iloc[-1]
+    last_date = df.index[-1]
+
+    next_business_day = last_date + timedelta(days=1)
+    while next_business_day.weekday() >= 5:
+        next_business_day += timedelta(days=1)
+
+    # --- Contango/backwardation actual (VIX y VIX3M de la última semana cerrada, sin shift) ---
+    current_ratio          = last_row["VIX"] / last_row["VIX3M"]
+    current_term_structure = "Contango" if current_ratio < 1 else "Backwardation"
+
+    # --- VIX dentro de alguno de los rangos definidos ---
+    current_vix  = last_row["VIX"]
+    vix_in_range = any(low <= current_vix < high for low, high in VIX_RANGES)
+
+    # --- VIX WMA bajando 2 semanas consecutivas (solo informativo) ---
+    vix_wma_down = bool(last_row["VIX_WMA_21"] < last_row["VIX_WMA_21_y"])
+
+    # --- VRP: VIX (implícita) vs volatilidad realizada anualizada (solo informativo) ---
+    realized_vol_annualized = float(last_row["Vol21"] * np.sqrt(52) * 100)
+    vrp_positive             = bool(current_vix > realized_vol_annualized)
+
+    # --- Condiciones individuales que forman la señal ---
+    cond_tendencia = bool(last_row["Close"] > last_row["SP500_WMA_30"])
+    cond_vix_rango = bool(vix_in_range)
+    cond_vix_wma   = bool(last_row["VIX"] < last_row["VIX_WMA_21"])
+    cond_contango  = bool(current_term_structure == "Contango")
+
+    opera = 1 if (cond_tendencia and cond_vix_rango and cond_vix_wma and cond_contango) else 0
+
+    return SenalEntrada(
+        new_date               = next_business_day.strftime("%Y-%m-%d"),
+        signal                  = opera,
+        last_close               = round(float(last_row["Close"]), 2),
+        last_sp500_wma30         = round(float(last_row["SP500_WMA_30"]), 2),
+        tendencia                = "Alcista" if cond_tendencia else "Bajista",
+        last_vix                 = round(float(current_vix), 2),
+        last_vix_wma21            = round(float(last_row["VIX_WMA_21"]), 2),
+        vix_en_rango             = vix_in_range,
+        vix_lt_wma21             = cond_vix_wma,
+        term_structure            = current_term_structure,
+        vix_wma21_bajando        = vix_wma_down,
+        realized_vol_anual_pct   = round(realized_vol_annualized, 2),
+        vrp_positive              = vrp_positive,
+        cond_tendencia           = cond_tendencia,
+        cond_vix_rango           = cond_vix_rango,
+        cond_vix_wma             = cond_vix_wma,
+        cond_contango            = cond_contango,
+    )
+
+
+# ==============================================================================
 # SEGMENTACION POR RANGO DE VIX
 # ==============================================================================
 def _segmentar_por_vix(df: pd.DataFrame) -> pd.DataFrame:
@@ -218,6 +317,7 @@ def calcular_rango_esperado(stdn: float = 2.5, years_back: int = YEARS_BACK) -> 
     """
     df = _descargar_y_procesar(years_back)
     stats_df = _segmentar_por_vix(df)
+    senal = _calcular_senal(df)
 
     last_row    = df.iloc[-1]
     current_vix = float(last_row["VIX_y"])   # VIX de la última semana cerrada (sin look-ahead)
@@ -265,4 +365,5 @@ def calcular_rango_esperado(stdn: float = 2.5, years_back: int = YEARS_BACK) -> 
         term_structure = str(last_row["Term_Structure"]),
         stats_df       = stats_df,
         hist_df        = df,
+        senal          = senal,
     )
