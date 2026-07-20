@@ -7,7 +7,7 @@ Weekly Iron Condor — Calculadora de movimiento esperado SPX.
 - Segmenta el histórico por régimen de VIX y calcula el std de los
   log-returns semanales (metodología del notebook Vol_SPX_5DTE_2_0_prep)
 - Fijo a 5 DTE: entrada Lunes, salida Viernes
-- El usuario ajusta: std (stdn)
+- El usuario ajusta: std (stdn), por defecto 2
 - Muestra las bandas de precio esperado y un gráfico del rango proyectado
 """
 
@@ -142,7 +142,7 @@ def construir_grafico(resultado, fecha_salida: date):
 
 
 # ==============================================================================
-# TABLA BONITA / SEMAFORO
+# HELPERS DE FORMATO
 # ==============================================================================
 
 def _fmt_bool(v):
@@ -156,77 +156,17 @@ def _fmt_num(v, decimals=2):
         return str(v)
 
 
-def construir_tabla_senal_html(senal) -> str:
-    """
-    Tabla HTML estilizada con semáforo:
-    - verde si cumple,
-    - rojo si no cumple,
-    - gris para informativo / no aplica.
+# ==============================================================================
+# ESTILOS COMPARTIDOS DE TABLAS
+# ==============================================================================
 
-    IMPORTANTE: todo el HTML se construye SIN indentación en las líneas,
-    porque Markdown convierte cualquier línea indentada 4+ espacios en un
-    bloque de código y el HTML deja de renderizarse (aparece como texto crudo).
-    """
-    rows = [
-        {"field": "New Date", "value": senal.new_date, "status": "info",
-         "desc": "Fecha del próximo lunes al que aplica la señal"},
-        {"field": "Signal", "value": "1" if senal.signal == 1 else "0",
-         "status": "ok" if senal.signal == 1 else "bad",
-         "desc": "Señal binaria: 1 = abrir Iron Condor 5DTE, 0 = no operar"},
-        {"field": "Tendencia", "value": senal.tendencia,
-         "status": "ok" if senal.cond_tendencia else "bad",
-         "desc": "Alcista si el cierre está por encima de su WMA_30"},
-        {"field": "Last Close", "value": _fmt_num(senal.last_close, 2), "status": "info",
-         "desc": "Cierre del SP500 en la última semana cerrada"},
-        {"field": "Last SP500_WMA_30", "value": _fmt_num(senal.last_sp500_wma30, 2), "status": "info",
-         "desc": "Media móvil ponderada del SP500 (5 semanas)"},
-        {"field": "Last VIX", "value": _fmt_num(senal.last_vix, 2), "status": "info",
-         "desc": "Cierre del VIX en la última semana"},
-        {"field": "Last VIX_WMA_21", "value": _fmt_num(senal.last_vix_wma21, 2), "status": "info",
-         "desc": "Media móvil ponderada del VIX (aprox. 1 año)"},
-        {"field": "VIX en rango (10-25)", "value": _fmt_bool(senal.vix_en_rango),
-         "status": "ok" if senal.cond_vix_rango else "bad",
-         "desc": "VIX dentro del rango operativo definido"},
-        {"field": "VIX < VIX_WMA21", "value": _fmt_bool(senal.vix_lt_wma21),
-         "status": "ok" if senal.cond_vix_wma else "bad",
-         "desc": "Volatilidad implícita relajándose"},
-        {"field": "Term Structure", "value": senal.term_structure,
-         "status": "ok" if senal.cond_contango else "bad",
-         "desc": "Contango (VIX < VIX3M) o Backwardation"},
-        {"field": "VIX WMA21 bajando", "value": _fmt_bool(senal.vix_wma21_bajando), "status": "info",
-         "desc": "Informativo, no entra en la señal"},
-        {"field": "Realized Vol (anual %)", "value": _fmt_num(senal.realized_vol_anual_pct, 2), "status": "info",
-         "desc": "Volatilidad realizada anualizada del SP500"},
-        {"field": "VRP positiva", "value": _fmt_bool(senal.vrp_positive), "status": "info",
-         "desc": "VIX > vol. realizada, favorable para venta de opciones"},
-    ]
-
-    def badge(status: str) -> str:
-        if status == "ok":
-            return '<span class="weic-pill weic-pill-ok">🟢 Cumple</span>'
-        if status == "bad":
-            return '<span class="weic-pill weic-pill-bad">🔴 No cumple</span>'
-        return '<span class="weic-pill weic-pill-info">⚪ Info</span>'
-
-    html_rows = []
-    for r in rows:
-        row_class = ("weic-row-ok" if r["status"] == "ok"
-                     else "weic-row-bad" if r["status"] == "bad"
-                     else "weic-row-info")
-        row_html = (
-            f'<tr class="{row_class}">'
-            f'<td class="col-field">{html.escape(str(r["field"]))}</td>'
-            f'<td class="col-value">{html.escape(str(r["value"]))}</td>'
-            f'<td class="col-status">{badge(r["status"])}</td>'
-            f'<td class="col-desc">{html.escape(str(r["desc"]))}</td>'
-            f'</tr>'
-        )
-        html_rows.append(row_html)
-
-    style = (
+def _weic_table_styles() -> str:
+    return (
         '<style>'
-        '.weic-table-wrap{margin-top:0.5rem;margin-bottom:0.25rem;border:1px solid rgba(128,128,128,0.18);'
+        '.weic-table-wrap{margin-top:0.5rem;margin-bottom:1.25rem;border:1px solid rgba(128,128,128,0.18);'
         'border-radius:14px;overflow:hidden;background:rgba(255,255,255,0.02);}'
+        '.weic-table-title{padding:0.7rem 1rem;font-weight:700;font-size:0.95rem;'
+        'background:rgba(120,120,120,0.14);border-bottom:1px solid rgba(128,128,128,0.18);}'
         '.weic-table{width:100%;border-collapse:collapse;font-size:0.95rem;}'
         '.weic-table thead th{text-align:left;padding:0.9rem 1rem;background:rgba(120,120,120,0.10);'
         'border-bottom:1px solid rgba(128,128,128,0.18);font-weight:700;}'
@@ -240,23 +180,145 @@ def construir_tabla_senal_html(senal) -> str:
         '.weic-pill-ok{background:rgba(27,175,122,0.18);color:#72e0b5;border:1px solid rgba(27,175,122,0.28);}'
         '.weic-pill-bad{background:rgba(224,92,92,0.18);color:#ff9a9a;border:1px solid rgba(224,92,92,0.28);}'
         '.weic-pill-info{background:rgba(140,140,140,0.14);color:#cfcfcf;border:1px solid rgba(160,160,160,0.18);}'
-        '.col-field{width:19%;font-weight:650;}'
-        '.col-value{width:15%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:600;}'
-        '.col-status{width:16%;}'
-        '.col-desc{width:50%;color:rgba(250,250,250,0.78);}'
+        '.col-field{width:26%;font-weight:650;}'
+        '.col-value{width:20%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:600;}'
+        '.col-status{width:18%;}'
+        '.col-desc{width:56%;color:rgba(250,250,250,0.78);}'
         '@media (max-width:900px){.weic-table{font-size:0.88rem;}.col-desc{display:none;}'
-        '.col-field{width:34%;}.col-value{width:26%;}.col-status{width:40%;}}'
+        '.col-field{width:40%;}.col-value{width:30%;}.col-status{width:30%;}}'
         '</style>'
     )
 
-    table_html = (
-        f'<div class="weic-table-wrap"><table class="weic-table">'
-        f'<thead><tr><th>Field</th><th>Value</th><th>Semáforo</th><th>Description</th></tr></thead>'
-        f'<tbody>{"".join(html_rows)}</tbody>'
+
+def _badge(status: str) -> str:
+    if status == "ok":
+        return '<span class="weic-pill weic-pill-ok">🟢 Cumple</span>'
+    if status == "bad":
+        return '<span class="weic-pill weic-pill-bad">🔴 No cumple</span>'
+    return '<span class="weic-pill weic-pill-info">⚪ Info</span>'
+
+
+def _build_table_html(title: str, headers: list, rows_html: list) -> str:
+    header_html = "".join(f"<th>{html.escape(h)}</th>" for h in headers)
+    return (
+        f'<div class="weic-table-wrap">'
+        f'<div class="weic-table-title">{html.escape(title)}</div>'
+        f'<table class="weic-table">'
+        f'<thead><tr>{header_html}</tr></thead>'
+        f'<tbody>{"".join(rows_html)}</tbody>'
         f'</table></div>'
     )
 
-    return style + table_html
+
+# ==============================================================================
+# TABLA 1 — DATOS BASE (Last Close, WMA, VIX, VIX WMA)
+# ==============================================================================
+
+def construir_tabla_datos_base_html(senal) -> str:
+    rows = [
+        {"field": "Last Close", "value": _fmt_num(senal.last_close, 2),
+         "desc": "Cierre del SP500 en la última semana cerrada"},
+        {"field": "Last SP500_WMA_30", "value": _fmt_num(senal.last_sp500_wma30, 2),
+         "desc": "Media móvil ponderada del SP500 (5 semanas)"},
+        {"field": "Last VIX", "value": _fmt_num(senal.last_vix, 2),
+         "desc": "Cierre del VIX en la última semana"},
+        {"field": "Last VIX_WMA_21", "value": _fmt_num(senal.last_vix_wma21, 2),
+         "desc": "Media móvil ponderada del VIX (aprox. 1 año)"},
+    ]
+
+    rows_html = []
+    for r in rows:
+        row_html = (
+            f'<tr class="weic-row-info">'
+            f'<td class="col-field">{html.escape(str(r["field"]))}</td>'
+            f'<td class="col-value">{html.escape(str(r["value"]))}</td>'
+            f'<td class="col-desc">{html.escape(str(r["desc"]))}</td>'
+            f'</tr>'
+        )
+        rows_html.append(row_html)
+
+    return _build_table_html(
+        "📌 Datos base",
+        ["Field", "Value", "Description"],
+        rows_html,
+    )
+
+
+# ==============================================================================
+# TABLA 2 — CONDICIONES DE LA SEÑAL (con semáforo)
+# ==============================================================================
+
+def construir_tabla_condiciones_html(senal) -> str:
+    rows = [
+        {"field": "Signal", "value": "1" if senal.signal == 1 else "0",
+         "status": "ok" if senal.signal == 1 else "bad",
+         "desc": "Señal binaria: 1 = abrir Iron Condor 5DTE, 0 = no operar"},
+        {"field": "Tendencia", "value": senal.tendencia,
+         "status": "ok" if senal.cond_tendencia else "bad",
+         "desc": "Alcista si el cierre está por encima de su WMA_30"},
+        {"field": "VIX en rango (10-25)", "value": _fmt_bool(senal.vix_en_rango),
+         "status": "ok" if senal.cond_vix_rango else "bad",
+         "desc": "VIX dentro del rango operativo definido"},
+        {"field": "VIX < VIX_WMA21", "value": _fmt_bool(senal.vix_lt_wma21),
+         "status": "ok" if senal.cond_vix_wma else "bad",
+         "desc": "Volatilidad implícita relajándose"},
+        {"field": "Term Structure", "value": senal.term_structure,
+         "status": "ok" if senal.cond_contango else "bad",
+         "desc": "Contango (VIX < VIX3M) o Backwardation"},
+    ]
+
+    rows_html = []
+    for r in rows:
+        row_class = "weic-row-ok" if r["status"] == "ok" else "weic-row-bad"
+        row_html = (
+            f'<tr class="{row_class}">'
+            f'<td class="col-field">{html.escape(str(r["field"]))}</td>'
+            f'<td class="col-value">{html.escape(str(r["value"]))}</td>'
+            f'<td class="col-status">{_badge(r["status"])}</td>'
+            f'<td class="col-desc">{html.escape(str(r["desc"]))}</td>'
+            f'</tr>'
+        )
+        rows_html.append(row_html)
+
+    return _build_table_html(
+        "🚦 Condiciones de la señal",
+        ["Field", "Value", "Semáforo", "Description"],
+        rows_html,
+    )
+
+
+# ==============================================================================
+# TABLA 3 — INFORMATIVAS (no entran en la señal)
+# ==============================================================================
+
+def construir_tabla_informativas_html(senal) -> str:
+    rows = [
+        {"field": "New Date", "value": senal.new_date,
+         "desc": "Fecha del próximo lunes al que aplica la señal"},
+        {"field": "VIX WMA21 bajando", "value": _fmt_bool(senal.vix_wma21_bajando),
+         "desc": "Informativo, no entra en la señal"},
+        {"field": "Realized Vol (anual %)", "value": _fmt_num(senal.realized_vol_anual_pct, 2),
+         "desc": "Volatilidad realizada anualizada del SP500"},
+        {"field": "VRP positiva", "value": _fmt_bool(senal.vrp_positive),
+         "desc": "VIX > vol. realizada, favorable para venta de opciones"},
+    ]
+
+    rows_html = []
+    for r in rows:
+        row_html = (
+            f'<tr class="weic-row-info">'
+            f'<td class="col-field">{html.escape(str(r["field"]))}</td>'
+            f'<td class="col-value">{html.escape(str(r["value"]))}</td>'
+            f'<td class="col-desc">{html.escape(str(r["desc"]))}</td>'
+            f'</tr>'
+        )
+        rows_html.append(row_html)
+
+    return _build_table_html(
+        "ℹ️ Informativas (no entran en la señal)",
+        ["Field", "Value", "Description"],
+        rows_html,
+    )
 
 
 # ==============================================================================
@@ -286,7 +348,7 @@ def main_weic_calculos():
             "Desviaciones estándar (σ)",
             min_value=0.5,
             max_value=4.0,
-            value=2.5,
+            value=2.0,
             step=0.1,
             format="%.1f",
             help="Número de desviaciones para calcular las bandas, sobre el std de "
@@ -346,7 +408,17 @@ def main_weic_calculos():
             f"Aplica al lunes **{senal.new_date}**."
         )
 
-    st.markdown(construir_tabla_senal_html(senal), unsafe_allow_html=True)
+    # --- Estilos compartidos (una sola vez) ---
+    st.markdown(_weic_table_styles(), unsafe_allow_html=True)
+
+    # --- Tabla 1: Datos base ---
+    st.markdown(construir_tabla_datos_base_html(senal), unsafe_allow_html=True)
+
+    # --- Tabla 2: Condiciones + semáforo ---
+    st.markdown(construir_tabla_condiciones_html(senal), unsafe_allow_html=True)
+
+    # --- Tabla 3: Informativas ---
+    st.markdown(construir_tabla_informativas_html(senal), unsafe_allow_html=True)
 
     st.markdown("---")
 
