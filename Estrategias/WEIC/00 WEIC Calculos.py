@@ -7,7 +7,7 @@ Weekly Iron Condor — Calculadora de movimiento esperado SPX.
 - Segmenta el histórico por régimen de VIX y calcula el std de los
   log-returns semanales (metodología del notebook Vol_SPX_5DTE_2_0_prep)
 - Fijo a 5 DTE: entrada Lunes, salida Viernes
-- El usuario ajusta: std (stdn), por defecto 2
+- El usuario ajusta: std (stdn), por defecto 2, desde la sección "Movimiento esperado"
 - Muestra las bandas de precio esperado y un gráfico del rango proyectado
 """
 
@@ -211,11 +211,13 @@ def _build_table_html(title: str, headers: list, rows_html: list) -> str:
 
 
 # ==============================================================================
-# TABLA 1 — DATOS BASE (Last Close, WMA, VIX, VIX WMA)
+# TABLA 1 — DATOS BASE (New Date, Last Close, WMA, VIX, VIX WMA)
 # ==============================================================================
 
 def construir_tabla_datos_base_html(senal) -> str:
     rows = [
+        {"field": "New Date", "value": senal.new_date,
+         "desc": "Fecha del próximo lunes al que aplica la señal"},
         {"field": "Last Close", "value": _fmt_num(senal.last_close, 2),
          "desc": "Cierre del SP500 en la última semana cerrada"},
         {"field": "Last SP500_WMA_30", "value": _fmt_num(senal.last_sp500_wma30, 2),
@@ -293,8 +295,6 @@ def construir_tabla_condiciones_html(senal) -> str:
 
 def construir_tabla_informativas_html(senal) -> str:
     rows = [
-        {"field": "New Date", "value": senal.new_date,
-         "desc": "Fecha del próximo lunes al que aplica la señal"},
         {"field": "VIX WMA21 bajando", "value": _fmt_bool(senal.vix_wma21_bajando),
          "desc": "Informativo, no entra en la señal"},
         {"field": "Realized Vol (anual %)", "value": _fmt_num(senal.realized_vol_anual_pct, 2),
@@ -335,39 +335,36 @@ def main_weic_calculos():
         "Calcula las bandas de precio esperado en función del régimen de VIX vigente, "
         "para una entrada Lunes → salida Viernes (5 DTE fijo)."
     )
-    st.markdown("---")
 
     # --------------------------------------------------------------------------
-    # SECCIÓN 1 — Parámetros
+    # Botón de actualización de datos (sin sección numerada propia)
     # --------------------------------------------------------------------------
-    st.header("1. Parámetros")
-
-    col_std, col_btn = st.columns([2, 1])
-    with col_std:
-        stdn = st.number_input(
-            "Desviaciones estándar (σ)",
-            min_value=0.5,
-            max_value=4.0,
-            value=2.0,
-            step=0.1,
-            format="%.1f",
-            help="Número de desviaciones para calcular las bandas, sobre el std de "
-                 "log-returns semanales del régimen de VIX vigente.",
-        )
+    col_info, col_btn = st.columns([3, 1])
     with col_btn:
-        st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🔄 Actualizar datos", type="primary"):
             st.cache_data.clear()
             st.rerun()
 
+    st.markdown("---")
+
+    # --------------------------------------------------------------------------
+    # SECCIÓN 1 — Señal de entrada
+    # --------------------------------------------------------------------------
+    st.header("1. Señal de entrada")
+
+    # stdn se define más abajo (sección Movimiento esperado), pero necesitamos
+    # un valor para el primer cálculo cacheado: usamos el valor por defecto (2.0)
+    # y luego se recalcula si el usuario lo cambia en la sección correspondiente.
+    if "weic_stdn" not in st.session_state:
+        st.session_state["weic_stdn"] = 2.0
+
     with st.spinner("Descargando datos semanales y calculando régimen de VIX..."):
         try:
-            resultado = obtener_rango_esperado(stdn)
+            resultado = obtener_rango_esperado(st.session_state["weic_stdn"])
         except Exception as e:
             st.error(f"❌ {e}")
             st.stop()
 
-    # Fechas corregidas apoyándonos en la señal calculada
     fecha_entrada = get_reference_monday_from_result(resultado)
     fecha_salida = get_next_friday_from_monday(fecha_entrada)
 
@@ -376,13 +373,6 @@ def main_weic_calculos():
         f"→  **Salida:** Viernes {fecha_salida.strftime('%d/%m/%Y')}  "
         f"|  **DTE:** 5 días (fijo)"
     )
-
-    st.markdown("---")
-
-    # --------------------------------------------------------------------------
-    # SECCIÓN 2 — Señal de entrada
-    # --------------------------------------------------------------------------
-    st.header("2. Señal de entrada")
 
     senal = resultado.senal
 
@@ -411,7 +401,7 @@ def main_weic_calculos():
     # --- Estilos compartidos (una sola vez) ---
     st.markdown(_weic_table_styles(), unsafe_allow_html=True)
 
-    # --- Tabla 1: Datos base ---
+    # --- Tabla 1: Datos base (incluye New Date) ---
     st.markdown(construir_tabla_datos_base_html(senal), unsafe_allow_html=True)
 
     # --- Tabla 2: Condiciones + semáforo ---
@@ -423,9 +413,25 @@ def main_weic_calculos():
     st.markdown("---")
 
     # --------------------------------------------------------------------------
-    # SECCIÓN 3 — Cálculo del rango esperado
+    # SECCIÓN 2 — Movimiento esperado (aquí vive el control de stdn)
     # --------------------------------------------------------------------------
-    st.header("3. Movimiento esperado")
+    st.header("2. Movimiento esperado")
+
+    stdn = st.number_input(
+        "Desviaciones estándar (σ)",
+        min_value=0.5,
+        max_value=4.0,
+        value=st.session_state["weic_stdn"],
+        step=0.1,
+        format="%.1f",
+        help="Número de desviaciones para calcular las bandas, sobre el std de "
+             "log-returns semanales del régimen de VIX vigente.",
+        key="weic_stdn_input",
+    )
+
+    if stdn != st.session_state["weic_stdn"]:
+        st.session_state["weic_stdn"] = stdn
+        st.rerun()
 
     spot = resultado.last_close
     current_vix = resultado.current_vix
@@ -512,9 +518,9 @@ def main_weic_calculos():
     st.markdown("---")
 
     # --------------------------------------------------------------------------
-    # SECCIÓN 4 — Gráfico
+    # SECCIÓN 3 — Gráfico
     # --------------------------------------------------------------------------
-    st.header("4. Gráfico del rango proyectado")
+    st.header("3. Gráfico del rango proyectado")
 
     fig = construir_grafico(resultado, fecha_salida)
     st.plotly_chart(fig, use_container_width=True)
