@@ -11,6 +11,7 @@ Weekly Iron Condor — Calculadora de movimiento esperado SPX.
 - Muestra las bandas de precio esperado y un gráfico del rango proyectado
 """
 
+import html
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -23,7 +24,7 @@ from utils.volatility import calcular_rango_esperado
 
 
 # ==============================================================================
-# HELPERS
+# HELPERS FECHAS
 # ==============================================================================
 
 def get_next_monday() -> date:
@@ -34,13 +35,24 @@ def get_next_monday() -> date:
     return today + timedelta(days=days_ahead)
 
 
-def get_next_friday() -> date:
-    today = date.today()
-    days_ahead = (4 - today.weekday()) % 7
-    if days_ahead == 0:
-        days_ahead = 7
-    return today + timedelta(days=days_ahead)
+def get_next_friday_from_monday(monday_date: date) -> date:
+    return monday_date + timedelta(days=4)
 
+
+def get_reference_monday_from_result(resultado) -> date:
+    """
+    Usa la fecha ya calculada por volatility.py (senal.new_date), que debería ser
+    el próximo lunes aplicable a la señal. Si falla, cae al próximo lunes natural.
+    """
+    try:
+        return pd.to_datetime(resultado.senal.new_date).date()
+    except Exception:
+        return get_next_monday()
+
+
+# ==============================================================================
+# CACHE
+# ==============================================================================
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def obtener_rango_esperado(stdn: float):
@@ -54,14 +66,13 @@ def obtener_rango_esperado(stdn: float):
 
 def construir_grafico(resultado, fecha_salida: date):
     """
-    Grafico de velas/linea con el historico semanal reciente del SPX
+    Grafico de linea con el historico semanal reciente del SPX
     y la banda esperada (stdn) proyectada hacia la fecha de salida.
     """
-    hist = resultado.hist_df.tail(26)  # ultimas ~26 semanas
+    hist = resultado.hist_df.tail(26)
 
     fig = go.Figure()
 
-    # --- Historico de cierres semanales ---
     fig.add_trace(go.Scatter(
         x=hist.index,
         y=hist["Close"],
@@ -73,7 +84,6 @@ def construir_grafico(resultado, fecha_salida: date):
     fecha_proyeccion = pd.Timestamp(fecha_salida)
     ultima_fecha = hist.index[-1]
 
-    # --- Lineas de proyeccion desde el ultimo cierre hasta la banda ---
     fig.add_trace(go.Scatter(
         x=[ultima_fecha, fecha_proyeccion],
         y=[resultado.last_close, resultado.band_up],
@@ -89,7 +99,6 @@ def construir_grafico(resultado, fecha_salida: date):
         line=dict(color="#1baf7a", width=2, dash="dot"),
     ))
 
-    # --- Marcadores de los puntos clave ---
     fig.add_trace(go.Scatter(
         x=[ultima_fecha],
         y=[resultado.last_close],
@@ -119,16 +128,6 @@ def construir_grafico(resultado, fecha_salida: date):
         showlegend=False,
     ))
 
-    # --- Sombreado del area de la banda ---
-    fig.add_trace(go.Scatter(
-        x=[fecha_proyeccion, fecha_proyeccion],
-        y=[resultado.band_dw, resultado.band_up],
-        mode="lines",
-        line=dict(color="rgba(0,0,0,0)"),
-        showlegend=False,
-        hoverinfo="skip",
-    ))
-
     fig.update_layout(
         title=f"SPX — Rango esperado proyectado ({resultado.stdn}σ, régimen VIX {resultado.regime_label})",
         xaxis_title="Fecha",
@@ -140,6 +139,260 @@ def construir_grafico(resultado, fecha_salida: date):
     )
 
     return fig
+
+
+# ==============================================================================
+# TABLA BONITA / SEMAFORO
+# ==============================================================================
+
+def _fmt_bool(v):
+    return "Sí" if bool(v) else "No"
+
+
+def _fmt_num(v, decimals=2):
+    try:
+        return f"{float(v):,.{decimals}f}"
+    except Exception:
+        return str(v)
+
+
+def construir_tabla_senal_html(senal) -> str:
+    """
+    Tabla HTML estilizada con semáforo:
+    - verde si cumple,
+    - rojo si no cumple,
+    - gris para informativo / no aplica.
+    """
+    rows = [
+        {
+            "field": "New Date",
+            "value": senal.new_date,
+            "status": "info",
+            "desc": "Fecha del próximo lunes al que aplica la señal",
+        },
+        {
+            "field": "Signal",
+            "value": "1" if senal.signal == 1 else "0",
+            "status": "ok" if senal.signal == 1 else "bad",
+            "desc": "Señal binaria: 1 = abrir Iron Condor 5DTE, 0 = no operar",
+        },
+        {
+            "field": "Tendencia",
+            "value": senal.tendencia,
+            "status": "ok" if senal.cond_tendencia else "bad",
+            "desc": "Alcista si el cierre está por encima de su WMA_30",
+        },
+        {
+            "field": "Last Close",
+            "value": _fmt_num(senal.last_close, 2),
+            "status": "info",
+            "desc": "Cierre del SP500 en la última semana cerrada",
+        },
+        {
+            "field": "Last SP500_WMA_30",
+            "value": _fmt_num(senal.last_sp500_wma30, 2),
+            "status": "info",
+            "desc": "Media móvil ponderada del SP500 (5 semanas)",
+        },
+        {
+            "field": "Last VIX",
+            "value": _fmt_num(senal.last_vix, 2),
+            "status": "info",
+            "desc": "Cierre del VIX en la última semana",
+        },
+        {
+            "field": "Last VIX_WMA_21",
+            "value": _fmt_num(senal.last_vix_wma21, 2),
+            "status": "info",
+            "desc": "Media móvil ponderada del VIX (aprox. 1 año)",
+        },
+        {
+            "field": "VIX en rango (10-25)",
+            "value": _fmt_bool(senal.vix_en_rango),
+            "status": "ok" if senal.cond_vix_rango else "bad",
+            "desc": "VIX dentro del rango operativo definido",
+        },
+        {
+            "field": "VIX < VIX_WMA21",
+            "value": _fmt_bool(senal.vix_lt_wma21),
+            "status": "ok" if senal.cond_vix_wma else "bad",
+            "desc": "Volatilidad implícita relajándose",
+        },
+        {
+            "field": "Term Structure",
+            "value": senal.term_structure,
+            "status": "ok" if senal.cond_contango else "bad",
+            "desc": "Contango (VIX < VIX3M) o Backwardation",
+        },
+        {
+            "field": "VIX WMA21 bajando",
+            "value": _fmt_bool(senal.vix_wma21_bajando),
+            "status": "info",
+            "desc": "Informativo, no entra en la señal",
+        },
+        {
+            "field": "Realized Vol (anual %)",
+            "value": _fmt_num(senal.realized_vol_anual_pct, 2),
+            "status": "info",
+            "desc": "Volatilidad realizada anualizada del SP500",
+        },
+        {
+            "field": "VRP positiva",
+            "value": _fmt_bool(senal.vrp_positive),
+            "status": "info",
+            "desc": "VIX > vol. realizada, favorable para venta de opciones",
+        },
+    ]
+
+    def badge(status: str) -> str:
+        if status == "ok":
+            return '<span class="weic-pill weic-pill-ok">🟢 Cumple</span>'
+        if status == "bad":
+            return '<span class="weic-pill weic-pill-bad">🔴 No cumple</span>'
+        return '<span class="weic-pill weic-pill-info">⚪ Info</span>'
+
+    html_rows = []
+    for r in rows:
+        row_class = (
+            "weic-row-ok" if r["status"] == "ok"
+            else "weic-row-bad" if r["status"] == "bad"
+            else "weic-row-info"
+        )
+
+        html_rows.append(
+            f"""
+            <tr class="{row_class}">
+                <td class="col-field">{html.escape(str(r["field"]))}</td>
+                <td class="col-value">{html.escape(str(r["value"]))}</td>
+                <td class="col-status">{badge(r["status"])}</td>
+                <td class="col-desc">{html.escape(str(r["desc"]))}</td>
+            </tr>
+            """
+        )
+
+    return f"""
+    <style>
+    .weic-table-wrap {{
+        margin-top: 0.5rem;
+        margin-bottom: 0.25rem;
+        border: 1px solid rgba(128,128,128,0.18);
+        border-radius: 14px;
+        overflow: hidden;
+        background: rgba(255,255,255,0.02);
+    }}
+
+    .weic-table {{
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.95rem;
+    }}
+
+    .weic-table thead th {{
+        text-align: left;
+        padding: 0.9rem 1rem;
+        background: rgba(120,120,120,0.10);
+        border-bottom: 1px solid rgba(128,128,128,0.18);
+        font-weight: 700;
+    }}
+
+    .weic-table tbody td {{
+        padding: 0.82rem 1rem;
+        border-bottom: 1px solid rgba(128,128,128,0.10);
+        vertical-align: top;
+    }}
+
+    .weic-table tbody tr:last-child td {{
+        border-bottom: none;
+    }}
+
+    .weic-row-ok {{
+        background: rgba(27, 175, 122, 0.06);
+    }}
+
+    .weic-row-bad {{
+        background: rgba(224, 92, 92, 0.06);
+    }}
+
+    .weic-row-info {{
+        background: transparent;
+    }}
+
+    .weic-pill {{
+        display: inline-block;
+        padding: 0.28rem 0.65rem;
+        border-radius: 999px;
+        font-size: 0.84rem;
+        font-weight: 700;
+        white-space: nowrap;
+    }}
+
+    .weic-pill-ok {{
+        background: rgba(27, 175, 122, 0.18);
+        color: #72e0b5;
+        border: 1px solid rgba(27, 175, 122, 0.28);
+    }}
+
+    .weic-pill-bad {{
+        background: rgba(224, 92, 92, 0.18);
+        color: #ff9a9a;
+        border: 1px solid rgba(224, 92, 92, 0.28);
+    }}
+
+    .weic-pill-info {{
+        background: rgba(140, 140, 140, 0.14);
+        color: #cfcfcf;
+        border: 1px solid rgba(160, 160, 160, 0.18);
+    }}
+
+    .col-field {{
+        width: 19%;
+        font-weight: 650;
+    }}
+
+    .col-value {{
+        width: 15%;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-weight: 600;
+    }}
+
+    .col-status {{
+        width: 16%;
+    }}
+
+    .col-desc {{
+        width: 50%;
+        color: rgba(250,250,250,0.78);
+    }}
+
+    @media (max-width: 900px) {{
+        .weic-table {{
+            font-size: 0.88rem;
+        }}
+        .col-desc {{
+            display: none;
+        }}
+        .col-field {{ width: 34%; }}
+        .col-value {{ width: 26%; }}
+        .col-status {{ width: 40%; }}
+    }}
+    </style>
+
+    <div class="weic-table-wrap">
+        <table class="weic-table">
+            <thead>
+                <tr>
+                    <th>Field</th>
+                    <th>Value</th>
+                    <th>Semáforo</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                {''.join(html_rows)}
+            </tbody>
+        </table>
+    </div>
+    """
 
 
 # ==============================================================================
@@ -181,8 +434,16 @@ def main_weic_calculos():
             st.cache_data.clear()
             st.rerun()
 
-    fecha_entrada = get_next_monday()
-    fecha_salida  = get_next_friday()
+    with st.spinner("Descargando datos semanales y calculando régimen de VIX..."):
+        try:
+            resultado = obtener_rango_esperado(stdn)
+        except Exception as e:
+            st.error(f"❌ {e}")
+            st.stop()
+
+    # Fechas corregidas apoyándonos en la señal calculada
+    fecha_entrada = get_reference_monday_from_result(resultado)
+    fecha_salida = get_next_friday_from_monday(fecha_entrada)
 
     st.info(
         f"📅 **Entrada:** Lunes {fecha_entrada.strftime('%d/%m/%Y')}  "
@@ -196,13 +457,6 @@ def main_weic_calculos():
     # SECCIÓN 2 — Señal de entrada
     # --------------------------------------------------------------------------
     st.header("2. Señal de entrada")
-
-    with st.spinner("Descargando datos semanales y calculando régimen de VIX..."):
-        try:
-            resultado = obtener_rango_esperado(stdn)
-        except Exception as e:
-            st.error(f"❌ {e}")
-            st.stop()
 
     senal = resultado.senal
 
@@ -222,67 +476,13 @@ def main_weic_calculos():
             fallidas.append("VIX no está por debajo de su VIX_WMA_21")
         if not senal.cond_contango:
             fallidas.append("Term Structure no está en Contango")
+
         st.error(
             f"⛔ **Signal = 0** — falla: {', '.join(fallidas)}. "
             f"Aplica al lunes **{senal.new_date}**."
         )
 
-    valores_ordenados = {
-        "New Date":                  senal.new_date,
-        "Signal":                    senal.signal,
-        "Last Close":                senal.last_close,
-        "Last SP500_WMA_30":         senal.last_sp500_wma30,
-        "Tendencia":                 senal.tendencia,
-        "Last VIX":                  senal.last_vix,
-        "Last VIX_WMA_21":           senal.last_vix_wma21,
-        "VIX en rango (10-25)":      senal.vix_en_rango,
-        "VIX < VIX WMA21":           senal.vix_lt_wma21,
-        "Term Structure":            senal.term_structure,
-        "VIX WMA21 bajando (info)":  senal.vix_wma21_bajando,
-        "Realized Vol (anual %)":    senal.realized_vol_anual_pct,
-        "VRP (info)":                senal.vrp_positive,
-    }
-
-    condicion_senal = {
-        "New Date":                 "",
-        "Signal":                   "",
-        "Tendencia":                "Cumple" if senal.cond_tendencia else "No cumple",
-        "Last Close":               "",
-        "Last SP500_WMA_30":        "",
-        "Last VIX":                 "",
-        "Last VIX_WMA_21":          "",
-        "VIX en rango (10-25)":     "Cumple" if senal.cond_vix_rango else "No cumple",
-        "VIX < VIX WMA21":          "Cumple" if senal.cond_vix_wma else "No cumple",
-        "Term Structure":           "Cumple" if senal.cond_contango else "No cumple",
-        "VIX WMA21 bajando (info)": "-- info --",
-        "Realized Vol (anual %)":   "",
-        "VRP (info)":               "-- info --",
-    }
-
-    descripciones = {
-        "New Date":                 "Fecha del próximo día hábil (lunes) al que aplica la señal",
-        "Signal":                   "Señal binaria: 1 = abrir Iron Condor 5DTE, 0 = no operar",
-        "Last Close":               "Cierre del SP500 en la última semana cerrada",
-        "Last SP500_WMA_30":        "Media móvil ponderada del SP500 (5 semanas), referencia de tendencia",
-        "Tendencia":                "Alcista si el cierre está por encima de su WMA_30, si no Bajista",
-        "Last VIX":                 "Cierre del VIX en la última semana",
-        "Last VIX_WMA_21":          "Media móvil ponderada del VIX (aprox 1 año)",
-        "VIX en rango (10-25)":     "VIX dentro del rango operativo definido (ni muy bajo ni muy alto)",
-        "VIX < VIX WMA21":          "Volatilidad implícita actual por debajo de su propia media (relajándose)",
-        "Term Structure":           "Contango (VIX<VIX3M, calma) o Backwardation (VIX>VIX3M, estrés)",
-        "VIX WMA21 bajando (info)": "La media del VIX lleva bajando respecto a la semana anterior. No entra en la señal",
-        "Realized Vol (anual %)":   "Volatilidad realizada anualizada del SP500 (últimas 4 semanas)",
-        "VRP (info)":               "VIX > Vol. Realizada: prima de riesgo de volatilidad positiva, favorable para vender opciones. No entra en la señal",
-    }
-
-    tabla_senal = pd.DataFrame({
-        "Field":        list(valores_ordenados.keys()),
-        "Value":        list(valores_ordenados.values()),
-        "Cumple Señal": [condicion_senal.get(k, "") for k in valores_ordenados.keys()],
-        "Description":  [descripciones.get(k, "") for k in valores_ordenados.keys()],
-    })
-
-    st.dataframe(tabla_senal, use_container_width=True, hide_index=True)
+    st.markdown(construir_tabla_senal_html(senal), unsafe_allow_html=True)
 
     st.markdown("---")
 
@@ -291,10 +491,10 @@ def main_weic_calculos():
     # --------------------------------------------------------------------------
     st.header("3. Movimiento esperado")
 
-    spot         = resultado.last_close
-    current_vix  = resultado.current_vix
-    movimiento   = resultado.band_up - spot
-    move_pct     = resultado.move_pct / 2  # amplitud total / 2 = % a cada lado
+    spot = resultado.last_close
+    current_vix = resultado.current_vix
+    movimiento = resultado.band_up - spot
+    move_pct = resultado.move_pct / 2
 
     st.caption(
         f"Régimen VIX: **{resultado.regime_label}**  |  "
@@ -376,7 +576,7 @@ def main_weic_calculos():
     st.markdown("---")
 
     # --------------------------------------------------------------------------
-    # SECCIÓN 3 — Gráfico
+    # SECCIÓN 4 — Gráfico
     # --------------------------------------------------------------------------
     st.header("4. Gráfico del rango proyectado")
 
