@@ -162,86 +162,43 @@ def construir_tabla_senal_html(senal) -> str:
     - verde si cumple,
     - rojo si no cumple,
     - gris para informativo / no aplica.
+
+    IMPORTANTE: todo el HTML se construye SIN indentación en las líneas,
+    porque Markdown convierte cualquier línea indentada 4+ espacios en un
+    bloque de código y el HTML deja de renderizarse (aparece como texto crudo).
     """
     rows = [
-        {
-            "field": "New Date",
-            "value": senal.new_date,
-            "status": "info",
-            "desc": "Fecha del próximo lunes al que aplica la señal",
-        },
-        {
-            "field": "Signal",
-            "value": "1" if senal.signal == 1 else "0",
-            "status": "ok" if senal.signal == 1 else "bad",
-            "desc": "Señal binaria: 1 = abrir Iron Condor 5DTE, 0 = no operar",
-        },
-        {
-            "field": "Tendencia",
-            "value": senal.tendencia,
-            "status": "ok" if senal.cond_tendencia else "bad",
-            "desc": "Alcista si el cierre está por encima de su WMA_30",
-        },
-        {
-            "field": "Last Close",
-            "value": _fmt_num(senal.last_close, 2),
-            "status": "info",
-            "desc": "Cierre del SP500 en la última semana cerrada",
-        },
-        {
-            "field": "Last SP500_WMA_30",
-            "value": _fmt_num(senal.last_sp500_wma30, 2),
-            "status": "info",
-            "desc": "Media móvil ponderada del SP500 (5 semanas)",
-        },
-        {
-            "field": "Last VIX",
-            "value": _fmt_num(senal.last_vix, 2),
-            "status": "info",
-            "desc": "Cierre del VIX en la última semana",
-        },
-        {
-            "field": "Last VIX_WMA_21",
-            "value": _fmt_num(senal.last_vix_wma21, 2),
-            "status": "info",
-            "desc": "Media móvil ponderada del VIX (aprox. 1 año)",
-        },
-        {
-            "field": "VIX en rango (10-25)",
-            "value": _fmt_bool(senal.vix_en_rango),
-            "status": "ok" if senal.cond_vix_rango else "bad",
-            "desc": "VIX dentro del rango operativo definido",
-        },
-        {
-            "field": "VIX < VIX_WMA21",
-            "value": _fmt_bool(senal.vix_lt_wma21),
-            "status": "ok" if senal.cond_vix_wma else "bad",
-            "desc": "Volatilidad implícita relajándose",
-        },
-        {
-            "field": "Term Structure",
-            "value": senal.term_structure,
-            "status": "ok" if senal.cond_contango else "bad",
-            "desc": "Contango (VIX < VIX3M) o Backwardation",
-        },
-        {
-            "field": "VIX WMA21 bajando",
-            "value": _fmt_bool(senal.vix_wma21_bajando),
-            "status": "info",
-            "desc": "Informativo, no entra en la señal",
-        },
-        {
-            "field": "Realized Vol (anual %)",
-            "value": _fmt_num(senal.realized_vol_anual_pct, 2),
-            "status": "info",
-            "desc": "Volatilidad realizada anualizada del SP500",
-        },
-        {
-            "field": "VRP positiva",
-            "value": _fmt_bool(senal.vrp_positive),
-            "status": "info",
-            "desc": "VIX > vol. realizada, favorable para venta de opciones",
-        },
+        {"field": "New Date", "value": senal.new_date, "status": "info",
+         "desc": "Fecha del próximo lunes al que aplica la señal"},
+        {"field": "Signal", "value": "1" if senal.signal == 1 else "0",
+         "status": "ok" if senal.signal == 1 else "bad",
+         "desc": "Señal binaria: 1 = abrir Iron Condor 5DTE, 0 = no operar"},
+        {"field": "Tendencia", "value": senal.tendencia,
+         "status": "ok" if senal.cond_tendencia else "bad",
+         "desc": "Alcista si el cierre está por encima de su WMA_30"},
+        {"field": "Last Close", "value": _fmt_num(senal.last_close, 2), "status": "info",
+         "desc": "Cierre del SP500 en la última semana cerrada"},
+        {"field": "Last SP500_WMA_30", "value": _fmt_num(senal.last_sp500_wma30, 2), "status": "info",
+         "desc": "Media móvil ponderada del SP500 (5 semanas)"},
+        {"field": "Last VIX", "value": _fmt_num(senal.last_vix, 2), "status": "info",
+         "desc": "Cierre del VIX en la última semana"},
+        {"field": "Last VIX_WMA_21", "value": _fmt_num(senal.last_vix_wma21, 2), "status": "info",
+         "desc": "Media móvil ponderada del VIX (aprox. 1 año)"},
+        {"field": "VIX en rango (10-25)", "value": _fmt_bool(senal.vix_en_rango),
+         "status": "ok" if senal.cond_vix_rango else "bad",
+         "desc": "VIX dentro del rango operativo definido"},
+        {"field": "VIX < VIX_WMA21", "value": _fmt_bool(senal.vix_lt_wma21),
+         "status": "ok" if senal.cond_vix_wma else "bad",
+         "desc": "Volatilidad implícita relajándose"},
+        {"field": "Term Structure", "value": senal.term_structure,
+         "status": "ok" if senal.cond_contango else "bad",
+         "desc": "Contango (VIX < VIX3M) o Backwardation"},
+        {"field": "VIX WMA21 bajando", "value": _fmt_bool(senal.vix_wma21_bajando), "status": "info",
+         "desc": "Informativo, no entra en la señal"},
+        {"field": "Realized Vol (anual %)", "value": _fmt_num(senal.realized_vol_anual_pct, 2), "status": "info",
+         "desc": "Volatilidad realizada anualizada del SP500"},
+        {"field": "VRP positiva", "value": _fmt_bool(senal.vrp_positive), "status": "info",
+         "desc": "VIX > vol. realizada, favorable para venta de opciones"},
     ]
 
     def badge(status: str) -> str:
@@ -253,146 +210,53 @@ def construir_tabla_senal_html(senal) -> str:
 
     html_rows = []
     for r in rows:
-        row_class = (
-            "weic-row-ok" if r["status"] == "ok"
-            else "weic-row-bad" if r["status"] == "bad"
-            else "weic-row-info"
+        row_class = ("weic-row-ok" if r["status"] == "ok"
+                     else "weic-row-bad" if r["status"] == "bad"
+                     else "weic-row-info")
+        row_html = (
+            f'<tr class="{row_class}">'
+            f'<td class="col-field">{html.escape(str(r["field"]))}</td>'
+            f'<td class="col-value">{html.escape(str(r["value"]))}</td>'
+            f'<td class="col-status">{badge(r["status"])}</td>'
+            f'<td class="col-desc">{html.escape(str(r["desc"]))}</td>'
+            f'</tr>'
         )
+        html_rows.append(row_html)
 
-        html_rows.append(
-            f"""
-            <tr class="{row_class}">
-                <td class="col-field">{html.escape(str(r["field"]))}</td>
-                <td class="col-value">{html.escape(str(r["value"]))}</td>
-                <td class="col-status">{badge(r["status"])}</td>
-                <td class="col-desc">{html.escape(str(r["desc"]))}</td>
-            </tr>
-            """
-        )
+    style = (
+        '<style>'
+        '.weic-table-wrap{margin-top:0.5rem;margin-bottom:0.25rem;border:1px solid rgba(128,128,128,0.18);'
+        'border-radius:14px;overflow:hidden;background:rgba(255,255,255,0.02);}'
+        '.weic-table{width:100%;border-collapse:collapse;font-size:0.95rem;}'
+        '.weic-table thead th{text-align:left;padding:0.9rem 1rem;background:rgba(120,120,120,0.10);'
+        'border-bottom:1px solid rgba(128,128,128,0.18);font-weight:700;}'
+        '.weic-table tbody td{padding:0.82rem 1rem;border-bottom:1px solid rgba(128,128,128,0.10);vertical-align:top;}'
+        '.weic-table tbody tr:last-child td{border-bottom:none;}'
+        '.weic-row-ok{background:rgba(27,175,122,0.06);}'
+        '.weic-row-bad{background:rgba(224,92,92,0.06);}'
+        '.weic-row-info{background:transparent;}'
+        '.weic-pill{display:inline-block;padding:0.28rem 0.65rem;border-radius:999px;font-size:0.84rem;'
+        'font-weight:700;white-space:nowrap;}'
+        '.weic-pill-ok{background:rgba(27,175,122,0.18);color:#72e0b5;border:1px solid rgba(27,175,122,0.28);}'
+        '.weic-pill-bad{background:rgba(224,92,92,0.18);color:#ff9a9a;border:1px solid rgba(224,92,92,0.28);}'
+        '.weic-pill-info{background:rgba(140,140,140,0.14);color:#cfcfcf;border:1px solid rgba(160,160,160,0.18);}'
+        '.col-field{width:19%;font-weight:650;}'
+        '.col-value{width:15%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:600;}'
+        '.col-status{width:16%;}'
+        '.col-desc{width:50%;color:rgba(250,250,250,0.78);}'
+        '@media (max-width:900px){.weic-table{font-size:0.88rem;}.col-desc{display:none;}'
+        '.col-field{width:34%;}.col-value{width:26%;}.col-status{width:40%;}}'
+        '</style>'
+    )
 
-    return f"""
-    <style>
-    .weic-table-wrap {{
-        margin-top: 0.5rem;
-        margin-bottom: 0.25rem;
-        border: 1px solid rgba(128,128,128,0.18);
-        border-radius: 14px;
-        overflow: hidden;
-        background: rgba(255,255,255,0.02);
-    }}
+    table_html = (
+        f'<div class="weic-table-wrap"><table class="weic-table">'
+        f'<thead><tr><th>Field</th><th>Value</th><th>Semáforo</th><th>Description</th></tr></thead>'
+        f'<tbody>{"".join(html_rows)}</tbody>'
+        f'</table></div>'
+    )
 
-    .weic-table {{
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 0.95rem;
-    }}
-
-    .weic-table thead th {{
-        text-align: left;
-        padding: 0.9rem 1rem;
-        background: rgba(120,120,120,0.10);
-        border-bottom: 1px solid rgba(128,128,128,0.18);
-        font-weight: 700;
-    }}
-
-    .weic-table tbody td {{
-        padding: 0.82rem 1rem;
-        border-bottom: 1px solid rgba(128,128,128,0.10);
-        vertical-align: top;
-    }}
-
-    .weic-table tbody tr:last-child td {{
-        border-bottom: none;
-    }}
-
-    .weic-row-ok {{
-        background: rgba(27, 175, 122, 0.06);
-    }}
-
-    .weic-row-bad {{
-        background: rgba(224, 92, 92, 0.06);
-    }}
-
-    .weic-row-info {{
-        background: transparent;
-    }}
-
-    .weic-pill {{
-        display: inline-block;
-        padding: 0.28rem 0.65rem;
-        border-radius: 999px;
-        font-size: 0.84rem;
-        font-weight: 700;
-        white-space: nowrap;
-    }}
-
-    .weic-pill-ok {{
-        background: rgba(27, 175, 122, 0.18);
-        color: #72e0b5;
-        border: 1px solid rgba(27, 175, 122, 0.28);
-    }}
-
-    .weic-pill-bad {{
-        background: rgba(224, 92, 92, 0.18);
-        color: #ff9a9a;
-        border: 1px solid rgba(224, 92, 92, 0.28);
-    }}
-
-    .weic-pill-info {{
-        background: rgba(140, 140, 140, 0.14);
-        color: #cfcfcf;
-        border: 1px solid rgba(160, 160, 160, 0.18);
-    }}
-
-    .col-field {{
-        width: 19%;
-        font-weight: 650;
-    }}
-
-    .col-value {{
-        width: 15%;
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-weight: 600;
-    }}
-
-    .col-status {{
-        width: 16%;
-    }}
-
-    .col-desc {{
-        width: 50%;
-        color: rgba(250,250,250,0.78);
-    }}
-
-    @media (max-width: 900px) {{
-        .weic-table {{
-            font-size: 0.88rem;
-        }}
-        .col-desc {{
-            display: none;
-        }}
-        .col-field {{ width: 34%; }}
-        .col-value {{ width: 26%; }}
-        .col-status {{ width: 40%; }}
-    }}
-    </style>
-
-    <div class="weic-table-wrap">
-        <table class="weic-table">
-            <thead>
-                <tr>
-                    <th>Field</th>
-                    <th>Value</th>
-                    <th>Semáforo</th>
-                    <th>Description</th>
-                </tr>
-            </thead>
-            <tbody>
-                {''.join(html_rows)}
-            </tbody>
-        </table>
-    </div>
-    """
+    return style + table_html
 
 
 # ==============================================================================
