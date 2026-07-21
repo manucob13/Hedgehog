@@ -1,33 +1,51 @@
 """
 volatility.py
 =============
-Cálculo del rango esperado semanal del SPX — fijo a 5 DTE (Lunes → Viernes),
-basado en el régimen de VIX actual. Replica la lógica del notebook
-Vol_SPX_5DTE_2_0_prep.ipynb (Manuel Izquierdo).
+Cálculo del rango esperado del SPX para Iron Condor semanal, con salida
+siempre en Viernes y origen configurable (Lunes / Martes / Miercoles),
+basado en el régimen de VIX actual.
 
 Metodología
 -----------
 - Datos SEMANALES de SPX (^GSPC), VIX (^VIX) y VIX3M (^VIX3M) vía yfinance,
   con sesión curl_cffi (impersonate Chrome) para evitar bloqueos.
 - Segmentación histórica en 4 regímenes de VIX: 10-15, 15-18, 18-20, 20-25.
-- Para cada régimen se calcula el std de los log-returns semanales (Std_logret).
-- El régimen activo se determina con el VIX de la semana YA CERRADA (shift),
-  sin look-ahead: se corre asumiendo que es domingo/lunes antes de la apertura.
-- Banda = Last_Close * (1 ± stdn * Std_logret_del_regimen)
+- Para cada régimen se calcula el std de los log-returns SEMANALES
+  (Lunes -> Viernes, base 5 días hábiles).
+- Para orígenes distintos de Lunes (Martes, Miercoles), ese sigma semanal
+  se escala por sqrt(dias_habiles / 5) — Opción A: aproximación por raíz
+  del tiempo, sin reconstruir el histórico a granularidad diaria.
+- El precio spot (ancla de las bandas) SIEMPRE se toma del último cierre
+  DIARIO disponible (no del cierre semanal), para que coincida con el día
+  de entrada real:
+    * Origen Lunes     -> último cierre diario = Viernes anterior
+    * Origen Martes    -> último cierre diario = Lunes de esa semana
+    * Origen Miercoles -> último cierre diario = Martes de esa semana
+  Esto asume que la herramienta se corre el día hábil antes de la entrada
+  (p.ej. la noche del lunes o la mañana del martes antes de abrir, para
+  preparar la entrada del martes).
+- El régimen activo (para elegir el sigma) se determina con el VIX de la
+  semana YA CERRADA (shift), igual que antes — no cambia con el origen.
+- Banda = Spot_diario * (1 ± stdn * sigma_aplicado)
 
 Uso desde la página principal
 ------------------------------
-from utils.volatility import calcular_rango_esperado
+from utils.volatility import calcular_rango_esperado, DIAS_HABILES_POR_ORIGEN
 
-resultado = calcular_rango_esperado(stdn=2.5)
+resultado = calcular_rango_esperado(stdn=1.0, origen="Martes")
 
-resultado.last_close      # último cierre semanal (viernes)
+resultado.last_close      # spot diario usado como ancla
+resultado.spot_date       # fecha real de ese cierre diario
 resultado.band_dw / band_up
+resultado.sigma_regimen   # sigma semanal base (Lunes->Viernes), sin escalar
+resultado.sigma_aplicado  # sigma ya escalado según origen/dias_habiles
+resultado.origen
+resultado.dias_habiles
 resultado.regime_label
 resultado.hist_df         # histórico semanal completo, para graficar
 
 Autor  : Manuel Izquierdo (notebook)
-Adaptado a Streamlit — v2.0
+Adaptado a Streamlit — v2.1 (origen configurable + spot diario)
 """
 
 import numpy as np
@@ -58,6 +76,23 @@ VIX_RANGES = [
     (20, 25),
 ]
 
+# Días hábiles restantes hasta el viernes, según el día de entrada.
+# Se usa tanto para escalar sigma (sqrt(dias_habiles/5)) como para mostrar
+# el DTE en la interfaz.
+DIAS_HABILES_POR_ORIGEN = {
+    "Lunes":     5,
+    "Martes":    4,
+    "Miercoles": 3,
+}
+
+# Offset en días de calendario desde el Lunes de referencia, para calcular
+# la fecha real de entrada según el origen elegido.
+OFFSET_DIAS_POR_ORIGEN = {
+    "Lunes":     0,
+    "Martes":    1,
+    "Miercoles": 2,
+}
+
 TICKER_SPX   = "^GSPC"
 TICKER_VIX   = "^VIX"
 TICKER_VIX3M = "^VIX3M"
@@ -84,19 +119,58 @@ def _week_ending_friday(ts: pd.Timestamp) -> pd.Timestamp:
     return (ts + pd.offsets.Week(weekday=4)).normalize()
 
 
+def _obtener_ultimo_cierre_diario() -> tuple:
+    """
+    Descarga los últimos días de datos DIARIOS del SPX y devuelve el cierre
+    más reciente disponible junto con su fecha.
+
+    Se usa como precio spot para las bandas, en vez del cierre semanal (que
+    solo se actualiza los viernes), para que el spot coincida con el día
+    de entrada real sea cual sea el origen elegido (Lunes/Martes/Miercoles).
+    """
+    session = curl_requests.Session(impersonate="chrome")
+    end_dt = datetime.today()
+    start_dt = end_dt - timedelta(days=10)
+
+    df_daily = yf.download(
+        TICKER_SPX,
+        start=start_dt.strftime("%Y-%m-%d"),
+        end=end_dt.strftime("%Y-%m-%d"),
+        auto_adjust=False,
+        multi_level_index=False,
+        session=session,
+        interval="1d",
+        progress=False,
+    )
+
+    if df_daily.empty:
+        raise ValueError(
+            "No se pudo descargar el cierre diario reciente del SPX."
+        )
+
+    ultimo_cierre = float(df_daily["Close"].iloc[-1])
+    ultima_fecha  = pd.Timestamp(df_daily.index[-1])
+    return ultimo_cierre, ultima_fecha
+
+
 # ==============================================================================
 # RESULTADO
 # ==============================================================================
 @dataclass
 class SenalEntrada:
     """
-    Señal binaria de entrada para el Iron Condor 5DTE, calculada con los
-    valores YA CONOCIDOS de la última semana cerrada (sin shift, porque nos
-    paramos justo después del cierre del viernes, antes de la apertura del
-    lunes). Replica el bloque "PREDICCION DEL MERCADO" del notebook.
+    Señal binaria de entrada para el Iron Condor, calculada con los valores
+    YA CONOCIDOS de la última semana cerrada (sin shift, porque nos paramos
+    justo después del cierre del viernes, antes de la apertura del lunes).
+    Replica el bloque "PREDICCION DEL MERCADO" del notebook.
+
+    Nota: por ahora la señal se calcula una única vez por semana (con el
+    cierre del viernes anterior) y se reutiliza para los tres orígenes
+    (Lunes/Martes/Miercoles) — no se recalcula con datos más frescos para
+    Martes/Miercoles. Es una simplificación consciente, no un descuido.
     """
     new_date:               str     # próximo día hábil (lunes) al que aplica la señal
-    signal:                 int     # 1 = abrir IC 5DTE, 0 = no operar
+    signal:                 int     # 1 = abrir IC, 0 = no operar
     last_close:             float
     last_sp500_wma30:       float
     tendencia:              str     # "Alcista" / "Bajista"
@@ -117,13 +191,17 @@ class SenalEntrada:
 @dataclass
 class RangoEsperadoResult:
     last_date:      str
-    last_close:     float
+    last_close:     float           # spot DIARIO usado como ancla de las bandas
+    spot_date:      str             # fecha real de ese cierre diario
     last_open:      float
     current_vix:    float              # VIX de la última semana cerrada (shifted, sin look-ahead)
     regime_label:   Optional[str]
     regime_rows:    int
-    sigma_regimen:  float              # Std_logret del régimen (semanal)
+    sigma_regimen:  float              # Std_logret semanal del régimen, SIN escalar (base Lunes->Viernes)
+    sigma_aplicado: float              # sigma ya escalado según origen/dias_habiles, usado en las bandas
     stdn:           float
+    origen:         str                # "Lunes" / "Martes" / "Miercoles"
+    dias_habiles:   int                # días hábiles hasta el viernes, según origen
     band_dw:        float
     band_up:        float
     move_pct:       float              # amplitud total de la banda, en %
@@ -131,7 +209,7 @@ class RangoEsperadoResult:
     term_structure: str                # "Contango" / "Backwardation"
     stats_df:       pd.DataFrame       # tabla resumen de todos los regímenes VIX
     hist_df:        pd.DataFrame       # histórico semanal completo (para graficar)
-    senal:          SenalEntrada       # señal de entrada del Iron Condor 5DTE
+    senal:          SenalEntrada       # señal de entrada del Iron Condor
 
 
 # ==============================================================================
@@ -214,11 +292,11 @@ def _descargar_y_procesar(years_back: int = YEARS_BACK) -> pd.DataFrame:
 # ==============================================================================
 def _calcular_senal(df: pd.DataFrame) -> SenalEntrada:
     """
-    Calcula la señal binaria de apertura del Iron Condor 5DTE con los
-    valores YA CONOCIDOS de la última semana cerrada (sin shift): estamos
-    parados justo después del cierre del viernes, antes de que abra el
-    mercado el lunes, así que 'VIX', 'VIX3M', 'Close', etc. de la última
-    fila son datos reales, no proyectados.
+    Calcula la señal binaria de apertura del Iron Condor con los valores
+    YA CONOCIDOS de la última semana cerrada (sin shift): estamos parados
+    justo después del cierre del viernes, antes de que abra el mercado el
+    lunes, así que 'VIX', 'VIX3M', 'Close', etc. de la última fila son
+    datos reales, no proyectados.
 
     Condiciones que forman la señal (las 4 deben cumplirse para Signal = 1):
       1. Tendencia = Alcista       -> Close > SP500_WMA_30
@@ -270,7 +348,7 @@ def _calcular_senal(df: pd.DataFrame) -> SenalEntrada:
         tendencia              = "Alcista" if cond_tendencia else "Bajista",
         last_vix               = round(float(current_vix), 2),
         last_vix_wma21         = round(float(last_row["VIX_WMA_21"]), 2),
-        vix_en_rango           = vix_in_range,
+        vix_en_rango            = vix_in_range,
         vix_lt_wma21           = cond_vix_wma,
         term_structure         = current_term_structure,
         vix_wma21_bajando      = vix_wma_down,
@@ -317,21 +395,36 @@ def _segmentar_por_vix(df: pd.DataFrame) -> pd.DataFrame:
 # ==============================================================================
 # FUNCIÓN PRINCIPAL
 # ==============================================================================
-def calcular_rango_esperado(stdn: float = 2.5, years_back: int = YEARS_BACK) -> RangoEsperadoResult:
+def calcular_rango_esperado(
+    stdn: float = 2.5,
+    years_back: int = YEARS_BACK,
+    origen: str = "Lunes",
+) -> RangoEsperadoResult:
     """
     Función principal. Descarga el histórico semanal completo, segmenta por
-    régimen de VIX y devuelve el rango esperado del SPX para la semana
-    próxima (5 DTE, Lunes → Viernes), en base al régimen de VIX vigente.
+    régimen de VIX y devuelve el rango esperado del SPX hasta el viernes,
+    en base al régimen de VIX vigente y al día de entrada (origen) elegido.
 
     Parámetros
     ----------
     stdn       : Desviaciones estándar para las bandas (default 2.5)
     years_back : Años de histórico a descargar (default 15)
+    origen     : "Lunes", "Martes" o "Miercoles" — día de entrada. La salida
+                 siempre es el viernes. Determina tanto el escalado de sigma
+                 (sqrt(dias_habiles/5)) como, indirectamente junto al momento
+                 en que se corre la herramienta, qué cierre diario se usa
+                 como spot.
 
     Retorna
     -------
     RangoEsperadoResult
     """
+    if origen not in DIAS_HABILES_POR_ORIGEN:
+        raise ValueError(
+            f"Origen '{origen}' no válido. Debe ser uno de: "
+            f"{list(DIAS_HABILES_POR_ORIGEN.keys())}"
+        )
+
     df = _descargar_y_procesar(years_back)
     stats_df = _segmentar_por_vix(df)
     senal = _calcular_senal(df)
@@ -344,8 +437,6 @@ def calcular_rango_esperado(stdn: float = 2.5, years_back: int = YEARS_BACK) -> 
         if low <= current_vix < high:
             current_label = f"{low}-{high}"
             break
-
-    last_close = float(last_row["Close"])
 
     if current_label is None:
         raise ValueError(
@@ -362,8 +453,23 @@ def calcular_rango_esperado(stdn: float = 2.5, years_back: int = YEARS_BACK) -> 
             f"({regime_rows}) para estimar un sigma confiable."
         )
 
-    band_dw  = round(last_close * (1 - stdn * sigma_regimen), 2)
-    band_up  = round(last_close * (1 + stdn * sigma_regimen), 2)
+    # --- Escalado del sigma según el origen (Opción A: sqrt del tiempo) ---
+    dias_habiles = DIAS_HABILES_POR_ORIGEN[origen]
+    factor_escala = (dias_habiles / 5) ** 0.5
+    sigma_aplicado = sigma_regimen * factor_escala
+
+    # --- Spot: SIEMPRE el último cierre DIARIO disponible, no el semanal ---
+    # Así el spot coincide con el día de entrada real (ver docstring del módulo).
+    # Si por lo que sea falla la descarga diaria, se cae al cierre semanal
+    # como fallback (menos preciso para Martes/Miercoles, pero no rompe la app).
+    try:
+        last_close, fecha_spot = _obtener_ultimo_cierre_diario()
+    except Exception:
+        last_close = float(last_row["Close"])
+        fecha_spot = _week_ending_friday(df.index[-1])
+
+    band_dw  = round(last_close * (1 - stdn * sigma_aplicado), 2)
+    band_up  = round(last_close * (1 + stdn * sigma_aplicado), 2)
     move_pct = round((band_up - band_dw) / last_close * 100, 2)
 
     last_week_close_date = _week_ending_friday(df.index[-1])
@@ -371,12 +477,16 @@ def calcular_rango_esperado(stdn: float = 2.5, years_back: int = YEARS_BACK) -> 
     return RangoEsperadoResult(
         last_date      = last_week_close_date.strftime("%Y-%m-%d"),
         last_close     = last_close,
+        spot_date      = fecha_spot.strftime("%Y-%m-%d"),
         last_open      = float(last_row["Open"]),
         current_vix    = current_vix,
         regime_label   = current_label,
         regime_rows    = regime_rows,
         sigma_regimen  = round(sigma_regimen, 6),
+        sigma_aplicado = round(sigma_aplicado, 6),
         stdn           = stdn,
+        origen         = origen,
+        dias_habiles   = dias_habiles,
         band_dw        = band_dw,
         band_up        = band_up,
         move_pct       = move_pct,
