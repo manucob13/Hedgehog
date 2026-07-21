@@ -6,8 +6,13 @@ Weekly Iron Condor — Calculadora de movimiento esperado SPX.
 - Descarga SPX, VIX y VIX3M semanales desde Yahoo Finance
 - Segmenta el histórico por régimen de VIX y calcula el std de los
   log-returns semanales (metodología del notebook Vol_SPX_5DTE_2_0_prep)
-- Fijo a 5 DTE: entrada Lunes, salida Viernes
-- El usuario ajusta: std (stdn), por defecto 2, desde la sección "Movimiento esperado"
+- Origen configurable: Lunes, Martes o Miercoles. La salida siempre es
+  el Viernes. Para Martes/Miercoles, el sigma semanal se escala por
+  sqrt(dias_habiles/5) (Opción A), y el spot usado como ancla de las
+  bandas es siempre el último cierre DIARIO disponible (no el semanal),
+  para que coincida con el día real de entrada.
+- El usuario ajusta: origen (día de entrada) y std (stdn), por defecto
+  Lunes y 1.0, desde la sección "Movimiento esperado"
 - Muestra las bandas de precio esperado y un gráfico del rango proyectado
 """
 
@@ -20,7 +25,11 @@ import warnings
 warnings.filterwarnings("ignore")
 
 from utils.utils import check_password
-from utils.volatility import calcular_rango_esperado
+from utils.volatility import (
+    calcular_rango_esperado,
+    DIAS_HABILES_POR_ORIGEN,
+    OFFSET_DIAS_POR_ORIGEN,
+)
 
 
 # ==============================================================================
@@ -50,14 +59,20 @@ def get_reference_monday_from_result(resultado) -> date:
         return get_next_monday()
 
 
+def get_fecha_entrada_efectiva(fecha_lunes: date, origen: str) -> date:
+    """Fecha real de entrada según el origen elegido (Lunes/Martes/Miercoles)."""
+    offset = OFFSET_DIAS_POR_ORIGEN.get(origen, 0)
+    return fecha_lunes + timedelta(days=offset)
+
+
 # ==============================================================================
 # CACHE
 # ==============================================================================
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def obtener_rango_esperado(stdn: float):
+def obtener_rango_esperado(stdn: float, origen: str):
     """Wrapper cacheado sobre calcular_rango_esperado (1h de cache)."""
-    return calcular_rango_esperado(stdn=stdn)
+    return calcular_rango_esperado(stdn=stdn, origen=origen)
 
 
 # ==============================================================================
@@ -103,7 +118,7 @@ def construir_grafico(resultado, fecha_salida: date):
         x=[ultima_fecha],
         y=[resultado.last_close],
         mode="markers+text",
-        name="Spot actual",
+        name=f"Spot ({resultado.spot_date})",
         marker=dict(color="#5b8def", size=10),
         text=[f"{resultado.last_close:,.0f}"],
         textposition="middle left",
@@ -129,7 +144,11 @@ def construir_grafico(resultado, fecha_salida: date):
     ))
 
     fig.update_layout(
-        title=f"SPX — Rango esperado proyectado ({resultado.stdn}σ, régimen VIX {resultado.regime_label})",
+        title=(
+            f"SPX — Rango esperado proyectado ({resultado.stdn}σ, "
+            f"{resultado.origen} → Viernes, {resultado.dias_habiles}d, "
+            f"régimen VIX {resultado.regime_label})"
+        ),
         xaxis_title="Fecha",
         yaxis_title="SPX",
         height=450,
@@ -254,7 +273,7 @@ def construir_tabla_condiciones_html(senal) -> str:
     rows = [
         {"field": "Signal", "value": "1" if senal.signal == 1 else "0",
          "status": "ok" if senal.signal == 1 else "bad",
-         "desc": "Señal binaria: 1 = abrir Iron Condor 5DTE, 0 = no operar"},
+         "desc": "Señal binaria: 1 = abrir Iron Condor, 0 = no operar"},
         {"field": "Tendencia", "value": senal.tendencia,
          "status": "ok" if senal.cond_tendencia else "bad",
          "desc": "Alcista si el cierre está por encima de su WMA_30"},
@@ -333,7 +352,7 @@ def main_weic_calculos():
     )
     st.markdown(
         "Calcula las bandas de precio esperado en función del régimen de VIX vigente, "
-        "para una entrada Lunes → salida Viernes (5 DTE fijo)."
+        "para una entrada Lunes, Martes o Miercoles, con salida siempre el Viernes."
     )
 
     # --------------------------------------------------------------------------
@@ -352,26 +371,35 @@ def main_weic_calculos():
     # --------------------------------------------------------------------------
     st.header("1. Señal de entrada")
 
-    # stdn se define más abajo (sección Movimiento esperado), pero necesitamos
-    # un valor para el primer cálculo cacheado: usamos el valor por defecto (2.0)
-    # y luego se recalcula si el usuario lo cambia en la sección correspondiente.
+    # stdn y origen se definen más abajo (sección Movimiento esperado), pero
+    # necesitamos valores para el primer cálculo cacheado: usamos los valores
+    # por defecto y luego se recalcula si el usuario los cambia.
     if "weic_stdn" not in st.session_state:
-        st.session_state["weic_stdn"] = 2.0
+        st.session_state["weic_stdn"] = 1.0
+    if "weic_origen" not in st.session_state:
+        st.session_state["weic_origen"] = "Lunes"
 
-    with st.spinner("Descargando datos semanales y calculando régimen de VIX..."):
+    with st.spinner("Descargando datos y calculando régimen de VIX..."):
         try:
-            resultado = obtener_rango_esperado(st.session_state["weic_stdn"])
+            resultado = obtener_rango_esperado(
+                st.session_state["weic_stdn"],
+                st.session_state["weic_origen"],
+            )
         except Exception as e:
             st.error(f"❌ {e}")
             st.stop()
 
-    fecha_entrada = get_reference_monday_from_result(resultado)
-    fecha_salida = get_next_friday_from_monday(fecha_entrada)
+    fecha_entrada_lunes = get_reference_monday_from_result(resultado)
+    fecha_entrada_efectiva = get_fecha_entrada_efectiva(
+        fecha_entrada_lunes, resultado.origen
+    )
+    fecha_salida = get_next_friday_from_monday(fecha_entrada_lunes)
 
     st.info(
-        f"📅 **Entrada:** Lunes {fecha_entrada.strftime('%d/%m/%Y')}  "
+        f"📅 **Entrada ({resultado.origen}):** {fecha_entrada_efectiva.strftime('%d/%m/%Y')}  "
         f"→  **Salida:** Viernes {fecha_salida.strftime('%d/%m/%Y')}  "
-        f"|  **DTE:** 5 días (fijo)"
+        f"|  **DTE:** {resultado.dias_habiles} días  "
+        f"|  **Spot usado:** cierre del {resultado.spot_date}"
     )
 
     senal = resultado.senal
@@ -398,6 +426,12 @@ def main_weic_calculos():
             f"Aplica al lunes **{senal.new_date}**."
         )
 
+    st.caption(
+        "ℹ️ La señal se calcula una única vez por semana (con el cierre del "
+        "viernes anterior) y se reutiliza igual para los tres orígenes — "
+        "no se recalcula con datos más frescos para Martes/Miercoles."
+    )
+
     # --- Estilos compartidos (una sola vez) ---
     st.markdown(_weic_table_styles(), unsafe_allow_html=True)
 
@@ -413,23 +447,38 @@ def main_weic_calculos():
     st.markdown("---")
 
     # --------------------------------------------------------------------------
-    # SECCIÓN 2 — Movimiento esperado (aquí vive el control de stdn)
+    # SECCIÓN 2 — Movimiento esperado (aquí viven los controles de origen y stdn)
     # --------------------------------------------------------------------------
     st.header("2. Movimiento esperado")
 
-    stdn = st.number_input(
-        "Desviaciones estándar (σ)",
-        min_value=0.5,
-        max_value=4.0,
-        value=st.session_state["weic_stdn"],
-        step=0.1,
-        format="%.1f",
-        help="Número de desviaciones para calcular las bandas, sobre el std de "
-             "log-returns semanales del régimen de VIX vigente.",
-        key="weic_stdn_input",
-    )
+    col_origen, col_stdn = st.columns(2)
 
-    if stdn != st.session_state["weic_stdn"]:
+    with col_origen:
+        origen = st.selectbox(
+            "Día de entrada",
+            options=list(DIAS_HABILES_POR_ORIGEN.keys()),
+            index=list(DIAS_HABILES_POR_ORIGEN.keys()).index(st.session_state["weic_origen"]),
+            help="Día en el que se abre el Iron Condor. La salida siempre es el viernes. "
+                 "El sigma semanal base se escala por sqrt(dias_habiles/5).",
+            key="weic_origen_input",
+        )
+
+    with col_stdn:
+        stdn = st.number_input(
+            "Desviaciones estándar (σ)",
+            min_value=0.5,
+            max_value=4.0,
+            value=st.session_state["weic_stdn"],
+            step=0.1,
+            format="%.1f",
+            help="Número de desviaciones para calcular las bandas, sobre el std de "
+                 "log-returns semanales del régimen de VIX vigente (ya escalado según "
+                 "el día de entrada elegido).",
+            key="weic_stdn_input",
+        )
+
+    if origen != st.session_state["weic_origen"] or stdn != st.session_state["weic_stdn"]:
+        st.session_state["weic_origen"] = origen
         st.session_state["weic_stdn"] = stdn
         st.rerun()
 
@@ -441,7 +490,8 @@ def main_weic_calculos():
     st.caption(
         f"Régimen VIX: **{resultado.regime_label}**  |  "
         f"Semanas en régimen: **{resultado.regime_rows}**  |  "
-        f"Std log-return semanal: **{resultado.sigma_regimen:.5f}**  |  "
+        f"Std log-return semanal (base 5d): **{resultado.sigma_regimen:.5f}**  |  "
+        f"Std aplicado ({resultado.dias_habiles}d): **{resultado.sigma_aplicado:.5f}**  |  "
         f"Tendencia: **{resultado.trend}**  |  "
         f"Term structure: **{resultado.term_structure}**  |  "
         f"σ: **{resultado.stdn}**"
@@ -453,8 +503,8 @@ def main_weic_calculos():
     s_banda_sup = f"{int(round(resultado.band_up)):,}".replace(",", ".")
     s_spot      = f"{int(round(spot)):,}".replace(",", ".")
     s_vix       = f"{current_vix:.2f}"
-    s_dte       = "5 días"
-    s_rango     = "Lunes → Viernes"
+    s_dte       = f"{resultado.dias_habiles} días"
+    s_rango     = f"{resultado.origen} → Viernes"
     s_regimen   = resultado.regime_label
 
     html_cards = (
@@ -489,6 +539,7 @@ def main_weic_calculos():
         'padding:1rem;text-align:center;border:1px solid rgba(128,128,128,0.15);">'
         '<div style="font-size:11px;color:gray;margin-bottom:4px;text-transform:uppercase;">Spot SPX</div>'
         '<div style="font-size:22px;font-weight:600;">' + s_spot + '</div>'
+        '<div style="font-size:11px;color:gray;">' + resultado.spot_date + '</div>'
         '</div>'
 
         '<div style="background:var(--secondary-background-color);border-radius:10px;'
@@ -539,7 +590,8 @@ def main_weic_calculos():
 
     st.caption(
         f"Última semana cerrada: {resultado.last_date}  |  "
-        "Estimación basada en el std histórico de log-returns semanales por régimen de VIX. "
+        "Estimación basada en el std histórico de log-returns semanales por régimen de VIX, "
+        "escalado por sqrt(dias_habiles/5) según el origen elegido. "
         "Verificá siempre los precios reales antes de operar."
     )
 
