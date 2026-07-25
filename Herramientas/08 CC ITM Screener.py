@@ -630,18 +630,18 @@ def main():
 
     col1, col2 = st.columns([3, 1])
     with col2:
-        actualizar_btn = st.button("🔄 Actualizar Tickers (Russell 1000 + Curados)",
+        actualizar_btn = st.button("🔄 Actualizar Tickers (Russell 1000 + Adicionales)",
                                     use_container_width=True, type="primary")
 
     if actualizar_btn:
-        with st.spinner("Descargando holdings de IWB (Russell 1000) desde iShares "
-                         "y combinando con el universo curado..."):
+        with st.spinner("Descargando holdings de IWB (Russell 1000) "
+                         "y combinando con el universo adicional..."):
             df_universe, meta = refresh_full_universe()
             st.session_state['itm_universe_df'] = df_universe
             st.session_state['itm_universe_meta'] = meta
 
     if 'itm_universe_df' not in st.session_state:
-        with st.spinner("Cargando universo de tickers (caché / Russell 1000 + curados)..."):
+        with st.spinner("Cargando universo de tickers (caché / Russell 1000 + adicionales)..."):
             df_universe, meta = get_full_universe()
             st.session_state['itm_universe_df'] = df_universe
             st.session_state['itm_universe_meta'] = meta
@@ -654,14 +654,14 @@ def main():
         if meta.get('r1000_ok'):
             st.success(
                 f"✅ **{meta['total_count']:,} tickers** en el universo "
-                f"(Russell 1000: **{meta['r1000_count']:,}** desde iShares/IWB "
-                f"+ Curados: **{meta['curated_count']:,}** desde utils/tickers.py, "
+                f"(Russell 1000: **{meta['r1000_count']:,}** "
+                f"+ Adicionales: **{meta['extra_count']:,}** desde utils/tickers.py, "
                 f"deduplicados)"
             )
         else:
             st.warning(
-                f"⚠️ No se pudo descargar el CSV de iShares (IWB). Usando solo el "
-                f"universo curado: **{meta['total_count']:,} tickers**. "
+                f"⚠️ No se pudo descargar el listado del Russell 1000 (IWB). Usando solo "
+                f"el universo adicional: **{meta['total_count']:,} tickers**. "
                 f"Prueba a pulsar 'Actualizar Tickers'."
             )
 
@@ -906,8 +906,9 @@ def main():
 ### Fuentes de datos
 - **yfinance**: precios, cadena de opciones, IV implícita (usada para calcular Delta vía
   Black-Scholes ya que Yahoo no provee griegos), earnings, dividendos.
-- **iShares (IWB holdings CSV)**: tickers del Russell 1000, descargados en vivo y cacheados
-  6 horas (`utils/r1000_tickers.py`), combinados con el universo curado de utils/tickers.py.
+- **iShares/BlackRock (holdings de IWB)**: tickers del Russell 1000, descargados en vivo
+  (endpoint real de descarga, con el CSV clásico como respaldo) y cacheados 6 horas
+  (`utils/r1000_tickers.py`), combinados con el universo adicional de utils/tickers.py.
 - **CBOE** (`utils/cboe_utils.py`, opcional): PCR oficial cuando el ticker está disponible en
   el feed delayed público; si no, se deriva del volumen/OI de la cadena de yfinance.
 - No se usa ninguna API de broker.
