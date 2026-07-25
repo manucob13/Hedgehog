@@ -57,6 +57,7 @@ RISK_FREE_RATE = 0.045
 # timeout, ticker delisted, etc.) en vez de un None mudo.
 _debug_lock = Lock()
 _debug_samples = {}
+_price_samples = []
 _MAX_DEBUG_SAMPLES = 5
 
 
@@ -67,9 +68,16 @@ def _record_debug(reason, msg):
             bucket.append(str(msg)[:200])
 
 
+def _record_price(ticker, price):
+    with _debug_lock:
+        if len(_price_samples) < 5000:
+            _price_samples.append((ticker, price))
+
+
 def _reset_debug():
     with _debug_lock:
         _debug_samples.clear()
+        _price_samples.clear()
 
 # Códigos de motivo de descarte, en el orden en que se evalúan.
 # Se usan para construir el embudo de diagnóstico.
@@ -395,8 +403,10 @@ def analyze_ticker(ticker, params):
 
         close         = data["Close"]
         current_price = float(close.iloc[-1])
+        _record_price(ticker, current_price)
 
         if not (params["min_price"] <= current_price <= params["max_price"]):
+            _record_debug("price_out_of_range", f"{ticker}: precio calculado = {current_price}")
             return None, "price_out_of_range"
 
         sma30, dist_sma_pct, slope_up = get_sma30(close)
@@ -532,8 +542,9 @@ def run_screener(tickers, params, progress_bar, status_text):
 
     with _debug_lock:
         debug_snapshot = {k: list(v) for k, v in _debug_samples.items()}
+        price_snapshot = list(_price_samples)
 
-    return df, funnel, debug_snapshot
+    return df, funnel, debug_snapshot, price_snapshot
 
 
 # ======================================================================
@@ -711,12 +722,13 @@ def main():
     if scan_btn:
         progress_bar = st.progress(0)
         status_text  = st.empty()
-        df_results, funnel, debug_snapshot = run_screener(tickers_all, params, progress_bar, status_text)
+        df_results, funnel, debug_snapshot, price_snapshot = run_screener(tickers_all, params, progress_bar, status_text)
         progress_bar.empty()
 
         st.session_state["results"] = df_results
         st.session_state["funnel"]  = funnel
         st.session_state["debug_snapshot"] = debug_snapshot
+        st.session_state["price_snapshot"] = price_snapshot
         st.session_state["scan_ts"] = datetime.now()
         st.session_state["scanned_total"] = len(tickers_all)
 
@@ -759,6 +771,24 @@ def main():
                     st.markdown(f"**{REASON_LABELS[code]}**")
                     for m in msgs:
                         st.code(m, language=None)
+
+        price_snapshot = st.session_state.get("price_snapshot", [])
+        if price_snapshot:
+            with st.expander("💲 Ver distribución real de precios obtenidos"):
+                df_prices = pd.DataFrame(price_snapshot, columns=["Ticker", "Precio"])
+                pmin, pmax = df_prices["Precio"].min(), df_prices["Precio"].max()
+                pmed = df_prices["Precio"].median()
+                st.write(
+                    f"**{len(df_prices)}** precios obtenidos · "
+                    f"mín: **${pmin:.2f}** · mediana: **${pmed:.2f}** · máx: **${pmax:.2f}**"
+                )
+                colp1, colp2 = st.columns(2)
+                with colp1:
+                    st.markdown("Más bajos")
+                    st.dataframe(df_prices.sort_values("Precio").head(15), hide_index=True, use_container_width=True)
+                with colp2:
+                    st.markdown("Más altos")
+                    st.dataframe(df_prices.sort_values("Precio", ascending=False).head(15), hide_index=True, use_container_width=True)
         st.divider()
 
     # ── Resultados ─────────────────────────────────────────────────────
