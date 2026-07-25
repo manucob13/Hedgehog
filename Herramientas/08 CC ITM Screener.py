@@ -729,10 +729,17 @@ def main():
                  "precios sigue mostrando NaN en tickers líquidos (AAPL, etc.), sube esto."
         )
 
-        quick_test = st.checkbox(
-            "⚡ Prueba rápida (solo primeros 40 tickers)",
-            value=False,
-            help="Para validar que el rate-limit está resuelto sin esperar el escaneo completo."
+        st.markdown("**🧪 Subconjunto de depuración**")
+        use_custom_subset = st.checkbox(
+            "Usar solo un subconjunto de tickers (en vez del universo completo)",
+            value=True,
+            help="Para iterar rápido mientras se depura, en vez de escanear los 1000+ tickers cada vez."
+        )
+        custom_tickers_raw = st.text_input(
+            "Tickers (separados por coma)",
+            value="AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA,JPM,V,MA,UNH,HD,PG,JNJ,XOM,BAC,KO,PEP,DIS,NFLX",
+            disabled=not use_custom_subset,
+            help="Se usan exactamente estos, sin pasar por el universo cargado."
         )
 
         st.markdown("**📅 Próximo viernes**")
@@ -772,14 +779,21 @@ def main():
     # ── Escaneo ────────────────────────────────────────────────────────
     st.markdown("### 🚀 Ejecutar Escaneo")
 
+    custom_subset_preview = [
+        _clean_ticker(t) for t in custom_tickers_raw.split(",")
+    ] if use_custom_subset else []
+    custom_subset_preview = [t for t in custom_subset_preview if t]
+
     scan_btn = st.button(
         "🎯 INICIAR ESCANEO",
         type="primary",
         use_container_width=True,
-        disabled=len(tickers_all) == 0,
+        disabled=(len(custom_subset_preview) == 0) if use_custom_subset else (len(tickers_all) == 0),
     )
 
-    est_n = 40 if quick_test else len(tickers_all)
+    custom_subset = custom_subset_preview
+
+    est_n = len(custom_subset) if use_custom_subset else len(tickers_all)
     est_seconds = est_n * pace_seconds * 3  # ~3 llamadas a Yahoo por ticker
     st.caption(
         f"⏱️ Estimado: ~{int(est_seconds // 60)} min {int(est_seconds % 60)} s "
@@ -787,7 +801,10 @@ def main():
     )
 
     if scan_btn:
-        scan_tickers = tickers_all[:40] if quick_test else tickers_all
+        scan_tickers = custom_subset if use_custom_subset else tickers_all
+        if not scan_tickers:
+            st.error("⚠️ El subconjunto de tickers está vacío — revisa el campo de texto.")
+            return
         progress_bar = st.progress(0)
         status_text  = st.empty()
         df_results, funnel, debug_snapshot, price_snapshot = run_screener(scan_tickers, params, progress_bar, status_text)
