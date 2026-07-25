@@ -79,6 +79,26 @@ def _reset_debug():
         _debug_samples.clear()
         _price_samples.clear()
 
+
+# ── Limitador de ritmo global para TODAS las llamadas a Yahoo ──────────
+# Yahoo rate-limita por requests/segundo desde una IP, sin importar si las
+# llamadas son secuenciales o en paralelo. Sin esto, aunque se serialicen
+# las descargas con un Lock, dispararlas sin pausa dispara el bloqueo igual
+# (esto es lo que estaba pasando: AAPL, AAL, etc. devolvían Close = NaN).
+_pace_lock = Lock()
+_last_request_ts = [0.0]
+_pace_interval = [0.35]  # segundos entre CUALQUIER llamada a Yahoo (configurable)
+
+
+def _pace_request():
+    import time
+    with _pace_lock:
+        now = time.monotonic()
+        wait = _last_request_ts[0] + _pace_interval[0] - now
+        if wait > 0:
+            time.sleep(wait)
+        _last_request_ts[0] = time.monotonic()
+
 # Códigos de motivo de descarte, en el orden en que se evalúan.
 # Se usan para construir el embudo de diagnóstico.
 REASON_ORDER = [
@@ -152,24 +172,47 @@ def refresh_universe():
 # 1. DATOS DIARIOS
 # ======================================================================
 
-def get_daily_data(ticker):
-    try:
-        end   = datetime.now() + timedelta(days=1)
-        start = end - timedelta(days=120)
-        with _lock:
-            data = yf.download(
-                ticker, start=start, end=end,
-                interval="1d", auto_adjust=False,
-                multi_level_index=False, progress=False
-            )
-        if data is None or data.empty or len(data) < 35:
-            _record_debug("no_daily_data", f"{ticker}: descarga vacía o insuficiente histórico")
+def get_daily_data(ticker, max_retries=2):
+    """
+    Cuando Yahoo empieza a rate-limitar (429 / bloqueo silencioso), yfinance
+    a menudo NO lanza una excepción: devuelve un DataFrame con la forma
+    correcta pero lleno de NaN. Por eso, además de comprobar que hay
+    suficientes filas, comprobamos explícitamente que el último Close no sea
+    NaN, y reintentamos con backoff antes de rendirnos.
+    """
+    import time
+    import random
+
+    end   = datetime.now() + timedelta(days=1)
+    start = end - timedelta(days=120)
+
+    for attempt in range(max_retries + 1):
+        try:
+            _pace_request()
+            with _lock:
+                data = yf.download(
+                    ticker, start=start, end=end,
+                    interval="1d", auto_adjust=False,
+                    multi_level_index=False, progress=False
+                )
+            if data is None or data.empty or len(data) < 35:
+                _record_debug("no_daily_data", f"{ticker} (intento {attempt+1}): datos vacíos/insuficientes")
+                raise ValueError("empty")
+
+            close_valid = data["Close"].dropna()
+            if close_valid.empty or pd.isna(data["Close"].iloc[-1]):
+                _record_debug("no_daily_data", f"{ticker} (intento {attempt+1}): último Close es NaN — probable rate-limit de Yahoo")
+                raise ValueError("nan_close")
+
+            data.index = pd.to_datetime(data.index)
+            return data
+        except Exception as e:
+            if attempt < max_retries:
+                time.sleep(0.6 * (attempt + 1) + random.uniform(0, 0.4))
+                continue
+            _record_debug("no_daily_data", f"{ticker}: {e}")
             return None
-        data.index = pd.to_datetime(data.index)
-        return data
-    except Exception as e:
-        _record_debug("no_daily_data", f"{ticker}: {e}")
-        return None
+    return None
 
 
 # ======================================================================
@@ -261,6 +304,7 @@ def select_friday_expiration(expirations):
 def has_earnings_this_week(stock):
     """True si hay earnings en los próximos 7 días."""
     try:
+        _pace_request()
         cal = stock.calendar
         if cal is None:
             return False
@@ -425,6 +469,7 @@ def analyze_ticker(ticker, params):
             return None, "earnings_this_week"
 
         try:
+            _pace_request()
             expirations = stock.options
         except Exception as e:
             _record_debug("no_expirations", f"{ticker}: {e}")
@@ -439,6 +484,7 @@ def analyze_ticker(ticker, params):
 
         # UNA sola llamada a option_chain (antes había dos)
         try:
+            _pace_request()
             chain = stock.option_chain(exp_str)
             calls = chain.calls
             puts  = chain.puts
@@ -514,6 +560,7 @@ def analyze_ticker(ticker, params):
 
 def run_screener(tickers, params, progress_bar, status_text):
     _reset_debug()
+    _pace_interval[0] = params.get("pace_seconds", 0.35)
     results = []
     funnel  = {r: 0 for r in REASON_ORDER}
     total   = len(tickers)
@@ -671,9 +718,21 @@ def main():
         max_workers = st.slider(
             "Requests en paralelo",
             min_value=1, max_value=8, value=4,
-            help="Yahoo Finance suele rate-limitar (429) si hay demasiadas "
-                 "requests simultáneas desde una IP compartida (Streamlit Cloud). "
-                 "Si el embudo muestra muchos 'sin datos diarios', baja esto a 1-2."
+            help="Con el limitador de ritmo global esto ya no es tan crítico, "
+                 "pero mantenlo bajo (1-2) si sigues viendo NaN."
+        )
+
+        pace_seconds = st.slider(
+            "Pausa mínima entre requests a Yahoo (seg)",
+            min_value=0.1, max_value=1.5, value=0.35, step=0.05,
+            help="Yahoo rate-limita por requests/segundo. Si el diagnóstico de "
+                 "precios sigue mostrando NaN en tickers líquidos (AAPL, etc.), sube esto."
+        )
+
+        quick_test = st.checkbox(
+            "⚡ Prueba rápida (solo primeros 40 tickers)",
+            value=False,
+            help="Para validar que el rate-limit está resuelto sin esperar el escaneo completo."
         )
 
         st.markdown("**📅 Próximo viernes**")
@@ -705,6 +764,7 @@ def main():
         "use_earnings_filter": use_earnings_filter,
         "diagnostic_mode":     diagnostic_mode,
         "max_workers":         max_workers,
+        "pace_seconds":        pace_seconds,
     }
 
     st.divider()
@@ -719,10 +779,18 @@ def main():
         disabled=len(tickers_all) == 0,
     )
 
+    est_n = 40 if quick_test else len(tickers_all)
+    est_seconds = est_n * pace_seconds * 3  # ~3 llamadas a Yahoo por ticker
+    st.caption(
+        f"⏱️ Estimado: ~{int(est_seconds // 60)} min {int(est_seconds % 60)} s "
+        f"para {est_n:,} tickers con esta pausa (más lento pero evita el rate-limit)."
+    )
+
     if scan_btn:
+        scan_tickers = tickers_all[:40] if quick_test else tickers_all
         progress_bar = st.progress(0)
         status_text  = st.empty()
-        df_results, funnel, debug_snapshot, price_snapshot = run_screener(tickers_all, params, progress_bar, status_text)
+        df_results, funnel, debug_snapshot, price_snapshot = run_screener(scan_tickers, params, progress_bar, status_text)
         progress_bar.empty()
 
         st.session_state["results"] = df_results
@@ -730,12 +798,12 @@ def main():
         st.session_state["debug_snapshot"] = debug_snapshot
         st.session_state["price_snapshot"] = price_snapshot
         st.session_state["scan_ts"] = datetime.now()
-        st.session_state["scanned_total"] = len(tickers_all)
+        st.session_state["scanned_total"] = len(scan_tickers)
 
         if not df_results.empty:
             st.success(
                 f"✅ **{len(df_results)} candidatos** encontrados "
-                f"sobre {len(tickers_all):,} tickers analizados"
+                f"sobre {len(scan_tickers):,} tickers analizados"
             )
         else:
             st.warning(
