@@ -14,9 +14,12 @@ Screener de Covered Calls IN-THE-MONEY (ITM) para ciclos cortos (Viernes -> Vier
     - Universo: Russell 1000 (descargado en vivo de iShares/IWB) + el
       universo curado de utils/tickers.py (Acciones + Índices + ETFs)
 
-NOTA: la descarga de tickers del Russell 1000 se hace ahora con una función
+NOTA: la descarga de tickers del Russell 1000 se hace con una función
 simple y autocontenida (sin depender de utils/r1000_tickers.py), porque el
-endpoint de BlackRock cambió de formato y rompía el parser anterior.
+endpoint de BlackRock cambió de formato. Además, se filtran filas de
+cash/derivados/futuros que no son tickers reales y se valida que el
+conteo final esté en un rango razonable (~800-1,300, acorde al tamaño
+real del índice Russell 1000).
 """
 
 import re
@@ -70,18 +73,29 @@ REQUEST_HEADERS = {
 ROW_RE = re.compile(r"<ss:Row[^>]*>(.*?)</ss:Row>", re.DOTALL)
 CELL_RE = re.compile(r"<ss:Data[^>]*>(.*?)</ss:Data>", re.DOTALL)
 
+# Filas que aparecen en los holdings pero no son acciones reales del índice
+EXCLUDE_KEYWORDS = ("CASH", "USD FUND", "BLACKROCK CASH", "FUTURES", "TOTAL")
+
+# El Russell 1000 real tiene ~1,000-1,050 componentes; se usa para
+# validar que el parseo no esté inflado con filas espurias (cash, etc.)
+EXPECTED_MIN = 800
+EXPECTED_MAX = 1300
+
 
 def _clean_ticker(raw):
     if raw is None:
         return None
     t = str(raw).strip().upper().replace("&amp;", "&")
-    if not t or t in ("-", "NAN", "N/A"):
+    if not t or t in ("-", "NAN", "N/A", ""):
+        return None
+    if any(k in t for k in EXCLUDE_KEYWORDS):
         return None
     return t.replace(" ", "")
 
 
 def download_r1000_tickers():
-    """Descarga y extrae tickers de holdings de IWB (Russell 1000) vía regex (robusto a XML mal formado)."""
+    """Descarga y extrae tickers de holdings de IWB (Russell 1000) vía regex.
+    Filtra cash/derivados y valida que el conteo esté en un rango razonable."""
     try:
         resp = requests.get(IWB_URL, headers=REQUEST_HEADERS, timeout=30)
         resp.raise_for_status()
@@ -107,7 +121,10 @@ def download_r1000_tickers():
                 if t:
                     tickers.append(t)
         tickers = sorted(set(tickers))
-        return (tickers, True) if tickers else ([], False)
+
+        if tickers and EXPECTED_MIN <= len(tickers) <= EXPECTED_MAX:
+            return tickers, True
+        return [], False
     except Exception:
         return [], False
 
@@ -939,6 +956,16 @@ def main():
 - 🟢 Score ≥ 70 → candidato óptimo
 - 🟡 Score 50-69 → candidato moderado, revisar manualmente
 - 🔴 Score < 50 → no recomendado
+
+### Fuentes de datos
+- **yfinance**: precios, cadena de opciones, IV implícita (usada para calcular Delta vía
+  Black-Scholes ya que Yahoo no provee griegos), earnings, dividendos.
+- **iShares/BlackRock (holdings de IWB)**: tickers del Russell 1000, descargados en vivo
+  y filtrados de filas de cash/derivados/futuros, cacheados 6 horas, combinados con el
+  universo adicional de utils/tickers.py.
+- **CBOE** (`utils/cboe_utils.py`, opcional): PCR oficial cuando el ticker está disponible en
+  el feed delayed público; si no, se deriva del volumen/OI de la cadena de yfinance.
+- No se usa ninguna API de broker.
 """)
 
 
