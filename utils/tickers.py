@@ -9,8 +9,8 @@ Contiene una lista curada de 210 activos de alta liquidez:
 - 133 Acciones (Semiconductores, Big Tech, Financiero/Fintech/Cripto,
   Energía/Industria/Aeroespacial, Consumo, Salud/Biotech, Telecom/Meme/ADRs)
 
-Ya NO se descarga nada de Wikipedia/iShares: el universo se genera
-directamente desde las listas fijas definidas en este archivo.
+Además, incorpora la descarga dinámica (con cache local) del universo
+Russell 1000 desde Wikipedia, para ampliar el screener a ese índice.
 
 FUNCIONES PÚBLICAS (mismas firmas que antes, compatibles con app.py):
 - create_tickers_universe(): Retorna pd.DataFrame con todo el universo
@@ -21,11 +21,14 @@ FUNCIONES PÚBLICAS (mismas firmas que antes, compatibles con app.py):
 - get_all_etf_names(): Retorna diccionario completo {ticker: nombre} de ETFs
 - get_all_index_names(): Retorna diccionario completo {ticker: nombre} de índices
 - get_stock_tickers(): Retorna lista de todos los tickers de acciones
+- get_russell1000_tickers(): Retorna lista de tickers del Russell 1000 (Wikipedia + cache)
 """
 
-import pandas as pd
-from datetime import datetime
 import os
+import pandas as pd
+import requests
+from io import StringIO
+from datetime import datetime
 
 
 # ============================================================
@@ -287,24 +290,132 @@ def get_top_stocks():
 
 
 # ============================================================
-# 5. CONSTRUCCIÓN DEL UNIVERSO
+# 5. RUSSELL 1000 (DESCARGA DINÁMICA DESDE WIKIPEDIA + CACHE)
 # ============================================================
 
-def create_tickers_universe(output_filename='Tks.csv'):
+_RUSSELL1000_CACHE_FILE = "russell1000_cache.csv"
+
+
+def get_russell1000_tickers(use_cache=True, cache_days=7):
+    """
+    Descarga la lista de tickers del Russell 1000 desde Wikipedia.
+    Usa un cache local en CSV para no golpear Wikipedia en cada ejecución
+    (importante porque este módulo se usa dentro de una app Streamlit
+    con recargas frecuentes).
+
+    Args:
+        use_cache (bool): Si True, intenta usar el cache local antes de descargar
+        cache_days (int): Días de validez del cache antes de refrescar
+
+    Returns:
+        list: Lista de tickers del Russell 1000 (formato compatible Yahoo Finance,
+              ej. 'BRK.B' -> 'BRK-B'). Lista vacía si falla la descarga y no hay cache.
+    """
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    cache_path = os.path.join(current_dir, _RUSSELL1000_CACHE_FILE)
+
+    # 1. Intentar usar cache si es reciente
+    if use_cache and os.path.exists(cache_path):
+        try:
+            mtime = datetime.fromtimestamp(os.path.getmtime(cache_path))
+            if (datetime.now() - mtime).days < cache_days:
+                cached = pd.read_csv(cache_path)
+                tickers = cached["Ticker"].dropna().tolist()
+                print(f"✅ Russell 1000: {len(tickers)} tickers cargados desde cache")
+                return tickers
+        except Exception:
+            pass
+
+    # 2. Descargar desde Wikipedia
+    url = "https://en.wikipedia.org/wiki/Russell_1000_Index"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/124.0.0.0 Safari/537.36"
+    }
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        tables = pd.read_html(StringIO(resp.text))
+
+        # Buscamos la tabla de componentes por sus columnas, no por índice fijo,
+        # ya que Wikipedia puede reordenar las tablas de la página.
+        df = None
+        for t in tables:
+            if "Symbol" in t.columns and "Company" in t.columns:
+                df = t
+                break
+
+        if df is None:
+            raise ValueError(
+                "No se encontró la tabla de componentes con columnas 'Company'/'Symbol'"
+            )
+
+        # Yahoo Finance usa '-' en vez de '.' para clases de acciones (ej: BRK.B -> BRK-B)
+        tickers = (
+            df["Symbol"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .str.replace(".", "-", regex=False)
+            .tolist()
+        )
+        tickers = sorted(set(tickers))
+
+        # 3. Guardar en cache
+        try:
+            pd.DataFrame({"Ticker": tickers}).to_csv(cache_path, index=False)
+        except Exception as e:
+            print(f"⚠️ No se pudo guardar cache de Russell 1000 ({e})")
+
+        print(f"✅ Russell 1000: {len(tickers)} tickers descargados de Wikipedia")
+        return tickers
+
+    except Exception as e:
+        print(f"⚠️ Error descargando Russell 1000 ({e}), usando cache si existe...")
+        if os.path.exists(cache_path):
+            try:
+                cached = pd.read_csv(cache_path)
+                tickers = cached["Ticker"].dropna().tolist()
+                print(f"✅ Russell 1000: {len(tickers)} tickers cargados desde cache (fallback)")
+                return tickers
+            except Exception:
+                pass
+        return []
+
+
+def get_top_russell1000():
+    """
+    Retorna lista de tickers del Russell 1000 (wrapper con log estándar,
+    siguiendo el mismo estilo que get_top_indices/get_top_etfs/get_top_stocks).
+
+    Returns:
+        list: Lista de símbolos del Russell 1000
+    """
+    russell = get_russell1000_tickers()
+    print(f"✅ Russell 1000: {len(russell)} símbolos agregados")
+    return russell
+
+
+# ============================================================
+# 6. CONSTRUCCIÓN DEL UNIVERSO
+# ============================================================
+
+def create_tickers_universe(output_filename='Tks.csv', include_russell1000=True):
     """
     Crea el universo completo de tickers combinando la lista fija de:
     - Acciones (Semiconductores, Big Tech, Financiero, Energía/Industria,
       Consumo, Salud, Telecom/Meme)
     - Índices
     - ETFs
-
-    Ya no descarga nada externamente: todo proviene de listas fijas
-    definidas en este mismo archivo.
+    - (Opcional) Russell 1000, descargado dinámicamente desde Wikipedia con cache
 
     Guarda el resultado en un archivo CSV en el directorio actual.
 
     Args:
         output_filename (str): Nombre del archivo CSV de salida
+        include_russell1000 (bool): Si True, incorpora el universo Russell 1000
 
     Returns:
         pd.DataFrame: DataFrame con todos los tickers
@@ -334,19 +445,34 @@ def create_tickers_universe(output_filename='Tks.csv'):
         'Type': 'ETF'
     })
 
-    # 4. Combinar todos
-    all_df = pd.concat([stocks_df, indices_df, etfs_df], ignore_index=True)
+    dfs_to_concat = [stocks_df, indices_df, etfs_df]
 
-    # 5. Eliminar duplicados (por si acaso)
+    # 4. Russell 1000 (opcional, dinámico)
+    if include_russell1000:
+        russell = get_top_russell1000()
+        if russell:
+            russell_df = pd.DataFrame({
+                'Ticker': russell,
+                'Type': 'Russell1000'
+            })
+            dfs_to_concat.append(russell_df)
+        else:
+            print("⚠️ Russell 1000 no disponible, se omite del universo.")
+
+    # 5. Combinar todos
+    all_df = pd.concat(dfs_to_concat, ignore_index=True)
+
+    # 6. Eliminar duplicados (por si acaso, priorizando la primera aparición:
+    #    Stock > Index > ETF > Russell1000)
     all_df = all_df.drop_duplicates(subset='Ticker', keep='first')
 
-    # 6. Ordenar alfabéticamente
+    # 7. Ordenar alfabéticamente
     all_df = all_df.sort_values('Ticker').reset_index(drop=True)
 
-    # 7. Agregar metadata
+    # 8. Agregar metadata
     all_df['LastUpdate'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-    # 8. Guardar en el directorio actual
+    # 9. Guardar en el directorio actual
     current_dir = os.path.dirname(os.path.abspath(__file__))
     output_path = os.path.join(current_dir, output_filename)
 
@@ -356,15 +482,18 @@ def create_tickers_universe(output_filename='Tks.csv'):
     except Exception as e:
         print(f"\n⚠️ No se pudo guardar el CSV ({e}), continuando en memoria...")
 
-    # 9. Estadísticas finales
+    # 10. Estadísticas finales
+    n_russell = len(all_df[all_df['Type'] == 'Russell1000'])
     print("\n" + "=" * 70)
     print("📊 RESUMEN DEL UNIVERSO DE TICKERS")
     print("=" * 70)
     print(f"📈 Acciones: {len(stocks_df):,}")
     print(f"📉 Índices: {len(indices_df):,}")
     print(f"📊 ETFs: {len(etfs_df):,}")
+    if include_russell1000:
+        print(f"🧩 Russell 1000: {n_russell:,}")
     print("-" * 70)
-    print(f"🎯 TOTAL DE TICKERS: {len(all_df):,}")
+    print(f"🎯 TOTAL DE TICKERS (sin duplicados): {len(all_df):,}")
     print("=" * 70)
     print(f"📅 Fecha de actualización: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("\n✅ Proceso completado exitosamente!")
