@@ -11,15 +11,17 @@ Screener de Covered Calls IN-THE-MONEY (ITM) para ciclos cortos (Viernes -> Vier
     - IV/RV ratio: prima "cara" vs. volatilidad realizada reciente
     - Liquidez: volumen subyacente, volumen/OI de opciones, spread bid-ask
     - Exclusión de earnings y ex-dividend dentro de la ventana del ciclo
-    - Universo: Russell 1000 (descargado en vivo de iShares/IWB) + el
-      universo curado de utils/tickers.py (Acciones + Índices + ETFs)
+    - Universo: Russell 1000 + universo curado de utils/tickers.py
+      (Acciones + Índices + ETFs, ~200 tickers), todo fusionado en un
+      único universo sin duplicados.
 
-NOTA: la descarga de tickers del Russell 1000 se hace con una función
-simple y autocontenida (sin depender de utils/r1000_tickers.py), porque el
-endpoint de BlackRock cambió de formato. Además, se filtran filas de
-cash/derivados/futuros que no son tickers reales y se valida que el
-conteo final esté en un rango razonable (~800-1,300, acorde al tamaño
-real del índice Russell 1000).
+NOTA: la construcción del universo se delega por completo en
+utils/tickers.py -> create_tickers_universe(), que ya combina internamente:
+  - Los ~200 tickers curados (Acciones + Índices + ETFs)
+  - El Russell 1000 (descargado de Wikipedia, con cache local de 7 días)
+y devuelve un único DataFrame deduplicado. Aquí solo se consume ese
+resultado y se cachea a nivel de Streamlit (6h) para evitar recomputar
+en cada rerun de la app.
 """
 
 import re
@@ -54,107 +56,59 @@ RISK_FREE_RATE = 0.045
 
 
 # ======================================================================
-# 0. UNIVERSO DE TICKERS (versión simplificada, sin utils/r1000_tickers.py)
+# 0. UNIVERSO DE TICKERS (delegado a utils/tickers.py)
 # ======================================================================
 
-IWB_URL = (
-    "https://www.blackrock.com/varnish-api/blk-one01-product-data/"
-    "product-data/api/v1/get-fund-document"
-    "?appType=PRODUCT_PAGE&appSubType=ISHARES&targetSite=us-ishares"
-    "&locale=en_US&portfolioId=239707&component=fundDownload&userType=individual"
-)
-REQUEST_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-    ),
-    "Accept": "*/*",
-}
-ROW_RE = re.compile(r"<ss:Row[^>]*>(.*?)</ss:Row>", re.DOTALL)
-CELL_RE = re.compile(r"<ss:Data[^>]*>(.*?)</ss:Data>", re.DOTALL)
-
-# Filas que aparecen en los holdings pero no son acciones reales del índice
-EXCLUDE_KEYWORDS = ("CASH", "USD FUND", "BLACKROCK CASH", "FUTURES", "TOTAL")
-
-# El Russell 1000 real tiene ~1,000-1,050 componentes; se usa para
-# validar que el parseo no esté inflado con filas espurias (cash, etc.)
-EXPECTED_MIN = 800
-EXPECTED_MAX = 1300
-
-
 def _clean_ticker(raw):
+    """Normaliza un ticker: mayúsculas, sin espacios, descarta vacíos/nulos."""
     if raw is None:
         return None
     t = str(raw).strip().upper().replace("&amp;", "&")
     if not t or t in ("-", "NAN", "N/A", ""):
         return None
-    if any(k in t for k in EXCLUDE_KEYWORDS):
-        return None
     return t.replace(" ", "")
-
-
-def download_r1000_tickers():
-    """Descarga y extrae tickers de holdings de IWB (Russell 1000) vía regex.
-    Filtra cash/derivados y valida que el conteo esté en un rango razonable."""
-    try:
-        resp = requests.get(IWB_URL, headers=REQUEST_HEADERS, timeout=30)
-        resp.raise_for_status()
-        text = resp.content.decode("utf-8", errors="ignore")
-        rows = ROW_RE.findall(text)
-        if not rows:
-            return [], False
-
-        header_idx = None
-        for i, row in enumerate(rows):
-            cells = CELL_RE.findall(row)
-            if cells and cells[0].strip().lower() == "ticker":
-                header_idx = i
-                break
-        if header_idx is None:
-            return [], False
-
-        tickers = []
-        for row in rows[header_idx + 1:]:
-            cells = CELL_RE.findall(row)
-            if cells:
-                t = _clean_ticker(cells[0])
-                if t:
-                    tickers.append(t)
-        tickers = sorted(set(tickers))
-
-        if tickers and EXPECTED_MIN <= len(tickers) <= EXPECTED_MAX:
-            return tickers, True
-        return [], False
-    except Exception:
-        return [], False
 
 
 @st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
 def get_full_universe():
-    """Universo completo: Russell 1000 + adicionales (utils/tickers.py). Cacheado 6h."""
-    r1000_tickers, r1000_ok = download_r1000_tickers()
+    """
+    Universo completo: utiliza utils/tickers.py -> create_tickers_universe(),
+    que ya combina internamente el universo curado (~200 tickers: Acciones,
+    Índices, ETFs) con el Russell 1000 (Wikipedia + cache), deduplicando.
+    Cacheado 6h a nivel de Streamlit para no reconstruirlo en cada rerun.
+    """
+    df_full = create_tickers_universe(include_russell1000=True)
 
-    df_extra = create_tickers_universe()
-    extra_tickers = (
-        df_extra["Ticker"].astype(str).tolist()
-        if isinstance(df_extra, pd.DataFrame) else list(df_extra)
-    )
-    extra_tickers = sorted({t for t in (_clean_ticker(x) for x in extra_tickers) if t})
+    if df_full is None or df_full.empty:
+        meta = {
+            "r1000_ok": False,
+            "r1000_count": 0,
+            "extra_count": 0,
+            "total_count": 0,
+        }
+        return pd.DataFrame({"Ticker": []}), meta
 
-    all_tickers = sorted(set(r1000_tickers) | set(extra_tickers)) if r1000_ok else extra_tickers
+    df_full = df_full.copy()
+    df_full["Ticker"] = df_full["Ticker"].apply(_clean_ticker)
+    df_full = df_full.dropna(subset=["Ticker"])
+    df_full = df_full.drop_duplicates(subset="Ticker", keep="first").reset_index(drop=True)
+
+    n_russell = int((df_full["Type"] == "Russell1000").sum()) if "Type" in df_full.columns else 0
+    n_extra = int(len(df_full) - n_russell)
 
     meta = {
-        "r1000_ok": r1000_ok,
-        "r1000_count": len(r1000_tickers),
-        "extra_count": len(extra_tickers),
-        "total_count": len(all_tickers),
+        "r1000_ok": n_russell > 0,
+        "r1000_count": n_russell,
+        "extra_count": n_extra,
+        "total_count": len(df_full),
     }
-    df_universe = pd.DataFrame({"Ticker": all_tickers})
+
+    df_universe = df_full[["Ticker"]].sort_values("Ticker").reset_index(drop=True)
     return df_universe, meta
 
 
 def refresh_full_universe():
-    """Fuerza una descarga nueva (limpia caché) y devuelve (df_universe, meta)."""
+    """Fuerza una descarga/reconstrucción nueva (limpia caché) y devuelve (df_universe, meta)."""
     get_full_universe.clear()
     return get_full_universe()
 
@@ -687,8 +641,7 @@ def main():
                                     use_container_width=True, type="primary")
 
     if actualizar_btn:
-        with st.spinner("Descargando holdings de IWB (Russell 1000) "
-                         "y combinando con el universo adicional..."):
+        with st.spinner("Reconstruyendo universo (Russell 1000 + curado de utils/tickers.py)..."):
             df_universe, meta = refresh_full_universe()
             st.session_state['itm_universe_df'] = df_universe
             st.session_state['itm_universe_meta'] = meta
@@ -717,7 +670,7 @@ def main():
             )
         else:
             st.warning(
-                f"⚠️ No se pudo descargar el listado del Russell 1000 (IWB). Usando solo "
+                f"⚠️ No se pudo obtener el listado del Russell 1000. Usando solo "
                 f"el universo adicional: **{meta['total_count']:,} tickers**. "
                 f"Prueba a pulsar 'Actualizar Tickers'."
             )
@@ -960,9 +913,9 @@ def main():
 ### Fuentes de datos
 - **yfinance**: precios, cadena de opciones, IV implícita (usada para calcular Delta vía
   Black-Scholes ya que Yahoo no provee griegos), earnings, dividendos.
-- **iShares/BlackRock (holdings de IWB)**: tickers del Russell 1000, descargados en vivo
-  y filtrados de filas de cash/derivados/futuros, cacheados 6 horas, combinados con el
-  universo adicional de utils/tickers.py.
+- **utils/tickers.py**: universo curado (~200 Acciones/Índices/ETFs) + Russell 1000
+  (Wikipedia, con cache local de 7 días), fusionados y deduplicados en un único
+  universo, cacheado 6h a nivel de Streamlit.
 - **CBOE** (`utils/cboe_utils.py`, opcional): PCR oficial cuando el ticker está disponible en
   el feed delayed público; si no, se deriva del volumen/OI de la cadena de yfinance.
 - No se usa ninguna API de broker.
