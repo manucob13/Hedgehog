@@ -1,31 +1,24 @@
 """
-CC ITM Screener
-================
-Screener de Covered Calls IN-THE-MONEY (ITM) para ciclos cortos (Viernes -> Viernes).
+Deep ITM Covered Call Screener
+================================
+Objetivo: encontrar covered calls deep ITM con extrínseco 0.85%-1.00% semanal.
 
-    - DTE objetivo: 5 días de trading (7 días calendario, viernes a viernes)
-    - Extrínseco objetivo: 0.90% - 1.00% del precio del subyacente
-    - Delta objetivo del strike ITM: 0.60 - 0.75
-    - Tendencia alcista: Close > SMA30 y SMA30 con pendiente positiva
-    - Put/Call Ratio: usado como factor de ranking (no exclusión dura)
-    - IV/RV ratio: prima "cara" vs. volatilidad realizada reciente
-    - Liquidez: volumen subyacente, volumen/OI de opciones, spread bid-ask
-    - Exclusión de earnings y ex-dividend dentro de la ventana del ciclo
-    - Universo: Russell 1000 + universo curado de utils/tickers.py
-      (Acciones + Índices + ETFs, ~200 tickers), todo fusionado en un
-      único universo sin duplicados.
+FILTROS DUROS:
+- Precio del subyacente: rango configurable
+- Close > SMA30 (tendencia alcista)
+- PCR < 1.0 (sesgo alcista)
+- OI > 100 (liquidez mínima)
+- Sin earnings en los próximos 7 días
+- Extrínseco entre 0.85% y 1.00% del precio del subyacente
+- Bid > 0 (opción negociable)
+- Vencimiento = próximo viernes (DTE ≤ 7)
 
-NOTA: la construcción del universo se delega por completo en
-utils/tickers.py -> create_tickers_universe(), que ya combina internamente:
-  - Los ~200 tickers curados (Acciones + Índices + ETFs)
-  - El Russell 1000 (descargado de Wikipedia, con cache local de 7 días)
-y devuelve un único DataFrame deduplicado. Aquí solo se consume ese
-resultado y se cachea a nivel de Streamlit (6h) para evitar recomputar
-en cada rerun de la app.
+RANKING: mayor downside protection % primero
+         (más deep ITM = más protección = mejor)
+
+PRECIO DE OPCIÓN: midprice (bid+ask)/2 siempre
 """
 
-import re
-import requests
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -41,26 +34,18 @@ import plotly.express as px
 from utils.utils import check_password
 from utils.tickers import create_tickers_universe
 
-try:
-    from utils.cboe_utils import get_option_chain_cboe
-    CBOE_AVAILABLE = True
-except Exception:
-    CBOE_AVAILABLE = False
-
 warnings.filterwarnings('ignore')
 
-_yfinance_lock = Lock()
-_N = NormalDist()
-
+_lock = Lock()
+_N   = NormalDist()
 RISK_FREE_RATE = 0.045
 
 
 # ======================================================================
-# 0. UNIVERSO DE TICKERS (delegado a utils/tickers.py)
+# 0. UNIVERSO
 # ======================================================================
 
 def _clean_ticker(raw):
-    """Normaliza un ticker: mayúsculas, sin espacios, descarta vacíos/nulos."""
     if raw is None:
         return None
     t = str(raw).strip().upper().replace("&amp;", "&")
@@ -69,68 +54,44 @@ def _clean_ticker(raw):
     return t.replace(" ", "")
 
 
-@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
 def get_full_universe():
-    """
-    Universo completo: utiliza utils/tickers.py -> create_tickers_universe(),
-    que ya combina internamente el universo curado (~200 tickers: Acciones,
-    Índices, ETFs) con el Russell 1000 (Wikipedia + cache), deduplicando.
-    Cacheado 6h a nivel de Streamlit para no reconstruirlo en cada rerun.
-    """
-    df_full = create_tickers_universe(include_russell1000=True)
-
-    if df_full is None or df_full.empty:
-        meta = {
-            "r1000_ok": False,
-            "r1000_count": 0,
-            "extra_count": 0,
-            "total_count": 0,
-        }
-        return pd.DataFrame({"Ticker": []}), meta
-
-    df_full = df_full.copy()
-    df_full["Ticker"] = df_full["Ticker"].apply(_clean_ticker)
-    df_full = df_full.dropna(subset=["Ticker"])
-    df_full = df_full.drop_duplicates(subset="Ticker", keep="first").reset_index(drop=True)
-
-    n_russell = int((df_full["Type"] == "Russell1000").sum()) if "Type" in df_full.columns else 0
-    n_extra = int(len(df_full) - n_russell)
-
+    df = create_tickers_universe(include_russell1000=True)
+    if df is None or df.empty:
+        return pd.DataFrame({"Ticker": []}), {}
+    df = df.copy()
+    df["Ticker"] = df["Ticker"].apply(_clean_ticker)
+    df = df.dropna(subset=["Ticker"]).drop_duplicates("Ticker").reset_index(drop=True)
+    n_r = int((df["Type"] == "Russell1000").sum()) if "Type" in df.columns else 0
     meta = {
-        "r1000_ok": n_russell > 0,
-        "r1000_count": n_russell,
-        "extra_count": n_extra,
-        "total_count": len(df_full),
+        "r1000_ok": n_r > 0,
+        "r1000_count": n_r,
+        "extra_count": len(df) - n_r,
+        "total_count": len(df),
     }
-
-    df_universe = df_full[["Ticker"]].sort_values("Ticker").reset_index(drop=True)
-    return df_universe, meta
+    return df[["Ticker"]].sort_values("Ticker").reset_index(drop=True), meta
 
 
-def refresh_full_universe():
-    """Fuerza una descarga/reconstrucción nueva (limpia caché) y devuelve (df_universe, meta)."""
+def refresh_universe():
     get_full_universe.clear()
     return get_full_universe()
 
 
 # ======================================================================
-# 1. DESCARGA DE DATOS BASE
+# 1. DATOS DIARIOS
 # ======================================================================
 
-def download_daily_data(ticker, period="6mo"):
-    """Descarga precios diarios (para SMA30, RV, precio actual, volumen)."""
+def get_daily_data(ticker):
     try:
-        end = datetime.now() + timedelta(days=1)
-        period_days = {'3mo': 90, '6mo': 180, '1y': 365}
-        days = period_days.get(period, 180)
-        start = end - timedelta(days=days)
-        with _yfinance_lock:
+        end   = datetime.now() + timedelta(days=1)
+        start = end - timedelta(days=120)
+        with _lock:
             data = yf.download(
                 ticker, start=start, end=end,
                 interval="1d", auto_adjust=False,
                 multi_level_index=False, progress=False
             )
-        if data is None or data.empty or len(data) < 40:
+        if data is None or data.empty or len(data) < 35:
             return None
         data.index = pd.to_datetime(data.index)
         return data
@@ -139,476 +100,401 @@ def download_daily_data(ticker, period="6mo"):
 
 
 # ======================================================================
-# 2. TENDENCIA: SMA30 + pendiente
+# 2. SMA30
 # ======================================================================
 
-def calculate_sma_trend(close, period=30, slope_lookback=5):
+def get_sma30(close):
+    """Devuelve (sma30_valor, dist_pct, slope_positivo) o (None, None, None)."""
     try:
-        if len(close) < period + slope_lookback:
+        if len(close) < 35:
             return None, None, None
-        sma = close.rolling(window=period).mean()
-        sma_now = sma.iloc[-1]
-        sma_prev = sma.iloc[-1 - slope_lookback]
-        if pd.isna(sma_now) or pd.isna(sma_prev):
-            return None, None, None
-        price_now = close.iloc[-1]
-        dist_pct = (price_now - sma_now) / sma_now * 100
-        slope_positive = sma_now > sma_prev
-        return round(float(sma_now), 2), round(float(dist_pct), 2), bool(slope_positive)
+        sma   = close.rolling(30).mean()
+        sma_now  = float(sma.iloc[-1])
+        sma_prev = float(sma.iloc[-6])   # 5 días atrás
+        price    = float(close.iloc[-1])
+        dist_pct = round((price - sma_now) / sma_now * 100, 2)
+        slope    = sma_now > sma_prev
+        return round(sma_now, 2), dist_pct, slope
     except Exception:
         return None, None, None
 
 
 # ======================================================================
-# 3. VOLATILIDAD REALIZADA (para IV/RV ratio)
+# 3. VOLATILIDAD REALIZADA
 # ======================================================================
 
-def calculate_realized_vol(close, window=10):
+def get_rv10(close):
     try:
-        if len(close) < window + 1:
+        if len(close) < 12:
             return None
         rets = np.log(close / close.shift(1)).dropna()
-        rv = float(rets.iloc[-window:].std() * np.sqrt(252) * 100)
-        return round(rv, 2)
+        return round(float(rets.iloc[-10:].std() * np.sqrt(252) * 100), 2)
     except Exception:
         return None
 
 
 # ======================================================================
-# 4. EARNINGS Y DIVIDENDOS
+# 4. BLACK-SCHOLES DELTA
 # ======================================================================
 
-def get_next_earnings_date(stock):
-    try:
-        cal = stock.calendar
-        if cal is not None and 'Earnings Date' in cal:
-            ed = cal['Earnings Date']
-            if isinstance(ed, list) and len(ed) > 0:
-                return pd.to_datetime(ed[0]).date()
-            if pd.notna(ed):
-                return pd.to_datetime(ed).date()
-        return None
-    except Exception:
-        return None
-
-
-def get_next_ex_dividend_date(stock):
-    try:
-        cal = stock.calendar
-        if cal is not None and 'Ex-Dividend Date' in cal:
-            exd = cal['Ex-Dividend Date']
-            if pd.notna(exd):
-                exd = pd.to_datetime(exd).date()
-                if exd > date.today():
-                    return exd
-        divs = stock.dividends
-        if divs is not None and not divs.empty and len(divs) >= 2:
-            dates = divs.tail(4).index
-            intervals = [(dates[i + 1] - dates[i]).days for i in range(len(dates) - 1)]
-            avg_interval = np.mean(intervals)
-            est = (divs.index[-1] + pd.Timedelta(days=avg_interval)).date()
-            if est > date.today():
-                return est
-        return None
-    except Exception:
-        return None
-
-
-# ======================================================================
-# 5. SELECCIÓN DE VENCIMIENTO
-# ======================================================================
-
-def select_target_expiration(expirations, target_dte_days=7, tolerance_days=3):
-    try:
-        today = date.today()
-        best = None
-        best_diff = None
-        for exp_str in expirations:
-            exp_date = datetime.strptime(exp_str, '%Y-%m-%d').date()
-            dte = (exp_date - today).days
-            if dte <= 0:
-                continue
-            diff = abs(dte - target_dte_days)
-            if diff <= tolerance_days and (best_diff is None or diff < best_diff):
-                best = (exp_str, dte)
-                best_diff = diff
-        return best if best else (None, None)
-    except Exception:
-        return None, None
-
-
-# ======================================================================
-# 6. BLACK-SCHOLES: DELTA DE LA CALL
-# ======================================================================
-
-def bs_call_delta(S, K, T_years, sigma, r=RISK_FREE_RATE):
+def bs_delta(S, K, T_years, sigma, r=RISK_FREE_RATE):
     try:
         if T_years <= 0 or sigma <= 0 or S <= 0 or K <= 0:
             return None
-        d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T_years) / (sigma * np.sqrt(T_years))
+        d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T_years) / (sigma * np.sqrt(T_years))
         return round(float(_N.cdf(d1)), 3)
     except Exception:
         return None
 
 
 # ======================================================================
-# 7. SELECCIÓN DEL STRIKE ITM + MÉTRICAS DE LA OPCIÓN
+# 5. PRÓXIMO VIERNES (DTE ≤ 7)
 # ======================================================================
 
-def find_itm_candidate(calls_df, current_price, dte_calendar,
-                        extrinsic_min_pct, extrinsic_max_pct,
-                        delta_min, delta_max):
+def next_friday():
+    """Devuelve la fecha del próximo viernes (incluyendo hoy si es viernes)."""
+    today = date.today()
+    days_ahead = (4 - today.weekday()) % 7   # 4 = viernes
+    if days_ahead == 0:
+        days_ahead = 7  # si hoy es viernes, el PRÓXIMO viernes
+    return today + timedelta(days=days_ahead)
+
+
+def select_friday_expiration(expirations):
+    """
+    Busca en la lista de vencimientos el próximo viernes con DTE ≤ 7.
+    Devuelve (exp_str, dte) o (None, None).
+    """
+    target = next_friday()
+    today  = date.today()
+    for exp_str in expirations:
+        exp = datetime.strptime(exp_str, "%Y-%m-%d").date()
+        dte = (exp - today).days
+        if exp == target and 1 <= dte <= 7:
+            return exp_str, dte
+    # Fallback: cualquier viernes con DTE ≤ 7
+    for exp_str in expirations:
+        exp = datetime.strptime(exp_str, "%Y-%m-%d").date()
+        dte = (exp - today).days
+        if exp.weekday() == 4 and 1 <= dte <= 7:
+            return exp_str, dte
+    return None, None
+
+
+# ======================================================================
+# 6. EARNINGS PRÓXIMOS 7 DÍAS
+# ======================================================================
+
+def has_earnings_this_week(stock):
+    """True si hay earnings en los próximos 7 días."""
     try:
-        itm = calls_df[calls_df['strike'] < current_price].copy()
+        cal = stock.calendar
+        if cal is None:
+            return False
+        ed = cal.get("Earnings Date")
+        if ed is None:
+            return False
+        if isinstance(ed, list):
+            ed = ed[0]
+        ed = pd.to_datetime(ed).date()
+        return date.today() <= ed <= (date.today() + timedelta(days=7))
+    except Exception:
+        return False
+
+
+# ======================================================================
+# 7. PUT/CALL RATIO
+# ======================================================================
+
+def get_pcr(stock, exp_str, current_price, range_pct=15):
+    """PCR basado en OI de la cadena de opciones (±15% del precio)."""
+    try:
+        chain  = stock.option_chain(exp_str)
+        lo     = current_price * (1 - range_pct / 100)
+        hi     = current_price * (1 + range_pct / 100)
+
+        calls  = chain.calls
+        puts   = chain.puts
+
+        c_filt = calls[(calls["strike"] >= lo) & (calls["strike"] <= hi)]
+        p_filt = puts[(puts["strike"] >= lo) & (puts["strike"] <= hi)]
+
+        c_oi = float(c_filt["openInterest"].fillna(0).sum())
+        p_oi = float(p_filt["openInterest"].fillna(0).sum())
+
+        if c_oi == 0:
+            return None
+        return round(p_oi / c_oi, 3)
+    except Exception:
+        return None
+
+
+# ======================================================================
+# 8. CANDIDATO DEEP ITM
+# ======================================================================
+
+def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
+                             extrinsic_min_pct, extrinsic_max_pct,
+                             min_oi):
+    """
+    Entre todos los strikes ITM con extrínseco en el rango objetivo:
+    - Calcula midprice, intrínseco, extrínseco
+    - Filtra por OI > min_oi y bid > 0
+    - Devuelve el strike con MAYOR downside protection
+      (más deep ITM = más alejado del precio actual)
+    """
+    try:
+        itm = calls_df[calls_df["strike"] < current_price].copy()
         if itm.empty:
             return None
 
-        itm['bid'] = itm['bid'].fillna(0)
-        itm['ask'] = itm['ask'].fillna(0)
-        itm['mid'] = (itm['bid'] + itm['ask']) / 2
-        itm = itm[itm['mid'] > 0]
+        # Usar midprice siempre
+        itm["bid"]  = pd.to_numeric(itm["bid"], errors="coerce").fillna(0)
+        itm["ask"]  = pd.to_numeric(itm["ask"], errors="coerce").fillna(0)
+        itm["mid"]  = (itm["bid"] + itm["ask"]) / 2
+
+        # Filtro: bid > 0 y mid > 0
+        itm = itm[(itm["bid"] > 0) & (itm["mid"] > 0)]
         if itm.empty:
             return None
 
-        itm['intrinsic'] = current_price - itm['strike']
-        itm['extrinsic'] = itm['mid'] - itm['intrinsic']
-        itm['extrinsic_pct'] = itm['extrinsic'] / current_price * 100
-        itm['spread_pct'] = np.where(
-            itm['mid'] > 0, (itm['ask'] - itm['bid']) / itm['mid'] * 100, np.nan
-        )
+        # Filtro OI
+        itm["oi"] = pd.to_numeric(
+            itm.get("openInterest", pd.Series(0, index=itm.index)),
+            errors="coerce"
+        ).fillna(0)
+        itm = itm[itm["oi"] >= min_oi]
+        if itm.empty:
+            return None
 
-        T_years = dte_calendar / 365.0
-        itm['iv'] = itm['impliedVolatility'].fillna(0)
-        itm['delta'] = itm.apply(
-            lambda row: bs_call_delta(current_price, row['strike'], T_years, row['iv']),
-            axis=1
-        )
+        # Métricas
+        itm["intrinsic"]     = current_price - itm["strike"]
+        itm["extrinsic"]     = itm["mid"] - itm["intrinsic"]
+        itm["extrinsic_pct"] = itm["extrinsic"] / current_price * 100
+        itm["spread_pct"]    = (itm["ask"] - itm["bid"]) / itm["mid"] * 100
+        itm["downside_prot"] = itm["intrinsic"] / current_price * 100  # = protección bajista
 
+        # Filtro extrínseco objetivo
         candidates = itm[
-            (itm['extrinsic_pct'] >= extrinsic_min_pct) &
-            (itm['extrinsic_pct'] <= extrinsic_max_pct) &
-            (itm['delta'].notna()) &
-            (itm['delta'] >= delta_min) &
-            (itm['delta'] <= delta_max)
+            (itm["extrinsic_pct"] >= extrinsic_min_pct) &
+            (itm["extrinsic_pct"] <= extrinsic_max_pct) &
+            (itm["extrinsic"] > 0)
         ]
 
         if candidates.empty:
             return None
 
-        best = candidates.sort_values('extrinsic_pct', ascending=False).iloc[0]
-        return best
-    except Exception:
-        return None
+        # Ranking: mayor downside_prot = más deep ITM = mejor
+        best = candidates.sort_values("downside_prot", ascending=False).iloc[0]
 
-
-# ======================================================================
-# 8. PUT/CALL RATIO
-# ======================================================================
-
-def get_pcr_yahoo(stock, exp_str, current_price, price_range_pct=10):
-    try:
-        chain = stock.option_chain(exp_str)
-        lower = current_price * (1 - price_range_pct / 100)
-        upper = current_price * (1 + price_range_pct / 100)
-
-        calls = chain.calls
-        calls_r = calls[(calls['strike'] >= lower) & (calls['strike'] <= upper)].copy()
-        puts = chain.puts
-        puts_r = puts[(puts['strike'] >= lower) & (puts['strike'] <= upper)].copy()
-
-        def activity(df):
-            if df.empty:
-                return 0
-            vol = df['volume'].fillna(0)
-            oi = df['openInterest'].fillna(0) if 'openInterest' in df.columns else 0
-            return float(np.where(vol > 0, vol, oi).sum())
-
-        call_act = activity(calls_r)
-        put_act = activity(puts_r)
-        if call_act == 0:
-            return None
-        return round(put_act / call_act, 3)
-    except Exception:
-        return None
-
-
-def get_pcr_cboe(ticker, exp_str):
-    if not CBOE_AVAILABLE:
-        return None
-    try:
-        df = get_option_chain_cboe(ticker)
-        if df is None or df.empty:
-            return None
-        exp_date = datetime.strptime(exp_str, '%Y-%m-%d').date()
-        df_exp = df[df['expiry'] == exp_date]
-        if df_exp.empty:
-            return None
-        call_vol = df_exp[df_exp['opt_type'] == 'C']['volume'].fillna(0).sum()
-        put_vol = df_exp[df_exp['opt_type'] == 'P']['volume'].fillna(0).sum()
-        if call_vol == 0:
-            return None
-        return round(float(put_vol / call_vol), 3)
-    except Exception:
-        return None
-
-
-def pcr_sentiment_label(pcr):
-    if pcr is None:
-        return "N/A"
-    if pcr < 0.7:
-        return "🟢 Muy Alcista"
-    if pcr < 1.0:
-        return "🟢 Alcista"
-    if pcr < 1.3:
-        return "🟡 Neutral"
-    return "🔴 Bajista"
-
-
-# ======================================================================
-# 9. SCORING COMPUESTO
-# ======================================================================
-
-def _minmax_score(value, lo, hi, invert=False):
-    if value is None or hi == lo:
-        return 0
-    v = max(lo, min(hi, value))
-    score = (v - lo) / (hi - lo) * 100
-    return round(100 - score, 1) if invert else round(score, 1)
-
-
-def calculate_composite_score(extrinsic_pct, iv_rv_ratio, downside_protection_pct,
-                               options_activity, vol_oi_ratio, dist_sma30_pct, pcr,
-                               extrinsic_min, extrinsic_max):
-    s_extrinsic = _minmax_score(extrinsic_pct, extrinsic_min, extrinsic_max)
-    s_ivrv = _minmax_score(iv_rv_ratio, 0.8, 2.0)
-    s_downside = _minmax_score(downside_protection_pct, 0, 10)
-    s_volume = _minmax_score(np.log10(options_activity + 1) if options_activity else 0, 1, 5)
-    s_voloi = _minmax_score(vol_oi_ratio, 0, 2)
-    s_trend = _minmax_score(dist_sma30_pct, 0, 15)
-    s_pcr = _minmax_score(pcr if pcr is not None else 1.3, 0.3, 1.3, invert=True)
-
-    score = (
-        s_extrinsic * 0.20 +
-        s_ivrv * 0.20 +
-        s_downside * 0.15 +
-        s_volume * 0.15 +
-        s_voloi * 0.10 +
-        s_trend * 0.10 +
-        s_pcr * 0.10
-    )
-    return round(score, 1)
-
-
-def get_semaphore(score):
-    if score >= 70:
-        return "🟢"
-    if score >= 50:
-        return "🟡"
-    return "🔴"
-
-
-# ======================================================================
-# 10. ANÁLISIS DE UN TICKER
-# ======================================================================
-
-def analyze_ticker_itm(ticker, params):
-    try:
-        data = download_daily_data(ticker, period="6mo")
-        if data is None:
-            return None
-
-        close = data['Close']
-        volume = data['Volume']
-        current_price = float(close.iloc[-1])
-        avg_volume = float(volume.iloc[-20:].mean())
-
-        if avg_volume < params['min_underlying_volume']:
-            return None
-        if not (params['min_price'] <= current_price <= params['max_price']):
-            return None
-
-        sma30, dist_sma_pct, slope_positive = calculate_sma_trend(close, period=30)
-        if params['apply_trend_filter']:
-            if sma30 is None or current_price <= sma30:
-                return None
-            if params['require_slope_positive'] and not slope_positive:
-                return None
-
-        rv = calculate_realized_vol(close, window=10)
-
-        stock = yf.Ticker(ticker)
-        expirations = stock.options
-        if not expirations:
-            return None
-
-        exp_str, dte_calendar = select_target_expiration(
-            expirations,
-            target_dte_days=params['target_dte_days'],
-            tolerance_days=params['dte_tolerance']
-        )
-        if exp_str is None:
-            return None
-
-        exp_date = datetime.strptime(exp_str, '%Y-%m-%d').date()
-
-        next_earnings = get_next_earnings_date(stock)
-        if params['exclude_earnings'] and next_earnings is not None:
-            if date.today() <= next_earnings <= (exp_date + timedelta(days=2)):
-                return None
-
-        next_exdiv = get_next_ex_dividend_date(stock)
-        if params['exclude_exdiv'] and next_exdiv is not None:
-            if date.today() <= next_exdiv <= exp_date:
-                return None
-
-        chain = stock.option_chain(exp_str)
-        calls = chain.calls
-        if calls is None or calls.empty:
-            return None
-
-        best = find_itm_candidate(
-            calls, current_price, dte_calendar,
-            params['extrinsic_min'], params['extrinsic_max'],
-            params['delta_min'], params['delta_max']
-        )
-        if best is None:
-            return None
-
-        strike_volume = float(best.get('volume') or 0)
-        strike_oi = float(best.get('openInterest') or 0)
-        spread_pct = float(best.get('spread_pct')) if pd.notna(best.get('spread_pct')) else None
-
-        if strike_oi < params['min_oi']:
-            return None
-        if strike_volume < params['min_option_volume'] and strike_oi < params['min_oi'] * 1.5:
-            return None
-        if spread_pct is not None and spread_pct > params['max_spread_pct']:
-            return None
-
-        vol_oi_ratio = round(strike_volume / strike_oi, 3) if strike_oi > 0 else 0
-
-        iv_pct = round(float(best['iv']) * 100, 2) if pd.notna(best.get('iv')) else None
-        iv_rv_ratio = round(iv_pct / rv, 3) if (iv_pct and rv and rv > 0) else None
-        if params['min_iv_rv_ratio'] and (iv_rv_ratio is None or iv_rv_ratio < params['min_iv_rv_ratio']):
-            return None
-
-        premium = round(float(best['mid']), 2)
-        strike_price = float(best['strike'])
-        breakeven = round(current_price - premium, 2)
-        downside_protection_pct = round((current_price - breakeven) / current_price * 100, 2)
-
-        pcr = get_pcr_cboe(ticker, exp_str)
-        pcr_source = "CBOE"
-        if pcr is None:
-            pcr = get_pcr_yahoo(stock, exp_str, current_price)
-            pcr_source = "Yahoo (derivado)"
-        if params['apply_pcr_filter'] and pcr is not None and pcr >= params['max_pcr']:
-            return None
-
-        extrinsic_pct = round(float(best['extrinsic_pct']), 2)
-        intrinsic = round(float(best['intrinsic']), 2)
-        delta = float(best['delta'])
-
-        annualized_return_pct = round(extrinsic_pct * (365 / dte_calendar), 1) if dte_calendar > 0 else None
-
-        score = calculate_composite_score(
-            extrinsic_pct, iv_rv_ratio, downside_protection_pct,
-            strike_volume + strike_oi, vol_oi_ratio, dist_sma_pct, pcr,
-            params['extrinsic_min'], params['extrinsic_max']
-        )
+        # Delta para ese strike
+        T_years = dte_calendar / 365.0
+        iv      = float(best.get("impliedVolatility") or 0)
+        delta   = bs_delta(current_price, float(best["strike"]), T_years, iv) if iv > 0 else None
 
         return {
-            'Semáforo': get_semaphore(score),
-            'Ticker': ticker,
-            'Score': score,
-            'Precio': round(current_price, 2),
-            'Strike': round(strike_price, 2),
-            'Vencimiento': exp_str,
-            'DTE_cal': dte_calendar,
-            'Delta': delta,
-            'Extrínseco_%': extrinsic_pct,
-            'Intrínseco': intrinsic,
-            'Prima': premium,
-            'Breakeven': breakeven,
-            'Downside_Prot_%': downside_protection_pct,
-            'Retorno_Anualizado_%': annualized_return_pct,
-            'IV_%': iv_pct,
-            'RV_%': rv,
-            'IV_RV_Ratio': iv_rv_ratio,
-            'Vol_Strike': int(strike_volume),
-            'OI_Strike': int(strike_oi),
-            'Vol/OI': vol_oi_ratio,
-            'Spread_%': round(spread_pct, 2) if spread_pct is not None else None,
-            'Avg_Vol_Subyacente': int(avg_volume),
-            'SMA30': sma30,
-            'Dist_SMA30_%': dist_sma_pct,
-            'SMA30_Subiendo': slope_positive,
-            'PCR': pcr,
-            'PCR_Fuente': pcr_source,
-            'Sentiment': pcr_sentiment_label(pcr),
-            'Next_Earnings': next_earnings.isoformat() if next_earnings else "N/A",
-            'Next_ExDiv': next_exdiv.isoformat() if next_exdiv else "N/A",
+            "strike":        float(best["strike"]),
+            "mid":           round(float(best["mid"]), 2),
+            "bid":           round(float(best["bid"]), 2),
+            "ask":           round(float(best["ask"]), 2),
+            "intrinsic":     round(float(best["intrinsic"]), 2),
+            "extrinsic":     round(float(best["extrinsic"]), 2),
+            "extrinsic_pct": round(float(best["extrinsic_pct"]), 3),
+            "downside_prot": round(float(best["downside_prot"]), 2),
+            "spread_pct":    round(float(best["spread_pct"]), 2),
+            "oi":            int(best["oi"]),
+            "volume":        int(pd.to_numeric(best.get("volume", 0), errors="coerce") or 0),
+            "iv_pct":        round(iv * 100, 2) if iv > 0 else None,
+            "delta":         delta,
         }
     except Exception:
         return None
 
 
 # ======================================================================
-# 11. EJECUCIÓN EN PARALELO
+# 9. ANÁLISIS DE UN TICKER
+# ======================================================================
+
+def analyze_ticker(ticker, params):
+    try:
+        # ── Datos diarios ──────────────────────────────────────────────
+        data = get_daily_data(ticker)
+        if data is None:
+            return None
+
+        close        = data["Close"]
+        current_price = float(close.iloc[-1])
+
+        # Filtro precio
+        if not (params["min_price"] <= current_price <= params["max_price"]):
+            return None
+
+        # SMA30
+        sma30, dist_sma_pct, slope_up = get_sma30(close)
+        if sma30 is None:
+            return None
+
+        # FILTRO DURO: Close > SMA30
+        if current_price <= sma30:
+            return None
+
+        # RV10
+        rv = get_rv10(close)
+
+        # ── Opciones ───────────────────────────────────────────────────
+        stock = yf.Ticker(ticker)
+
+        # FILTRO DURO: No earnings esta semana
+        if has_earnings_this_week(stock):
+            return None
+
+        expirations = stock.options
+        if not expirations:
+            return None
+
+        exp_str, dte = select_friday_expiration(expirations)
+        if exp_str is None:
+            return None
+
+        # PCR
+        pcr = get_pcr(stock, exp_str, current_price)
+
+        # FILTRO DURO: PCR < 1.0 (alcista)
+        if pcr is not None and pcr >= 1.0:
+            return None
+
+        # Cadena de calls
+        chain = stock.option_chain(exp_str)
+        calls = chain.calls
+        if calls is None or calls.empty:
+            return None
+
+        # Candidato deep ITM
+        candidate = find_deep_itm_candidate(
+            calls, current_price, dte,
+            params["extrinsic_min"],
+            params["extrinsic_max"],
+            params["min_oi"],
+        )
+        if candidate is None:
+            return None
+
+        # ── Métricas adicionales ───────────────────────────────────────
+        iv_rv_ratio = (
+            round(candidate["iv_pct"] / rv, 3)
+            if (candidate["iv_pct"] and rv and rv > 0)
+            else None
+        )
+
+        annualized = round(
+            candidate["extrinsic_pct"] * (365 / dte), 1
+        ) if dte > 0 else None
+
+        breakeven = round(current_price - candidate["mid"], 2)
+
+        # ── Resultado ──────────────────────────────────────────────────
+        return {
+            # Identificación
+            "Ticker":          ticker,
+            "Precio":          round(current_price, 2),
+            "Vencimiento":     exp_str,
+            "DTE":             dte,
+            # Datos del strike (ranking principal)
+            "Strike":          candidate["strike"],
+            "Downside_Prot_%": candidate["downside_prot"],   # ← ranking principal
+            "Extrínseco_%":    candidate["extrinsic_pct"],
+            "Prima_Mid":       candidate["mid"],
+            "Bid":             candidate["bid"],
+            "Ask":             candidate["ask"],
+            "Intrínseco":      candidate["intrinsic"],
+            "Extrínseco_$":    candidate["extrinsic"],
+            "Breakeven":       breakeven,
+            # Griegos e IV
+            "Delta":           candidate["delta"],
+            "IV_%":            candidate["iv_pct"],
+            "RV_%":            rv,
+            "IV_RV":           iv_rv_ratio,
+            # Retorno
+            "Ret_Anualizado_%": annualized,
+            # Liquidez
+            "OI":              candidate["oi"],
+            "Volumen":         candidate["volume"],
+            "Spread_%":        candidate["spread_pct"],
+            # Tendencia
+            "SMA30":           sma30,
+            "Dist_SMA30_%":    dist_sma_pct,
+            "SMA30_Sube":      slope_up,
+            # Sentimiento
+            "PCR":             pcr,
+        }
+
+    except Exception:
+        return None
+
+
+# ======================================================================
+# 10. SCREENER EN PARALELO
 # ======================================================================
 
 def run_screener(tickers, params, progress_bar, status_text):
     results = []
-    total = len(tickers)
+    total   = len(tickers)
+
     with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = {executor.submit(analyze_ticker_itm, t, params): t for t in tickers}
-        completed = 0
+        futures = {executor.submit(analyze_ticker, t, params): t for t in tickers}
+        done = 0
         for future in as_completed(futures):
-            completed += 1
-            progress_bar.progress(completed / total)
-            status_text.text(f"🔍 Analizando {completed}/{total}...")
-            result = future.result()
-            if result is not None:
-                results.append(result)
-    status_text.text(f"✅ Completado: {len(results)} candidatos encontrados")
+            done += 1
+            progress_bar.progress(done / total)
+            status_text.text(f"🔍 {done}/{total} — encontrados: {len(results)}")
+            r = future.result()
+            if r is not None:
+                results.append(r)
+
+    status_text.text(f"✅ Completado: {len(results)} candidatos")
+
     if not results:
         return pd.DataFrame()
+
     df = pd.DataFrame(results)
-    df = df.sort_values('Score', ascending=False).reset_index(drop=True)
+
+    # Ranking: mayor Downside_Prot_% primero
+    df = df.sort_values("Downside_Prot_%", ascending=False).reset_index(drop=True)
+    df.insert(0, "Rank", range(1, len(df) + 1))
+
     return df
 
 
 # ======================================================================
-# 12. GRÁFICOS
+# 11. GRÁFICO DE PRECIO
 # ======================================================================
 
-def plot_price_with_sma(ticker, sma_period=30):
+def plot_price(ticker):
     try:
-        data = download_daily_data(ticker, period="6mo")
-        if data is None or data.empty:
+        data = get_daily_data(ticker)
+        if data is None:
             return None
-        sma = data['Close'].rolling(sma_period).mean()
-
+        sma = data["Close"].rolling(30).mean()
         fig = go.Figure()
         fig.add_trace(go.Candlestick(
             x=data.index,
-            open=data['Open'], high=data['High'],
-            low=data['Low'], close=data['Close'],
+            open=data["Open"], high=data["High"],
+            low=data["Low"],   close=data["Close"],
             name=ticker,
-            increasing_line_color='#6daa45',
-            decreasing_line_color='#dd6974'
+            increasing_line_color="#6daa45",
+            decreasing_line_color="#dd6974",
         ))
         fig.add_trace(go.Scatter(
             x=data.index, y=sma,
-            mode='lines', name=f'SMA{sma_period}',
-            line=dict(color='#e8af34', width=2)
+            mode="lines", name="SMA30",
+            line=dict(color="#e8af34", width=2),
         ))
         fig.update_layout(
-            title=f'{ticker} — Precio + SMA{sma_period}',
-            template='plotly_dark',
+            title=f"{ticker} — Precio + SMA30",
+            template="plotly_dark",
             height=420,
             xaxis_rangeslider_visible=False,
-            hovermode='x unified'
+            hovermode="x unified",
         )
         return fig
     except Exception:
@@ -616,310 +502,313 @@ def plot_price_with_sma(ticker, sma_period=30):
 
 
 # ======================================================================
-# 13. INTERFAZ STREAMLIT
+# 12. INTERFAZ STREAMLIT
 # ======================================================================
 
 def main():
-    st.set_page_config(page_title="CC ITM Screener", page_icon="🎯", layout="wide")
+    st.set_page_config(
+        page_title="Deep ITM CC Screener",
+        page_icon="🎯",
+        layout="wide",
+    )
 
     if not check_password():
         st.stop()
 
-    st.title("🎯 CC ITM Screener — ITM Covered Calls (Viernes a Viernes)")
+    st.title("🎯 Deep ITM Covered Call Screener")
     st.markdown(
-        "**Screener de covered calls ITM, ciclo de 5 días de trading "
-        "(entrada viernes, vencimiento viernes siguiente) · "
-        "Extrínseco objetivo 0.90%-1.00% · Universo: Russell 1000 + ETFs + Índices**"
+        "**Objetivo: extrínseco 0.85%-1.00% semanal · "
+        "Vencimiento próximo viernes · "
+        "Ranking por mayor downside protection**"
     )
-    st.markdown("---")
+    st.divider()
 
+    # ── Universo ───────────────────────────────────────────────────────
     st.markdown("### 📂 Universo de Tickers")
+    col_info, col_btn = st.columns([4, 1])
 
-    col1, col2 = st.columns([3, 1])
-    with col2:
-        actualizar_btn = st.button("🔄 Actualizar Tickers (Russell 1000 + Adicionales)",
-                                    use_container_width=True, type="primary")
+    with col_btn:
+        if st.button("🔄 Actualizar Universo", type="primary", use_container_width=True):
+            with st.spinner("Reconstruyendo universo..."):
+                df_universe, meta = refresh_universe()
+                st.session_state["df_universe"] = df_universe
+                st.session_state["meta_universe"] = meta
 
-    if actualizar_btn:
-        with st.spinner("Reconstruyendo universo (Russell 1000 + curado de utils/tickers.py)..."):
-            df_universe, meta = refresh_full_universe()
-            st.session_state['itm_universe_df'] = df_universe
-            st.session_state['itm_universe_meta'] = meta
+    if "df_universe" not in st.session_state:
+        with st.spinner("Cargando universo..."):
+            df_universe, meta = get_full_universe()
+            st.session_state["df_universe"] = df_universe
+            st.session_state["meta_universe"] = meta
 
-    if 'itm_universe_df' not in st.session_state:
-        try:
-            with st.spinner("Cargando universo de tickers (caché / Russell 1000 + adicionales)..."):
-                df_universe, meta = get_full_universe()
-                st.session_state['itm_universe_df'] = df_universe
-                st.session_state['itm_universe_meta'] = meta
-        except Exception as e:
-            st.error(f"Error cargando el universo de tickers: {e}")
-            st.stop()
+    df_universe = st.session_state["df_universe"]
+    meta        = st.session_state["meta_universe"]
+    tickers_all = df_universe["Ticker"].tolist()
 
-    df_universe = st.session_state['itm_universe_df']
-    meta = st.session_state['itm_universe_meta']
-    tickers_list = df_universe['Ticker'].astype(str).tolist()
-
-    with col1:
-        if meta.get('r1000_ok'):
+    with col_info:
+        if meta.get("r1000_ok"):
             st.success(
-                f"✅ **{meta['total_count']:,} tickers** en el universo "
-                f"(Russell 1000: **{meta['r1000_count']:,}** "
-                f"+ Adicionales: **{meta['extra_count']:,}** desde utils/tickers.py, "
-                f"deduplicados)"
+                f"✅ **{meta['total_count']:,} tickers** "
+                f"(Russell 1000: {meta['r1000_count']:,} "
+                f"+ Adicionales: {meta['extra_count']:,})"
             )
         else:
-            st.warning(
-                f"⚠️ No se pudo obtener el listado del Russell 1000. Usando solo "
-                f"el universo adicional: **{meta['total_count']:,} tickers**. "
-                f"Prueba a pulsar 'Actualizar Tickers'."
-            )
+            st.warning(f"⚠️ Solo universo adicional: {meta['total_count']:,} tickers")
 
-    st.session_state['itm_tickers_universe'] = tickers_list
+    st.divider()
 
-    st.markdown("---")
+    # ── Filtros ────────────────────────────────────────────────────────
+    st.markdown("### ⚙️ Parámetros")
 
-    st.markdown("### ⚙️ Configuración del Screener")
     c1, c2, c3 = st.columns(3)
 
     with c1:
-        st.markdown("**📅 Timing del ciclo**")
-        target_dte_days = st.slider("DTE objetivo (días calendario)", 5, 10, 7,
-                                     help="Viernes a viernes = 7 días calendario (5 de trading)")
-        dte_tolerance = st.slider("Tolerancia DTE (± días)", 0, 5, 2)
-        exclude_earnings = st.checkbox("Excluir earnings dentro de la ventana", value=True)
-        exclude_exdiv = st.checkbox("Excluir ex-dividend dentro de la ventana", value=True)
-
         st.markdown("**💰 Extrínseco objetivo**")
         extrinsic_min, extrinsic_max = st.slider(
-            "Rango de extrínseco (% del subyacente)", 0.3, 2.0, (0.90, 1.00), step=0.05
+            "Rango extrínseco (% del precio)",
+            min_value=0.50, max_value=2.00,
+            value=(0.85, 1.00), step=0.05,
+            help="Filtro duro: solo strikes con extrínseco en este rango"
+        )
+
+        st.markdown("**💲 Precio del subyacente**")
+        min_price, max_price = st.slider(
+            "Rango de precio ($)",
+            min_value=5, max_value=1000,
+            value=(20, 500), step=5,
+            help="Filtro duro: solo acciones en este rango de precio"
         )
 
     with c2:
-        st.markdown("**🎯 Selección de strike (ITM)**")
-        delta_min, delta_max = st.slider("Rango de Delta", 0.40, 0.95, (0.60, 0.75), step=0.05)
-        min_iv_rv_ratio = st.slider("IV/RV mínimo", 0.5, 2.5, 1.1, step=0.05,
-                                     help="IV implícita / Volatilidad realizada 10d — prima 'cara'")
+        st.markdown("**💧 Liquidez mínima**")
+        min_oi = st.number_input(
+            "OI mínimo del strike",
+            min_value=10, max_value=10000,
+            value=100, step=50,
+            help="Filtro duro: open interest mínimo para que el strike sea negociable"
+        )
 
-        st.markdown("**📈 Tendencia**")
-        apply_trend_filter = st.checkbox("Aplicar filtro SMA30 (Close > SMA30)", value=True)
-        require_slope_positive = st.checkbox("Exigir SMA30 con pendiente positiva", value=True)
+        st.markdown("**📅 Próximo viernes**")
+        today    = date.today()
+        friday   = next_friday()
+        dte_days = (friday - today).days
+        st.info(f"📅 Próximo viernes: **{friday.strftime('%d %b %Y')}** (DTE: {dte_days} días)")
 
     with c3:
-        st.markdown("**💧 Liquidez**")
-        min_underlying_volume = st.number_input("Volumen mínimo subyacente (20d avg)",
-                                                  value=1_000_000, step=100_000)
-        min_price, max_price = st.slider("Rango de precio del subyacente ($)", 5, 800, (20, 400))
-        min_option_volume = st.number_input("Volumen mínimo del strike (día)", value=500, step=100)
-        min_oi = st.number_input("Open Interest mínimo del strike", value=500, step=100)
-        max_spread_pct = st.slider("Spread bid-ask máximo (%)", 1, 20, 5)
-
-        st.markdown("**🗳️ Sentimiento (PCR)**")
-        apply_pcr_filter = st.checkbox("Excluir si PCR ≥ umbral (filtro duro)", value=False,
-                                        help="Recomendado dejar como factor de ranking, no exclusión")
-        max_pcr = st.slider("Umbral máximo de PCR", 0.5, 2.0, 1.3, step=0.1,
-                             disabled=not apply_pcr_filter)
+        st.markdown("**ℹ️ Filtros activos (siempre)**")
+        st.info("✅ Close > SMA30 (tendencia alcista)")
+        st.info("✅ PCR < 1.0 (sesgo alcista)")
+        st.info("✅ Sin earnings en los próximos 7 días")
+        st.info("✅ Bid > 0 (opción negociable)")
+        st.info("✅ Midprice = (Bid + Ask) / 2")
 
     params = {
-        'target_dte_days': target_dte_days,
-        'dte_tolerance': dte_tolerance,
-        'exclude_earnings': exclude_earnings,
-        'exclude_exdiv': exclude_exdiv,
-        'extrinsic_min': extrinsic_min,
-        'extrinsic_max': extrinsic_max,
-        'delta_min': delta_min,
-        'delta_max': delta_max,
-        'min_iv_rv_ratio': min_iv_rv_ratio,
-        'apply_trend_filter': apply_trend_filter,
-        'require_slope_positive': require_slope_positive,
-        'min_underlying_volume': min_underlying_volume,
-        'min_price': min_price,
-        'max_price': max_price,
-        'min_option_volume': min_option_volume,
-        'min_oi': min_oi,
-        'max_spread_pct': max_spread_pct,
-        'apply_pcr_filter': apply_pcr_filter,
-        'max_pcr': max_pcr,
+        "extrinsic_min": extrinsic_min,
+        "extrinsic_max": extrinsic_max,
+        "min_price":     min_price,
+        "max_price":     max_price,
+        "min_oi":        min_oi,
     }
 
-    with st.expander("📋 Resumen de filtros activos", expanded=False):
-        fc1, fc2 = st.columns(2)
-        with fc1:
-            st.info(f"DTE objetivo: **{target_dte_days} ± {dte_tolerance} días**")
-            st.info(f"Extrínseco: **{extrinsic_min}% - {extrinsic_max}%**")
-            st.info(f"Delta: **{delta_min} - {delta_max}**")
-            st.info(f"IV/RV mínimo: **{min_iv_rv_ratio}**")
-        with fc2:
-            st.info(f"Volumen subyacente ≥ **{min_underlying_volume:,}**")
-            st.info(f"OI strike ≥ **{min_oi:,}** · Spread ≤ **{max_spread_pct}%**")
-            st.info(f"Earnings excluidos: **{exclude_earnings}** · Ex-div excluidos: **{exclude_exdiv}**")
-            st.info(f"CBOE PCR disponible: **{CBOE_AVAILABLE}**")
+    st.divider()
 
-    st.markdown("---")
-
+    # ── Escaneo ────────────────────────────────────────────────────────
     st.markdown("### 🚀 Ejecutar Escaneo")
-    scan_btn = st.button("🎯 INICIAR ESCANEO CC ITM", type="primary", use_container_width=True,
-                          disabled=len(st.session_state.get('itm_tickers_universe', [])) == 0)
+
+    scan_btn = st.button(
+        "🎯 INICIAR ESCANEO",
+        type="primary",
+        use_container_width=True,
+        disabled=len(tickers_all) == 0,
+    )
 
     if scan_btn:
         progress_bar = st.progress(0)
-        status_text = st.empty()
-        tickers = st.session_state['itm_tickers_universe']
-        df_results = run_screener(tickers, params, progress_bar, status_text)
+        status_text  = st.empty()
+        df_results   = run_screener(tickers_all, params, progress_bar, status_text)
         progress_bar.empty()
 
         if not df_results.empty:
-            st.session_state['itm_scan_results'] = df_results
-            st.session_state['itm_scan_timestamp'] = datetime.now()
-            st.success(f"✅ Escaneo completado: **{len(df_results)}** candidatos ITM encontrados "
-                       f"sobre {len(tickers)} tickers analizados")
-        else:
-            st.warning("⚠️ Ningún ticker cumplió todos los filtros. Prueba relajando algún criterio.")
-            if 'itm_scan_results' in st.session_state:
-                del st.session_state['itm_scan_results']
-
-    st.markdown("---")
-
-    st.markdown("### 📈 Resultados")
-
-    if 'itm_scan_results' in st.session_state:
-        df_show = st.session_state['itm_scan_results']
-        ts = st.session_state['itm_scan_timestamp']
-
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("🟢 Candidatos óptimos (Score≥70)", len(df_show[df_show['Score'] >= 70]))
-        k2.metric("🟡 Candidatos moderados", len(df_show[(df_show['Score'] >= 50) & (df_show['Score'] < 70)]))
-        k3.metric("📊 Total candidatos", len(df_show))
-        k4.metric("🕐 Último escaneo", ts.strftime("%H:%M:%S"))
-
-        st.markdown("---")
-        tab1, tab2, tab3 = st.tabs(["📊 Tabla Completa", "🎯 Top Candidatos", "📉 Gráficos"])
-
-        with tab1:
-            def color_score(val):
-                if val >= 70:
-                    return 'background-color: #1e3a1e; color: #6daa45'
-                if val >= 50:
-                    return 'background-color: #3a3a1e; color: #e8af34'
-                return 'background-color: #3a1e1e; color: #dd6974'
-
-            display_cols = [
-                'Semáforo', 'Ticker', 'Score', 'Precio', 'Strike', 'Vencimiento', 'DTE_cal',
-                'Delta', 'Extrínseco_%', 'Prima', 'Breakeven', 'Downside_Prot_%',
-                'Retorno_Anualizado_%', 'IV_%', 'RV_%', 'IV_RV_Ratio',
-                'Vol_Strike', 'OI_Strike', 'Vol/OI', 'Spread_%',
-                'Dist_SMA30_%', 'SMA30_Subiendo', 'PCR', 'Sentiment', 'PCR_Fuente',
-                'Next_Earnings', 'Next_ExDiv'
-            ]
-            display_cols = [c for c in display_cols if c in df_show.columns]
-            st.dataframe(
-                df_show[display_cols].style.map(color_score, subset=['Score']),
-                use_container_width=True,
-                height=500
+            st.session_state["results"] = df_results
+            st.session_state["scan_ts"] = datetime.now()
+            st.success(
+                f"✅ **{len(df_results)} candidatos** encontrados "
+                f"sobre {len(tickers_all):,} tickers analizados"
             )
-            csv = df_show.to_csv(index=False).encode('utf-8')
-            st.download_button("⬇️ Descargar CSV", csv, "cc_itm_screener.csv", "text/csv")
+        else:
+            st.warning("⚠️ Ningún ticker cumplió todos los filtros. Prueba a ampliar el rango de extrínseco u OI.")
+            st.session_state.pop("results", None)
 
-        with tab2:
-            top = df_show[df_show['Score'] >= 70].head(10)
-            if top.empty:
-                st.info("No hay candidatos con Score ≥ 70. Revisa la tabla completa o relaja filtros.")
-            else:
-                for _, row in top.iterrows():
-                    with st.expander(
-                        f"{row['Semáforo']} **{row['Ticker']}** — Score {row['Score']} | "
-                        f"Strike ${row['Strike']} | Extrínseco {row['Extrínseco_%']}% | "
-                        f"Delta {row['Delta']}"
-                    ):
-                        st.markdown(f"""
-| Métrica | Valor |
+    st.divider()
+
+    # ── Resultados ─────────────────────────────────────────────────────
+    st.markdown("### 📊 Resultados")
+
+    if "results" not in st.session_state:
+        st.info("👆 Configura los parámetros y pulsa **INICIAR ESCANEO**.")
+        return
+
+    df = st.session_state["results"]
+    ts = st.session_state["scan_ts"]
+
+    # KPIs
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("📊 Candidatos totales", len(df))
+    k2.metric("🛡️ Downside prot. máx.", f"{df['Downside_Prot_%'].max():.2f}%")
+    k3.metric("💰 Extrínseco medio", f"{df['Extrínseco_%'].mean():.3f}%")
+    k4.metric("🕐 Escaneo", ts.strftime("%H:%M:%S"))
+
+    st.divider()
+
+    tab1, tab2, tab3 = st.tabs(["📋 Ranking Completo", "🔍 Detalle", "📈 Gráficos"])
+
+    # ── Tab 1: Tabla ───────────────────────────────────────────────────
+    with tab1:
+        # Columnas a mostrar en orden lógico
+        cols_show = [
+            "Rank", "Ticker", "Precio", "Strike", "Downside_Prot_%",
+            "Extrínseco_%", "Prima_Mid", "Bid", "Ask",
+            "Breakeven", "Delta", "DTE", "Vencimiento",
+            "IV_%", "RV_%", "IV_RV", "Ret_Anualizado_%",
+            "OI", "Volumen", "Spread_%",
+            "SMA30", "Dist_SMA30_%", "SMA30_Sube",
+            "PCR",
+        ]
+        cols_show = [c for c in cols_show if c in df.columns]
+
+        def color_downside(val):
+            if val >= 15:
+                return "background-color:#1e3a1e; color:#6daa45"
+            if val >= 10:
+                return "background-color:#3a3a1e; color:#e8af34"
+            return ""
+
+        st.dataframe(
+            df[cols_show].style.map(color_downside, subset=["Downside_Prot_%"]),
+            use_container_width=True,
+            height=550,
+        )
+
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "⬇️ Descargar CSV",
+            csv,
+            f"deep_itm_cc_{ts.strftime('%Y%m%d_%H%M')}.csv",
+            "text/csv",
+        )
+
+    # ── Tab 2: Detalle ─────────────────────────────────────────────────
+    with tab2:
+        selected = st.selectbox(
+            "Selecciona un ticker para ver el detalle",
+            options=df["Ticker"].tolist(),
+        )
+        if selected:
+            row = df[df["Ticker"] == selected].iloc[0]
+            st.markdown(f"## {selected} — Deep ITM Covered Call")
+
+            col_a, col_b = st.columns(2)
+
+            with col_a:
+                st.markdown("### 📌 Trade Setup")
+                st.markdown(f"""
+| Concepto | Valor |
 |---|---|
-| 💰 Precio subyacente | **${row['Precio']}** |
-| 🎯 Strike ITM | **${row['Strike']}** |
-| 📅 Vencimiento | **{row['Vencimiento']}** ({row['DTE_cal']}d calendario) |
-| 🔺 Delta | `{row['Delta']}` |
-| 💵 Prima | **${row['Prima']}** |
-| 🧮 Extrínseco | **{row['Extrínseco_%']}%** |
+| 💲 Precio subyacente | **${row['Precio']}** |
+| 🎯 Strike (deep ITM) | **${row['Strike']}** |
+| 📅 Vencimiento | **{row['Vencimiento']}** (DTE: {row['DTE']}d) |
+| 💵 Prima Mid | **${row['Prima_Mid']}** |
+| 📊 Bid / Ask | ${row['Bid']} / ${row['Ask']} |
+| 🔺 Intrínseco | ${row['Intrínseco']} |
+| 🔹 Extrínseco | ${row['Extrínseco_$']} ({row['Extrínseco_%']}%) |
 | 🛡️ Downside protection | **{row['Downside_Prot_%']}%** |
-| 📈 Retorno anualizado (extrínseco) | **{row['Retorno_Anualizado_%']}%** |
-| 📊 IV / RV | {row['IV_%']}% / {row['RV_%']}% → ratio `{row['IV_RV_Ratio']}` |
-| 💧 Vol/OI del strike | {row['Vol_Strike']} / {row['OI_Strike']} (`{row['Vol/OI']}`) |
-| 〰️ Spread | {row['Spread_%']}% |
-| 📐 Distancia SMA30 | {row['Dist_SMA30_%']}% (subiendo: {row['SMA30_Subiendo']}) |
-| 🗳️ PCR | {row['PCR']} — {row['Sentiment']} ({row['PCR_Fuente']}) |
-| 📆 Próx. earnings / ex-div | {row['Next_Earnings']} / {row['Next_ExDiv']} |
+| ⚖️ Breakeven | ${row['Breakeven']} |
+| 📐 Delta | {row['Delta']} |
 """)
 
-        with tab3:
-            if df_show.empty:
-                st.info("Ejecuta el escaneo primero.")
-            else:
-                selected_chart = st.selectbox("Selecciona ticker para ver el gráfico",
-                                               options=df_show['Ticker'].tolist())
-                if selected_chart:
-                    fig_price = plot_price_with_sma(selected_chart)
-                    if fig_price:
-                        st.plotly_chart(fig_price, use_container_width=True)
-                    else:
-                        st.warning("No se pudo cargar el gráfico de precios.")
-
-                fig_scores = px.bar(
-                    df_show.sort_values('Score', ascending=True).tail(20),
-                    x='Score', y='Ticker', orientation='h', color='Score',
-                    color_continuous_scale=['#dd6974', '#e8af34', '#6daa45'],
-                    range_color=[0, 100],
-                    title='Scores CC ITM — Top 20',
-                    template='plotly_dark', height=500,
-                    labels={'Score': 'Score CC ITM', 'Ticker': ''}
-                )
-                fig_scores.add_vline(x=70, line_dash='dash', line_color='#6daa45',
-                                      annotation_text="Óptimo (70)")
-                fig_scores.add_vline(x=50, line_dash='dash', line_color='#e8af34',
-                                      annotation_text="Moderado (50)")
-                st.plotly_chart(fig_scores, use_container_width=True)
-    else:
-        st.info("👆 Configura los parámetros y pulsa **INICIAR ESCANEO** para analizar el universo.")
-
-    st.markdown("---")
-    with st.expander("ℹ️ Guía de la estrategia y del scoring", expanded=False):
-        st.markdown("""
-### Reglas de elegibilidad (deben cumplirse todas las activadas)
-- **Liquidez subyacente**: volumen 20d ≥ mínimo, precio dentro del rango
-- **Timing**: expiración más cercana al DTE objetivo (viernes a viernes, tolerancia configurable)
-- **Extrínseco**: entre el rango objetivo (% del precio del subyacente)
-- **Strike ITM**: strike < precio actual, con Delta dentro del rango objetivo
-- **Liquidez de la cadena**: OI y volumen del strike, spread bid-ask máximo
-- **IV/RV**: la IV implícita del strike debe superar la vol. realizada reciente por el ratio mínimo
-- **Tendencia**: Close > SMA30, opcionalmente con SMA30 en pendiente positiva
-- **Eventos**: earnings y ex-dividend excluidos si caen dentro de la ventana del ciclo
-- **PCR**: por defecto solo pondera el score; puede activarse como filtro duro
-
-### Score compuesto (0-100)
-| Factor | Peso |
+            with col_b:
+                st.markdown("### 📊 Contexto")
+                st.markdown(f"""
+| Concepto | Valor |
 |---|---|
-| Extrínseco % (dentro del rango) | 20% |
-| IV/RV ratio | 20% |
-| Downside protection % | 15% |
-| Volumen de opciones (log) | 15% |
-| Vol/OI ratio del strike | 10% |
-| Distancia % sobre SMA30 | 10% |
-| PCR (invertido — más bajo, mejor) | 10% |
-
-### Semáforo
-- 🟢 Score ≥ 70 → candidato óptimo
-- 🟡 Score 50-69 → candidato moderado, revisar manualmente
-- 🔴 Score < 50 → no recomendado
-
-### Fuentes de datos
-- **yfinance**: precios, cadena de opciones, IV implícita (usada para calcular Delta vía
-  Black-Scholes ya que Yahoo no provee griegos), earnings, dividendos.
-- **utils/tickers.py**: universo curado (~200 Acciones/Índices/ETFs) + Russell 1000
-  (Wikipedia, con cache local de 7 días), fusionados y deduplicados en un único
-  universo, cacheado 6h a nivel de Streamlit.
-- **CBOE** (`utils/cboe_utils.py`, opcional): PCR oficial cuando el ticker está disponible en
-  el feed delayed público; si no, se deriva del volumen/OI de la cadena de yfinance.
-- No se usa ninguna API de broker.
+| 📈 IV / RV | {row['IV_%']}% / {row['RV_%']}% (ratio: {row['IV_RV']}) |
+| 🔄 Retorno anualizado | {row['Ret_Anualizado_%']}% |
+| 💧 OI / Volumen | {row['OI']:,} / {row['Volumen']:,} |
+| 〰️ Spread bid-ask | {row['Spread_%']}% |
+| 📐 SMA30 | {row['SMA30']} ({row['Dist_SMA30_%']}% sobre SMA) |
+| ↗️ SMA30 subiendo | {row['SMA30_Sube']} |
+| 🗳️ PCR | {row['PCR']} |
 """)
+
+            st.markdown("---")
+            st.markdown("### 💡 Interpretación")
+
+            prot = row["Downside_Prot_%"]
+            ext  = row["Extrínseco_%"]
+
+            if prot >= 15:
+                st.success(f"🟢 **Protección excelente**: el precio puede caer un {prot:.1f}% antes de que entres en pérdida.")
+            elif prot >= 10:
+                st.warning(f"🟡 **Protección moderada**: el precio puede caer un {prot:.1f}% antes de pérdida.")
+            else:
+                st.error(f"🔴 **Protección baja**: solo {prot:.1f}% de margen bajista.")
+
+            st.info(
+                f"Con un extrínseco del **{ext}%** sobre un precio de **${row['Precio']}**, "
+                f"cobras **${row['Extrínseco_$']}** por acción de prima pura (valor tiempo). "
+                f"Si el subyacente cierra por encima del strike **${row['Strike']}** el viernes, "
+                f"te quedas esa prima íntegra."
+            )
+
+    # ── Tab 3: Gráficos ────────────────────────────────────────────────
+    with tab3:
+        col_g1, col_g2 = st.columns(2)
+
+        with col_g1:
+            ticker_chart = st.selectbox(
+                "Ver gráfico de precio",
+                options=df["Ticker"].tolist(),
+                key="chart_select",
+            )
+            if ticker_chart:
+                fig = plot_price(ticker_chart)
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.warning("No se pudo cargar el gráfico.")
+
+        with col_g2:
+            # Scatter: Downside protection vs Extrínseco
+            fig_scatter = px.scatter(
+                df,
+                x="Extrínseco_%",
+                y="Downside_Prot_%",
+                text="Ticker",
+                color="Downside_Prot_%",
+                color_continuous_scale=["#dd6974", "#e8af34", "#6daa45"],
+                title="Downside Protection vs Extrínseco%",
+                template="plotly_dark",
+                height=420,
+                labels={
+                    "Extrínseco_%": "Extrínseco (%)",
+                    "Downside_Prot_%": "Downside Protection (%)",
+                },
+            )
+            fig_scatter.update_traces(textposition="top center", marker_size=10)
+            st.plotly_chart(fig_scatter, use_container_width=True)
+
+        # Bar chart ranking
+        fig_bar = px.bar(
+            df.head(20),
+            x="Ticker",
+            y="Downside_Prot_%",
+            color="Downside_Prot_%",
+            color_continuous_scale=["#dd6974", "#e8af34", "#6daa45"],
+            title="Top 20 — Downside Protection % (mayor = más deep ITM)",
+            template="plotly_dark",
+            height=400,
+            labels={"Downside_Prot_%": "Downside Protection (%)"},
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
 
 
 if __name__ == "__main__":
