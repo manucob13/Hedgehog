@@ -18,15 +18,16 @@ Uso típico en cualquier página Streamlit:
     meta -> dict con conteos y estado de la descarga (para mostrar en UI)
 
 NOTA sobre la fuente de datos:
-    La URL clásica "ishares.com/.../?fileType=csv&fileName=IWB_holdings"
-    dejó de servir el CSV directamente (ahora devuelve la página HTML
-    del producto). El fichero real de holdings se descarga hoy como un
-    Excel binario desde el endpoint interno que usa el botón "Data
-    Download" de la propia página de iShares. Este módulo usa ese
-    endpoint como fuente principal, con el CSV clásico como respaldo
-    por si iShares lo reactiva en el futuro.
+    El endpoint de BlackRock devuelve un XML tipo "SpreadsheetML" (formato
+    antiguo de Excel), no un .xlsx binario real, y a veces con caracteres
+    o entidades mal formadas que rompen un parser XML estricto. Por eso
+    se parsea con expresiones regulares en vez de xml.etree o openpyxl.
+    Además, el fichero incluye líneas de cash, derivados y colateral de
+    préstamo de valores que no son tickers reales del índice (el Russell
+    1000 tiene ~1,000-1,050 componentes reales) — se excluyen explícitamente.
 """
 
+import re
 import io
 import requests
 import pandas as pd
@@ -34,17 +35,15 @@ import streamlit as st
 
 from utils.tickers import create_tickers_universe
 
-# --- Endpoint principal (real) ---
-# Excel binario servido por blackrock.com, identificado por el
-# portfolioId del fondo (239707 = IWB, iShares Russell 1000 ETF).
-IWB_XLSX_URL = (
+# --- Endpoint principal: XML SpreadsheetML servido por blackrock.com ---
+IWB_XML_URL = (
     "https://www.blackrock.com/varnish-api/blk-one01-product-data/"
     "product-data/api/v1/get-fund-document"
     "?appType=PRODUCT_PAGE&appSubType=ISHARES&targetSite=us-ishares"
     "&locale=en_US&portfolioId=239707&component=fundDownload&userType=individual"
 )
 
-# --- Endpoint de respaldo (por si iShares reactiva el CSV clásico) ---
+# --- Endpoint de respaldo (CSV clásico, por si iShares lo reactiva) ---
 IWB_CSV_URL_FALLBACK = (
     "https://www.ishares.com/us/products/239707/ishares-russell-1000-etf/"
     "?fileType=csv&fileName=IWB_holdings&dataType=fund"
@@ -58,16 +57,28 @@ REQUEST_HEADERS = {
     "Accept": "*/*",
 }
 
+# Filas que aparecen en los holdings pero no son acciones del índice
+EXCLUDE_KEYWORDS = ("CASH", "USD FUND", "BLACKROCK CASH", "FUTURES", "TOTAL")
+
+# El Russell 1000 real tiene ~1,000-1,050 componentes; usamos esto para
+# validar que el parseo no esté inflado con filas espurias.
+EXPECTED_MIN = 800
+EXPECTED_MAX = 1300
+
+ROW_RE = re.compile(r"<ss:Row[^>]*>(.*?)</ss:Row>", re.DOTALL)
+CELL_RE = re.compile(r"<ss:Data[^>]*>(.*?)</ss:Data>", re.DOTALL)
+
 
 def _clean_ticker(raw):
-    """Normaliza un ticker crudo del fichero de iShares a formato yfinance-friendly."""
+    """Normaliza un ticker crudo y descarta filas de cash/derivados/totales."""
     if raw is None:
         return None
-    t = str(raw).strip().upper()
-    if not t or t in ("-", "NAN", "N/A"):
+    t = str(raw).strip().upper().replace("&amp;", "&")
+    if not t or t in ("-", "NAN", "N/A", ""):
         return None
-    t = t.replace(" ", "")
-    return t
+    if any(k in t for k in EXCLUDE_KEYWORDS):
+        return None
+    return t.replace(" ", "")
 
 
 def _download_bytes(url, timeout=30):
@@ -80,45 +91,41 @@ def _download_bytes(url, timeout=30):
         return None
 
 
-def parse_iwb_tickers_from_excel(content_bytes):
+def parse_iwb_tickers_from_xml(content_bytes):
     """
-    Parsea el fichero Excel (binario) de holdings de IWB y devuelve una
-    lista de tickers únicos.
-
-    El fichero trae varias filas de metadata (nombre del fondo, fecha,
-    etc.) antes de la fila de cabecera real
-    ("Ticker, Name, Sector, Asset Class, ..."). Buscamos dinámicamente
-    esa fila en vez de asumir un número fijo de filas a saltar, para
-    que no se rompa si iShares cambia el formato ligeramente.
+    Parsea el XML SpreadsheetML de holdings de IWB vía expresiones
+    regulares (robusto a caracteres/entidades mal formadas que rompen
+    un parser XML estricto como xml.etree.ElementTree).
     """
     if not content_bytes:
         return []
     try:
-        df_raw = pd.read_excel(io.BytesIO(content_bytes), header=None, engine="openpyxl")
+        text = content_bytes.decode("utf-8", errors="ignore")
     except Exception:
         return []
 
+    rows = ROW_RE.findall(text)
+    if not rows:
+        return []
+
     header_idx = None
-    for i in range(len(df_raw)):
-        val = df_raw.iloc[i, 0]
-        if isinstance(val, str) and val.strip().lower() == "ticker":
+    for i, row in enumerate(rows):
+        cells = CELL_RE.findall(row)
+        if cells and cells[0].strip().lower() == "ticker":
             header_idx = i
             break
     if header_idx is None:
         return []
 
-    try:
-        df = pd.read_excel(io.BytesIO(content_bytes), header=header_idx, engine="openpyxl")
-    except Exception:
-        return []
+    tickers = []
+    for row in rows[header_idx + 1:]:
+        cells = CELL_RE.findall(row)
+        if cells:
+            t = _clean_ticker(cells[0])
+            if t:
+                tickers.append(t)
 
-    if "Ticker" not in df.columns:
-        return []
-
-    df = df[df["Ticker"].notna()]
-    tickers = [_clean_ticker(t) for t in df["Ticker"].tolist()]
-    tickers = sorted({t for t in tickers if t})
-    return tickers
+    return sorted(set(tickers))
 
 
 def parse_iwb_tickers_from_csv(csv_text):
@@ -154,17 +161,16 @@ def parse_iwb_tickers_from_csv(csv_text):
 def download_r1000_tickers():
     """
     Descarga + parsea los holdings de IWB (Russell 1000).
-    Intenta primero el endpoint real (Excel binario); si falla, cae al
-    CSV clásico como respaldo. Devuelve (tickers_list, ok_bool).
+    Intenta primero el XML de BlackRock; si el conteo resultante no es
+    razonable (o falla), cae al CSV clásico como respaldo.
+    Devuelve (tickers_list, ok_bool).
     """
-    # 1) Endpoint principal: Excel binario
-    content = _download_bytes(IWB_XLSX_URL)
+    content = _download_bytes(IWB_XML_URL)
     if content:
-        tickers = parse_iwb_tickers_from_excel(content)
-        if tickers:
+        tickers = parse_iwb_tickers_from_xml(content)
+        if tickers and EXPECTED_MIN <= len(tickers) <= EXPECTED_MAX:
             return tickers, True
 
-    # 2) Respaldo: CSV clásico (por si iShares lo reactiva)
     content = _download_bytes(IWB_CSV_URL_FALLBACK)
     if content:
         try:
@@ -172,7 +178,7 @@ def download_r1000_tickers():
         except Exception:
             csv_text = None
         tickers = parse_iwb_tickers_from_csv(csv_text) if csv_text else []
-        if tickers:
+        if tickers and EXPECTED_MIN <= len(tickers) <= EXPECTED_MAX:
             return tickers, True
 
     return [], False
