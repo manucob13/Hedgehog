@@ -52,6 +52,25 @@ _lock = Lock()
 _N   = NormalDist()
 RISK_FREE_RATE = 0.045
 
+# Captura unas pocas muestras de mensajes de error reales por motivo,
+# para poder ver en la UI *por qué* está fallando yfinance (rate limit,
+# timeout, ticker delisted, etc.) en vez de un None mudo.
+_debug_lock = Lock()
+_debug_samples = {}
+_MAX_DEBUG_SAMPLES = 5
+
+
+def _record_debug(reason, msg):
+    with _debug_lock:
+        bucket = _debug_samples.setdefault(reason, [])
+        if len(bucket) < _MAX_DEBUG_SAMPLES:
+            bucket.append(str(msg)[:200])
+
+
+def _reset_debug():
+    with _debug_lock:
+        _debug_samples.clear()
+
 # Códigos de motivo de descarte, en el orden en que se evalúan.
 # Se usan para construir el embudo de diagnóstico.
 REASON_ORDER = [
@@ -136,10 +155,12 @@ def get_daily_data(ticker):
                 multi_level_index=False, progress=False
             )
         if data is None or data.empty or len(data) < 35:
+            _record_debug("no_daily_data", f"{ticker}: descarga vacía o insuficiente histórico")
             return None
         data.index = pd.to_datetime(data.index)
         return data
-    except Exception:
+    except Exception as e:
+        _record_debug("no_daily_data", f"{ticker}: {e}")
         return None
 
 
@@ -393,8 +414,13 @@ def analyze_ticker(ticker, params):
         if params["use_earnings_filter"] and has_earnings_this_week(stock):
             return None, "earnings_this_week"
 
-        expirations = stock.options
+        try:
+            expirations = stock.options
+        except Exception as e:
+            _record_debug("no_expirations", f"{ticker}: {e}")
+            return None, "no_expirations"
         if not expirations:
+            _record_debug("no_expirations", f"{ticker}: lista de vencimientos vacía")
             return None, "no_expirations"
 
         exp_str, dte = select_friday_expiration(expirations)
@@ -402,10 +428,15 @@ def analyze_ticker(ticker, params):
             return None, "no_friday_expiration"
 
         # UNA sola llamada a option_chain (antes había dos)
-        chain = stock.option_chain(exp_str)
-        calls = chain.calls
-        puts  = chain.puts
+        try:
+            chain = stock.option_chain(exp_str)
+            calls = chain.calls
+            puts  = chain.puts
+        except Exception as e:
+            _record_debug("no_calls_chain", f"{ticker}: {e}")
+            return None, "no_calls_chain"
         if calls is None or calls.empty:
+            _record_debug("no_calls_chain", f"{ticker}: cadena de calls vacía")
             return None, "no_calls_chain"
 
         pcr = compute_pcr(calls, puts, current_price)
@@ -472,11 +503,15 @@ def analyze_ticker(ticker, params):
 # ======================================================================
 
 def run_screener(tickers, params, progress_bar, status_text):
+    _reset_debug()
     results = []
     funnel  = {r: 0 for r in REASON_ORDER}
     total   = len(tickers)
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    # Menos workers en paralelo: yfinance en Streamlit Cloud se rate-limita
+    # (429) muy rápido con demasiadas requests simultáneas contra Yahoo,
+    # y eso se traduce en resultados vacíos sin ningún error visible.
+    with ThreadPoolExecutor(max_workers=params.get("max_workers", 4)) as executor:
         futures = {executor.submit(analyze_ticker, t, params): t for t in tickers}
         done = 0
         for future in as_completed(futures):
@@ -495,7 +530,10 @@ def run_screener(tickers, params, progress_bar, status_text):
         df = df.sort_values("Downside_Prot_%", ascending=False).reset_index(drop=True)
         df.insert(0, "Rank", range(1, len(df) + 1))
 
-    return df, funnel
+    with _debug_lock:
+        debug_snapshot = {k: list(v) for k, v in _debug_samples.items()}
+
+    return df, funnel, debug_snapshot
 
 
 # ======================================================================
@@ -618,6 +656,15 @@ def main():
             value=100, step=50,
         )
 
+        st.markdown("**🧵 Concurrencia**")
+        max_workers = st.slider(
+            "Requests en paralelo",
+            min_value=1, max_value=8, value=4,
+            help="Yahoo Finance suele rate-limitar (429) si hay demasiadas "
+                 "requests simultáneas desde una IP compartida (Streamlit Cloud). "
+                 "Si el embudo muestra muchos 'sin datos diarios', baja esto a 1-2."
+        )
+
         st.markdown("**📅 Próximo viernes**")
         today    = date.today()
         friday   = next_friday()
@@ -646,6 +693,7 @@ def main():
         "use_pcr_filter":      use_pcr_filter,
         "use_earnings_filter": use_earnings_filter,
         "diagnostic_mode":     diagnostic_mode,
+        "max_workers":         max_workers,
     }
 
     st.divider()
@@ -663,11 +711,12 @@ def main():
     if scan_btn:
         progress_bar = st.progress(0)
         status_text  = st.empty()
-        df_results, funnel = run_screener(tickers_all, params, progress_bar, status_text)
+        df_results, funnel, debug_snapshot = run_screener(tickers_all, params, progress_bar, status_text)
         progress_bar.empty()
 
         st.session_state["results"] = df_results
         st.session_state["funnel"]  = funnel
+        st.session_state["debug_snapshot"] = debug_snapshot
         st.session_state["scan_ts"] = datetime.now()
         st.session_state["scanned_total"] = len(tickers_all)
 
@@ -699,6 +748,17 @@ def main():
             rows.append({"Motivo": REASON_LABELS[code], "Tickers": n, "% del universo": pct})
         df_funnel = pd.DataFrame(rows)
         st.dataframe(df_funnel, use_container_width=True, hide_index=True)
+
+        debug_snapshot = st.session_state.get("debug_snapshot", {})
+        if debug_snapshot:
+            with st.expander("🐛 Ver mensajes de error reales (muestras)"):
+                for code in REASON_ORDER:
+                    msgs = debug_snapshot.get(code)
+                    if not msgs:
+                        continue
+                    st.markdown(f"**{REASON_LABELS[code]}**")
+                    for m in msgs:
+                        st.code(m, language=None)
         st.divider()
 
     # ── Resultados ─────────────────────────────────────────────────────
