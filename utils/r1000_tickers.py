@@ -1,8 +1,8 @@
 """
 r1000_tickers.py
 =================
-Utilidad reutilizable para descargar el listado de holdings del ETF
-iShares Russell 1000 (IWB) y combinarlos con el universo adicional ya
+Utilidad reutilizable para descargar el listado de componentes del
+Russell 1000 Index y combinarlos con el universo adicional ya
 existente en utils/tickers.py (~210 tickers: Acciones + Índices + ETFs)
 para formar el universo completo usado por los distintos screeners del
 proyecto.
@@ -18,36 +18,24 @@ Uso típico en cualquier página Streamlit:
     meta -> dict con conteos y estado de la descarga (para mostrar en UI)
 
 NOTA sobre la fuente de datos:
-    El endpoint de BlackRock devuelve un XML tipo "SpreadsheetML" (formato
-    antiguo de Excel), no un .xlsx binario real, y a veces con caracteres
-    o entidades mal formadas que rompen un parser XML estricto. Por eso
-    se parsea con expresiones regulares en vez de xml.etree o openpyxl.
-    Además, el fichero incluye líneas de cash, derivados y colateral de
-    préstamo de valores que no son tickers reales del índice (el Russell
-    1000 tiene ~1,000-1,050 componentes reales) — se excluyen explícitamente.
+    Los endpoints de BlackRock/iShares (Excel binario y CSV clásico)
+    dejaron de ser fiables desde servidores cloud: BlackRock bloquea o
+    cambia de formato las peticiones automatizadas, devolviendo datos
+    corruptos o vacíos. En su lugar, este módulo usa la tabla
+    "Components" de la página de Wikipedia del Russell 1000 Index
+    (en.wikipedia.org/wiki/Russell_1000_Index), que se actualiza
+    periódicamente y es estable para scraping con pandas.read_html.
 """
 
 import re
-import io
 import requests
 import pandas as pd
 import streamlit as st
 
 from utils.tickers import create_tickers_universe
 
-# --- Endpoint principal: XML SpreadsheetML servido por blackrock.com ---
-IWB_XML_URL = (
-    "https://www.blackrock.com/varnish-api/blk-one01-product-data/"
-    "product-data/api/v1/get-fund-document"
-    "?appType=PRODUCT_PAGE&appSubType=ISHARES&targetSite=us-ishares"
-    "&locale=en_US&portfolioId=239707&component=fundDownload&userType=individual"
-)
-
-# --- Endpoint de respaldo (CSV clásico, por si iShares lo reactiva) ---
-IWB_CSV_URL_FALLBACK = (
-    "https://www.ishares.com/us/products/239707/ishares-russell-1000-etf/"
-    "?fileType=csv&fileName=IWB_holdings&dataType=fund"
-)
+# --- Fuente principal: tabla "Components" de Wikipedia ---
+WIKI_R1000_URL = "https://en.wikipedia.org/wiki/Russell_1000_Index"
 
 REQUEST_HEADERS = {
     "User-Agent": (
@@ -57,129 +45,88 @@ REQUEST_HEADERS = {
     "Accept": "*/*",
 }
 
-# Filas que aparecen en los holdings pero no son acciones del índice
-EXCLUDE_KEYWORDS = ("CASH", "USD FUND", "BLACKROCK CASH", "FUTURES", "TOTAL")
-
-# El Russell 1000 real tiene ~1,000-1,050 componentes; usamos esto para
-# validar que el parseo no esté inflado con filas espurias.
+# El Russell 1000 real tiene ~1,000-1,050 componentes; se usa para
+# validar que el parseo no esté vacío o corrupto.
 EXPECTED_MIN = 800
 EXPECTED_MAX = 1300
 
-ROW_RE = re.compile(r"<ss:Row[^>]*>(.*?)</ss:Row>", re.DOTALL)
-CELL_RE = re.compile(r"<ss:Data[^>]*>(.*?)</ss:Data>", re.DOTALL)
-
 
 def _clean_ticker(raw):
-    """Normaliza un ticker crudo y descarta filas de cash/derivados/totales."""
+    """Normaliza un ticker crudo a formato yfinance-friendly."""
     if raw is None:
         return None
-    t = str(raw).strip().upper().replace("&amp;", "&")
+    t = str(raw).strip().upper()
     if not t or t in ("-", "NAN", "N/A", ""):
         return None
-    if any(k in t for k in EXCLUDE_KEYWORDS):
+    # Wikipedia a veces incluye notas al pie tipo "AAPL[a]" -> nos
+    # quedamos solo con la parte del ticker antes de cualquier corchete.
+    t = re.sub(r"\[.*?\]", "", t).strip()
+    t = t.replace(" ", "")
+    # BRK.B / BF.B -> formato yfinance usa guion: BRK-B / BF-B
+    t = t.replace(".", "-")
+    if not t:
         return None
-    return t.replace(" ", "")
+    return t
 
 
-def _download_bytes(url, timeout=30):
-    """Descarga el contenido crudo (bytes) de una URL. None si falla."""
+def _download_html(url, timeout=30):
+    """Descarga el HTML crudo de una URL. None si falla."""
     try:
         resp = requests.get(url, headers=REQUEST_HEADERS, timeout=timeout)
         resp.raise_for_status()
-        return resp.content
+        return resp.text
     except Exception:
         return None
 
 
-def parse_iwb_tickers_from_xml(content_bytes):
+def parse_r1000_tickers_from_wikipedia(html_text):
     """
-    Parsea el XML SpreadsheetML de holdings de IWB vía expresiones
-    regulares (robusto a caracteres/entidades mal formadas que rompen
-    un parser XML estricto como xml.etree.ElementTree).
+    Parsea la tabla "Components" de la página de Wikipedia del Russell
+    1000 Index. Busca dinámicamente, entre todas las tablas de la
+    página, la que contenga una columna 'Symbol' (o 'Ticker'), en vez
+    de asumir un índice de tabla fijo, para tolerar cambios menores en
+    el layout de la página.
     """
-    if not content_bytes:
+    if not html_text:
         return []
     try:
-        text = content_bytes.decode("utf-8", errors="ignore")
+        tables = pd.read_html(html_text)
     except Exception:
         return []
 
-    rows = ROW_RE.findall(text)
-    if not rows:
-        return []
+    symbol_col_candidates = ("symbol", "ticker")
 
-    header_idx = None
-    for i, row in enumerate(rows):
-        cells = CELL_RE.findall(row)
-        if cells and cells[0].strip().lower() == "ticker":
-            header_idx = i
-            break
-    if header_idx is None:
-        return []
+    for df in tables:
+        cols_lower = [str(c).strip().lower() for c in df.columns]
+        match_col = None
+        for cand in symbol_col_candidates:
+            if cand in cols_lower:
+                match_col = df.columns[cols_lower.index(cand)]
+                break
+        if match_col is None:
+            continue
 
-    tickers = []
-    for row in rows[header_idx + 1:]:
-        cells = CELL_RE.findall(row)
-        if cells:
-            t = _clean_ticker(cells[0])
-            if t:
-                tickers.append(t)
+        tickers = [_clean_ticker(t) for t in df[match_col].tolist()]
+        tickers = sorted({t for t in tickers if t})
+        if len(tickers) >= EXPECTED_MIN:
+            return tickers
 
-    return sorted(set(tickers))
-
-
-def parse_iwb_tickers_from_csv(csv_text):
-    """Parsea el CSV clásico de iShares (usado solo como respaldo)."""
-    if not csv_text:
-        return []
-
-    lines = csv_text.splitlines()
-    header_idx = None
-    for i, line in enumerate(lines):
-        first_cell = line.split(",")[0].strip().strip('"')
-        if first_cell.lower() == "ticker":
-            header_idx = i
-            break
-    if header_idx is None:
-        return []
-
-    data_str = "\n".join(lines[header_idx:])
-    try:
-        df = pd.read_csv(io.StringIO(data_str), thousands=",")
-    except Exception:
-        return []
-
-    if "Ticker" not in df.columns:
-        return []
-
-    df = df[df["Ticker"].notna()]
-    tickers = [_clean_ticker(t) for t in df["Ticker"].tolist()]
-    tickers = sorted({t for t in tickers if t})
-    return tickers
+    return []
 
 
 def download_r1000_tickers():
     """
-    Descarga + parsea los holdings de IWB (Russell 1000).
-    Intenta primero el XML de BlackRock; si el conteo resultante no es
-    razonable (o falla), cae al CSV clásico como respaldo.
-    Devuelve (tickers_list, ok_bool).
+    Descarga + parsea los componentes del Russell 1000 desde Wikipedia.
+    Devuelve (tickers_list, ok_bool). ok=False si la descarga falla o
+    el conteo resultante no es razonable.
     """
-    content = _download_bytes(IWB_XML_URL)
-    if content:
-        tickers = parse_iwb_tickers_from_xml(content)
-        if tickers and EXPECTED_MIN <= len(tickers) <= EXPECTED_MAX:
-            return tickers, True
+    html_text = _download_html(WIKI_R1000_URL)
+    if not html_text:
+        return [], False
 
-    content = _download_bytes(IWB_CSV_URL_FALLBACK)
-    if content:
-        try:
-            csv_text = content.decode("utf-8", errors="ignore")
-        except Exception:
-            csv_text = None
-        tickers = parse_iwb_tickers_from_csv(csv_text) if csv_text else []
-        if tickers and EXPECTED_MIN <= len(tickers) <= EXPECTED_MAX:
-            return tickers, True
+    tickers = parse_r1000_tickers_from_wikipedia(html_text)
+    if tickers and EXPECTED_MIN <= len(tickers) <= EXPECTED_MAX:
+        return tickers, True
 
     return [], False
 
@@ -187,7 +134,7 @@ def download_r1000_tickers():
 def build_full_universe():
     """
     Combina:
-      - Tickers del Russell 1000 (IWB holdings)
+      - Tickers del Russell 1000 (Wikipedia)
       - Universo adicional ya existente en utils/tickers.py
 
     Devuelve (df_universe, meta):
@@ -205,7 +152,7 @@ def build_full_universe():
     extra_tickers = [_clean_ticker(t) for t in extra_tickers]
     extra_tickers = [t for t in extra_tickers if t]
 
-    all_tickers = sorted(set(r1000_tickers) | set(extra_tickers))
+    all_tickers = sorted(set(r1000_tickers) | set(extra_tickers)) if r1000_ok else sorted(set(extra_tickers))
 
     meta = {
         "r1000_ok": r1000_ok,
@@ -220,7 +167,7 @@ def build_full_universe():
 
 @st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
 def _cached_full_universe():
-    """Cache de Streamlit (6h) para no golpear el endpoint de iShares en cada rerun."""
+    """Cache de Streamlit (6h) para no golpear Wikipedia en cada rerun."""
     return build_full_universe()
 
 
