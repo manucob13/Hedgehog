@@ -3,13 +3,13 @@ Deep ITM Covered Call Screener
 ================================
 Objetivo: encontrar covered calls deep ITM con extrínseco 0.85%-1.00% semanal.
 
-FILTROS DUROS:
+FILTROS DUROS (ahora todos activables/desactivables desde la UI):
 - Precio del subyacente: rango configurable
-- Close > SMA30 (tendencia alcista)
-- PCR < 1.0 (sesgo alcista)
+- Close > SMA30 (tendencia alcista)             [toggle]
+- PCR < 1.0 (sesgo alcista)                       [toggle]
 - OI > 100 (liquidez mínima)
-- Sin earnings en los próximos 7 días
-- Extrínseco entre 0.85% y 1.00% del precio del subyacente
+- Sin earnings en los próximos 7 días             [toggle]
+- Extrínseco entre 0.85% y 1.00% del subyacente   [toggle: modo diagnóstico lo ignora]
 - Bid > 0 (opción negociable)
 - Vencimiento = próximo viernes (DTE ≤ 7)
 
@@ -17,6 +17,18 @@ RANKING: mayor downside protection % primero
          (más deep ITM = más protección = mejor)
 
 PRECIO DE OPCIÓN: midprice (bid+ask)/2 siempre
+
+NUEVO EN ESTA VERSIÓN:
+- Embudo de diagnóstico: cuenta cuántos tickers caen en cada filtro, para ver
+  exactamente dónde se está vaciando el resultado.
+- Modo diagnóstico: si activo, ignora la banda de extrínseco objetivo y
+  devuelve igualmente el mejor candidato ITM encontrado (con su extrínseco
+  real), para poder calibrar la banda con datos reales del día.
+- Los tres filtros booleanos (SMA30, PCR, earnings) son ahora checkboxes.
+- Se eliminó la llamada duplicada a stock.option_chain() (antes se pedía dos
+  veces por ticker: una para PCR y otra para la cadena de calls). Esto reduce
+  a la mitad las requests a Yahoo por ticker y baja el riesgo de rate-limit /
+  timeouts silenciosos que el try/except se estaba comiendo.
 """
 
 import streamlit as st
@@ -39,6 +51,38 @@ warnings.filterwarnings('ignore')
 _lock = Lock()
 _N   = NormalDist()
 RISK_FREE_RATE = 0.045
+
+# Códigos de motivo de descarte, en el orden en que se evalúan.
+# Se usan para construir el embudo de diagnóstico.
+REASON_ORDER = [
+    "ok",
+    "no_daily_data",
+    "price_out_of_range",
+    "sma30_unavailable",
+    "below_sma30",
+    "earnings_this_week",
+    "no_expirations",
+    "no_friday_expiration",
+    "no_calls_chain",
+    "pcr_bearish",
+    "no_itm_candidate",
+    "error",
+]
+
+REASON_LABELS = {
+    "ok":                    "✅ Pasó todos los filtros",
+    "no_daily_data":         "Sin datos diarios (yfinance)",
+    "price_out_of_range":    "Precio fuera de rango",
+    "sma30_unavailable":     "No hay suficiente histórico para SMA30",
+    "below_sma30":           "Precio ≤ SMA30 (no alcista)",
+    "earnings_this_week":    "Earnings en los próximos 7 días",
+    "no_expirations":        "Sin vencimientos de opciones listados",
+    "no_friday_expiration":  "Sin vencimiento viernes con DTE≤7",
+    "no_calls_chain":        "Cadena de calls vacía/no disponible",
+    "pcr_bearish":           "PCR ≥ 1.0 (sesgo bajista)",
+    "no_itm_candidate":      "Sin strike ITM que cumpla extrínseco/OI/bid",
+    "error":                 "Excepción no controlada",
+}
 
 
 # ======================================================================
@@ -203,18 +247,15 @@ def has_earnings_this_week(stock):
 
 
 # ======================================================================
-# 7. PUT/CALL RATIO
+# 7. PUT/CALL RATIO (a partir de una cadena ya descargada, sin red)
 # ======================================================================
 
-def get_pcr(stock, exp_str, current_price, range_pct=15):
-    """PCR basado en OI de la cadena de opciones (±15% del precio)."""
+def compute_pcr(calls, puts, current_price, range_pct=15):
+    """PCR basado en OI de la cadena de opciones (±15% del precio).
+    No hace ninguna llamada de red: recibe calls/puts ya descargados."""
     try:
-        chain  = stock.option_chain(exp_str)
-        lo     = current_price * (1 - range_pct / 100)
-        hi     = current_price * (1 + range_pct / 100)
-
-        calls  = chain.calls
-        puts   = chain.puts
+        lo = current_price * (1 - range_pct / 100)
+        hi = current_price * (1 + range_pct / 100)
 
         c_filt = calls[(calls["strike"] >= lo) & (calls["strike"] <= hi)]
         p_filt = puts[(puts["strike"] >= lo) & (puts["strike"] <= hi)]
@@ -235,30 +276,30 @@ def get_pcr(stock, exp_str, current_price, range_pct=15):
 
 def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
                              extrinsic_min_pct, extrinsic_max_pct,
-                             min_oi):
+                             min_oi, diagnostic_mode=False):
     """
-    Entre todos los strikes ITM con extrínseco en el rango objetivo:
+    Entre todos los strikes ITM:
     - Calcula midprice, intrínseco, extrínseco
     - Filtra por OI > min_oi y bid > 0
-    - Devuelve el strike con MAYOR downside protection
-      (más deep ITM = más alejado del precio actual)
+    - Si diagnostic_mode=False: exige extrínseco en [min_pct, max_pct] y
+      devuelve, entre los que cumplen, el de mayor downside protection.
+    - Si diagnostic_mode=True: ignora la banda de extrínseco y devuelve
+      igualmente el de mayor downside protection, para poder ver el
+      extrínseco real disponible en el mercado hoy.
     """
     try:
         itm = calls_df[calls_df["strike"] < current_price].copy()
         if itm.empty:
             return None
 
-        # Usar midprice siempre
         itm["bid"]  = pd.to_numeric(itm["bid"], errors="coerce").fillna(0)
         itm["ask"]  = pd.to_numeric(itm["ask"], errors="coerce").fillna(0)
         itm["mid"]  = (itm["bid"] + itm["ask"]) / 2
 
-        # Filtro: bid > 0 y mid > 0
         itm = itm[(itm["bid"] > 0) & (itm["mid"] > 0)]
         if itm.empty:
             return None
 
-        # Filtro OI
         itm["oi"] = pd.to_numeric(
             itm.get("openInterest", pd.Series(0, index=itm.index)),
             errors="coerce"
@@ -267,27 +308,29 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
         if itm.empty:
             return None
 
-        # Métricas
         itm["intrinsic"]     = current_price - itm["strike"]
         itm["extrinsic"]     = itm["mid"] - itm["intrinsic"]
         itm["extrinsic_pct"] = itm["extrinsic"] / current_price * 100
         itm["spread_pct"]    = (itm["ask"] - itm["bid"]) / itm["mid"] * 100
-        itm["downside_prot"] = itm["intrinsic"] / current_price * 100  # = protección bajista
+        itm["downside_prot"] = itm["intrinsic"] / current_price * 100
 
-        # Filtro extrínseco objetivo
-        candidates = itm[
-            (itm["extrinsic_pct"] >= extrinsic_min_pct) &
-            (itm["extrinsic_pct"] <= extrinsic_max_pct) &
-            (itm["extrinsic"] > 0)
-        ]
+        itm = itm[itm["extrinsic"] > 0]
+        if itm.empty:
+            return None
+
+        if diagnostic_mode:
+            candidates = itm
+        else:
+            candidates = itm[
+                (itm["extrinsic_pct"] >= extrinsic_min_pct) &
+                (itm["extrinsic_pct"] <= extrinsic_max_pct)
+            ]
 
         if candidates.empty:
             return None
 
-        # Ranking: mayor downside_prot = más deep ITM = mejor
         best = candidates.sort_values("downside_prot", ascending=False).iloc[0]
 
-        # Delta para ese strike
         T_years = dte_calendar / 365.0
         iv      = float(best.get("impliedVolatility") or 0)
         delta   = bs_delta(current_price, float(best["strike"]), T_years, iv) if iv > 0 else None
@@ -306,6 +349,9 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
             "volume":        int(pd.to_numeric(best.get("volume", 0), errors="coerce") or 0),
             "iv_pct":        round(iv * 100, 2) if iv > 0 else None,
             "delta":         delta,
+            "in_target_band": bool(
+                extrinsic_min_pct <= float(best["extrinsic_pct"]) <= extrinsic_max_pct
+            ),
         }
     except Exception:
         return None
@@ -316,120 +362,109 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
 # ======================================================================
 
 def analyze_ticker(ticker, params):
+    """
+    Devuelve SIEMPRE (result_dict_or_None, reason_code).
+    reason_code == "ok" cuando result_dict_or_None no es None.
+    """
     try:
         # ── Datos diarios ──────────────────────────────────────────────
         data = get_daily_data(ticker)
         if data is None:
-            return None
+            return None, "no_daily_data"
 
-        close        = data["Close"]
+        close         = data["Close"]
         current_price = float(close.iloc[-1])
 
-        # Filtro precio
         if not (params["min_price"] <= current_price <= params["max_price"]):
-            return None
+            return None, "price_out_of_range"
 
-        # SMA30
         sma30, dist_sma_pct, slope_up = get_sma30(close)
         if sma30 is None:
-            return None
+            return None, "sma30_unavailable"
 
-        # FILTRO DURO: Close > SMA30
-        if current_price <= sma30:
-            return None
+        if params["use_sma_filter"] and current_price <= sma30:
+            return None, "below_sma30"
 
-        # RV10
         rv = get_rv10(close)
 
         # ── Opciones ───────────────────────────────────────────────────
         stock = yf.Ticker(ticker)
 
-        # FILTRO DURO: No earnings esta semana
-        if has_earnings_this_week(stock):
-            return None
+        if params["use_earnings_filter"] and has_earnings_this_week(stock):
+            return None, "earnings_this_week"
 
         expirations = stock.options
         if not expirations:
-            return None
+            return None, "no_expirations"
 
         exp_str, dte = select_friday_expiration(expirations)
         if exp_str is None:
-            return None
+            return None, "no_friday_expiration"
 
-        # PCR
-        pcr = get_pcr(stock, exp_str, current_price)
-
-        # FILTRO DURO: PCR < 1.0 (alcista)
-        if pcr is not None and pcr >= 1.0:
-            return None
-
-        # Cadena de calls
+        # UNA sola llamada a option_chain (antes había dos)
         chain = stock.option_chain(exp_str)
         calls = chain.calls
+        puts  = chain.puts
         if calls is None or calls.empty:
-            return None
+            return None, "no_calls_chain"
 
-        # Candidato deep ITM
+        pcr = compute_pcr(calls, puts, current_price)
+
+        if params["use_pcr_filter"] and pcr is not None and pcr >= 1.0:
+            return None, "pcr_bearish"
+
         candidate = find_deep_itm_candidate(
             calls, current_price, dte,
             params["extrinsic_min"],
             params["extrinsic_max"],
             params["min_oi"],
+            diagnostic_mode=params["diagnostic_mode"],
         )
         if candidate is None:
-            return None
+            return None, "no_itm_candidate"
 
-        # ── Métricas adicionales ───────────────────────────────────────
         iv_rv_ratio = (
             round(candidate["iv_pct"] / rv, 3)
             if (candidate["iv_pct"] and rv and rv > 0)
             else None
         )
-
         annualized = round(
             candidate["extrinsic_pct"] * (365 / dte), 1
         ) if dte > 0 else None
-
         breakeven = round(current_price - candidate["mid"], 2)
 
-        # ── Resultado ──────────────────────────────────────────────────
-        return {
-            # Identificación
+        result = {
             "Ticker":          ticker,
             "Precio":          round(current_price, 2),
             "Vencimiento":     exp_str,
             "DTE":             dte,
-            # Datos del strike (ranking principal)
             "Strike":          candidate["strike"],
-            "Downside_Prot_%": candidate["downside_prot"],   # ← ranking principal
+            "Downside_Prot_%": candidate["downside_prot"],
             "Extrínseco_%":    candidate["extrinsic_pct"],
+            "En_Banda":        candidate["in_target_band"],
             "Prima_Mid":       candidate["mid"],
             "Bid":             candidate["bid"],
             "Ask":             candidate["ask"],
             "Intrínseco":      candidate["intrinsic"],
             "Extrínseco_$":    candidate["extrinsic"],
             "Breakeven":       breakeven,
-            # Griegos e IV
             "Delta":           candidate["delta"],
             "IV_%":            candidate["iv_pct"],
             "RV_%":            rv,
             "IV_RV":           iv_rv_ratio,
-            # Retorno
             "Ret_Anualizado_%": annualized,
-            # Liquidez
             "OI":              candidate["oi"],
             "Volumen":         candidate["volume"],
             "Spread_%":        candidate["spread_pct"],
-            # Tendencia
             "SMA30":           sma30,
             "Dist_SMA30_%":    dist_sma_pct,
             "SMA30_Sube":      slope_up,
-            # Sentimiento
             "PCR":             pcr,
         }
+        return result, "ok"
 
     except Exception:
-        return None
+        return None, "error"
 
 
 # ======================================================================
@@ -438,6 +473,7 @@ def analyze_ticker(ticker, params):
 
 def run_screener(tickers, params, progress_bar, status_text):
     results = []
+    funnel  = {r: 0 for r in REASON_ORDER}
     total   = len(tickers)
 
     with ThreadPoolExecutor(max_workers=8) as executor:
@@ -447,22 +483,19 @@ def run_screener(tickers, params, progress_bar, status_text):
             done += 1
             progress_bar.progress(done / total)
             status_text.text(f"🔍 {done}/{total} — encontrados: {len(results)}")
-            r = future.result()
+            r, reason = future.result()
+            funnel[reason] = funnel.get(reason, 0) + 1
             if r is not None:
                 results.append(r)
 
     status_text.text(f"✅ Completado: {len(results)} candidatos")
 
-    if not results:
-        return pd.DataFrame()
-
     df = pd.DataFrame(results)
+    if not df.empty:
+        df = df.sort_values("Downside_Prot_%", ascending=False).reset_index(drop=True)
+        df.insert(0, "Rank", range(1, len(df) + 1))
 
-    # Ranking: mayor Downside_Prot_% primero
-    df = df.sort_values("Downside_Prot_%", ascending=False).reset_index(drop=True)
-    df.insert(0, "Rank", range(1, len(df) + 1))
-
-    return df
+    return df, funnel
 
 
 # ======================================================================
@@ -567,7 +600,7 @@ def main():
             "Rango extrínseco (% del precio)",
             min_value=0.50, max_value=2.00,
             value=(0.85, 1.00), step=0.05,
-            help="Filtro duro: solo strikes con extrínseco en este rango"
+            help="Solo aplica si el modo diagnóstico está desactivado"
         )
 
         st.markdown("**💲 Precio del subyacente**")
@@ -575,7 +608,6 @@ def main():
             "Rango de precio ($)",
             min_value=5, max_value=1000,
             value=(20, 500), step=5,
-            help="Filtro duro: solo acciones en este rango de precio"
         )
 
     with c2:
@@ -584,7 +616,6 @@ def main():
             "OI mínimo del strike",
             min_value=10, max_value=10000,
             value=100, step=50,
-            help="Filtro duro: open interest mínimo para que el strike sea negociable"
         )
 
         st.markdown("**📅 Próximo viernes**")
@@ -594,19 +625,27 @@ def main():
         st.info(f"📅 Próximo viernes: **{friday.strftime('%d %b %Y')}** (DTE: {dte_days} días)")
 
     with c3:
-        st.markdown("**ℹ️ Filtros activos (siempre)**")
-        st.info("✅ Close > SMA30 (tendencia alcista)")
-        st.info("✅ PCR < 1.0 (sesgo alcista)")
-        st.info("✅ Sin earnings en los próximos 7 días")
-        st.info("✅ Bid > 0 (opción negociable)")
-        st.info("✅ Midprice = (Bid + Ask) / 2")
+        st.markdown("**🎚️ Filtros activables**")
+        use_sma_filter = st.checkbox("Close > SMA30 (tendencia alcista)", value=True)
+        use_pcr_filter = st.checkbox("PCR < 1.0 (sesgo alcista)", value=True)
+        use_earnings_filter = st.checkbox("Excluir earnings próximos 7 días", value=True)
+        diagnostic_mode = st.checkbox(
+            "🔬 Modo diagnóstico (ignora banda de extrínseco)",
+            value=False,
+            help="Devuelve el mejor candidato ITM aunque su extrínseco no esté "
+                 "en el rango objetivo, para ver los valores reales del mercado."
+        )
 
     params = {
-        "extrinsic_min": extrinsic_min,
-        "extrinsic_max": extrinsic_max,
-        "min_price":     min_price,
-        "max_price":     max_price,
-        "min_oi":        min_oi,
+        "extrinsic_min":       extrinsic_min,
+        "extrinsic_max":       extrinsic_max,
+        "min_price":           min_price,
+        "max_price":           max_price,
+        "min_oi":              min_oi,
+        "use_sma_filter":      use_sma_filter,
+        "use_pcr_filter":      use_pcr_filter,
+        "use_earnings_filter": use_earnings_filter,
+        "diagnostic_mode":     diagnostic_mode,
     }
 
     st.divider()
@@ -624,33 +663,54 @@ def main():
     if scan_btn:
         progress_bar = st.progress(0)
         status_text  = st.empty()
-        df_results   = run_screener(tickers_all, params, progress_bar, status_text)
+        df_results, funnel = run_screener(tickers_all, params, progress_bar, status_text)
         progress_bar.empty()
 
+        st.session_state["results"] = df_results
+        st.session_state["funnel"]  = funnel
+        st.session_state["scan_ts"] = datetime.now()
+        st.session_state["scanned_total"] = len(tickers_all)
+
         if not df_results.empty:
-            st.session_state["results"] = df_results
-            st.session_state["scan_ts"] = datetime.now()
             st.success(
                 f"✅ **{len(df_results)} candidatos** encontrados "
                 f"sobre {len(tickers_all):,} tickers analizados"
             )
         else:
-            st.warning("⚠️ Ningún ticker cumplió todos los filtros. Prueba a ampliar el rango de extrínseco u OI.")
-            st.session_state.pop("results", None)
+            st.warning(
+                "⚠️ Ningún ticker cumplió todos los filtros. Mira el embudo de "
+                "diagnóstico más abajo para ver en qué paso se están cayendo."
+            )
 
     st.divider()
+
+    # ── Embudo de diagnóstico ─────────────────────────────────────────
+    if "funnel" in st.session_state:
+        st.markdown("### 🔎 Embudo de diagnóstico")
+        st.caption("Cuántos tickers se descartaron en cada paso del último escaneo.")
+        funnel = st.session_state["funnel"]
+        total_scanned = st.session_state["scanned_total"]
+        rows = []
+        for code in REASON_ORDER:
+            n = funnel.get(code, 0)
+            if n == 0 and code != "ok":
+                continue
+            pct = round(n / total_scanned * 100, 1) if total_scanned else 0
+            rows.append({"Motivo": REASON_LABELS[code], "Tickers": n, "% del universo": pct})
+        df_funnel = pd.DataFrame(rows)
+        st.dataframe(df_funnel, use_container_width=True, hide_index=True)
+        st.divider()
 
     # ── Resultados ─────────────────────────────────────────────────────
     st.markdown("### 📊 Resultados")
 
-    if "results" not in st.session_state:
+    if "results" not in st.session_state or st.session_state["results"].empty:
         st.info("👆 Configura los parámetros y pulsa **INICIAR ESCANEO**.")
         return
 
     df = st.session_state["results"]
     ts = st.session_state["scan_ts"]
 
-    # KPIs
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("📊 Candidatos totales", len(df))
     k2.metric("🛡️ Downside prot. máx.", f"{df['Downside_Prot_%'].max():.2f}%")
@@ -661,12 +721,10 @@ def main():
 
     tab1, tab2, tab3 = st.tabs(["📋 Ranking Completo", "🔍 Detalle", "📈 Gráficos"])
 
-    # ── Tab 1: Tabla ───────────────────────────────────────────────────
     with tab1:
-        # Columnas a mostrar en orden lógico
         cols_show = [
             "Rank", "Ticker", "Precio", "Strike", "Downside_Prot_%",
-            "Extrínseco_%", "Prima_Mid", "Bid", "Ask",
+            "Extrínseco_%", "En_Banda", "Prima_Mid", "Bid", "Ask",
             "Breakeven", "Delta", "DTE", "Vencimiento",
             "IV_%", "RV_%", "IV_RV", "Ret_Anualizado_%",
             "OI", "Volumen", "Spread_%",
@@ -696,7 +754,6 @@ def main():
             "text/csv",
         )
 
-    # ── Tab 2: Detalle ─────────────────────────────────────────────────
     with tab2:
         selected = st.selectbox(
             "Selecciona un ticker para ver el detalle",
@@ -720,6 +777,7 @@ def main():
 | 📊 Bid / Ask | ${row['Bid']} / ${row['Ask']} |
 | 🔺 Intrínseco | ${row['Intrínseco']} |
 | 🔹 Extrínseco | ${row['Extrínseco_$']} ({row['Extrínseco_%']}%) |
+| 🎯 En banda objetivo | {"Sí" if row.get('En_Banda') else "No (modo diagnóstico)"} |
 | 🛡️ Downside protection | **{row['Downside_Prot_%']}%** |
 | ⚖️ Breakeven | ${row['Breakeven']} |
 | 📐 Delta | {row['Delta']} |
@@ -759,7 +817,6 @@ def main():
                 f"te quedas esa prima íntegra."
             )
 
-    # ── Tab 3: Gráficos ────────────────────────────────────────────────
     with tab3:
         col_g1, col_g2 = st.columns(2)
 
@@ -777,7 +834,6 @@ def main():
                     st.warning("No se pudo cargar el gráfico.")
 
         with col_g2:
-            # Scatter: Downside protection vs Extrínseco
             fig_scatter = px.scatter(
                 df,
                 x="Extrínseco_%",
@@ -796,7 +852,6 @@ def main():
             fig_scatter.update_traces(textposition="top center", marker_size=10)
             st.plotly_chart(fig_scatter, use_container_width=True)
 
-        # Bar chart ranking
         fig_bar = px.bar(
             df.head(20),
             x="Ticker",
