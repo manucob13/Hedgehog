@@ -14,17 +14,17 @@ adaptado por completo a la estrategia ITM Covered Call definida:
     - IV/RV ratio: prima "cara" vs. volatilidad realizada reciente
     - Liquidez: volumen subyacente, volumen/OI de opciones, spread bid-ask
     - Exclusión de earnings y ex-dividend dentro de la ventana del ciclo
-    - Universo: el mismo de utils/tickers.py (Acciones + Índices + ETFs)
-      (sustituye a Russell 1000 + ETFs; es el universo fijo ya curado
-      en el proyecto "Trend Stocks Screener")
+    - Universo: Russell 1000 (descargado en vivo de iShares/IWB) + el
+      universo curado de utils/tickers.py (Acciones + Índices + ETFs)
 
 Fuente de datos:
     - yfinance: precios, cadena de opciones, IV implícita, earnings, dividendos
+    - iShares (IWB holdings CSV): tickers del Russell 1000
     - CBOE (opcional): Put/Call Ratio oficial cuando el ticker está disponible
       en el feed público delayed de CBOE (utils/cboe_utils.py)
 
 NOTA: no se usa broker. Todo lo que necesita esta estrategia se puede
-      obtener de Yahoo Finance + CBOE, tal como se discutió.
+      obtener de Yahoo Finance + iShares + CBOE, tal como se discutió.
 """
 
 import streamlit as st
@@ -40,7 +40,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 
 from utils.utils import check_password
-from utils.tickers import create_tickers_universe
+from utils.r1000_tickers import get_full_universe, refresh_full_universe
 
 # CBOE es opcional: si el módulo o la conexión fallan, el screener sigue
 # funcionando solo con yfinance (PCR derivado de la cadena de opciones).
@@ -484,8 +484,7 @@ def analyze_ticker_itm(ticker, params):
         # --- Downside protection ---
         premium = round(float(best['mid']), 2)
         strike_price = float(best['strike'])
-        breakeven = round(strike_price + premium - (current_price - strike_price), 2) \
-            if False else round(current_price - premium, 2)  # breakeven real = precio - prima cobrada
+        breakeven = round(current_price - premium, 2)  # breakeven real = precio - prima cobrada
         downside_protection_pct = round((current_price - breakeven) / current_price * 100, 2)
 
         # --- PCR: CBOE oficial si está disponible, si no, derivado de Yahoo ---
@@ -622,26 +621,51 @@ def main():
     st.markdown(
         "**Screener de covered calls ITM, ciclo de 5 días de trading "
         "(entrada viernes, vencimiento viernes siguiente) · "
-        "Extrínseco objetivo 0.90%-1.00% · Universo: Acciones + ETFs + Índices**"
+        "Extrínseco objetivo 0.90%-1.00% · Universo: Russell 1000 + ETFs + Índices**"
     )
     st.markdown("---")
 
     # ---------- Universo ----------
     st.markdown("### 📂 Universo de Tickers")
+
     col1, col2 = st.columns([3, 1])
-    with col1:
-        if 'itm_tickers_universe' not in st.session_state:
-            with st.spinner("Cargando universo de tickers..."):
-                df_tickers = create_tickers_universe()
-                tickers_list = df_tickers['Ticker'].astype(str).tolist() \
-                    if isinstance(df_tickers, pd.DataFrame) else list(df_tickers)
-                st.session_state['itm_tickers_universe'] = tickers_list
-        st.success(f"✅ {len(st.session_state['itm_tickers_universe']):,} tickers disponibles "
-                   f"(Acciones + ETFs + Índices — utils/tickers.py)")
     with col2:
-        if st.button("🔄 Recargar Tickers", use_container_width=True):
-            del st.session_state['itm_tickers_universe']
-            st.rerun()
+        actualizar_btn = st.button("🔄 Actualizar Tickers (Russell 1000 + Curados)",
+                                    use_container_width=True, type="primary")
+
+    if actualizar_btn:
+        with st.spinner("Descargando holdings de IWB (Russell 1000) desde iShares "
+                         "y combinando con el universo curado..."):
+            df_universe, meta = refresh_full_universe()
+            st.session_state['itm_universe_df'] = df_universe
+            st.session_state['itm_universe_meta'] = meta
+
+    if 'itm_universe_df' not in st.session_state:
+        with st.spinner("Cargando universo de tickers (caché / Russell 1000 + curados)..."):
+            df_universe, meta = get_full_universe()
+            st.session_state['itm_universe_df'] = df_universe
+            st.session_state['itm_universe_meta'] = meta
+
+    df_universe = st.session_state['itm_universe_df']
+    meta = st.session_state['itm_universe_meta']
+    tickers_list = df_universe['Ticker'].astype(str).tolist()
+
+    with col1:
+        if meta.get('r1000_ok'):
+            st.success(
+                f"✅ **{meta['total_count']:,} tickers** en el universo "
+                f"(Russell 1000: **{meta['r1000_count']:,}** desde iShares/IWB "
+                f"+ Curados: **{meta['curated_count']:,}** desde utils/tickers.py, "
+                f"deduplicados)"
+            )
+        else:
+            st.warning(
+                f"⚠️ No se pudo descargar el CSV de iShares (IWB). Usando solo el "
+                f"universo curado: **{meta['total_count']:,} tickers**. "
+                f"Prueba a pulsar 'Actualizar Tickers'."
+            )
+
+    st.session_state['itm_tickers_universe'] = tickers_list
 
     st.markdown("---")
 
@@ -882,6 +906,8 @@ def main():
 ### Fuentes de datos
 - **yfinance**: precios, cadena de opciones, IV implícita (usada para calcular Delta vía
   Black-Scholes ya que Yahoo no provee griegos), earnings, dividendos.
+- **iShares (IWB holdings CSV)**: tickers del Russell 1000, descargados en vivo y cacheados
+  6 horas (`utils/r1000_tickers.py`), combinados con el universo curado de utils/tickers.py.
 - **CBOE** (`utils/cboe_utils.py`, opcional): PCR oficial cuando el ticker está disponible en
   el feed delayed público; si no, se deriva del volumen/OI de la cadena de yfinance.
 - No se usa ninguna API de broker.
