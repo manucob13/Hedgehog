@@ -48,6 +48,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 import warnings
 import socket
+import logging
 import plotly.graph_objects as go
 import plotly.express as px
 
@@ -55,6 +56,16 @@ from utils.utils import check_password
 from utils.tickers import create_tickers_universe
 
 warnings.filterwarnings('ignore')
+
+# Logs visibles en Streamlit Cloud: menú "Manage app" (abajo a la derecha
+# de la app desplegada) → pestaña "Logs". Ahí se ve esto en tiempo real,
+# server-side, independientemente de lo que pinte la UI.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("cc_itm_screener")
+logger.info(f"yfinance version = {getattr(yf, '__version__', 'desconocida')}")
 
 # Sin esto, una llamada a Yahoo que se quede colgada (sin dar error ni
 # timeout) bloquea indefinidamente el socket subyacente. Como la Fase 1
@@ -197,6 +208,7 @@ def get_daily_data(ticker, use_lock=True):
     try:
         end   = datetime.now() + timedelta(days=1)
         start = end - timedelta(days=120)
+        logger.info(f"[{ticker}] descarga: start={start.date()} end={end.date()} use_lock={use_lock}")
 
         def _do_download():
             return yf.download(
@@ -212,17 +224,19 @@ def get_daily_data(ticker, use_lock=True):
             data = _with_timeout(_do_download)
 
         if data is None or data.empty or len(data) < 35:
+            logger.warning(f"[{ticker}] descarga vacía o insuficiente: "
+                            f"{'None' if data is None else len(data)} filas")
             _record_debug("no_daily_data", f"{ticker}: descarga vacía o insuficiente histórico")
             return None
 
-        # La última fila puede ser la sesión de HOY todavía sin cerrar
-        # (Close = NaN) cuando se pide end=mañana en horario de mercado.
-        # Quitamos esas filas incompletas en vez de descartar el ticker.
         n_before = len(data)
         tail_preview = data["Close"].tail(3).to_dict()
+        logger.info(f"[{ticker}] filas={n_before} columnas={list(data.columns)} "
+                    f"dtypes_close={data['Close'].dtype} tail3={tail_preview}")
         data = data.dropna(subset=["Close"])
         n_after = len(data)
         if data.empty or len(data) < 35:
+            logger.warning(f"[{ticker}] tras dropna quedan {n_after}/{n_before} filas — descartado")
             _record_debug(
                 "no_daily_data",
                 f"{ticker}: filas antes={n_before} después de limpiar NaN={n_after} · "
@@ -230,9 +244,11 @@ def get_daily_data(ticker, use_lock=True):
             )
             return None
 
+        logger.info(f"[{ticker}] OK — último close válido = {data['Close'].iloc[-1]}")
         data.index = pd.to_datetime(data.index)
         return data
     except Exception as e:
+        logger.error(f"[{ticker}] EXCEPCIÓN: {type(e).__name__}: {e}")
         _record_debug("no_daily_data", f"{ticker}: {e}")
         return None
 
@@ -655,6 +671,58 @@ def main():
         "Ranking por mayor downside protection**"
     )
     st.caption("⚙️ v3 — pipeline en dos fases (precio en paralelo → opciones secuencial)")
+
+    # ── Test de conectividad directo, sin ninguna capa nuestra ─────────
+    with st.expander("🧪 Test de conectividad directo (1 ticker, sin lock/threads/wrapper)"):
+        st.caption(
+            f"yfinance instalado: **{getattr(yf, '__version__', 'desconocida')}** · "
+            "Esto llama a yf.download() puro, tal cual, para ver el dato crudo. "
+            "Los logs de esta prueba también salen en Streamlit Cloud → Manage app → Logs."
+        )
+        test_ticker = st.text_input("Ticker a probar", value="AAPL", key="raw_test_ticker")
+        if st.button("▶️ Probar ahora", key="raw_test_btn"):
+            t = _clean_ticker(test_ticker) or "AAPL"
+
+            st.markdown("**Método 1: `yf.download()`**")
+            try:
+                raw1 = yf.download(t, period="1mo", interval="1d", progress=False)
+                logger.info(f"[TEST] yf.download({t}) shape={raw1.shape if raw1 is not None else None}")
+                if raw1 is None or raw1.empty:
+                    st.error("Devolvió None o vacío.")
+                else:
+                    st.write(f"Shape: {raw1.shape} · Columnas: {list(raw1.columns)} · dtype Close: {raw1['Close'].dtype}")
+                    st.dataframe(raw1.tail(5))
+                    n_nan = raw1["Close"].isna().sum()
+                    st.write(f"Valores NaN en Close: {n_nan} / {len(raw1)}")
+            except Exception as e:
+                logger.error(f"[TEST] yf.download({t}) EXCEPCIÓN: {type(e).__name__}: {e}")
+                st.error(f"Excepción: {type(e).__name__}: {e}")
+
+            st.markdown("**Método 2: `yf.Ticker().history()`** (ruta distinta dentro de yfinance)")
+            try:
+                raw2 = yf.Ticker(t).history(period="1mo", interval="1d")
+                logger.info(f"[TEST] Ticker({t}).history() shape={raw2.shape if raw2 is not None else None}")
+                if raw2 is None or raw2.empty:
+                    st.error("Devolvió None o vacío.")
+                else:
+                    st.write(f"Shape: {raw2.shape} · Columnas: {list(raw2.columns)}")
+                    st.dataframe(raw2.tail(5))
+                    n_nan2 = raw2["Close"].isna().sum()
+                    st.write(f"Valores NaN en Close: {n_nan2} / {len(raw2)}")
+            except Exception as e:
+                logger.error(f"[TEST] Ticker({t}).history() EXCEPCIÓN: {type(e).__name__}: {e}")
+                st.error(f"Excepción: {type(e).__name__}: {e}")
+
+            st.markdown("**Método 3: `yf.Ticker().fast_info`** (endpoint de solo precio actual, distinto de los dos anteriores)")
+            try:
+                fi = yf.Ticker(t).fast_info
+                last_price = fi.get("lastPrice") if hasattr(fi, "get") else getattr(fi, "last_price", None)
+                logger.info(f"[TEST] fast_info({t}) lastPrice={last_price}")
+                st.write(f"last_price: {last_price}")
+            except Exception as e:
+                logger.error(f"[TEST] fast_info({t}) EXCEPCIÓN: {type(e).__name__}: {e}")
+                st.error(f"Excepción: {type(e).__name__}: {e}")
+
     st.divider()
 
     # ── Universo ───────────────────────────────────────────────────────
