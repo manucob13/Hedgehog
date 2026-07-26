@@ -3,7 +3,7 @@ Deep ITM Covered Call Screener
 ================================
 Objetivo: encontrar covered calls deep ITM con extrínseco 0.85%-1.00% semanal.
 
-FILTROS DUROS (ahora todos activables/desactivables desde la UI):
+FILTROS DUROS (todos activables/desactivables desde la UI):
 - Precio del subyacente: rango configurable
 - Close > SMA30 (tendencia alcista)             [toggle]
 - PCR < 1.0 (sesgo alcista)                       [toggle]
@@ -13,22 +13,29 @@ FILTROS DUROS (ahora todos activables/desactivables desde la UI):
 - Bid > 0 (opción negociable)
 - Vencimiento = próximo viernes (DTE ≤ 7)
 
-RANKING: mayor downside protection % primero
-         (más deep ITM = más protección = mejor)
-
+RANKING: mayor downside protection % primero (más deep ITM = más protección)
 PRECIO DE OPCIÓN: midprice (bid+ask)/2 siempre
 
-NUEVO EN ESTA VERSIÓN:
-- Embudo de diagnóstico: cuenta cuántos tickers caen en cada filtro, para ver
-  exactamente dónde se está vaciando el resultado.
-- Modo diagnóstico: si activo, ignora la banda de extrínseco objetivo y
-  devuelve igualmente el mejor candidato ITM encontrado (con su extrínseco
-  real), para poder calibrar la banda con datos reales del día.
-- Los tres filtros booleanos (SMA30, PCR, earnings) son ahora checkboxes.
-- Se eliminó la llamada duplicada a stock.option_chain() (antes se pedía dos
-  veces por ticker: una para PCR y otra para la cadena de calls). Esto reduce
-  a la mitad las requests a Yahoo por ticker y baja el riesgo de rate-limit /
-  timeouts silenciosos que el try/except se estaba comiendo.
+ARQUITECTURA (v3) — CAMBIO IMPORTANTE
+--------------------------------------
+Versiones anteriores mezclaban, dentro del mismo ThreadPoolExecutor, llamadas
+a yf.download() (descarga masiva) CON llamadas a stock.options /
+stock.option_chain() / stock.calendar (API por objeto Ticker) — dos rutas de
+yfinance distintas golpeando la red concurrentemente desde varios hilos. Eso
+producía DataFrames con la forma correcta pero Close = NaN para tickers tan
+líquidos como AAPL, un patrón de corrupción silenciosa, no un simple 429.
+
+Ahora el pipeline está separado en DOS FASES, como en el screener de
+tendencia que sí funciona:
+
+  FASE 1 (paralela, con lock) — SOLO yf.download() de precio diario.
+      Aquí se filtra por rango de precio y SMA30.
+  FASE 2 (secuencial, sin threads) — SOLO llamadas a Ticker/options,
+      una detrás de otra, únicamente sobre los supervivientes de la fase 1.
+      Aquí se filtra por earnings, PCR y se busca el candidato ITM.
+
+Esto reduce drásticamente cuántos tickers necesitan la fase 2 (más lenta),
+y evita mezclar las dos rutas de red concurrentemente.
 """
 
 import streamlit as st
@@ -40,6 +47,7 @@ from statistics import NormalDist
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 import warnings
+import socket
 import plotly.graph_objects as go
 import plotly.express as px
 
@@ -48,13 +56,53 @@ from utils.tickers import create_tickers_universe
 
 warnings.filterwarnings('ignore')
 
-_lock = Lock()
-_N   = NormalDist()
+# Sin esto, una llamada a Yahoo que se quede colgada (sin dar error ni
+# timeout) bloquea indefinidamente el socket subyacente. Como la Fase 1
+# serializa las descargas con un Lock, UN solo ticker colgado deja a TODOS
+# los hilos esperando para siempre — eso es lo que produce la barra de
+# progreso congelada. Este timeout global convierte cualquier cuelgue de
+# red en una excepción capturable en como mucho SOCKET_TIMEOUT segundos.
+SOCKET_TIMEOUT = 15
+socket.setdefaulttimeout(SOCKET_TIMEOUT)
+
+# Lock global para las descargas de precio en la Fase 1 — mismo patrón que
+# el screener de tendencia que ya funciona en producción.
+_yfinance_lock = Lock()
+
+_N = NormalDist()
 RISK_FREE_RATE = 0.045
 
-# Captura unas pocas muestras de mensajes de error reales por motivo,
-# para poder ver en la UI *por qué* está fallando yfinance (rate limit,
-# timeout, ticker delisted, etc.) en vez de un None mudo.
+# ── Diagnóstico: motivos de descarte y muestras de error reales ────────
+REASON_ORDER = [
+    "ok",
+    "no_daily_data",
+    "price_out_of_range",
+    "sma30_unavailable",
+    "below_sma30",
+    "earnings_this_week",
+    "no_expirations",
+    "no_friday_expiration",
+    "no_calls_chain",
+    "pcr_bearish",
+    "no_itm_candidate",
+    "error",
+]
+
+REASON_LABELS = {
+    "ok":                    "✅ Pasó todos los filtros",
+    "no_daily_data":         "Sin datos diarios (Fase 1 — yf.download)",
+    "price_out_of_range":    "Precio fuera de rango (Fase 1)",
+    "sma30_unavailable":     "No hay suficiente histórico para SMA30 (Fase 1)",
+    "below_sma30":           "Precio ≤ SMA30 — no alcista (Fase 1)",
+    "earnings_this_week":    "Earnings en los próximos 7 días (Fase 2)",
+    "no_expirations":        "Sin vencimientos de opciones listados (Fase 2)",
+    "no_friday_expiration":  "Sin vencimiento viernes con DTE≤7 (Fase 2)",
+    "no_calls_chain":        "Cadena de calls vacía/no disponible (Fase 2)",
+    "pcr_bearish":           "PCR ≥ 1.0 — sesgo bajista (Fase 2)",
+    "no_itm_candidate":      "Sin strike ITM que cumpla extrínseco/OI/bid (Fase 2)",
+    "error":                 "Excepción no controlada",
+}
+
 _debug_lock = Lock()
 _debug_samples = {}
 _price_samples = []
@@ -80,56 +128,25 @@ def _reset_debug():
         _price_samples.clear()
 
 
-# ── Limitador de ritmo global para TODAS las llamadas a Yahoo ──────────
-# Yahoo rate-limita por requests/segundo desde una IP, sin importar si las
-# llamadas son secuenciales o en paralelo. Sin esto, aunque se serialicen
-# las descargas con un Lock, dispararlas sin pausa dispara el bloqueo igual
-# (esto es lo que estaba pasando: AAPL, AAL, etc. devolvían Close = NaN).
-_pace_lock = Lock()
-_last_request_ts = [0.0]
-_pace_interval = [0.35]  # segundos entre CUALQUIER llamada a Yahoo (configurable)
-
-
-def _pace_request():
-    import time
-    with _pace_lock:
-        now = time.monotonic()
-        wait = _last_request_ts[0] + _pace_interval[0] - now
-        if wait > 0:
-            time.sleep(wait)
-        _last_request_ts[0] = time.monotonic()
-
-# Códigos de motivo de descarte, en el orden en que se evalúan.
-# Se usan para construir el embudo de diagnóstico.
-REASON_ORDER = [
-    "ok",
-    "no_daily_data",
-    "price_out_of_range",
-    "sma30_unavailable",
-    "below_sma30",
-    "earnings_this_week",
-    "no_expirations",
-    "no_friday_expiration",
-    "no_calls_chain",
-    "pcr_bearish",
-    "no_itm_candidate",
-    "error",
-]
-
-REASON_LABELS = {
-    "ok":                    "✅ Pasó todos los filtros",
-    "no_daily_data":         "Sin datos diarios (yfinance)",
-    "price_out_of_range":    "Precio fuera de rango",
-    "sma30_unavailable":     "No hay suficiente histórico para SMA30",
-    "below_sma30":           "Precio ≤ SMA30 (no alcista)",
-    "earnings_this_week":    "Earnings en los próximos 7 días",
-    "no_expirations":        "Sin vencimientos de opciones listados",
-    "no_friday_expiration":  "Sin vencimiento viernes con DTE≤7",
-    "no_calls_chain":        "Cadena de calls vacía/no disponible",
-    "pcr_bearish":           "PCR ≥ 1.0 (sesgo bajista)",
-    "no_itm_candidate":      "Sin strike ITM que cumpla extrínseco/OI/bid",
-    "error":                 "Excepción no controlada",
-}
+def _with_timeout(fn, args=(), kwargs=None, timeout=SOCKET_TIMEOUT + 5):
+    """
+    Ejecuta fn en un hilo aparte y espera como mucho `timeout` segundos.
+    socket.setdefaulttimeout() no siempre basta: algunas versiones de
+    yfinance usan curl_cffi por debajo, que no respeta el timeout de
+    socket de Python. Este wrapper pone un límite duro e independiente:
+    si fn no responde a tiempo, lanzamos TimeoutError y seguimos con el
+    siguiente ticker en vez de congelar todo el pipeline. El hilo colgado
+    queda huérfano en segundo plano (inofensivo) en vez de bloquear al
+    resto — por eso se crea un executor nuevo por llamada en vez de
+    reutilizar uno con pocos workers.
+    """
+    kwargs = kwargs or {}
+    ex = ThreadPoolExecutor(max_workers=1)
+    future = ex.submit(fn, *args, **kwargs)
+    try:
+        return future.result(timeout=timeout)
+    finally:
+        ex.shutdown(wait=False)
 
 
 # ======================================================================
@@ -169,50 +186,45 @@ def refresh_universe():
 
 
 # ======================================================================
-# 1. DATOS DIARIOS
+# 1. DATOS DIARIOS (Fase 1 — mismo patrón que el screener de tendencia)
 # ======================================================================
 
-def get_daily_data(ticker, max_retries=2):
-    """
-    Cuando Yahoo empieza a rate-limitar (429 / bloqueo silencioso), yfinance
-    a menudo NO lanza una excepción: devuelve un DataFrame con la forma
-    correcta pero lleno de NaN. Por eso, además de comprobar que hay
-    suficientes filas, comprobamos explícitamente que el último Close no sea
-    NaN, y reintentamos con backoff antes de rendirnos.
-    """
-    import time
-    import random
+def get_daily_data(ticker, use_lock=True):
+    """Descarga precio diario. Mismo patrón exacto que download_weekly_data()
+    del screener de tendencia (que sí funciona): un solo yf.download(),
+    protegido por lock cuando se llama desde threads, sin mezclarlo con
+    ninguna otra API de yfinance."""
+    try:
+        end   = datetime.now() + timedelta(days=1)
+        start = end - timedelta(days=120)
 
-    end   = datetime.now() + timedelta(days=1)
-    start = end - timedelta(days=120)
+        def _do_download():
+            return yf.download(
+                ticker, start=start, end=end,
+                interval="1d", auto_adjust=False,
+                multi_level_index=False, progress=False,
+                timeout=SOCKET_TIMEOUT,
+            )
 
-    for attempt in range(max_retries + 1):
-        try:
-            _pace_request()
-            with _lock:
-                data = yf.download(
-                    ticker, start=start, end=end,
-                    interval="1d", auto_adjust=False,
-                    multi_level_index=False, progress=False
-                )
-            if data is None or data.empty or len(data) < 35:
-                _record_debug("no_daily_data", f"{ticker} (intento {attempt+1}): datos vacíos/insuficientes")
-                raise ValueError("empty")
+        if use_lock:
+            with _yfinance_lock:
+                data = _with_timeout(_do_download)
+        else:
+            data = _with_timeout(_do_download)
 
-            close_valid = data["Close"].dropna()
-            if close_valid.empty or pd.isna(data["Close"].iloc[-1]):
-                _record_debug("no_daily_data", f"{ticker} (intento {attempt+1}): último Close es NaN — probable rate-limit de Yahoo")
-                raise ValueError("nan_close")
-
-            data.index = pd.to_datetime(data.index)
-            return data
-        except Exception as e:
-            if attempt < max_retries:
-                time.sleep(0.6 * (attempt + 1) + random.uniform(0, 0.4))
-                continue
-            _record_debug("no_daily_data", f"{ticker}: {e}")
+        if data is None or data.empty or len(data) < 35:
+            _record_debug("no_daily_data", f"{ticker}: descarga vacía o insuficiente histórico")
             return None
-    return None
+
+        if pd.isna(data["Close"].iloc[-1]):
+            _record_debug("no_daily_data", f"{ticker}: último Close es NaN")
+            return None
+
+        data.index = pd.to_datetime(data.index)
+        return data
+    except Exception as e:
+        _record_debug("no_daily_data", f"{ticker}: {e}")
+        return None
 
 
 # ======================================================================
@@ -224,9 +236,9 @@ def get_sma30(close):
     try:
         if len(close) < 35:
             return None, None, None
-        sma   = close.rolling(30).mean()
+        sma      = close.rolling(30).mean()
         sma_now  = float(sma.iloc[-1])
-        sma_prev = float(sma.iloc[-6])   # 5 días atrás
+        sma_prev = float(sma.iloc[-6])
         price    = float(close.iloc[-1])
         dist_pct = round((price - sma_now) / sma_now * 100, 2)
         slope    = sma_now > sma_prev
@@ -268,19 +280,14 @@ def bs_delta(S, K, T_years, sigma, r=RISK_FREE_RATE):
 # ======================================================================
 
 def next_friday():
-    """Devuelve la fecha del próximo viernes (incluyendo hoy si es viernes)."""
     today = date.today()
-    days_ahead = (4 - today.weekday()) % 7   # 4 = viernes
+    days_ahead = (4 - today.weekday()) % 7
     if days_ahead == 0:
-        days_ahead = 7  # si hoy es viernes, el PRÓXIMO viernes
+        days_ahead = 7
     return today + timedelta(days=days_ahead)
 
 
 def select_friday_expiration(expirations):
-    """
-    Busca en la lista de vencimientos el próximo viernes con DTE ≤ 7.
-    Devuelve (exp_str, dte) o (None, None).
-    """
     target = next_friday()
     today  = date.today()
     for exp_str in expirations:
@@ -288,7 +295,6 @@ def select_friday_expiration(expirations):
         dte = (exp - today).days
         if exp == target and 1 <= dte <= 7:
             return exp_str, dte
-    # Fallback: cualquier viernes con DTE ≤ 7
     for exp_str in expirations:
         exp = datetime.strptime(exp_str, "%Y-%m-%d").date()
         dte = (exp - today).days
@@ -302,10 +308,8 @@ def select_friday_expiration(expirations):
 # ======================================================================
 
 def has_earnings_this_week(stock):
-    """True si hay earnings en los próximos 7 días."""
     try:
-        _pace_request()
-        cal = stock.calendar
+        cal = _with_timeout(lambda: stock.calendar)
         if cal is None:
             return False
         ed = cal.get("Earnings Date")
@@ -320,22 +324,17 @@ def has_earnings_this_week(stock):
 
 
 # ======================================================================
-# 7. PUT/CALL RATIO (a partir de una cadena ya descargada, sin red)
+# 7. PUT/CALL RATIO (sobre una cadena ya descargada, sin red)
 # ======================================================================
 
 def compute_pcr(calls, puts, current_price, range_pct=15):
-    """PCR basado en OI de la cadena de opciones (±15% del precio).
-    No hace ninguna llamada de red: recibe calls/puts ya descargados."""
     try:
         lo = current_price * (1 - range_pct / 100)
         hi = current_price * (1 + range_pct / 100)
-
         c_filt = calls[(calls["strike"] >= lo) & (calls["strike"] <= hi)]
         p_filt = puts[(puts["strike"] >= lo) & (puts["strike"] <= hi)]
-
         c_oi = float(c_filt["openInterest"].fillna(0).sum())
         p_oi = float(p_filt["openInterest"].fillna(0).sum())
-
         if c_oi == 0:
             return None
         return round(p_oi / c_oi, 3)
@@ -350,32 +349,21 @@ def compute_pcr(calls, puts, current_price, range_pct=15):
 def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
                              extrinsic_min_pct, extrinsic_max_pct,
                              min_oi, diagnostic_mode=False):
-    """
-    Entre todos los strikes ITM:
-    - Calcula midprice, intrínseco, extrínseco
-    - Filtra por OI > min_oi y bid > 0
-    - Si diagnostic_mode=False: exige extrínseco en [min_pct, max_pct] y
-      devuelve, entre los que cumplen, el de mayor downside protection.
-    - Si diagnostic_mode=True: ignora la banda de extrínseco y devuelve
-      igualmente el de mayor downside protection, para poder ver el
-      extrínseco real disponible en el mercado hoy.
-    """
     try:
         itm = calls_df[calls_df["strike"] < current_price].copy()
         if itm.empty:
             return None
 
-        itm["bid"]  = pd.to_numeric(itm["bid"], errors="coerce").fillna(0)
-        itm["ask"]  = pd.to_numeric(itm["ask"], errors="coerce").fillna(0)
-        itm["mid"]  = (itm["bid"] + itm["ask"]) / 2
+        itm["bid"] = pd.to_numeric(itm["bid"], errors="coerce").fillna(0)
+        itm["ask"] = pd.to_numeric(itm["ask"], errors="coerce").fillna(0)
+        itm["mid"] = (itm["bid"] + itm["ask"]) / 2
 
         itm = itm[(itm["bid"] > 0) & (itm["mid"] > 0)]
         if itm.empty:
             return None
 
         itm["oi"] = pd.to_numeric(
-            itm.get("openInterest", pd.Series(0, index=itm.index)),
-            errors="coerce"
+            itm.get("openInterest", pd.Series(0, index=itm.index)), errors="coerce"
         ).fillna(0)
         itm = itm[itm["oi"] >= min_oi]
         if itm.empty:
@@ -398,7 +386,6 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
                 (itm["extrinsic_pct"] >= extrinsic_min_pct) &
                 (itm["extrinsic_pct"] <= extrinsic_max_pct)
             ]
-
         if candidates.empty:
             return None
 
@@ -409,39 +396,33 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
         delta   = bs_delta(current_price, float(best["strike"]), T_years, iv) if iv > 0 else None
 
         return {
-            "strike":        float(best["strike"]),
-            "mid":           round(float(best["mid"]), 2),
-            "bid":           round(float(best["bid"]), 2),
-            "ask":           round(float(best["ask"]), 2),
-            "intrinsic":     round(float(best["intrinsic"]), 2),
-            "extrinsic":     round(float(best["extrinsic"]), 2),
-            "extrinsic_pct": round(float(best["extrinsic_pct"]), 3),
-            "downside_prot": round(float(best["downside_prot"]), 2),
-            "spread_pct":    round(float(best["spread_pct"]), 2),
-            "oi":            int(best["oi"]),
-            "volume":        int(pd.to_numeric(best.get("volume", 0), errors="coerce") or 0),
-            "iv_pct":        round(iv * 100, 2) if iv > 0 else None,
-            "delta":         delta,
-            "in_target_band": bool(
-                extrinsic_min_pct <= float(best["extrinsic_pct"]) <= extrinsic_max_pct
-            ),
+            "strike":         float(best["strike"]),
+            "mid":            round(float(best["mid"]), 2),
+            "bid":            round(float(best["bid"]), 2),
+            "ask":            round(float(best["ask"]), 2),
+            "intrinsic":      round(float(best["intrinsic"]), 2),
+            "extrinsic":      round(float(best["extrinsic"]), 2),
+            "extrinsic_pct":  round(float(best["extrinsic_pct"]), 3),
+            "downside_prot":  round(float(best["downside_prot"]), 2),
+            "spread_pct":     round(float(best["spread_pct"]), 2),
+            "oi":             int(best["oi"]),
+            "volume":         int(pd.to_numeric(best.get("volume", 0), errors="coerce") or 0),
+            "iv_pct":         round(iv * 100, 2) if iv > 0 else None,
+            "delta":          delta,
+            "in_target_band": bool(extrinsic_min_pct <= float(best["extrinsic_pct"]) <= extrinsic_max_pct),
         }
     except Exception:
         return None
 
 
 # ======================================================================
-# 9. ANÁLISIS DE UN TICKER
+# 9a. FASE 1 — precio diario + SMA30 (paralela)
 # ======================================================================
 
-def analyze_ticker(ticker, params):
-    """
-    Devuelve SIEMPRE (result_dict_or_None, reason_code).
-    reason_code == "ok" cuando result_dict_or_None no es None.
-    """
+def phase1_price_filter(ticker, params):
+    """Solo yf.download(). Devuelve (registro_o_None, reason)."""
     try:
-        # ── Datos diarios ──────────────────────────────────────────────
-        data = get_daily_data(ticker)
+        data = get_daily_data(ticker, use_lock=True)
         if data is None:
             return None, "no_daily_data"
 
@@ -462,123 +443,140 @@ def analyze_ticker(ticker, params):
 
         rv = get_rv10(close)
 
-        # ── Opciones ───────────────────────────────────────────────────
+        return {
+            "Ticker": ticker,
+            "current_price": round(current_price, 2),
+            "sma30": sma30,
+            "dist_sma_pct": dist_sma_pct,
+            "slope_up": slope_up,
+            "rv": rv,
+        }, "ok"
+    except Exception as e:
+        _record_debug("error", f"{ticker}: {e}")
+        return None, "error"
+
+
+# ======================================================================
+# 9b. FASE 2 — opciones (SECUENCIAL, sin threads)
+# ======================================================================
+
+def phase2_options_filter(survivor, params):
+    """Recibe el registro de la Fase 1 y añade las métricas de opciones.
+    Se llama en un bucle for normal, nunca dentro de un ThreadPoolExecutor,
+    para no mezclar esta API de yfinance con las descargas paralelas."""
+    ticker        = survivor["Ticker"]
+    current_price = survivor["current_price"]
+    try:
         stock = yf.Ticker(ticker)
 
         if params["use_earnings_filter"] and has_earnings_this_week(stock):
             return None, "earnings_this_week"
 
-        try:
-            _pace_request()
-            expirations = stock.options
-        except Exception as e:
-            _record_debug("no_expirations", f"{ticker}: {e}")
-            return None, "no_expirations"
+        expirations = _with_timeout(lambda: stock.options)
         if not expirations:
-            _record_debug("no_expirations", f"{ticker}: lista de vencimientos vacía")
             return None, "no_expirations"
 
         exp_str, dte = select_friday_expiration(expirations)
         if exp_str is None:
             return None, "no_friday_expiration"
 
-        # UNA sola llamada a option_chain (antes había dos)
-        try:
-            _pace_request()
-            chain = stock.option_chain(exp_str)
-            calls = chain.calls
-            puts  = chain.puts
-        except Exception as e:
-            _record_debug("no_calls_chain", f"{ticker}: {e}")
-            return None, "no_calls_chain"
+        chain = _with_timeout(lambda: stock.option_chain(exp_str))
+        calls = chain.calls
+        puts  = chain.puts
         if calls is None or calls.empty:
-            _record_debug("no_calls_chain", f"{ticker}: cadena de calls vacía")
             return None, "no_calls_chain"
 
         pcr = compute_pcr(calls, puts, current_price)
-
         if params["use_pcr_filter"] and pcr is not None and pcr >= 1.0:
             return None, "pcr_bearish"
 
         candidate = find_deep_itm_candidate(
             calls, current_price, dte,
-            params["extrinsic_min"],
-            params["extrinsic_max"],
-            params["min_oi"],
-            diagnostic_mode=params["diagnostic_mode"],
+            params["extrinsic_min"], params["extrinsic_max"],
+            params["min_oi"], diagnostic_mode=params["diagnostic_mode"],
         )
         if candidate is None:
             return None, "no_itm_candidate"
 
         iv_rv_ratio = (
-            round(candidate["iv_pct"] / rv, 3)
-            if (candidate["iv_pct"] and rv and rv > 0)
-            else None
+            round(candidate["iv_pct"] / survivor["rv"], 3)
+            if (candidate["iv_pct"] and survivor["rv"] and survivor["rv"] > 0) else None
         )
-        annualized = round(
-            candidate["extrinsic_pct"] * (365 / dte), 1
-        ) if dte > 0 else None
-        breakeven = round(current_price - candidate["mid"], 2)
+        annualized = round(candidate["extrinsic_pct"] * (365 / dte), 1) if dte > 0 else None
+        breakeven  = round(current_price - candidate["mid"], 2)
 
         result = {
-            "Ticker":          ticker,
-            "Precio":          round(current_price, 2),
-            "Vencimiento":     exp_str,
-            "DTE":             dte,
-            "Strike":          candidate["strike"],
+            "Ticker": ticker,
+            "Precio": current_price,
+            "Vencimiento": exp_str,
+            "DTE": dte,
+            "Strike": candidate["strike"],
             "Downside_Prot_%": candidate["downside_prot"],
-            "Extrínseco_%":    candidate["extrinsic_pct"],
-            "En_Banda":        candidate["in_target_band"],
-            "Prima_Mid":       candidate["mid"],
-            "Bid":             candidate["bid"],
-            "Ask":             candidate["ask"],
-            "Intrínseco":      candidate["intrinsic"],
-            "Extrínseco_$":    candidate["extrinsic"],
-            "Breakeven":       breakeven,
-            "Delta":           candidate["delta"],
-            "IV_%":            candidate["iv_pct"],
-            "RV_%":            rv,
-            "IV_RV":           iv_rv_ratio,
+            "Extrínseco_%": candidate["extrinsic_pct"],
+            "En_Banda": candidate["in_target_band"],
+            "Prima_Mid": candidate["mid"],
+            "Bid": candidate["bid"],
+            "Ask": candidate["ask"],
+            "Intrínseco": candidate["intrinsic"],
+            "Extrínseco_$": candidate["extrinsic"],
+            "Breakeven": breakeven,
+            "Delta": candidate["delta"],
+            "IV_%": candidate["iv_pct"],
+            "RV_%": survivor["rv"],
+            "IV_RV": iv_rv_ratio,
             "Ret_Anualizado_%": annualized,
-            "OI":              candidate["oi"],
-            "Volumen":         candidate["volume"],
-            "Spread_%":        candidate["spread_pct"],
-            "SMA30":           sma30,
-            "Dist_SMA30_%":    dist_sma_pct,
-            "SMA30_Sube":      slope_up,
-            "PCR":             pcr,
+            "OI": candidate["oi"],
+            "Volumen": candidate["volume"],
+            "Spread_%": candidate["spread_pct"],
+            "SMA30": survivor["sma30"],
+            "Dist_SMA30_%": survivor["dist_sma_pct"],
+            "SMA30_Sube": survivor["slope_up"],
+            "PCR": pcr,
         }
         return result, "ok"
-
-    except Exception:
+    except Exception as e:
+        _record_debug("error", f"{ticker}: {e}")
         return None, "error"
 
 
 # ======================================================================
-# 10. SCREENER EN PARALELO
+# 10. ORQUESTADOR: Fase 1 (paralela) → Fase 2 (secuencial)
 # ======================================================================
 
 def run_screener(tickers, params, progress_bar, status_text):
     _reset_debug()
-    _pace_interval[0] = params.get("pace_seconds", 0.35)
-    results = []
-    funnel  = {r: 0 for r in REASON_ORDER}
-    total   = len(tickers)
+    funnel = {r: 0 for r in REASON_ORDER}
+    total  = len(tickers)
 
-    # Menos workers en paralelo: yfinance en Streamlit Cloud se rate-limita
-    # (429) muy rápido con demasiadas requests simultáneas contra Yahoo,
-    # y eso se traduce en resultados vacíos sin ningún error visible.
-    with ThreadPoolExecutor(max_workers=params.get("max_workers", 4)) as executor:
-        futures = {executor.submit(analyze_ticker, t, params): t for t in tickers}
+    # ── FASE 1: precio + SMA30, en paralelo (solo yf.download, con lock) ──
+    status_text.text(f"🔍 Fase 1/2 — precio y tendencia: 0/{total}")
+    survivors = []
+    with ThreadPoolExecutor(max_workers=params.get("max_workers", 6)) as executor:
+        futures = {executor.submit(phase1_price_filter, t, params): t for t in tickers}
         done = 0
         for future in as_completed(futures):
             done += 1
-            progress_bar.progress(done / total)
-            status_text.text(f"🔍 {done}/{total} — encontrados: {len(results)}")
-            r, reason = future.result()
+            progress_bar.progress(done / total * 0.5)
+            status_text.text(f"🔍 Fase 1/2 — precio y tendencia: {done}/{total} · supervivientes: {len(survivors)}")
+            r, reason = None, "error"
+            try:
+                r, reason = future.result(timeout=SOCKET_TIMEOUT + 10)
+            except Exception as e:
+                _record_debug("error", f"timeout/fallo esperando resultado: {e}")
             funnel[reason] = funnel.get(reason, 0) + 1
             if r is not None:
-                results.append(r)
+                survivors.append(r)
+
+    # ── FASE 2: opciones, SECUENCIAL, solo sobre supervivientes ────────
+    results = []
+    n_survivors = len(survivors)
+    for i, s in enumerate(survivors, start=1):
+        progress_bar.progress(0.5 + (i / max(n_survivors, 1)) * 0.5)
+        status_text.text(f"🔍 Fase 2/2 — opciones: {i}/{n_survivors} ({s['Ticker']}) · encontrados: {len(results)}")
+        r, reason = phase2_options_filter(s, params)
+        funnel[reason] = funnel.get(reason, 0) + 1
+        if r is not None:
+            results.append(r)
 
     status_text.text(f"✅ Completado: {len(results)} candidatos")
 
@@ -600,7 +598,7 @@ def run_screener(tickers, params, progress_bar, status_text):
 
 def plot_price(ticker):
     try:
-        data = get_daily_data(ticker)
+        data = get_daily_data(ticker, use_lock=False)
         if data is None:
             return None
         sma = data["Close"].rolling(30).mean()
@@ -608,7 +606,7 @@ def plot_price(ticker):
         fig.add_trace(go.Candlestick(
             x=data.index,
             open=data["Open"], high=data["High"],
-            low=data["Low"],   close=data["Close"],
+            low=data["Low"], close=data["Close"],
             name=ticker,
             increasing_line_color="#6daa45",
             decreasing_line_color="#dd6974",
@@ -635,11 +633,7 @@ def plot_price(ticker):
 # ======================================================================
 
 def main():
-    st.set_page_config(
-        page_title="Deep ITM CC Screener",
-        page_icon="🎯",
-        layout="wide",
-    )
+    st.set_page_config(page_title="Deep ITM CC Screener", page_icon="🎯", layout="wide")
 
     if not check_password():
         st.stop()
@@ -650,6 +644,7 @@ def main():
         "Vencimiento próximo viernes · "
         "Ranking por mayor downside protection**"
     )
+    st.caption("⚙️ v3 — pipeline en dos fases (precio en paralelo → opciones secuencial)")
     st.divider()
 
     # ── Universo ───────────────────────────────────────────────────────
@@ -677,8 +672,7 @@ def main():
         if meta.get("r1000_ok"):
             st.success(
                 f"✅ **{meta['total_count']:,} tickers** "
-                f"(Russell 1000: {meta['r1000_count']:,} "
-                f"+ Adicionales: {meta['extra_count']:,})"
+                f"(Russell 1000: {meta['r1000_count']:,} + Adicionales: {meta['extra_count']:,})"
             )
         else:
             st.warning(f"⚠️ Solo universo adicional: {meta['total_count']:,} tickers")
@@ -694,52 +688,25 @@ def main():
         st.markdown("**💰 Extrínseco objetivo**")
         extrinsic_min, extrinsic_max = st.slider(
             "Rango extrínseco (% del precio)",
-            min_value=0.50, max_value=2.00,
-            value=(0.85, 1.00), step=0.05,
+            min_value=0.50, max_value=2.00, value=(0.85, 1.00), step=0.05,
             help="Solo aplica si el modo diagnóstico está desactivado"
         )
 
         st.markdown("**💲 Precio del subyacente**")
         min_price, max_price = st.slider(
-            "Rango de precio ($)",
-            min_value=5, max_value=1000,
-            value=(20, 500), step=5,
+            "Rango de precio ($)", min_value=5, max_value=1000, value=(20, 500), step=5,
         )
 
     with c2:
         st.markdown("**💧 Liquidez mínima**")
-        min_oi = st.number_input(
-            "OI mínimo del strike",
-            min_value=10, max_value=10000,
-            value=100, step=50,
-        )
+        min_oi = st.number_input("OI mínimo del strike", min_value=10, max_value=10000, value=100, step=50)
 
-        st.markdown("**🧵 Concurrencia**")
+        st.markdown("**🧵 Concurrencia (solo Fase 1)**")
         max_workers = st.slider(
             "Requests en paralelo",
-            min_value=1, max_value=8, value=4,
-            help="Con el limitador de ritmo global esto ya no es tan crítico, "
-                 "pero mantenlo bajo (1-2) si sigues viendo NaN."
-        )
-
-        pace_seconds = st.slider(
-            "Pausa mínima entre requests a Yahoo (seg)",
-            min_value=0.1, max_value=1.5, value=0.35, step=0.05,
-            help="Yahoo rate-limita por requests/segundo. Si el diagnóstico de "
-                 "precios sigue mostrando NaN en tickers líquidos (AAPL, etc.), sube esto."
-        )
-
-        st.markdown("**🧪 Subconjunto de depuración**")
-        use_custom_subset = st.checkbox(
-            "Usar solo un subconjunto de tickers (en vez del universo completo)",
-            value=True,
-            help="Para iterar rápido mientras se depura, en vez de escanear los 1000+ tickers cada vez."
-        )
-        custom_tickers_raw = st.text_input(
-            "Tickers (separados por coma)",
-            value="AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA,JPM,V,MA,UNH,HD,PG,JNJ,XOM,BAC,KO,PEP,DIS,NFLX",
-            disabled=not use_custom_subset,
-            help="Se usan exactamente estos, sin pasar por el universo cargado."
+            min_value=1, max_value=10, value=6,
+            help="Solo afecta a la descarga de precios (Fase 1). La Fase 2 "
+                 "(opciones) siempre corre secuencial, sin threads."
         )
 
         st.markdown("**📅 Próximo viernes**")
@@ -754,10 +721,20 @@ def main():
         use_pcr_filter = st.checkbox("PCR < 1.0 (sesgo alcista)", value=True)
         use_earnings_filter = st.checkbox("Excluir earnings próximos 7 días", value=True)
         diagnostic_mode = st.checkbox(
-            "🔬 Modo diagnóstico (ignora banda de extrínseco)",
-            value=False,
+            "🔬 Modo diagnóstico (ignora banda de extrínseco)", value=False,
             help="Devuelve el mejor candidato ITM aunque su extrínseco no esté "
                  "en el rango objetivo, para ver los valores reales del mercado."
+        )
+
+        st.markdown("**🧪 Subconjunto de depuración**")
+        use_custom_subset = st.checkbox(
+            "Usar solo un subconjunto de tickers", value=True,
+            help="Para iterar rápido en vez de escanear los 1000+ tickers cada vez."
+        )
+        custom_tickers_raw = st.text_input(
+            "Tickers (separados por coma)",
+            value="AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA,JPM,V,MA,UNH,HD,PG,JNJ,XOM,BAC,KO,PEP,DIS,NFLX",
+            disabled=not use_custom_subset,
         )
 
     params = {
@@ -771,7 +748,6 @@ def main():
         "use_earnings_filter": use_earnings_filter,
         "diagnostic_mode":     diagnostic_mode,
         "max_workers":         max_workers,
-        "pace_seconds":        pace_seconds,
     }
 
     st.divider()
@@ -791,41 +767,39 @@ def main():
         disabled=(len(custom_subset_preview) == 0) if use_custom_subset else (len(tickers_all) == 0),
     )
 
-    custom_subset = custom_subset_preview
-
-    est_n = len(custom_subset) if use_custom_subset else len(tickers_all)
-    est_seconds = est_n * pace_seconds * 3  # ~3 llamadas a Yahoo por ticker
+    est_n = len(custom_subset_preview) if use_custom_subset else len(tickers_all)
     st.caption(
-        f"⏱️ Estimado: ~{int(est_seconds // 60)} min {int(est_seconds % 60)} s "
-        f"para {est_n:,} tickers con esta pausa (más lento pero evita el rate-limit)."
+        f"ℹ️ Se escanearán **{est_n:,}** tickers · Fase 1 en paralelo (rápida) "
+        f"→ Fase 2 secuencial solo sobre los que sobrevivan a precio/SMA30 "
+        f"(más lenta, ~1-2s por ticker)."
     )
 
     if scan_btn:
-        scan_tickers = custom_subset if use_custom_subset else tickers_all
+        scan_tickers = custom_subset_preview if use_custom_subset else tickers_all
         if not scan_tickers:
             st.error("⚠️ El subconjunto de tickers está vacío — revisa el campo de texto.")
             return
+
         progress_bar = st.progress(0)
         status_text  = st.empty()
-        df_results, funnel, debug_snapshot, price_snapshot = run_screener(scan_tickers, params, progress_bar, status_text)
+        df_results, funnel, debug_snapshot, price_snapshot = run_screener(
+            scan_tickers, params, progress_bar, status_text
+        )
         progress_bar.empty()
 
         st.session_state["results"] = df_results
-        st.session_state["funnel"]  = funnel
+        st.session_state["funnel"] = funnel
         st.session_state["debug_snapshot"] = debug_snapshot
         st.session_state["price_snapshot"] = price_snapshot
         st.session_state["scan_ts"] = datetime.now()
         st.session_state["scanned_total"] = len(scan_tickers)
 
         if not df_results.empty:
-            st.success(
-                f"✅ **{len(df_results)} candidatos** encontrados "
-                f"sobre {len(scan_tickers):,} tickers analizados"
-            )
+            st.success(f"✅ **{len(df_results)} candidatos** encontrados sobre {len(scan_tickers):,} tickers analizados")
         else:
             st.warning(
                 "⚠️ Ningún ticker cumplió todos los filtros. Mira el embudo de "
-                "diagnóstico más abajo para ver en qué paso se están cayendo."
+                "diagnóstico más abajo para ver en qué fase/paso se están cayendo."
             )
 
     st.divider()
@@ -859,7 +833,7 @@ def main():
 
         price_snapshot = st.session_state.get("price_snapshot", [])
         if price_snapshot:
-            with st.expander("💲 Ver distribución real de precios obtenidos"):
+            with st.expander("💲 Ver distribución real de precios obtenidos (Fase 1)"):
                 df_prices = pd.DataFrame(price_snapshot, columns=["Ticker", "Precio"])
                 pmin, pmax = df_prices["Precio"].min(), df_prices["Precio"].max()
                 pmed = df_prices["Precio"].median()
@@ -917,23 +891,17 @@ def main():
 
         st.dataframe(
             df[cols_show].style.map(color_downside, subset=["Downside_Prot_%"]),
-            use_container_width=True,
-            height=550,
+            use_container_width=True, height=550,
         )
 
         csv = df.to_csv(index=False).encode("utf-8")
         st.download_button(
-            "⬇️ Descargar CSV",
-            csv,
-            f"deep_itm_cc_{ts.strftime('%Y%m%d_%H%M')}.csv",
-            "text/csv",
+            "⬇️ Descargar CSV", csv,
+            f"deep_itm_cc_{ts.strftime('%Y%m%d_%H%M')}.csv", "text/csv",
         )
 
     with tab2:
-        selected = st.selectbox(
-            "Selecciona un ticker para ver el detalle",
-            options=df["Ticker"].tolist(),
-        )
+        selected = st.selectbox("Selecciona un ticker para ver el detalle", options=df["Ticker"].tolist())
         if selected:
             row = df[df["Ticker"] == selected].iloc[0]
             st.markdown(f"## {selected} — Deep ITM Covered Call")
@@ -997,9 +965,7 @@ def main():
 
         with col_g1:
             ticker_chart = st.selectbox(
-                "Ver gráfico de precio",
-                options=df["Ticker"].tolist(),
-                key="chart_select",
+                "Ver gráfico de precio", options=df["Ticker"].tolist(), key="chart_select",
             )
             if ticker_chart:
                 fig = plot_price(ticker_chart)
@@ -1010,32 +976,22 @@ def main():
 
         with col_g2:
             fig_scatter = px.scatter(
-                df,
-                x="Extrínseco_%",
-                y="Downside_Prot_%",
-                text="Ticker",
+                df, x="Extrínseco_%", y="Downside_Prot_%", text="Ticker",
                 color="Downside_Prot_%",
                 color_continuous_scale=["#dd6974", "#e8af34", "#6daa45"],
                 title="Downside Protection vs Extrínseco%",
-                template="plotly_dark",
-                height=420,
-                labels={
-                    "Extrínseco_%": "Extrínseco (%)",
-                    "Downside_Prot_%": "Downside Protection (%)",
-                },
+                template="plotly_dark", height=420,
+                labels={"Extrínseco_%": "Extrínseco (%)", "Downside_Prot_%": "Downside Protection (%)"},
             )
             fig_scatter.update_traces(textposition="top center", marker_size=10)
             st.plotly_chart(fig_scatter, use_container_width=True)
 
         fig_bar = px.bar(
-            df.head(20),
-            x="Ticker",
-            y="Downside_Prot_%",
+            df.head(20), x="Ticker", y="Downside_Prot_%",
             color="Downside_Prot_%",
             color_continuous_scale=["#dd6974", "#e8af34", "#6daa45"],
             title="Top 20 — Downside Protection % (mayor = más deep ITM)",
-            template="plotly_dark",
-            height=400,
+            template="plotly_dark", height=400,
             labels={"Downside_Prot_%": "Downside Protection (%)"},
         )
         st.plotly_chart(fig_bar, use_container_width=True)
