@@ -21,11 +21,46 @@ son una preferencia de trading):
 - Bid > 0 y Ask > 0 (opción realmente cotizada) [fijo]
 - Vencimiento = próximo viernes (DTE ≤ 7)
 
-RANKING: mayor downside protection % primero (más deep ITM = más protección)
+RANKING: mayor downside protection % primero (prima total/precio — más deep
+ITM = más protección; ver punto 11 del docstring)
 PRECIO DE OPCIÓN: midprice (bid+ask)/2 siempre
 PRECIO DEL SUBYACENTE PARA INTRÍNSECO/EXTRÍNSECO: precio en vivo (fast_info),
 con fallback automático y transparente al último cierre histórico si no hay
 precio en vivo disponible (fin de semana, fallo puntual de red, etc.)
+
+ARQUITECTURA (v3.6) — CAMBIOS DE ESTA REVISIÓN
+------------------------------------------------
+11. FIX: DOWNSIDE_PROT_% DEBE INCLUIR EL EXTRÍNSECO, NO SOLO EL INTRÍNSECO.
+Contrastado con la metodología estándar del sector (p. ej. Born To Sell,
+uno de los screeners de referencia para deep ITM covered calls): la
+protección real de una covered call es la prima TOTAL cobrada
+(intrínseco + extrínseco) respecto al precio — es la misma distancia
+que separa el precio actual del Breakeven (current_price - mid). El
+código calculaba Downside_Prot_% usando SOLO el intrínseco
+(itm["intrinsic"] / current_price), lo cual es inconsistente con el
+propio Breakeven (que sí usa la prima completa) e infravalora la
+protección real exactamente en el importe del extrínseco cobrado — la
+misma magnitud que todo el screener está optimizando. Se corrige a
+itm["mid"] / current_price, y se añade una columna nueva,
+Prot_Intrinseca_%, para quien quiera ver por separado la parte "dura"
+(estructural, no perecedera) de la protección frente a la parte que
+depende del valor tiempo cobrado.
+12. AVISO VISUAL DE IV/RV EXTREMO ("demasiado bueno para ser verdad").
+Al quitar el techo de extrínseco (v3.5), también se abre la puerta a
+primas anormalmente altas por riesgo de evento (FDA, litigios, rumor de
+M&A) que ni el filtro de earnings ni el de tendencia detectan — Born To
+Sell advierte explícitamente de este patrón (su ejemplo: un 110% de
+retorno anualizado con 40% de protección resultó ser una biotech con
+catalizador FDA pendiente). La columna IV_RV ya existía pero era fácil
+pasarla por alto; ahora se resalta visualmente en la tabla cuando el
+ratio es alto (>=1.8 aviso, >=2.5 alerta), como recordatorio para
+investigar el nombre antes de operar. Sigue siendo solo un aviso, no un
+filtro — un IV alto puede ser perfectamente legítimo en un nombre
+volátil de toda la vida.
+13. FIX: _clean_ticker() tenía un reemplazo inútil (.replace("&", "&"),
+no hace nada). Se corrige a .replace("&amp;", "&") — necesario si el
+universo se scrapea de tablas HTML donde tickers como "AT&T" pueden
+llegar sin decodificar como "AT&amp;T".
 
 ARQUITECTURA (v3.5) — CAMBIOS DE ESTA REVISIÓN
 ------------------------------------------------
@@ -293,7 +328,7 @@ def _with_timeout(fn, args=(), kwargs=None):
 def _clean_ticker(raw):
     if raw is None:
         return None
-    t = str(raw).strip().upper().replace("&", "&")
+    t = str(raw).strip().replace("&amp;", "&").upper()
     if not t or t in ("-", "NAN", "N/A", ""):
         return None
     return t.replace(" ", "")
@@ -632,7 +667,16 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
         itm["extrinsic_pct"] = itm["extrinsic"] / current_price * 100
         itm["spread_dollar"] = itm["ask"] - itm["bid"]
         itm["spread_pct"] = itm["spread_dollar"] / itm["mid"] * 100
-        itm["downside_prot"] = itm["intrinsic"] / current_price * 100
+        # Punto 11 del docstring: la protección real de una covered call es
+        # la prima TOTAL cobrada (intrínseco + extrínseco) respecto al
+        # precio, no solo el intrínseco. Es la misma cantidad que ya usa
+        # Breakeven (current_price - mid) — antes este campo solo restaba
+        # el intrínseco, infravalorando la protección real por el importe
+        # exacto del extrínseco cobrado (justo lo que se está optimizando
+        # en todo el screener). Coincide con la metodología estándar del
+        # sector (p.ej. Born To Sell: protección = prima total / precio).
+        itm["downside_prot"] = itm["mid"] / current_price * 100
+        itm["downside_prot_intrinsic"] = itm["intrinsic"] / current_price * 100
 
         itm = itm[itm["extrinsic"] > 0]
         if itm.empty:
@@ -670,6 +714,7 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
             "extrinsic": round(float(best["extrinsic"]), 2),
             "extrinsic_pct": round(float(best["extrinsic_pct"]), 3),
             "downside_prot": round(float(best["downside_prot"]), 2),
+            "downside_prot_intrinsic": round(float(best["downside_prot_intrinsic"]), 2),
             "spread_pct": round(float(best["spread_pct"]), 2),
             "oi": int(best["oi"]),
             "volume": int(pd.to_numeric(best.get("volume", 0), errors="coerce") or 0),
@@ -810,6 +855,7 @@ def phase2_options_filter(survivor, params):
             "DTE": dte,
             "Strike": candidate["strike"],
             "Downside_Prot_%": candidate["downside_prot"],
+            "Prot_Intrinseca_%": candidate["downside_prot_intrinsic"],
             "Extrínseco_%": candidate["extrinsic_pct"],
             "En_Banda": candidate["in_target_band"],
             "Prima_Mid": candidate["mid"],
@@ -943,7 +989,7 @@ def main():
         "Vencimiento próximo viernes · "
         "Ranking por mayor downside protection**"
     )
-    st.caption("⚙️ v3.5 — extrínseco como umbral mínimo (antes banda), caché anti-throttling, filtro de tendencia por niveles, dividendo visible")
+    st.caption("⚙️ v3.6 — downside protection corregida (incluye extrínseco), aviso IV/RV extremo, fix ticker cleaning")
     st.divider()
 
     # ── Universo ───────────────────────────────────────────────────────
@@ -1208,7 +1254,7 @@ def main():
 
     with tab1:
         cols_show = [
-            "Rank", "Ticker", "Precio", "Strike", "Downside_Prot_%",
+            "Rank", "Ticker", "Precio", "Strike", "Downside_Prot_%", "Prot_Intrinseca_%",
             "Extrínseco_%", "En_Banda", "Prima_Mid", "Bid", "Ask",
             "Breakeven", "Delta", "DTE", "Vencimiento",
             "IV_%", "RV_%", "IV_RV", "Ret_Anualizado_%",
@@ -1225,10 +1271,40 @@ def main():
                 return "background-color:#3a3a1e; color:#e8af34"
             return ""
 
+        def color_iv_rv(val):
+            # Punto 12 del docstring: un IV muy por encima de la RV suele
+            # indicar riesgo de evento (FDA, litigio, M&A rumor) que ni el
+            # filtro de earnings ni el de tendencia detectan — Born To Sell
+            # advierte de esto explícitamente (retornos "demasiado buenos
+            # para ser verdad" suelen ser biotechs con catalizador binario
+            # pendiente). Es solo un aviso visual, no un filtro: a veces el
+            # IV alto es legítimo (nombre volátil de toda la vida).
+            try:
+                if val is None or pd.isna(val):
+                    return ""
+                if val >= 2.5:
+                    return "background-color:#3a1e1e; color:#dd6974"
+                if val >= 1.8:
+                    return "background-color:#3a3a1e; color:#e8af34"
+            except Exception:
+                pass
+            return ""
+
+        styler = df[cols_show].style.map(color_downside, subset=["Downside_Prot_%"])
+        if "IV_RV" in cols_show:
+            styler = styler.map(color_iv_rv, subset=["IV_RV"])
+
         st.dataframe(
-            df[cols_show].style.map(color_downside, subset=["Downside_Prot_%"]),
+            styler,
             use_container_width=True, height=550,
         )
+        if "IV_RV" in cols_show:
+            st.caption(
+                "🟧🟥 IV_RV resaltado = la IV de la opción supera con creces la "
+                "volatilidad realizada reciente. No es necesariamente malo, pero "
+                "conviene mirar por qué antes de operar (catalizador conocido, "
+                "M&A, litigio, evento regulatorio...) — ver punto 12 del docstring."
+            )
 
         csv = df.to_csv(index=False).encode("utf-8")
         st.download_button(
@@ -1257,7 +1333,8 @@ def main():
 | 🔺 Intrínseco | ${row['Intrínseco']} |
 | 🔹 Extrínseco | ${row['Extrínseco_$']} ({row['Extrínseco_%']}%) |
 | 🎯 Cumple umbral mínimo | {"Sí" if row.get('En_Banda') else "No (modo diagnóstico)"} |
-| 🛡️ Downside protection | **{row['Downside_Prot_%']}%** |
+| 🛡️ Downside protection (prima total) | **{row['Downside_Prot_%']}%** |
+| 🧱 · de la cual, solo intrínseco | {row.get('Prot_Intrinseca_%', 'N/D')}% |
 | ⚖️ Breakeven | ${row['Breakeven']} |
 | 📐 Delta | {row['Delta']} |
 """)
@@ -1285,11 +1362,11 @@ def main():
             ext = row["Extrínseco_%"]
 
             if prot >= 15:
-                st.success(f"🟢 **Protección excelente**: el precio puede caer un {prot:.1f}% antes de que entres en pérdida.")
+                st.success(f"🟢 **Protección excelente**: el precio puede caer un {prot:.1f}% antes de que entres en pérdida (incluye la prima total cobrada, no solo el intrínseco).")
             elif prot >= 10:
-                st.warning(f"🟡 **Protección moderada**: el precio puede caer un {prot:.1f}% antes de pérdida.")
+                st.warning(f"🟡 **Protección moderada**: el precio puede caer un {prot:.1f}% antes de pérdida (prima total).")
             else:
-                st.error(f"🔴 **Protección baja**: solo {prot:.1f}% de margen bajista.")
+                st.error(f"🔴 **Protección baja**: solo {prot:.1f}% de margen bajista (prima total).")
 
             st.info(
                 f"Con un extrínseco del **{ext}%** sobre un precio de **${row['Precio']}**, "
