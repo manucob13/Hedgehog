@@ -48,6 +48,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 import warnings
 import socket
+import logging
 import plotly.graph_objects as go
 import plotly.express as px
 
@@ -55,6 +56,16 @@ from utils.utils import check_password
 from utils.tickers import create_tickers_universe
 
 warnings.filterwarnings('ignore')
+
+# Logs visibles en Streamlit Cloud: menú "Manage app" (abajo a la derecha
+# de la app desplegada) → pestaña "Logs". Ahí se ve esto en tiempo real,
+# server-side, independientemente de lo que pinte la UI.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("cc_itm_screener")
+logger.info(f"yfinance version = {getattr(yf, '__version__', 'desconocida')}")
 
 # Sin esto, una llamada a Yahoo que se quede colgada (sin dar error ni
 # timeout) bloquea indefinidamente el socket subyacente. Como la Fase 1
@@ -130,23 +141,17 @@ def _reset_debug():
 
 def _with_timeout(fn, args=(), kwargs=None, timeout=SOCKET_TIMEOUT + 5):
     """
-    Ejecuta fn en un hilo aparte y espera como mucho `timeout` segundos.
-    socket.setdefaulttimeout() no siempre basta: algunas versiones de
-    yfinance usan curl_cffi por debajo, que no respeta el timeout de
-    socket de Python. Este wrapper pone un límite duro e independiente:
-    si fn no responde a tiempo, lanzamos TimeoutError y seguimos con el
-    siguiente ticker en vez de congelar todo el pipeline. El hilo colgado
-    queda huérfano en segundo plano (inofensivo) en vez de bloquear al
-    resto — por eso se crea un executor nuevo por llamada en vez de
-    reutilizar uno con pocos workers.
+    DESACTIVADO (v3.1): crear un ThreadPoolExecutor nuevo en cada llamada
+    a Yahoo (una por ticker en Fase 1, hasta 3 más por superviviente en
+    Fase 2) genera ráfagas de cientos de hilos en un escaneo normal — en
+    Streamlit Community Cloud (CPU compartida) eso dispara el throttling
+    de la plataforma ("Your app has been throttled"), que a su vez puede
+    degradar/romper la ejecución de formas que parecen bugs de datos pero
+    no lo son. socket.setdefaulttimeout() ya acota los cuelgues de red sin
+    coste de hilos adicionales, así que simplemente ejecutamos fn directo.
     """
     kwargs = kwargs or {}
-    ex = ThreadPoolExecutor(max_workers=1)
-    future = ex.submit(fn, *args, **kwargs)
-    try:
-        return future.result(timeout=timeout)
-    finally:
-        ex.shutdown(wait=False)
+    return fn(*args, **kwargs)
 
 
 # ======================================================================
@@ -197,13 +202,13 @@ def get_daily_data(ticker, use_lock=True):
     try:
         end   = datetime.now() + timedelta(days=1)
         start = end - timedelta(days=120)
+        logger.info(f"[{ticker}] descarga: start={start.date()} end={end.date()} use_lock={use_lock}")
 
         def _do_download():
             return yf.download(
                 ticker, start=start, end=end,
                 interval="1d", auto_adjust=False,
                 multi_level_index=False, progress=False,
-                timeout=SOCKET_TIMEOUT,
             )
 
         if use_lock:
@@ -213,16 +218,31 @@ def get_daily_data(ticker, use_lock=True):
             data = _with_timeout(_do_download)
 
         if data is None or data.empty or len(data) < 35:
+            logger.warning(f"[{ticker}] descarga vacía o insuficiente: "
+                            f"{'None' if data is None else len(data)} filas")
             _record_debug("no_daily_data", f"{ticker}: descarga vacía o insuficiente histórico")
             return None
 
-        if pd.isna(data["Close"].iloc[-1]):
-            _record_debug("no_daily_data", f"{ticker}: último Close es NaN")
+        n_before = len(data)
+        tail_preview = data["Close"].tail(3).to_dict()
+        logger.info(f"[{ticker}] filas={n_before} columnas={list(data.columns)} "
+                    f"dtypes_close={data['Close'].dtype} tail3={tail_preview}")
+        data = data.dropna(subset=["Close"])
+        n_after = len(data)
+        if data.empty or len(data) < 35:
+            logger.warning(f"[{ticker}] tras dropna quedan {n_after}/{n_before} filas — descartado")
+            _record_debug(
+                "no_daily_data",
+                f"{ticker}: filas antes={n_before} después de limpiar NaN={n_after} · "
+                f"últimas 3 Close (crudas)={tail_preview}"
+            )
             return None
 
+        logger.info(f"[{ticker}] OK — último close válido = {data['Close'].iloc[-1]}")
         data.index = pd.to_datetime(data.index)
         return data
     except Exception as e:
+        logger.error(f"[{ticker}] EXCEPCIÓN: {type(e).__name__}: {e}")
         _record_debug("no_daily_data", f"{ticker}: {e}")
         return None
 
@@ -645,6 +665,58 @@ def main():
         "Ranking por mayor downside protection**"
     )
     st.caption("⚙️ v3 — pipeline en dos fases (precio en paralelo → opciones secuencial)")
+
+    # ── Test de conectividad directo, sin ninguna capa nuestra ─────────
+    with st.expander("🧪 Test de conectividad directo (1 ticker, sin lock/threads/wrapper)"):
+        st.caption(
+            f"yfinance instalado: **{getattr(yf, '__version__', 'desconocida')}** · "
+            "Esto llama a yf.download() puro, tal cual, para ver el dato crudo. "
+            "Los logs de esta prueba también salen en Streamlit Cloud → Manage app → Logs."
+        )
+        test_ticker = st.text_input("Ticker a probar", value="AAPL", key="raw_test_ticker")
+        if st.button("▶️ Probar ahora", key="raw_test_btn"):
+            t = _clean_ticker(test_ticker) or "AAPL"
+
+            st.markdown("**Método 1: `yf.download()`**")
+            try:
+                raw1 = yf.download(t, period="1mo", interval="1d", progress=False)
+                logger.info(f"[TEST] yf.download({t}) shape={raw1.shape if raw1 is not None else None}")
+                if raw1 is None or raw1.empty:
+                    st.error("Devolvió None o vacío.")
+                else:
+                    st.write(f"Shape: {raw1.shape} · Columnas: {list(raw1.columns)} · dtype Close: {raw1['Close'].dtype}")
+                    st.dataframe(raw1.tail(5))
+                    n_nan = raw1["Close"].isna().sum()
+                    st.write(f"Valores NaN en Close: {n_nan} / {len(raw1)}")
+            except Exception as e:
+                logger.error(f"[TEST] yf.download({t}) EXCEPCIÓN: {type(e).__name__}: {e}")
+                st.error(f"Excepción: {type(e).__name__}: {e}")
+
+            st.markdown("**Método 2: `yf.Ticker().history()`** (ruta distinta dentro de yfinance)")
+            try:
+                raw2 = yf.Ticker(t).history(period="1mo", interval="1d")
+                logger.info(f"[TEST] Ticker({t}).history() shape={raw2.shape if raw2 is not None else None}")
+                if raw2 is None or raw2.empty:
+                    st.error("Devolvió None o vacío.")
+                else:
+                    st.write(f"Shape: {raw2.shape} · Columnas: {list(raw2.columns)}")
+                    st.dataframe(raw2.tail(5))
+                    n_nan2 = raw2["Close"].isna().sum()
+                    st.write(f"Valores NaN en Close: {n_nan2} / {len(raw2)}")
+            except Exception as e:
+                logger.error(f"[TEST] Ticker({t}).history() EXCEPCIÓN: {type(e).__name__}: {e}")
+                st.error(f"Excepción: {type(e).__name__}: {e}")
+
+            st.markdown("**Método 3: `yf.Ticker().fast_info`** (endpoint de solo precio actual, distinto de los dos anteriores)")
+            try:
+                fi = yf.Ticker(t).fast_info
+                last_price = fi.get("lastPrice") if hasattr(fi, "get") else getattr(fi, "last_price", None)
+                logger.info(f"[TEST] fast_info({t}) lastPrice={last_price}")
+                st.write(f"last_price: {last_price}")
+            except Exception as e:
+                logger.error(f"[TEST] fast_info({t}) EXCEPCIÓN: {type(e).__name__}: {e}")
+                st.error(f"Excepción: {type(e).__name__}: {e}")
+
     st.divider()
 
     # ── Universo ───────────────────────────────────────────────────────
@@ -704,9 +776,11 @@ def main():
         st.markdown("**🧵 Concurrencia (solo Fase 1)**")
         max_workers = st.slider(
             "Requests en paralelo",
-            min_value=1, max_value=10, value=6,
+            min_value=1, max_value=10, value=3,
             help="Solo afecta a la descarga de precios (Fase 1). La Fase 2 "
-                 "(opciones) siempre corre secuencial, sin threads."
+                 "(opciones) siempre corre secuencial, sin threads. Valores "
+                 "altos pueden disparar el throttling de CPU de Streamlit "
+                 "Cloud en la capa gratuita — si te throttlean, baja esto a 1-2."
         )
 
         st.markdown("**📅 Próximo viernes**")
