@@ -1,24 +1,24 @@
 """
 Deep ITM Covered Call Screener
 ================================
-Objetivo: encontrar covered calls deep ITM con extrínseco 0.85%-1.00% semanal.
+Objetivo: encontrar covered calls deep ITM con extrínseco >= umbral mínimo semanal.
 
 FILTROS DUROS (todos activables/desactivables desde la UI salvo los marcados
 [fijo], que siempre están activos porque protegen la validez del dato, no
 son una preferencia de trading):
 - Precio del subyacente: rango configurable
-- Tendencia alcista, 4 niveles de exigencia         [selector]
-    Ninguno / Básico (Close>SMA30) / Medio (+ SMA30
-    con pendiente alcista) / Fuerte (+ SMA10>SMA30)
-- PCR < 1.0 (sesgo alcista)                       [toggle]
+- Tendencia alcista, 4 niveles de exigencia [selector]
+  Ninguno / Básico (Close>SMA30) / Medio (+ SMA30
+  con pendiente alcista) / Fuerte (+ SMA10>SMA30)
+- PCR < 1.0 (sesgo alcista) [toggle]
 - OI > 100 (liquidez mínima)
-- Sin earnings en los próximos 7 días             [toggle]
+- Sin earnings en los próximos 7 días [toggle]
 - Sin riesgo de dividendo (ex-div antes de vto.
-  con dividendo >= extrínseco capturado)          [toggle, ON por defecto]
+  con dividendo >= extrínseco capturado) [toggle, ON por defecto]
 - Spread bid-ask no superior al 50% del extrínseco
-  capturado (si no, la prima "no es real")        [fijo]
-- Extrínseco entre 0.85% y 1.00% del subyacente   [toggle: modo diagnóstico lo ignora]
-- Bid > 0 y Ask > 0 (opción realmente cotizada)   [fijo]
+  capturado (si no, la prima "no es real") [fijo]
+- Extrínseco >= umbral mínimo del subyacente [toggle: modo diagnóstico lo ignora]
+- Bid > 0 y Ask > 0 (opción realmente cotizada) [fijo]
 - Vencimiento = próximo viernes (DTE ≤ 7)
 
 RANKING: mayor downside protection % primero (más deep ITM = más protección)
@@ -27,111 +27,134 @@ PRECIO DEL SUBYACENTE PARA INTRÍNSECO/EXTRÍNSECO: precio en vivo (fast_info),
 con fallback automático y transparente al último cierre histórico si no hay
 precio en vivo disponible (fin de semana, fallo puntual de red, etc.)
 
+ARQUITECTURA (v3.5) — CAMBIOS DE ESTA REVISIÓN
+------------------------------------------------
+10. EXTRÍNSECO COMO UMBRAL MÍNIMO (antes: banda ±0.15%).
+Antes el usuario fijaba un "extrínseco objetivo" y el filtro construía
+automáticamente una banda [objetivo-0.15%, objetivo+0.15%] — cualquier
+strike con extrínseco por ENCIMA del techo también se descartaba, lo
+cual no tiene sentido económico (más extrínseco cobrado = mejor, no
+peor). Ahora el campo de la UI es directamente "Extrínseco mínimo (%)"
+y actúa como umbral: pasan todos los strikes con extrínseco_% >= ese
+valor, sin techo. Cambios:
+  · UI: un solo st.number_input "extrinsic_min" (ya no hay
+    extrinsic_target ni cálculo de extrinsic_max).
+  · find_deep_itm_candidate(): el filtro de banda
+    (extrinsic_min_pct <= x <= extrinsic_max_pct) pasa a ser un
+    filtro de umbral (x >= extrinsic_min_pct); ya no recibe
+    extrinsic_max_pct.
+  · candidate["in_target_band"] se renombra conceptualmente a
+    "cumple umbral" pero se mantiene la clave "in_target_band" (y la
+    columna "En_Banda" en resultados) para no romper el resto del
+    pipeline/UI; su significado ahora es "extrínseco >= mínimo".
+  · modo diagnóstico sigue igual: ignora el umbral por completo y
+    devuelve el mejor candidato ITM real del mercado.
+
 ARQUITECTURA (v3.4) — CAMBIOS DE ESTA REVISIÓN
 ------------------------------------------------
 9. FIX DE THROTTLING DE CPU (Streamlit Community Cloud).
-   La revisión anterior, sin querer, empeoró esto: quitar el lock de la
-   Fase 1 le dio paralelismo real (bien) pero también concurrencia real de
-   CPU/red (coste); y el filtro de dividendos añadió 2 llamadas de red más
-   por superviviente en Fase 2 (de 3 a 5 por ticker). Para un universo de
-   miles de tickers, eso es carga real. Cuatro cambios para bajarla sin
-   perder lo anterior:
-     · get_daily_data() (la llamada más repetida, una por ticker en cada
-       escaneo) ahora está cacheada 30 min con @st.cache_data. Durante una
-       sesión de ajuste de parámetros, donde se relanza el escaneo varias
-       veces sobre el mismo universo en pocos minutos, esto evita repetir
-       miles de descargas idénticas.
-     · get_earnings_and_dividend_info() también cacheada (6h — earnings y
-       dividendos no cambian intradía) y solo se llama si al menos uno de
-       los dos filtros (earnings o dividendo) está activo; si ambos están
-       apagados, se ahorra por completo esa llamada de red.
-     · MAX_WORKERS baja de 4 a 3 en la Fase 1, para no saturar la CPU
-       compartida de la capa gratuita ahora que la concurrencia es real.
-     · Nuevo modo "prueba rápida con universo reducido": un campo opcional
-       para escanear solo un puñado de tickers mientras se ajustan
-       parámetros, en vez de relanzar el universo completo cada vez.
+La revisión anterior, sin querer, empeoró esto: quitar el lock de la
+Fase 1 le dio paralelismo real (bien) pero también concurrencia real de
+CPU/red (coste); y el filtro de dividendos añadió 2 llamadas de red más
+por superviviente en Fase 2 (de 3 a 5 por ticker). Para un universo de
+miles de tickers, eso es carga real. Cuatro cambios para bajarla sin
+perder lo anterior:
+· get_daily_data() (la llamada más repetida, una por ticker en cada
+  escaneo) ahora está cacheada 30 min con @st.cache_data. Durante una
+  sesión de ajuste de parámetros, donde se relanza el escaneo varias
+  veces sobre el mismo universo en pocos minutos, esto evita repetir
+  miles de descargas idénticas.
+· get_earnings_and_dividend_info() también cacheada (6h — earnings y
+  dividendos no cambian intradía) y solo se llama si al menos uno de
+  los dos filtros (earnings o dividendo) está activo; si ambos están
+  apagados, se ahorra por completo esa llamada de red.
+· MAX_WORKERS baja de 4 a 3 en la Fase 1, para no saturar la CPU
+  compartida de la capa gratuita ahora que la concurrencia es real.
+· Nuevo modo "prueba rápida con universo reducido": un campo opcional
+  para escanear solo un puñado de tickers mientras se ajustan
+  parámetros, en vez de relanzar el universo completo cada vez.
 
 ARQUITECTURA (v3.3) — CAMBIOS DE ESTA REVISIÓN
 ------------------------------------------------
 7. FILTRO DE TENDENCIA MÁS ROBUSTO.
-   Antes "alcista" era solo Close > SMA30, un único cruce que da muchos
-   falsos positivos justo cuando el precio está pegado a la media (cruza
-   por arriba y por abajo varias veces en pocos días sin que haya
-   tendencia real). Ya se calculaba slope_up (si la SMA30 sube o baja)
-   pero nunca se usaba para filtrar, solo se mostraba en la tabla. Ahora
-   hay 3 niveles seleccionables en la UI, de menos a más exigente:
-     · Básico: Close > SMA30 (comportamiento anterior)
-     · Medio:  + la propia SMA30 tiene pendiente alcista (no basta con
-       estar por encima de una media que está bajando)
-     · Fuerte: + SMA10 > SMA30 (el corto plazo también confirma; evita
-       operar tendencias de fondo ya agotadas)
-   Los rechazos por pendiente/cruce SMA10 usan un motivo de embudo nuevo,
-   "weak_trend", separado de "below_sma30", para poder diferenciar en el
-   diagnóstico si el problema es el nivel de precio o el momentum.
+Antes "alcista" era solo Close > SMA30, un único cruce que da muchos
+falsos positivos justo cuando el precio está pegado a la media (cruza
+por arriba y por abajo varias veces en pocos días sin que haya
+tendencia real). Ya se calculaba slope_up (si la SMA30 sube o baja)
+pero nunca se usaba para filtrar, solo se mostraba en la tabla. Ahora
+hay 3 niveles seleccionables en la UI, de menos a más exigente:
+· Básico: Close > SMA30 (comportamiento anterior)
+· Medio: + la propia SMA30 tiene pendiente alcista (no basta con
+  estar por encima de una media que está bajando)
+· Fuerte: + SMA10 > SMA30 (el corto plazo también confirma; evita
+  operar tendencias de fondo ya agotadas)
+Los rechazos por pendiente/cruce SMA10 usan un motivo de embudo nuevo,
+"weak_trend", separado de "below_sma30", para poder diferenciar en el
+diagnóstico si el problema es el nivel de precio o el momentum.
 8. RIESGO DE DIVIDENDO VISIBLE Y CONTROLABLE.
-   El filtro de dividendo (punto 5, v3.2) era correcto pero opaco: se
-   aplicaba siempre sin checkbox propio y sin mostrar el dato subyacente,
-   así que no había forma de verificar por qué se descartaba un ticker ni
-   de desactivarlo si se quería. Ahora es un checkbox más en "Filtros
-   activables" (activado por defecto) y las columnas Ex_Div_Date /
-   Div_Estimado aparecen en la tabla de resultados para los candidatos
-   que sí pasan, de forma que el dato esté siempre a la vista.
+El filtro de dividendo (punto 5, v3.2) era correcto pero opaco: se
+aplicaba siempre sin checkbox propio y sin mostrar el dato subyacente,
+así que no había forma de verificar por qué se descartaba un ticker ni
+de desactivarlo si se quería. Ahora es un checkbox más en "Filtros
+activables" (activado por defecto) y las columnas Ex_Div_Date /
+Div_Estimado aparecen en la tabla de resultados para los candidatos
+que sí pasan, de forma que el dato esté siempre a la vista.
 
 ARQUITECTURA (v3.2) — CAMBIOS DE ESTA REVISIÓN
 ------------------------------------------------
 1. PRECIO EN VIVO PARA EL CÁLCULO DE INTRÍNSECO/EXTRÍNSECO.
-   Antes, current_price salía siempre del último Close histórico (día
-   anterior o cierre ya viejo). Con una banda de extrínseco de solo
-   ±0.15%, correr esto a media sesión del viernes con un precio de ayer
-   podía desalinear completamente el cálculo. Ahora, en Fase 2, se pide
-   stock.fast_info justo antes de construir el candidato — esto devuelve
-   el precio en vivo si el mercado está abierto, y el último precio
-   conocido (= último cierre) si está cerrado. Mismo código sirve para
-   "viernes a media sesión" y "fin de semana", sin ramas especiales.
-   El Close histórico se sigue usando (ahora ajustado, ver punto 4) solo
-   para SMA30/RV10, donde no hace falta esa precisión al segundo.
+Antes, current_price salía siempre del último Close histórico (día
+anterior o cierre ya viejo). Con una banda de extrínseco de solo
+±0.15%, correr esto a media sesión del viernes con un precio de ayer
+podía desalinear completamente el cálculo. Ahora, en Fase 2, se pide
+stock.fast_info justo antes de construir el candidato — esto devuelve
+el precio en vivo si el mercado está abierto, y el último precio
+conocido (= último cierre) si está cerrado. Mismo código sirve para
+"viernes a media sesión" y "fin de semana", sin ramas especiales.
+El Close histórico se sigue usando (ahora ajustado, ver punto 4) solo
+para SMA30/RV10, donde no hace falta esa precisión al segundo.
 2. FASE 1 REALMENTE PARALELA.
-   El _yfinance_lock envolvía toda la descarga dentro de cada tarea del
-   ThreadPoolExecutor, así que aunque hubiera N workers configurados solo
-   una descarga corría a la vez — el paralelismo no existía en la
-   práctica. Se ha quitado el lock: el propio ThreadPoolExecutor(max_workers=N)
-   ya acota la concurrencia real a N descargas simultáneas, que es
-   justamente lo que se buscaba. La concurrencia deja de ser un control
-   expuesto en la UI (ver punto 2b) y pasa a ser un valor fijo interno
-   conservador, para no generar throttling en Streamlit Community Cloud.
+El _yfinance_lock envolvía toda la descarga dentro de cada tarea del
+ThreadPoolExecutor, así que aunque hubiera N workers configurados solo
+una descarga corría a la vez — el paralelismo no existía en la
+práctica. Se ha quitado el lock: el propio ThreadPoolExecutor(max_workers=N)
+ya acota la concurrencia real a N descargas simultáneas, que es
+justamente lo que se buscaba. La concurrencia deja de ser un control
+expuesto en la UI (ver punto 2b) y pasa a ser un valor fijo interno
+conservador, para no generar throttling en Streamlit Community Cloud.
 2b. Se retira de la UI el slider "Requests en paralelo": es un detalle de
-   implementación, no una decisión de trading, y no debería exigir que el
-   usuario entienda internals de threading para usar el screener. Sigue
-   funcionando exactamente igual por debajo, con MAX_WORKERS fijado a un
-   valor seguro.
+implementación, no una decisión de trading, y no debería exigir que el
+usuario entienda internals de threading para usar el screener. Sigue
+funcionando exactamente igual por debajo, con MAX_WORKERS fijado a un
+valor seguro.
 3. FILTRO DE SPREAD RELATIVO AL EXTRÍNSECO.
-   Un OI alto (acumulado histórico) no garantiza que el spread bid-ask
-   actual sea razonable, sobre todo en deep ITM. Si el spread se come una
-   parte grande del extrínseco que se supone que estás cobrando, la prima
-   "real" capturable es mucho menor que la que muestra el mid price. Se
-   añade un filtro fijo: el spread en dólares no puede superar el 50% del
-   extrínseco en dólares del candidato.
+Un OI alto (acumulado histórico) no garantiza que el spread bid-ask
+actual sea razonable, sobre todo en deep ITM. Si el spread se come una
+parte grande del extrínseco que se supone que estás cobrando, la prima
+"real" capturable es mucho menor que la que muestra el mid price. Se
+añade un filtro fijo: el spread en dólares no puede superar el 50% del
+extrínseco en dólares del candidato.
 4. AUTO-ADJUST EN LA SERIE DIARIA.
-   get_daily_data() usaba auto_adjust=False. Si un ticker tuvo un split en
-   los últimos 120 días, el Close crudo tiene un salto de escala que
-   distorsiona la SMA30 (falsos "por debajo/encima de SMA30"). Ahora se
-   pide la serie ajustada (auto_adjust=True) para el cálculo de
-   SMA30/RV10/rango de precio en Fase 1.
+get_daily_data() usaba auto_adjust=False. Si un ticker tuvo un split en
+los últimos 120 días, el Close crudo tiene un salto de escala que
+distorsiona la SMA30 (falsos "por debajo/encima de SMA30"). Ahora se
+pide la serie ajustada (auto_adjust=True) para el cálculo de
+SMA30/RV10/rango de precio en Fase 1.
 5. FILTRO DE RIESGO DE DIVIDENDO.
-   No basta con evitar earnings: en covered calls deep ITM, la asignación
-   anticipada más probable ocurre justo antes de una fecha ex-dividendo
-   cuando el extrínseco que le queda a la opción es menor que el
-   dividendo a cobrar (a quien tiene la call comprada le compensa
-   ejercer antes para cobrar el dividendo). Se añade una consulta de
-   calendario de dividendos (ex-date) y del último dividendo pagado (como
-   estimación del próximo importe); si la ex-date cae antes o el mismo
-   día del vencimiento y el dividendo estimado es >= extrínseco del
-   candidato, se descarta con el motivo "dividend_risk".
+No basta con evitar earnings: en covered calls deep ITM, la asignación
+anticipada más probable ocurre justo antes de una fecha ex-dividendo
+cuando el extrínseco que le queda a la opción es menor que el
+dividendo a cobrar (a quien tiene la call comprada le compensa
+ejercer antes para cobrar el dividendo). Se añade una consulta de
+calendario de dividendos (ex-date) y del último dividendo pagado (como
+estimación del próximo importe); si la ex-date cae antes o el mismo
+día del vencimiento y el dividendo estimado es >= extrínseco del
+candidato, se descarta con el motivo "dividend_risk".
 6. VALIDACIÓN DE ASK.
-   Antes solo se exigía bid > 0. Si ask viene en 0/NaN (dato faltante, no
-   spread real), el mid quedaba artificialmente bajo (mid = bid/2),
-   pudiendo colar candidatos con extrínseco distorsionado. Ahora se exige
-   también ask > 0.
+Antes solo se exigía bid > 0. Si ask viene en 0/NaN (dato faltante, no
+spread real), el mid quedaba artificialmente bajo (mid = bid/2),
+pudiendo colar candidatos con extrínseco distorsionado. Ahora se exige
+también ask > 0.
 
 Historial de diagnóstico previo (se mantiene por referencia, sigue siendo
 la razón de fondo por la que el pipeline usa Ticker().history() y no
@@ -218,20 +241,20 @@ REASON_ORDER = [
 ]
 
 REASON_LABELS = {
-    "ok":                    "✅ Pasó todos los filtros",
-    "no_daily_data":         "Sin datos diarios (Fase 1 — yf.download)",
-    "price_out_of_range":    "Precio fuera de rango (Fase 1)",
-    "sma30_unavailable":     "No hay suficiente histórico para SMA30 (Fase 1)",
-    "below_sma30":           "Precio ≤ SMA30 — no alcista (Fase 1)",
-    "weak_trend":            "Tendencia insuficiente: SMA30 sin pendiente alcista o SMA10 no confirma (Fase 1)",
-    "earnings_this_week":    "Earnings en los próximos 7 días (Fase 2)",
-    "no_expirations":        "Sin vencimientos de opciones listados (Fase 2)",
-    "no_friday_expiration":  "Sin vencimiento viernes con DTE≤7 (Fase 2)",
-    "no_calls_chain":        "Cadena de calls vacía/no disponible (Fase 2)",
-    "pcr_bearish":           "PCR ≥ 1.0 — sesgo bajista (Fase 2)",
-    "no_itm_candidate":      "Sin strike ITM que cumpla extrínseco/OI/bid/ask/spread (Fase 2)",
-    "dividend_risk":         "Riesgo de asignación por dividendo antes del vencimiento (Fase 2)",
-    "error":                 "Excepción no controlada",
+    "ok": "✅ Pasó todos los filtros",
+    "no_daily_data": "Sin datos diarios (Fase 1 — yf.download)",
+    "price_out_of_range": "Precio fuera de rango (Fase 1)",
+    "sma30_unavailable": "No hay suficiente histórico para SMA30 (Fase 1)",
+    "below_sma30": "Precio ≤ SMA30 — no alcista (Fase 1)",
+    "weak_trend": "Tendencia insuficiente: SMA30 sin pendiente alcista o SMA10 no confirma (Fase 1)",
+    "earnings_this_week": "Earnings en los próximos 7 días (Fase 2)",
+    "no_expirations": "Sin vencimientos de opciones listados (Fase 2)",
+    "no_friday_expiration": "Sin vencimiento viernes con DTE≤7 (Fase 2)",
+    "no_calls_chain": "Cadena de calls vacía/no disponible (Fase 2)",
+    "pcr_bearish": "PCR ≥ 1.0 — sesgo bajista (Fase 2)",
+    "no_itm_candidate": "Sin strike ITM que cumpla extrínseco/OI/bid/ask/spread (Fase 2)",
+    "dividend_risk": "Riesgo de asignación por dividendo antes del vencimiento (Fase 2)",
+    "error": "Excepción no controlada",
 }
 
 _debug_lock = Lock()
@@ -239,25 +262,21 @@ _debug_samples = {}
 _price_samples = []
 _MAX_DEBUG_SAMPLES = 5
 
-
 def _record_debug(reason, msg):
     with _debug_lock:
         bucket = _debug_samples.setdefault(reason, [])
         if len(bucket) < _MAX_DEBUG_SAMPLES:
             bucket.append(str(msg)[:200])
 
-
 def _record_price(ticker, price):
     with _debug_lock:
         if len(_price_samples) < 5000:
             _price_samples.append((ticker, price))
 
-
 def _reset_debug():
     with _debug_lock:
         _debug_samples.clear()
         _price_samples.clear()
-
 
 def _with_timeout(fn, args=(), kwargs=None):
     """Ejecuta fn directo. El acotado de cuelgues de red ya lo da
@@ -267,7 +286,6 @@ def _with_timeout(fn, args=(), kwargs=None):
     kwargs = kwargs or {}
     return fn(*args, **kwargs)
 
-
 # ======================================================================
 # 0. UNIVERSO
 # ======================================================================
@@ -275,11 +293,10 @@ def _with_timeout(fn, args=(), kwargs=None):
 def _clean_ticker(raw):
     if raw is None:
         return None
-    t = str(raw).strip().upper().replace("&amp;", "&")
+    t = str(raw).strip().upper().replace("&", "&")
     if not t or t in ("-", "NAN", "N/A", ""):
         return None
     return t.replace(" ", "")
-
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
 def get_full_universe():
@@ -298,11 +315,9 @@ def get_full_universe():
     }
     return df[["Ticker"]].sort_values("Ticker").reset_index(drop=True), meta
 
-
 def refresh_universe():
     get_full_universe.clear()
     return get_full_universe()
-
 
 # ======================================================================
 # 1. DATOS DIARIOS (Fase 1 — paralela de verdad, ver punto 2 del docstring)
@@ -332,7 +347,7 @@ def get_daily_data(ticker):
     es corto para no servir datos desfasados en pleno día de mercado, pero
     cubre de sobra una sesión de prueba de parámetros."""
     try:
-        end   = datetime.now() + timedelta(days=1)
+        end = datetime.now() + timedelta(days=1)
         start = end - timedelta(days=120)
         logger.info(f"[{ticker}] descarga: start={start.date()} end={end.date()}")
 
@@ -372,7 +387,6 @@ def get_daily_data(ticker):
         _record_debug("no_daily_data", f"{ticker}: {e}")
         return None
 
-
 # ======================================================================
 # 1b. PRECIO EN VIVO (punto 1 del docstring)
 # ======================================================================
@@ -402,7 +416,6 @@ def get_live_price(stock, fallback_price):
         logger.warning(f"fast_info falló, uso fallback histórico: {e}")
     return fallback_price
 
-
 # ======================================================================
 # 2. TENDENCIA: SMA30 + pendiente + SMA10 (punto 7 del docstring)
 # ======================================================================
@@ -422,22 +435,21 @@ def get_trend_info(close):
     try:
         if len(close) < 35:
             return None
-        sma30      = close.rolling(30).mean()
-        sma10      = close.rolling(10).mean()
-        sma30_now  = float(sma30.iloc[-1])
+        sma30 = close.rolling(30).mean()
+        sma10 = close.rolling(10).mean()
+        sma30_now = float(sma30.iloc[-1])
         sma30_prev = float(sma30.iloc[-6])
-        sma10_now  = float(sma10.iloc[-1])
-        price      = float(close.iloc[-1])
+        sma10_now = float(sma10.iloc[-1])
+        price = float(close.iloc[-1])
         return {
-            "sma30":              round(sma30_now, 2),
-            "dist_sma30_pct":     round((price - sma30_now) / sma30_now * 100, 2),
-            "sma30_slope_up":     sma30_now > sma30_prev,
-            "sma10":              round(sma10_now, 2),
-            "sma10_above_sma30":  sma10_now > sma30_now,
+            "sma30": round(sma30_now, 2),
+            "dist_sma30_pct": round((price - sma30_now) / sma30_now * 100, 2),
+            "sma30_slope_up": sma30_now > sma30_prev,
+            "sma10": round(sma10_now, 2),
+            "sma10_above_sma30": sma10_now > sma30_now,
         }
     except Exception:
         return None
-
 
 # ======================================================================
 # 3. VOLATILIDAD REALIZADA
@@ -452,7 +464,6 @@ def get_rv10(close):
     except Exception:
         return None
 
-
 # ======================================================================
 # 4. BLACK-SCHOLES DELTA
 # ======================================================================
@@ -466,7 +477,6 @@ def bs_delta(S, K, T_years, sigma, r=RISK_FREE_RATE):
     except Exception:
         return None
 
-
 # ======================================================================
 # 5. PRÓXIMO VIERNES (DTE ≤ 7)
 # ======================================================================
@@ -478,10 +488,9 @@ def next_friday():
         days_ahead = 7
     return today + timedelta(days=days_ahead)
 
-
 def select_friday_expiration(expirations):
     target = next_friday()
-    today  = date.today()
+    today = date.today()
     for exp_str in expirations:
         exp = datetime.strptime(exp_str, "%Y-%m-%d").date()
         dte = (exp - today).days
@@ -493,7 +502,6 @@ def select_friday_expiration(expirations):
         if exp.weekday() == 4 and 1 <= dte <= 7:
             return exp_str, dte
     return None, None
-
 
 # ======================================================================
 # 6. EARNINGS PRÓXIMOS 7 DÍAS Y RIESGO DE DIVIDENDO (punto 5 del docstring)
@@ -512,9 +520,9 @@ def get_earnings_and_dividend_info(ticker):
     directa del throttling de Streamlit Community Cloud.
 
     Devuelve dict:
-      - earnings_date: date o None
-      - ex_div_date: date o None (próxima fecha ex-dividendo conocida)
-      - div_amount: float o None (estimación = último dividendo pagado)
+    - earnings_date: date o None
+    - ex_div_date: date o None (próxima fecha ex-dividendo conocida)
+    - div_amount: float o None (estimación = último dividendo pagado)
     """
     info = {"earnings_date": None, "ex_div_date": None, "div_amount": None}
     try:
@@ -547,12 +555,10 @@ def get_earnings_and_dividend_info(ticker):
 
     return info
 
-
 def has_earnings_this_week(earnings_date):
     if earnings_date is None:
         return False
     return date.today() <= earnings_date <= (date.today() + timedelta(days=7))
-
 
 def has_dividend_risk(ex_div_date, div_amount, exp_date_obj, extrinsic_dollar):
     """True si hay una ex-date de dividendo antes o el mismo día del
@@ -566,7 +572,6 @@ def has_dividend_risk(ex_div_date, div_amount, exp_date_obj, extrinsic_dollar):
     if today <= ex_div_date <= exp_date_obj:
         return div_amount >= extrinsic_dollar
     return False
-
 
 # ======================================================================
 # 7. PUT/CALL RATIO (sobre una cadena ya descargada, sin red)
@@ -586,14 +591,19 @@ def compute_pcr(calls, puts, current_price, range_pct=15):
     except Exception:
         return None
 
-
 # ======================================================================
 # 8. CANDIDATO DEEP ITM
 # ======================================================================
 
 def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
-                             extrinsic_min_pct, extrinsic_max_pct,
+                             extrinsic_min_pct,
                              min_oi, diagnostic_mode=False):
+    """extrinsic_min_pct actúa como UMBRAL MÍNIMO (punto 10 del docstring):
+    pasan todos los strikes con extrinsic_pct >= extrinsic_min_pct, sin
+    techo superior. En modo diagnóstico, se ignora este umbral y se
+    devuelve el mejor candidato ITM real del mercado (por downside
+    protection), para poder ver los valores reales aunque no cumplan el
+    mínimo configurado."""
     try:
         itm = calls_df[calls_df["strike"] < current_price].copy()
         if itm.empty:
@@ -617,11 +627,11 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
         if itm.empty:
             return None
 
-        itm["intrinsic"]     = current_price - itm["strike"]
-        itm["extrinsic"]     = itm["mid"] - itm["intrinsic"]
+        itm["intrinsic"] = current_price - itm["strike"]
+        itm["extrinsic"] = itm["mid"] - itm["intrinsic"]
         itm["extrinsic_pct"] = itm["extrinsic"] / current_price * 100
         itm["spread_dollar"] = itm["ask"] - itm["bid"]
-        itm["spread_pct"]    = itm["spread_dollar"] / itm["mid"] * 100
+        itm["spread_pct"] = itm["spread_dollar"] / itm["mid"] * 100
         itm["downside_prot"] = itm["intrinsic"] / current_price * 100
 
         itm = itm[itm["extrinsic"] > 0]
@@ -640,38 +650,38 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
         if diagnostic_mode:
             candidates = itm
         else:
-            candidates = itm[
-                (itm["extrinsic_pct"] >= extrinsic_min_pct) &
-                (itm["extrinsic_pct"] <= extrinsic_max_pct)
-            ]
+            # Punto 10: umbral mínimo, sin techo superior.
+            candidates = itm[itm["extrinsic_pct"] >= extrinsic_min_pct]
         if candidates.empty:
             return None
 
         best = candidates.sort_values("downside_prot", ascending=False).iloc[0]
 
         T_years = dte_calendar / 365.0
-        iv      = float(best.get("impliedVolatility") or 0)
-        delta   = bs_delta(current_price, float(best["strike"]), T_years, iv) if iv > 0 else None
+        iv = float(best.get("impliedVolatility") or 0)
+        delta = bs_delta(current_price, float(best["strike"]), T_years, iv) if iv > 0 else None
 
         return {
-            "strike":         float(best["strike"]),
-            "mid":            round(float(best["mid"]), 2),
-            "bid":            round(float(best["bid"]), 2),
-            "ask":            round(float(best["ask"]), 2),
-            "intrinsic":      round(float(best["intrinsic"]), 2),
-            "extrinsic":      round(float(best["extrinsic"]), 2),
-            "extrinsic_pct":  round(float(best["extrinsic_pct"]), 3),
-            "downside_prot":  round(float(best["downside_prot"]), 2),
-            "spread_pct":     round(float(best["spread_pct"]), 2),
-            "oi":             int(best["oi"]),
-            "volume":         int(pd.to_numeric(best.get("volume", 0), errors="coerce") or 0),
-            "iv_pct":         round(iv * 100, 2) if iv > 0 else None,
-            "delta":          delta,
-            "in_target_band": bool(extrinsic_min_pct <= float(best["extrinsic_pct"]) <= extrinsic_max_pct),
+            "strike": float(best["strike"]),
+            "mid": round(float(best["mid"]), 2),
+            "bid": round(float(best["bid"]), 2),
+            "ask": round(float(best["ask"]), 2),
+            "intrinsic": round(float(best["intrinsic"]), 2),
+            "extrinsic": round(float(best["extrinsic"]), 2),
+            "extrinsic_pct": round(float(best["extrinsic_pct"]), 3),
+            "downside_prot": round(float(best["downside_prot"]), 2),
+            "spread_pct": round(float(best["spread_pct"]), 2),
+            "oi": int(best["oi"]),
+            "volume": int(pd.to_numeric(best.get("volume", 0), errors="coerce") or 0),
+            "iv_pct": round(iv * 100, 2) if iv > 0 else None,
+            "delta": delta,
+            # Se mantiene la clave "in_target_band" (y la columna "En_Banda"
+            # en resultados) por compatibilidad con el resto del pipeline;
+            # su significado ahora es "extrínseco >= mínimo configurado".
+            "in_target_band": bool(float(best["extrinsic_pct"]) >= extrinsic_min_pct),
         }
     except Exception:
         return None
-
 
 # ======================================================================
 # 9a. FASE 1 — precio diario + SMA30 (paralela)
@@ -684,7 +694,7 @@ def phase1_price_filter(ticker, params):
         if data is None:
             return None, "no_daily_data"
 
-        close         = data["Close"]
+        close = data["Close"]
         current_price = float(close.iloc[-1])
         _record_price(ticker, current_price)
 
@@ -721,7 +731,6 @@ def phase1_price_filter(ticker, params):
         _record_debug("error", f"{ticker}: {e}")
         return None, "error"
 
-
 # ======================================================================
 # 9b. FASE 2 — opciones (SECUENCIAL, sin threads)
 # ======================================================================
@@ -730,8 +739,8 @@ def phase2_options_filter(survivor, params):
     """Recibe el registro de la Fase 1 y añade las métricas de opciones.
     Se llama en un bucle for normal, nunca dentro de un ThreadPoolExecutor,
     para no mezclar esta API de yfinance con las descargas paralelas."""
-    ticker           = survivor["Ticker"]
-    fallback_price   = survivor["current_price"]
+    ticker = survivor["Ticker"]
+    fallback_price = survivor["current_price"]
     try:
         stock = yf.Ticker(ticker)
 
@@ -763,7 +772,7 @@ def phase2_options_filter(survivor, params):
 
         chain = _with_timeout(lambda: stock.option_chain(exp_str))
         calls = chain.calls
-        puts  = chain.puts
+        puts = chain.puts
         if calls is None or calls.empty:
             return None, "no_calls_chain"
 
@@ -773,7 +782,7 @@ def phase2_options_filter(survivor, params):
 
         candidate = find_deep_itm_candidate(
             calls, current_price, dte,
-            params["extrinsic_min"], params["extrinsic_max"],
+            params["extrinsic_min"],
             params["min_oi"], diagnostic_mode=params["diagnostic_mode"],
         )
         if candidate is None:
@@ -792,7 +801,7 @@ def phase2_options_filter(survivor, params):
             if (candidate["iv_pct"] and survivor["rv"] and survivor["rv"] > 0) else None
         )
         annualized = round(candidate["extrinsic_pct"] * (365 / dte), 1) if dte > 0 else None
-        breakeven  = round(current_price - candidate["mid"], 2)
+        breakeven = round(current_price - candidate["mid"], 2)
 
         result = {
             "Ticker": ticker,
@@ -831,7 +840,6 @@ def phase2_options_filter(survivor, params):
         _record_debug("error", f"{ticker}: {e}")
         return None, "error"
 
-
 # ======================================================================
 # 10. ORQUESTADOR: Fase 1 (paralela) → Fase 2 (secuencial)
 # ======================================================================
@@ -839,7 +847,7 @@ def phase2_options_filter(survivor, params):
 def run_screener(tickers, params, progress_bar, status_text):
     _reset_debug()
     funnel = {r: 0 for r in REASON_ORDER}
-    total  = len(tickers)
+    total = len(tickers)
 
     # ── FASE 1: precio + SMA30, en paralelo de verdad (ver punto 2) ────
     status_text.text(f"🔍 Fase 1/2 — precio y tendencia: 0/{total}")
@@ -884,7 +892,6 @@ def run_screener(tickers, params, progress_bar, status_text):
 
     return df, funnel, debug_snapshot, price_snapshot
 
-
 # ======================================================================
 # 11. GRÁFICO DE PRECIO
 # ======================================================================
@@ -920,7 +927,6 @@ def plot_price(ticker):
     except Exception:
         return None
 
-
 # ======================================================================
 # 12. INTERFAZ STREAMLIT
 # ======================================================================
@@ -933,11 +939,11 @@ def main():
 
     st.title("🎯 Deep ITM Covered Call Screener")
     st.markdown(
-        "**Objetivo: extrínseco 0.85%-1.00% semanal · "
+        "**Objetivo: extrínseco mínimo semanal · "
         "Vencimiento próximo viernes · "
         "Ranking por mayor downside protection**"
     )
-    st.caption("⚙️ v3.4 — caché anti-throttling, filtro de tendencia por niveles, dividendo visible")
+    st.caption("⚙️ v3.5 — extrínseco como umbral mínimo (antes banda), caché anti-throttling, filtro de tendencia por niveles, dividendo visible")
     st.divider()
 
     # ── Universo ───────────────────────────────────────────────────────
@@ -958,7 +964,7 @@ def main():
             st.session_state["meta_universe"] = meta
 
     df_universe = st.session_state["df_universe"]
-    meta        = st.session_state["meta_universe"]
+    meta = st.session_state["meta_universe"]
     tickers_all = df_universe["Ticker"].tolist()
 
     with col_info:
@@ -978,14 +984,14 @@ def main():
     c1, c2, c3 = st.columns(3)
 
     with c1:
-        st.markdown("**💰 Extrínseco objetivo**")
-        extrinsic_target = st.number_input(
-            "Extrínseco objetivo (% del precio, semanal)",
-            min_value=0.10, max_value=5.00, value=1.00, step=0.05,
-            help="Se admite ±0.15% alrededor de este valor como banda válida."
+        st.markdown("**💰 Extrínseco mínimo**")
+        extrinsic_min = st.number_input(
+            "Extrínseco mínimo (% del precio, semanal)",
+            min_value=0.10, max_value=5.00, value=0.85, step=0.05,
+            help="Umbral mínimo: pasan todos los strikes con extrínseco >= "
+                 "este valor, sin techo superior. Un extrínseco más alto "
+                 "que el mínimo es mejor, no se descarta."
         )
-        extrinsic_min = round(extrinsic_target - 0.15, 3)
-        extrinsic_max = round(extrinsic_target + 0.15, 3)
 
         st.markdown("**💲 Precio del subyacente**")
         min_price, max_price = st.slider(
@@ -997,8 +1003,8 @@ def main():
         min_oi = st.number_input("OI mínimo del strike", min_value=10, max_value=10000, value=100, step=50)
 
         st.markdown("**📅 Próximo viernes**")
-        today    = date.today()
-        friday   = next_friday()
+        today = date.today()
+        friday = next_friday()
         dte_days = (friday - today).days
         st.info(f"📅 Próximo viernes: **{friday.strftime('%d %b %Y')}** (DTE: {dte_days} días)")
 
@@ -1041,9 +1047,9 @@ def main():
                  "resultados aunque este filtro esté desactivado."
         )
         diagnostic_mode = st.checkbox(
-            "🔬 Modo diagnóstico (ignora banda de extrínseco)", value=False,
-            help="Devuelve el mejor candidato ITM aunque su extrínseco no esté "
-                 "en el rango objetivo, para ver los valores reales del mercado."
+            "🔬 Modo diagnóstico (ignora el umbral de extrínseco)", value=False,
+            help="Devuelve el mejor candidato ITM aunque su extrínseco no alcance "
+                 "el mínimo configurado, para ver los valores reales del mercado."
         )
         st.caption(
             "Siempre activos (no configurables): bid>0 y ask>0, y spread ≤ 50% "
@@ -1051,16 +1057,15 @@ def main():
         )
 
     params = {
-        "extrinsic_min":       extrinsic_min,
-        "extrinsic_max":       extrinsic_max,
-        "min_price":           min_price,
-        "max_price":           max_price,
-        "min_oi":              min_oi,
-        "trend_strength":      trend_strength,
-        "use_pcr_filter":      use_pcr_filter,
+        "extrinsic_min": extrinsic_min,
+        "min_price": min_price,
+        "max_price": max_price,
+        "min_oi": min_oi,
+        "trend_strength": trend_strength,
+        "use_pcr_filter": use_pcr_filter,
         "use_earnings_filter": use_earnings_filter,
         "use_dividend_filter": use_dividend_filter,
-        "diagnostic_mode":     diagnostic_mode,
+        "diagnostic_mode": diagnostic_mode,
     }
 
     st.divider()
@@ -1082,7 +1087,6 @@ def main():
             "Tickers de prueba (separados por coma o espacio)",
             value="", placeholder="AAPL, MSFT, NVDA, KO",
         )
-
     test_tickers = [
         _clean_ticker(t) for t in test_tickers_raw.replace(",", " ").split()
     ] if test_tickers_raw.strip() else []
@@ -1113,7 +1117,7 @@ def main():
             return
 
         progress_bar = st.progress(0)
-        status_text  = st.empty()
+        status_text = st.empty()
         df_results, funnel, debug_snapshot, price_snapshot = run_screener(
             scan_tickers, params, progress_bar, status_text
         )
@@ -1252,7 +1256,7 @@ def main():
 | 📊 Bid / Ask | ${row['Bid']} / ${row['Ask']} |
 | 🔺 Intrínseco | ${row['Intrínseco']} |
 | 🔹 Extrínseco | ${row['Extrínseco_$']} ({row['Extrínseco_%']}%) |
-| 🎯 En banda objetivo | {"Sí" if row.get('En_Banda') else "No (modo diagnóstico)"} |
+| 🎯 Cumple umbral mínimo | {"Sí" if row.get('En_Banda') else "No (modo diagnóstico)"} |
 | 🛡️ Downside protection | **{row['Downside_Prot_%']}%** |
 | ⚖️ Breakeven | ${row['Breakeven']} |
 | 📐 Delta | {row['Delta']} |
@@ -1278,7 +1282,7 @@ def main():
             st.markdown("### 💡 Interpretación")
 
             prot = row["Downside_Prot_%"]
-            ext  = row["Extrínseco_%"]
+            ext = row["Extrínseco_%"]
 
             if prot >= 15:
                 st.success(f"🟢 **Protección excelente**: el precio puede caer un {prot:.1f}% antes de que entres en pérdida.")
@@ -1329,7 +1333,6 @@ def main():
             labels={"Downside_Prot_%": "Downside Protection (%)"},
         )
         st.plotly_chart(fig_bar, use_container_width=True)
-
 
 if __name__ == "__main__":
     main()
