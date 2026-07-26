@@ -701,11 +701,13 @@ def main():
 
     with c1:
         st.markdown("**💰 Extrínseco objetivo**")
-        extrinsic_min, extrinsic_max = st.slider(
-            "Rango extrínseco (% del precio)",
-            min_value=0.50, max_value=2.00, value=(0.85, 1.00), step=0.05,
-            help="Solo aplica si el modo diagnóstico está desactivado"
+        extrinsic_target = st.number_input(
+            "Extrínseco objetivo (% del precio, semanal)",
+            min_value=0.10, max_value=5.00, value=1.00, step=0.05,
+            help="Se admite ±0.15% alrededor de este valor como banda válida."
         )
+        extrinsic_min = round(extrinsic_target - 0.15, 3)
+        extrinsic_max = round(extrinsic_target + 0.15, 3)
 
         st.markdown("**💲 Precio del subyacente**")
         min_price, max_price = st.slider(
