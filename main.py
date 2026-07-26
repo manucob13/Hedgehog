@@ -2,22 +2,18 @@ import streamlit as st
 import sys
 import os
 from pathlib import Path
-
 # --- CONFIGURACIÓN DE RUTAS ---
 # Esto permite que 'from utils.utils import check_password' funcione siempre
 root_path = Path(__file__).parent.absolute()
 if str(root_path) not in sys.path:
     sys.path.append(str(root_path))
-
 # 1. CONFIGURACIÓN GLOBAL DE LA PESTAÑA Y LAYOUT
 st.set_page_config(
     page_title="Hedgehog opciones",
     layout="wide",
     page_icon="🦔"
 )
-
 # 2. DEFINICIÓN DE LAS PÁGINAS
-
 # --- Sección ESTRATEGIAS → Time Edge ---
 te_signals = st.Page(
     "Estrategias/TE/00 TE Signals.py", 
@@ -30,13 +26,11 @@ te_op_21dte = st.Page(
     title="Op 21DTE", 
     icon="🦔"
 )
-
 te_op_60dte = st.Page(
     "Estrategias/TE/02 TE Op 60DTE.py", 
     title="Op 60DTE", 
     icon="🦔"
 )
-
 # --- Sección ESTRATEGIAS → Triple Calendar ---
 tc_signals = st.Page(
     "Estrategias/TC/00 TC Signals.py", 
@@ -53,15 +47,33 @@ tc_ajustes = st.Page(
     title="Ajustes", 
     icon="🦉"
 )
-
 # --- Sección ESTRATEGIAS → WEIC ---
 weic_calculos = st.Page(
     "Estrategias/WEIC/00 WEIC Calculos.py", 
     title="Cálculos", 
     icon="🦉"
-
 )
-
+# --- Sección CARTERA ---
+cartera_panel = st.Page(
+    "Cartera/00 Panel.py", 
+    title="Panel", 
+    icon="📊"
+)
+cartera_calendario = st.Page(
+    "Cartera/01 Calendario.py", 
+    title="Calendario", 
+    icon="🗓️"
+)
+cartera_operaciones = st.Page(
+    "Cartera/02 Operaciones.py", 
+    title="Operaciones", 
+    icon="📋"
+)
+cartera_importar = st.Page(
+    "Cartera/03 Importar.py", 
+    title="Importar", 
+    icon="⬆️"
+)
 # --- Sección HERRAMIENTAS ---
 vix_term = st.Page(
     "Herramientas/01 VIX Term Structure.py", 
@@ -103,12 +115,17 @@ broker_test = st.Page(
     title="Broker Test", 
     icon="🔌"
 )
-
 # 3. CREACIÓN DE LA NAVEGACIÓN JERÁRQUICA
 pg = st.navigation({
     "Time Edge": [te_signals, te_op_21dte,te_op_60dte],
     "Triple Calendar": [tc_signals, tc_calculos,tc_ajustes],
     "WEIC": [weic_calculos],
+    "CARTERA": [
+        cartera_panel,
+        cartera_calendario,
+        cartera_operaciones,
+        cartera_importar
+    ],
     "HERRAMIENTAS": [
         vix_term, 
         trend_Zscore,
@@ -120,6 +137,5 @@ pg = st.navigation({
         broker_test
     ]
 })
-
 # 4. EJECUCIÓN
 pg.run()
