@@ -16,26 +16,22 @@ FILTROS DUROS (todos activables/desactivables desde la UI):
 RANKING: mayor downside protection % primero (más deep ITM = más protección)
 PRECIO DE OPCIÓN: midprice (bid+ask)/2 siempre
 
-ARQUITECTURA (v3) — CAMBIO IMPORTANTE
+ARQUITECTURA (v3.1) — CAMBIO IMPORTANTE
 --------------------------------------
-Versiones anteriores mezclaban, dentro del mismo ThreadPoolExecutor, llamadas
-a yf.download() (descarga masiva) CON llamadas a stock.options /
-stock.option_chain() / stock.calendar (API por objeto Ticker) — dos rutas de
-yfinance distintas golpeando la red concurrentemente desde varios hilos. Eso
-producía DataFrames con la forma correcta pero Close = NaN para tickers tan
-líquidos como AAPL, un patrón de corrupción silenciosa, no un simple 429.
-
-Ahora el pipeline está separado en DOS FASES, como en el screener de
-tendencia que sí funciona:
-
-  FASE 1 (paralela, con lock) — SOLO yf.download() de precio diario.
-      Aquí se filtra por rango de precio y SMA30.
-  FASE 2 (secuencial, sin threads) — SOLO llamadas a Ticker/options,
-      una detrás de otra, únicamente sobre los supervivientes de la fase 1.
-      Aquí se filtra por earnings, PCR y se busca el candidato ITM.
-
-Esto reduce drásticamente cuántos tickers necesitan la fase 2 (más lenta),
-y evita mezclar las dos rutas de red concurrentemente.
+Historial de diagnóstico de esta sesión (de mayor a menor impacto real):
+1. yf.download() devuelve columnas mal aplanadas en esta instalación
+   (AttributeError sobre 'Close' incluso con multi_level_index=False) —
+   confirmado con el test de conectividad en vivo. yf.Ticker().history()
+   SÍ funciona limpio. → Todo el pipeline usa ahora Ticker().history().
+2. La última fila de cada descarga puede ser la sesión de HOY sin cerrar
+   (Close = NaN) — se filtra con dropna(subset=["Close"]).
+3. Crear un ThreadPoolExecutor nuevo por cada llamada a Yahoo (protección
+   anti-cuelgue) dispara el throttling de CPU de Streamlit Community
+   Cloud con ráfagas de cientos de hilos — quitado, solo queda
+   socket.setdefaulttimeout() como red de seguridad barata.
+4. Pipeline en dos fases: Fase 1 (paralela, con lock) solo precio+SMA30;
+   Fase 2 (secuencial, sin threads) solo opciones — evita mezclar dos
+   rutas de red de yfinance concurrentemente.
 """
 
 import streamlit as st
@@ -195,20 +191,19 @@ def refresh_universe():
 # ======================================================================
 
 def get_daily_data(ticker, use_lock=True):
-    """Descarga precio diario. Mismo patrón exacto que download_weekly_data()
-    del screener de tendencia (que sí funciona): un solo yf.download(),
-    protegido por lock cuando se llama desde threads, sin mezclarlo con
-    ninguna otra API de yfinance."""
+    """Descarga precio diario. Usa yf.Ticker(ticker).history() en vez de
+    yf.download(): en esta instalación yf.download() devuelve columnas mal
+    aplanadas incluso con multi_level_index=False (confirmado con el test
+    de conectividad: AttributeError sobre 'Close'), mientras que
+    Ticker().history() funciona limpio y devuelve datos reales."""
     try:
         end   = datetime.now() + timedelta(days=1)
         start = end - timedelta(days=120)
         logger.info(f"[{ticker}] descarga: start={start.date()} end={end.date()} use_lock={use_lock}")
 
         def _do_download():
-            return yf.download(
-                ticker, start=start, end=end,
-                interval="1d", auto_adjust=False,
-                multi_level_index=False, progress=False,
+            return yf.Ticker(ticker).history(
+                start=start, end=end, interval="1d", auto_adjust=False
             )
 
         if use_lock:
@@ -677,17 +672,20 @@ def main():
         if st.button("▶️ Probar ahora", key="raw_test_btn"):
             t = _clean_ticker(test_ticker) or "AAPL"
 
-            st.markdown("**Método 1: `yf.download()`**")
+            st.markdown("**Método 1: `yf.download()`** (histórico: columnas mal aplanadas en esta instalación)")
             try:
                 raw1 = yf.download(t, period="1mo", interval="1d", progress=False)
-                logger.info(f"[TEST] yf.download({t}) shape={raw1.shape if raw1 is not None else None}")
+                close_col = raw1["Close"] if raw1 is not None else None
+                is_series = hasattr(close_col, "dtype")
+                logger.info(f"[TEST] yf.download({t}) shape={raw1.shape if raw1 is not None else None} "
+                            f"close_is_series={is_series}")
                 if raw1 is None or raw1.empty:
                     st.error("Devolvió None o vacío.")
                 else:
-                    st.write(f"Shape: {raw1.shape} · Columnas: {list(raw1.columns)} · dtype Close: {raw1['Close'].dtype}")
+                    st.write(f"Shape: {raw1.shape} · Columnas: {list(raw1.columns)} · "
+                              f"'Close' es Series (esperado) o DataFrame (roto): "
+                              f"{'Series ✅' if is_series else 'DataFrame ❌ — bug conocido en esta versión'}")
                     st.dataframe(raw1.tail(5))
-                    n_nan = raw1["Close"].isna().sum()
-                    st.write(f"Valores NaN en Close: {n_nan} / {len(raw1)}")
             except Exception as e:
                 logger.error(f"[TEST] yf.download({t}) EXCEPCIÓN: {type(e).__name__}: {e}")
                 st.error(f"Excepción: {type(e).__name__}: {e}")
