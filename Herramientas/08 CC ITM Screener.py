@@ -3,35 +3,95 @@ Deep ITM Covered Call Screener
 ================================
 Objetivo: encontrar covered calls deep ITM con extrínseco 0.85%-1.00% semanal.
 
-FILTROS DUROS (todos activables/desactivables desde la UI):
+FILTROS DUROS (todos activables/desactivables desde la UI salvo los marcados
+[fijo], que siempre están activos porque protegen la validez del dato, no
+son una preferencia de trading):
 - Precio del subyacente: rango configurable
 - Close > SMA30 (tendencia alcista)             [toggle]
 - PCR < 1.0 (sesgo alcista)                       [toggle]
 - OI > 100 (liquidez mínima)
 - Sin earnings en los próximos 7 días             [toggle]
+- Sin riesgo de dividendo (ex-div antes de vto.
+  con dividendo >= extrínseco capturado)          [fijo]
+- Spread bid-ask no superior al 50% del extrínseco
+  capturado (si no, la prima "no es real")        [fijo]
 - Extrínseco entre 0.85% y 1.00% del subyacente   [toggle: modo diagnóstico lo ignora]
-- Bid > 0 (opción negociable)
+- Bid > 0 y Ask > 0 (opción realmente cotizada)   [fijo]
 - Vencimiento = próximo viernes (DTE ≤ 7)
 
 RANKING: mayor downside protection % primero (más deep ITM = más protección)
 PRECIO DE OPCIÓN: midprice (bid+ask)/2 siempre
+PRECIO DEL SUBYACENTE PARA INTRÍNSECO/EXTRÍNSECO: precio en vivo (fast_info),
+con fallback automático y transparente al último cierre histórico si no hay
+precio en vivo disponible (fin de semana, fallo puntual de red, etc.)
 
-ARQUITECTURA (v3.1) — CAMBIO IMPORTANTE
---------------------------------------
-Historial de diagnóstico de esta sesión (de mayor a menor impacto real):
-1. yf.download() devuelve columnas mal aplanadas en esta instalación
-   (AttributeError sobre 'Close' incluso con multi_level_index=False) —
-   confirmado con el test de conectividad en vivo. yf.Ticker().history()
-   SÍ funciona limpio. → Todo el pipeline usa ahora Ticker().history().
-2. La última fila de cada descarga puede ser la sesión de HOY sin cerrar
-   (Close = NaN) — se filtra con dropna(subset=["Close"]).
-3. Crear un ThreadPoolExecutor nuevo por cada llamada a Yahoo (protección
-   anti-cuelgue) dispara el throttling de CPU de Streamlit Community
-   Cloud con ráfagas de cientos de hilos — quitado, solo queda
-   socket.setdefaulttimeout() como red de seguridad barata.
-4. Pipeline en dos fases: Fase 1 (paralela, con lock) solo precio+SMA30;
-   Fase 2 (secuencial, sin threads) solo opciones — evita mezclar dos
-   rutas de red de yfinance concurrentemente.
+ARQUITECTURA (v3.2) — CAMBIOS DE ESTA REVISIÓN
+------------------------------------------------
+1. PRECIO EN VIVO PARA EL CÁLCULO DE INTRÍNSECO/EXTRÍNSECO.
+   Antes, current_price salía siempre del último Close histórico (día
+   anterior o cierre ya viejo). Con una banda de extrínseco de solo
+   ±0.15%, correr esto a media sesión del viernes con un precio de ayer
+   podía desalinear completamente el cálculo. Ahora, en Fase 2, se pide
+   stock.fast_info justo antes de construir el candidato — esto devuelve
+   el precio en vivo si el mercado está abierto, y el último precio
+   conocido (= último cierre) si está cerrado. Mismo código sirve para
+   "viernes a media sesión" y "fin de semana", sin ramas especiales.
+   El Close histórico se sigue usando (ahora ajustado, ver punto 4) solo
+   para SMA30/RV10, donde no hace falta esa precisión al segundo.
+2. FASE 1 REALMENTE PARALELA.
+   El _yfinance_lock envolvía toda la descarga dentro de cada tarea del
+   ThreadPoolExecutor, así que aunque hubiera N workers configurados solo
+   una descarga corría a la vez — el paralelismo no existía en la
+   práctica. Se ha quitado el lock: el propio ThreadPoolExecutor(max_workers=N)
+   ya acota la concurrencia real a N descargas simultáneas, que es
+   justamente lo que se buscaba. La concurrencia deja de ser un control
+   expuesto en la UI (ver punto 2b) y pasa a ser un valor fijo interno
+   conservador, para no generar throttling en Streamlit Community Cloud.
+2b. Se retira de la UI el slider "Requests en paralelo": es un detalle de
+   implementación, no una decisión de trading, y no debería exigir que el
+   usuario entienda internals de threading para usar el screener. Sigue
+   funcionando exactamente igual por debajo, con MAX_WORKERS fijado a un
+   valor seguro.
+3. FILTRO DE SPREAD RELATIVO AL EXTRÍNSECO.
+   Un OI alto (acumulado histórico) no garantiza que el spread bid-ask
+   actual sea razonable, sobre todo en deep ITM. Si el spread se come una
+   parte grande del extrínseco que se supone que estás cobrando, la prima
+   "real" capturable es mucho menor que la que muestra el mid price. Se
+   añade un filtro fijo: el spread en dólares no puede superar el 50% del
+   extrínseco en dólares del candidato.
+4. AUTO-ADJUST EN LA SERIE DIARIA.
+   get_daily_data() usaba auto_adjust=False. Si un ticker tuvo un split en
+   los últimos 120 días, el Close crudo tiene un salto de escala que
+   distorsiona la SMA30 (falsos "por debajo/encima de SMA30"). Ahora se
+   pide la serie ajustada (auto_adjust=True) para el cálculo de
+   SMA30/RV10/rango de precio en Fase 1.
+5. FILTRO DE RIESGO DE DIVIDENDO.
+   No basta con evitar earnings: en covered calls deep ITM, la asignación
+   anticipada más probable ocurre justo antes de una fecha ex-dividendo
+   cuando el extrínseco que le queda a la opción es menor que el
+   dividendo a cobrar (a quien tiene la call comprada le compensa
+   ejercer antes para cobrar el dividendo). Se añade una consulta de
+   calendario de dividendos (ex-date) y del último dividendo pagado (como
+   estimación del próximo importe); si la ex-date cae antes o el mismo
+   día del vencimiento y el dividendo estimado es >= extrínseco del
+   candidato, se descarta con el motivo "dividend_risk".
+6. VALIDACIÓN DE ASK.
+   Antes solo se exigía bid > 0. Si ask viene en 0/NaN (dato faltante, no
+   spread real), el mid quedaba artificialmente bajo (mid = bid/2),
+   pudiendo colar candidatos con extrínseco distorsionado. Ahora se exige
+   también ask > 0.
+
+Historial de diagnóstico previo (se mantiene por referencia, sigue siendo
+la razón de fondo por la que el pipeline usa Ticker().history() y no
+yf.download(), y por la que existe el socket.setdefaulttimeout()):
+- yf.download() devolvía columnas mal aplanadas en esta instalación
+  (AttributeError sobre 'Close' incluso con multi_level_index=False) —
+  confirmado con el test de conectividad en vivo. Ticker().history() sí
+  funciona limpio. → Todo el pipeline usa Ticker().history().
+- La última fila de cada descarga puede ser la sesión de HOY sin cerrar
+  (Close = NaN) — se filtra con dropna(subset=["Close"]).
+- socket.setdefaulttimeout() como red de seguridad barata contra cuelgues
+  de red sin usar un ThreadPoolExecutor nuevo por llamada.
 """
 
 import streamlit as st
@@ -64,17 +124,24 @@ logger = logging.getLogger("cc_itm_screener")
 logger.info(f"yfinance version = {getattr(yf, '__version__', 'desconocida')}")
 
 # Sin esto, una llamada a Yahoo que se quede colgada (sin dar error ni
-# timeout) bloquea indefinidamente el socket subyacente. Como la Fase 1
-# serializa las descargas con un Lock, UN solo ticker colgado deja a TODOS
-# los hilos esperando para siempre — eso es lo que produce la barra de
-# progreso congelada. Este timeout global convierte cualquier cuelgue de
-# red en una excepción capturable en como mucho SOCKET_TIMEOUT segundos.
+# timeout) bloquea indefinidamente el socket subyacente. Este timeout
+# global convierte cualquier cuelgue de red en una excepción capturable en
+# como mucho SOCKET_TIMEOUT segundos.
 SOCKET_TIMEOUT = 15
 socket.setdefaulttimeout(SOCKET_TIMEOUT)
 
-# Lock global para las descargas de precio en la Fase 1 — mismo patrón que
-# el screener de tendencia que ya funciona en producción.
-_yfinance_lock = Lock()
+# Concurrencia de la Fase 1 (descarga de precios). Antes era un slider en
+# la UI; se ha vuelto un valor fijo interno (ver punto 2/2b del docstring):
+# es un detalle de implementación, no una decisión de trading, y un valor
+# más alto en Streamlit Community Cloud (CPU compartida) puede disparar
+# throttling de la plataforma. 4 es un punto conservador que da
+# paralelismo real ahora que se ha quitado el lock que lo anulaba.
+MAX_WORKERS = 4
+
+# Spread bid-ask máximo permitido, como % del extrínseco en dólares del
+# candidato. Si el spread se come más de esto, el extrínseco "de mid
+# price" no es realmente capturable. Ver punto 3 del docstring.
+SPREAD_MAX_PCT_OF_EXTRINSIC = 50.0
 
 _N = NormalDist()
 RISK_FREE_RATE = 0.045
@@ -92,6 +159,7 @@ REASON_ORDER = [
     "no_calls_chain",
     "pcr_bearish",
     "no_itm_candidate",
+    "dividend_risk",
     "error",
 ]
 
@@ -106,7 +174,8 @@ REASON_LABELS = {
     "no_friday_expiration":  "Sin vencimiento viernes con DTE≤7 (Fase 2)",
     "no_calls_chain":        "Cadena de calls vacía/no disponible (Fase 2)",
     "pcr_bearish":           "PCR ≥ 1.0 — sesgo bajista (Fase 2)",
-    "no_itm_candidate":      "Sin strike ITM que cumpla extrínseco/OI/bid (Fase 2)",
+    "no_itm_candidate":      "Sin strike ITM que cumpla extrínseco/OI/bid/ask/spread (Fase 2)",
+    "dividend_risk":         "Riesgo de asignación por dividendo antes del vencimiento (Fase 2)",
     "error":                 "Excepción no controlada",
 }
 
@@ -135,17 +204,11 @@ def _reset_debug():
         _price_samples.clear()
 
 
-def _with_timeout(fn, args=(), kwargs=None, timeout=SOCKET_TIMEOUT + 5):
-    """
-    DESACTIVADO (v3.1): crear un ThreadPoolExecutor nuevo en cada llamada
-    a Yahoo (una por ticker en Fase 1, hasta 3 más por superviviente en
-    Fase 2) genera ráfagas de cientos de hilos en un escaneo normal — en
-    Streamlit Community Cloud (CPU compartida) eso dispara el throttling
-    de la plataforma ("Your app has been throttled"), que a su vez puede
-    degradar/romper la ejecución de formas que parecen bugs de datos pero
-    no lo son. socket.setdefaulttimeout() ya acota los cuelgues de red sin
-    coste de hilos adicionales, así que simplemente ejecutamos fn directo.
-    """
+def _with_timeout(fn, args=(), kwargs=None):
+    """Ejecuta fn directo. El acotado de cuelgues de red ya lo da
+    socket.setdefaulttimeout() a nivel global; no hace falta un
+    ThreadPoolExecutor nuevo por llamada (eso disparaba throttling de CPU
+    en Streamlit Community Cloud, ver histórico de diagnóstico)."""
     kwargs = kwargs or {}
     return fn(*args, **kwargs)
 
@@ -187,30 +250,33 @@ def refresh_universe():
 
 
 # ======================================================================
-# 1. DATOS DIARIOS (Fase 1 — mismo patrón que el screener de tendencia)
+# 1. DATOS DIARIOS (Fase 1 — paralela de verdad, ver punto 2 del docstring)
 # ======================================================================
 
-def get_daily_data(ticker, use_lock=True):
-    """Descarga precio diario. Usa yf.Ticker(ticker).history() en vez de
-    yf.download(): en esta instalación yf.download() devuelve columnas mal
-    aplanadas incluso con multi_level_index=False (confirmado con el test
-    de conectividad: AttributeError sobre 'Close'), mientras que
-    Ticker().history() funciona limpio y devuelve datos reales."""
+def get_daily_data(ticker):
+    """Descarga precio diario AJUSTADO (auto_adjust=True) vía
+    yf.Ticker(ticker).history(): en esta instalación yf.download() devuelve
+    columnas mal aplanadas incluso con multi_level_index=False (confirmado
+    con el test de conectividad: AttributeError sobre 'Close'), mientras
+    que Ticker().history() funciona limpio.
+
+    auto_adjust=True (punto 4 del docstring): sin ajustar, un split en los
+    últimos 120 días metía un salto de escala en el Close crudo que
+    distorsionaba la SMA30. Esta serie ajustada es solo para SMA30/RV10 y
+    para el filtro de rango de precio de Fase 1 — el precio que realmente
+    se usa para intrínseco/extrínseco en Fase 2 es el precio en vivo
+    (ver get_live_price)."""
     try:
         end   = datetime.now() + timedelta(days=1)
         start = end - timedelta(days=120)
-        logger.info(f"[{ticker}] descarga: start={start.date()} end={end.date()} use_lock={use_lock}")
+        logger.info(f"[{ticker}] descarga: start={start.date()} end={end.date()}")
 
         def _do_download():
             return yf.Ticker(ticker).history(
-                start=start, end=end, interval="1d", auto_adjust=False
+                start=start, end=end, interval="1d", auto_adjust=True
             )
 
-        if use_lock:
-            with _yfinance_lock:
-                data = _with_timeout(_do_download)
-        else:
-            data = _with_timeout(_do_download)
+        data = _with_timeout(_do_download)
 
         if data is None or data.empty or len(data) < 35:
             logger.warning(f"[{ticker}] descarga vacía o insuficiente: "
@@ -229,17 +295,47 @@ def get_daily_data(ticker, use_lock=True):
             _record_debug(
                 "no_daily_data",
                 f"{ticker}: filas antes={n_before} después de limpiar NaN={n_after} · "
-                f"últimas 3 Close (crudas)={tail_preview}"
+                f"últimas 3 Close (ajustadas)={tail_preview}"
             )
             return None
 
-        logger.info(f"[{ticker}] OK — último close válido = {data['Close'].iloc[-1]}")
+        logger.info(f"[{ticker}] OK — último close ajustado válido = {data['Close'].iloc[-1]}")
         data.index = pd.to_datetime(data.index)
         return data
     except Exception as e:
         logger.error(f"[{ticker}] EXCEPCIÓN: {type(e).__name__}: {e}")
         _record_debug("no_daily_data", f"{ticker}: {e}")
         return None
+
+
+# ======================================================================
+# 1b. PRECIO EN VIVO (punto 1 del docstring)
+# ======================================================================
+
+def get_live_price(stock, fallback_price):
+    """Precio en vivo del subyacente vía fast_info, con fallback
+    transparente al último cierre histórico si no está disponible.
+
+    fast_info devuelve el último precio conocido tanto si el mercado está
+    abierto (precio en vivo real) como cerrado (= último cierre) — por eso
+    el mismo código sirve igual un viernes a media sesión que un fin de
+    semana, sin necesidad de detectar en qué caso estamos."""
+    try:
+        fi = _with_timeout(lambda: stock.fast_info)
+        lp = None
+        for key in ("last_price", "lastPrice"):
+            try:
+                val = fi[key] if hasattr(fi, "__getitem__") else getattr(fi, key, None)
+            except Exception:
+                val = None
+            if val is not None:
+                lp = val
+                break
+        if lp is not None and float(lp) > 0:
+            return float(lp)
+    except Exception as e:
+        logger.warning(f"fast_info falló, uso fallback histórico: {e}")
+    return fallback_price
 
 
 # ======================================================================
@@ -319,23 +415,71 @@ def select_friday_expiration(expirations):
 
 
 # ======================================================================
-# 6. EARNINGS PRÓXIMOS 7 DÍAS
+# 6. EARNINGS PRÓXIMOS 7 DÍAS Y RIESGO DE DIVIDENDO (punto 5 del docstring)
 # ======================================================================
 
-def has_earnings_this_week(stock):
+def get_earnings_and_dividend_info(stock):
+    """Una sola función que reúne fecha de earnings y datos de dividendo,
+    reutilizando stock.calendar para ambos y evitando llamadas de red
+    duplicadas.
+
+    Devuelve dict:
+      - earnings_date: date o None
+      - ex_div_date: date o None (próxima fecha ex-dividendo conocida)
+      - div_amount: float o None (estimación = último dividendo pagado)
+    """
+    info = {"earnings_date": None, "ex_div_date": None, "div_amount": None}
     try:
         cal = _with_timeout(lambda: stock.calendar)
-        if cal is None:
-            return False
-        ed = cal.get("Earnings Date")
-        if ed is None:
-            return False
-        if isinstance(ed, list):
-            ed = ed[0]
-        ed = pd.to_datetime(ed).date()
-        return date.today() <= ed <= (date.today() + timedelta(days=7))
+        if cal:
+            ed = cal.get("Earnings Date")
+            if isinstance(ed, list):
+                ed = ed[0] if ed else None
+            if ed is not None:
+                try:
+                    info["earnings_date"] = pd.to_datetime(ed).date()
+                except Exception:
+                    pass
+
+            exd = cal.get("Ex-Dividend Date")
+            if isinstance(exd, list):
+                exd = exd[0] if exd else None
+            if exd is not None:
+                try:
+                    info["ex_div_date"] = pd.to_datetime(exd).date()
+                except Exception:
+                    pass
     except Exception:
+        pass
+
+    try:
+        divs = _with_timeout(lambda: stock.dividends)
+        if divs is not None and not divs.empty:
+            info["div_amount"] = float(divs.iloc[-1])
+    except Exception:
+        pass
+
+    return info
+
+
+def has_earnings_this_week(earnings_date):
+    if earnings_date is None:
         return False
+    return date.today() <= earnings_date <= (date.today() + timedelta(days=7))
+
+
+def has_dividend_risk(ex_div_date, div_amount, exp_date_obj, extrinsic_dollar):
+    """True si hay una ex-date de dividendo antes o el mismo día del
+    vencimiento y el dividendo estimado es >= el extrínseco del candidato
+    (riesgo real de asignación anticipada). Si no hay datos suficientes de
+    dividendo, no se bloquea — más vale un falso negativo aquí que
+    descartar candidatos válidos por falta de dato."""
+    if ex_div_date is None or div_amount is None or div_amount <= 0:
+        return False
+    today = date.today()
+    if today <= ex_div_date <= exp_date_obj:
+        return div_amount >= extrinsic_dollar
+    return False
 
 
 # ======================================================================
@@ -373,7 +517,10 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
         itm["ask"] = pd.to_numeric(itm["ask"], errors="coerce").fillna(0)
         itm["mid"] = (itm["bid"] + itm["ask"]) / 2
 
-        itm = itm[(itm["bid"] > 0) & (itm["mid"] > 0)]
+        # Punto 6: exigir también ask > 0. Un ask en 0/NaN no es un spread
+        # real de $0, es un dato faltante — sin esto el mid quedaba
+        # artificialmente bajo (mid = bid/2) y distorsionaba el extrínseco.
+        itm = itm[(itm["bid"] > 0) & (itm["ask"] > 0) & (itm["mid"] > 0)]
         if itm.empty:
             return None
 
@@ -387,10 +534,20 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
         itm["intrinsic"]     = current_price - itm["strike"]
         itm["extrinsic"]     = itm["mid"] - itm["intrinsic"]
         itm["extrinsic_pct"] = itm["extrinsic"] / current_price * 100
-        itm["spread_pct"]    = (itm["ask"] - itm["bid"]) / itm["mid"] * 100
+        itm["spread_dollar"] = itm["ask"] - itm["bid"]
+        itm["spread_pct"]    = itm["spread_dollar"] / itm["mid"] * 100
         itm["downside_prot"] = itm["intrinsic"] / current_price * 100
 
         itm = itm[itm["extrinsic"] > 0]
+        if itm.empty:
+            return None
+
+        # Punto 3: el spread no puede comerse más de la mitad del
+        # extrínseco que se supone que se está cobrando — si no, el mid
+        # price no representa una prima realmente capturable.
+        itm = itm[
+            itm["spread_dollar"] <= itm["extrinsic"] * (SPREAD_MAX_PCT_OF_EXTRINSIC / 100)
+        ]
         if itm.empty:
             return None
 
@@ -435,9 +592,9 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
 # ======================================================================
 
 def phase1_price_filter(ticker, params):
-    """Solo yf.download(). Devuelve (registro_o_None, reason)."""
+    """Solo datos diarios. Devuelve (registro_o_None, reason)."""
     try:
-        data = get_daily_data(ticker, use_lock=True)
+        data = get_daily_data(ticker)
         if data is None:
             return None, "no_daily_data"
 
@@ -479,12 +636,14 @@ def phase2_options_filter(survivor, params):
     """Recibe el registro de la Fase 1 y añade las métricas de opciones.
     Se llama en un bucle for normal, nunca dentro de un ThreadPoolExecutor,
     para no mezclar esta API de yfinance con las descargas paralelas."""
-    ticker        = survivor["Ticker"]
-    current_price = survivor["current_price"]
+    ticker           = survivor["Ticker"]
+    fallback_price   = survivor["current_price"]
     try:
         stock = yf.Ticker(ticker)
 
-        if params["use_earnings_filter"] and has_earnings_this_week(stock):
+        cal_info = get_earnings_and_dividend_info(stock)
+
+        if params["use_earnings_filter"] and has_earnings_this_week(cal_info["earnings_date"]):
             return None, "earnings_this_week"
 
         expirations = _with_timeout(lambda: stock.options)
@@ -494,6 +653,12 @@ def phase2_options_filter(survivor, params):
         exp_str, dte = select_friday_expiration(expirations)
         if exp_str is None:
             return None, "no_friday_expiration"
+        exp_date_obj = datetime.strptime(exp_str, "%Y-%m-%d").date()
+
+        # Punto 1: precio en vivo para todo lo que dependa de precisión de
+        # precio (PCR, intrínseco/extrínseco), con fallback transparente
+        # al cierre histórico ya calculado en Fase 1.
+        current_price = get_live_price(stock, fallback_price)
 
         chain = _with_timeout(lambda: stock.option_chain(exp_str))
         calls = chain.calls
@@ -513,6 +678,11 @@ def phase2_options_filter(survivor, params):
         if candidate is None:
             return None, "no_itm_candidate"
 
+        # Punto 5: riesgo de asignación anticipada por dividendo.
+        if has_dividend_risk(cal_info["ex_div_date"], cal_info["div_amount"],
+                              exp_date_obj, candidate["extrinsic"]):
+            return None, "dividend_risk"
+
         iv_rv_ratio = (
             round(candidate["iv_pct"] / survivor["rv"], 3)
             if (candidate["iv_pct"] and survivor["rv"] and survivor["rv"] > 0) else None
@@ -522,7 +692,7 @@ def phase2_options_filter(survivor, params):
 
         result = {
             "Ticker": ticker,
-            "Precio": current_price,
+            "Precio": round(current_price, 2),
             "Vencimiento": exp_str,
             "DTE": dte,
             "Strike": candidate["strike"],
@@ -563,10 +733,10 @@ def run_screener(tickers, params, progress_bar, status_text):
     funnel = {r: 0 for r in REASON_ORDER}
     total  = len(tickers)
 
-    # ── FASE 1: precio + SMA30, en paralelo (solo yf.download, con lock) ──
+    # ── FASE 1: precio + SMA30, en paralelo de verdad (ver punto 2) ────
     status_text.text(f"🔍 Fase 1/2 — precio y tendencia: 0/{total}")
     survivors = []
-    with ThreadPoolExecutor(max_workers=params.get("max_workers", 6)) as executor:
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(phase1_price_filter, t, params): t for t in tickers}
         done = 0
         for future in as_completed(futures):
@@ -613,7 +783,7 @@ def run_screener(tickers, params, progress_bar, status_text):
 
 def plot_price(ticker):
     try:
-        data = get_daily_data(ticker, use_lock=False)
+        data = get_daily_data(ticker)
         if data is None:
             return None
         sma = data["Close"].rolling(30).mean()
@@ -659,7 +829,7 @@ def main():
         "Vencimiento próximo viernes · "
         "Ranking por mayor downside protection**"
     )
-    st.caption("⚙️ v3.1 — pipeline en dos fases (precio en paralelo → opciones secuencial)")
+    st.caption("⚙️ v3.2 — precio en vivo, Fase 1 paralela real, filtro de spread y de riesgo de dividendo")
     st.divider()
 
     # ── Universo ───────────────────────────────────────────────────────
@@ -718,21 +888,17 @@ def main():
         st.markdown("**💧 Liquidez mínima**")
         min_oi = st.number_input("OI mínimo del strike", min_value=10, max_value=10000, value=100, step=50)
 
-        st.markdown("**🧵 Concurrencia (solo Fase 1)**")
-        max_workers = st.slider(
-            "Requests en paralelo",
-            min_value=1, max_value=10, value=3,
-            help="Solo afecta a la descarga de precios (Fase 1). La Fase 2 "
-                 "(opciones) siempre corre secuencial, sin threads. Valores "
-                 "altos pueden disparar el throttling de CPU de Streamlit "
-                 "Cloud en la capa gratuita — si te throttlean, baja esto a 1-2."
-        )
-
         st.markdown("**📅 Próximo viernes**")
         today    = date.today()
         friday   = next_friday()
         dte_days = (friday - today).days
         st.info(f"📅 Próximo viernes: **{friday.strftime('%d %b %Y')}** (DTE: {dte_days} días)")
+
+        st.caption(
+            f"El precio del subyacente para intrínseco/extrínseco se toma en vivo "
+            f"en el momento del escaneo, con fallback automático al último cierre "
+            f"si no hay precio en vivo disponible (fin de semana, etc.)."
+        )
 
     with c3:
         st.markdown("**🎚️ Filtros activables**")
@@ -743,6 +909,10 @@ def main():
             "🔬 Modo diagnóstico (ignora banda de extrínseco)", value=False,
             help="Devuelve el mejor candidato ITM aunque su extrínseco no esté "
                  "en el rango objetivo, para ver los valores reales del mercado."
+        )
+        st.caption(
+            "Siempre activos (no configurables): bid>0 y ask>0, spread ≤ 50% del "
+            "extrínseco, y exclusión por riesgo de asignación por dividendo."
         )
 
     params = {
@@ -755,7 +925,6 @@ def main():
         "use_pcr_filter":      use_pcr_filter,
         "use_earnings_filter": use_earnings_filter,
         "diagnostic_mode":     diagnostic_mode,
-        "max_workers":         max_workers,
     }
 
     st.divider()
