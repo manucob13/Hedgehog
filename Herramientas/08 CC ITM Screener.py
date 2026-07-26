@@ -7,12 +7,14 @@ FILTROS DUROS (todos activables/desactivables desde la UI salvo los marcados
 [fijo], que siempre están activos porque protegen la validez del dato, no
 son una preferencia de trading):
 - Precio del subyacente: rango configurable
-- Close > SMA30 (tendencia alcista)             [toggle]
+- Tendencia alcista, 4 niveles de exigencia         [selector]
+    Ninguno / Básico (Close>SMA30) / Medio (+ SMA30
+    con pendiente alcista) / Fuerte (+ SMA10>SMA30)
 - PCR < 1.0 (sesgo alcista)                       [toggle]
 - OI > 100 (liquidez mínima)
 - Sin earnings en los próximos 7 días             [toggle]
 - Sin riesgo de dividendo (ex-div antes de vto.
-  con dividendo >= extrínseco capturado)          [fijo]
+  con dividendo >= extrínseco capturado)          [toggle, ON por defecto]
 - Spread bid-ask no superior al 50% del extrínseco
   capturado (si no, la prima "no es real")        [fijo]
 - Extrínseco entre 0.85% y 1.00% del subyacente   [toggle: modo diagnóstico lo ignora]
@@ -24,6 +26,32 @@ PRECIO DE OPCIÓN: midprice (bid+ask)/2 siempre
 PRECIO DEL SUBYACENTE PARA INTRÍNSECO/EXTRÍNSECO: precio en vivo (fast_info),
 con fallback automático y transparente al último cierre histórico si no hay
 precio en vivo disponible (fin de semana, fallo puntual de red, etc.)
+
+ARQUITECTURA (v3.3) — CAMBIOS DE ESTA REVISIÓN
+------------------------------------------------
+7. FILTRO DE TENDENCIA MÁS ROBUSTO.
+   Antes "alcista" era solo Close > SMA30, un único cruce que da muchos
+   falsos positivos justo cuando el precio está pegado a la media (cruza
+   por arriba y por abajo varias veces en pocos días sin que haya
+   tendencia real). Ya se calculaba slope_up (si la SMA30 sube o baja)
+   pero nunca se usaba para filtrar, solo se mostraba en la tabla. Ahora
+   hay 3 niveles seleccionables en la UI, de menos a más exigente:
+     · Básico: Close > SMA30 (comportamiento anterior)
+     · Medio:  + la propia SMA30 tiene pendiente alcista (no basta con
+       estar por encima de una media que está bajando)
+     · Fuerte: + SMA10 > SMA30 (el corto plazo también confirma; evita
+       operar tendencias de fondo ya agotadas)
+   Los rechazos por pendiente/cruce SMA10 usan un motivo de embudo nuevo,
+   "weak_trend", separado de "below_sma30", para poder diferenciar en el
+   diagnóstico si el problema es el nivel de precio o el momentum.
+8. RIESGO DE DIVIDENDO VISIBLE Y CONTROLABLE.
+   El filtro de dividendo (punto 5, v3.2) era correcto pero opaco: se
+   aplicaba siempre sin checkbox propio y sin mostrar el dato subyacente,
+   así que no había forma de verificar por qué se descartaba un ticker ni
+   de desactivarlo si se quería. Ahora es un checkbox más en "Filtros
+   activables" (activado por defecto) y las columnas Ex_Div_Date /
+   Div_Estimado aparecen en la tabla de resultados para los candidatos
+   que sí pasan, de forma que el dato esté siempre a la vista.
 
 ARQUITECTURA (v3.2) — CAMBIOS DE ESTA REVISIÓN
 ------------------------------------------------
@@ -153,6 +181,7 @@ REASON_ORDER = [
     "price_out_of_range",
     "sma30_unavailable",
     "below_sma30",
+    "weak_trend",
     "earnings_this_week",
     "no_expirations",
     "no_friday_expiration",
@@ -169,6 +198,7 @@ REASON_LABELS = {
     "price_out_of_range":    "Precio fuera de rango (Fase 1)",
     "sma30_unavailable":     "No hay suficiente histórico para SMA30 (Fase 1)",
     "below_sma30":           "Precio ≤ SMA30 — no alcista (Fase 1)",
+    "weak_trend":            "Tendencia insuficiente: SMA30 sin pendiente alcista o SMA10 no confirma (Fase 1)",
     "earnings_this_week":    "Earnings en los próximos 7 días (Fase 2)",
     "no_expirations":        "Sin vencimientos de opciones listados (Fase 2)",
     "no_friday_expiration":  "Sin vencimiento viernes con DTE≤7 (Fase 2)",
@@ -339,23 +369,39 @@ def get_live_price(stock, fallback_price):
 
 
 # ======================================================================
-# 2. SMA30
+# 2. TENDENCIA: SMA30 + pendiente + SMA10 (punto 7 del docstring)
 # ======================================================================
 
-def get_sma30(close):
-    """Devuelve (sma30_valor, dist_pct, slope_positivo) o (None, None, None)."""
+def get_trend_info(close):
+    """Devuelve un dict con todo lo necesario para los 3 niveles de
+    exigencia de tendencia, o None si no hay histórico suficiente.
+
+    - sma30 / dist_sma30_pct: igual que antes (nivel Básico)
+    - sma30_slope_up: la SMA30 de hoy es mayor que la de hace 5 sesiones
+      (nivel Medio — exige que la media de fondo esté subiendo, no solo
+      que el precio esté por encima de una media plana o bajando)
+    - sma10 / sma10_above_sma30: confirmación de corto plazo (nivel
+      Fuerte — evita quedarse en un "alcista de libro" ya agotado, donde
+      el precio sigue sobre la SMA30 pero el momentum reciente ya giró)
+    """
     try:
         if len(close) < 35:
-            return None, None, None
-        sma      = close.rolling(30).mean()
-        sma_now  = float(sma.iloc[-1])
-        sma_prev = float(sma.iloc[-6])
-        price    = float(close.iloc[-1])
-        dist_pct = round((price - sma_now) / sma_now * 100, 2)
-        slope    = sma_now > sma_prev
-        return round(sma_now, 2), dist_pct, slope
+            return None
+        sma30      = close.rolling(30).mean()
+        sma10      = close.rolling(10).mean()
+        sma30_now  = float(sma30.iloc[-1])
+        sma30_prev = float(sma30.iloc[-6])
+        sma10_now  = float(sma10.iloc[-1])
+        price      = float(close.iloc[-1])
+        return {
+            "sma30":              round(sma30_now, 2),
+            "dist_sma30_pct":     round((price - sma30_now) / sma30_now * 100, 2),
+            "sma30_slope_up":     sma30_now > sma30_prev,
+            "sma10":              round(sma10_now, 2),
+            "sma10_above_sma30":  sma10_now > sma30_now,
+        }
     except Exception:
-        return None, None, None
+        return None
 
 
 # ======================================================================
@@ -606,21 +652,29 @@ def phase1_price_filter(ticker, params):
             _record_debug("price_out_of_range", f"{ticker}: precio calculado = {current_price}")
             return None, "price_out_of_range"
 
-        sma30, dist_sma_pct, slope_up = get_sma30(close)
-        if sma30 is None:
+        trend = get_trend_info(close)
+        if trend is None:
             return None, "sma30_unavailable"
 
-        if params["use_sma_filter"] and current_price <= sma30:
-            return None, "below_sma30"
+        level = params["trend_strength"]  # "none" | "basic" | "medium" | "strong"
+        if level != "none":
+            if current_price <= trend["sma30"]:
+                return None, "below_sma30"
+            if level in ("medium", "strong") and not trend["sma30_slope_up"]:
+                return None, "weak_trend"
+            if level == "strong" and not trend["sma10_above_sma30"]:
+                return None, "weak_trend"
 
         rv = get_rv10(close)
 
         return {
             "Ticker": ticker,
             "current_price": round(current_price, 2),
-            "sma30": sma30,
-            "dist_sma_pct": dist_sma_pct,
-            "slope_up": slope_up,
+            "sma30": trend["sma30"],
+            "dist_sma_pct": trend["dist_sma30_pct"],
+            "slope_up": trend["sma30_slope_up"],
+            "sma10": trend["sma10"],
+            "sma10_above_sma30": trend["sma10_above_sma30"],
             "rv": rv,
         }, "ok"
     except Exception as e:
@@ -678,9 +732,12 @@ def phase2_options_filter(survivor, params):
         if candidate is None:
             return None, "no_itm_candidate"
 
-        # Punto 5: riesgo de asignación anticipada por dividendo.
-        if has_dividend_risk(cal_info["ex_div_date"], cal_info["div_amount"],
-                              exp_date_obj, candidate["extrinsic"]):
+        # Punto 5 / punto 8: riesgo de asignación anticipada por dividendo.
+        # Ahora es un toggle visible en la UI (antes siempre activo y opaco).
+        if params["use_dividend_filter"] and has_dividend_risk(
+            cal_info["ex_div_date"], cal_info["div_amount"],
+            exp_date_obj, candidate["extrinsic"]
+        ):
             return None, "dividend_risk"
 
         iv_rv_ratio = (
@@ -716,7 +773,11 @@ def phase2_options_filter(survivor, params):
             "SMA30": survivor["sma30"],
             "Dist_SMA30_%": survivor["dist_sma_pct"],
             "SMA30_Sube": survivor["slope_up"],
+            "SMA10": survivor.get("sma10"),
+            "SMA10>SMA30": survivor.get("sma10_above_sma30"),
             "PCR": pcr,
+            "Ex_Div_Date": cal_info["ex_div_date"].isoformat() if cal_info["ex_div_date"] else None,
+            "Div_Estimado": cal_info["div_amount"],
         }
         return result, "ok"
     except Exception as e:
@@ -902,17 +963,44 @@ def main():
 
     with c3:
         st.markdown("**🎚️ Filtros activables**")
-        use_sma_filter = st.checkbox("Close > SMA30 (tendencia alcista)", value=True)
+
+        trend_options = {
+            "Ninguno": "none",
+            "Básico: Close > SMA30": "basic",
+            "Medio: + SMA30 con pendiente alcista": "medium",
+            "Fuerte: + SMA10 > SMA30 (cruce alcista corto plazo)": "strong",
+        }
+        trend_label = st.selectbox(
+            "📈 Tendencia alcista",
+            options=list(trend_options.keys()),
+            index=2,  # "Medio" por defecto
+            help="Básico = comportamiento anterior (un solo cruce, da falsos "
+                 "positivos cerca de la media). Medio añade que la propia SMA30 "
+                 "esté subiendo, no solo que el precio esté por encima. Fuerte "
+                 "exige además que la SMA10 (corto plazo) confirme, para evitar "
+                 "tendencias de fondo ya agotadas."
+        )
+        trend_strength = trend_options[trend_label]
+
         use_pcr_filter = st.checkbox("PCR < 1.0 (sesgo alcista)", value=True)
         use_earnings_filter = st.checkbox("Excluir earnings próximos 7 días", value=True)
+        use_dividend_filter = st.checkbox(
+            "Excluir riesgo de asignación por dividendo", value=True,
+            help="Descarta el candidato si hay una fecha ex-dividendo antes o el "
+                 "mismo día del vencimiento y el dividendo estimado es mayor o "
+                 "igual que el extrínseco capturado (a quien tiene la call "
+                 "comprada le compensaría ejercer antes para cobrar el dividendo). "
+                 "El dato de Ex_Div_Date/Div_Estimado se ve en la tabla de "
+                 "resultados aunque este filtro esté desactivado."
+        )
         diagnostic_mode = st.checkbox(
             "🔬 Modo diagnóstico (ignora banda de extrínseco)", value=False,
             help="Devuelve el mejor candidato ITM aunque su extrínseco no esté "
                  "en el rango objetivo, para ver los valores reales del mercado."
         )
         st.caption(
-            "Siempre activos (no configurables): bid>0 y ask>0, spread ≤ 50% del "
-            "extrínseco, y exclusión por riesgo de asignación por dividendo."
+            "Siempre activos (no configurables): bid>0 y ask>0, y spread ≤ 50% "
+            "del extrínseco (una prima con spread grande no es capturable de verdad)."
         )
 
     params = {
@@ -921,9 +1009,10 @@ def main():
         "min_price":           min_price,
         "max_price":           max_price,
         "min_oi":              min_oi,
-        "use_sma_filter":      use_sma_filter,
+        "trend_strength":      trend_strength,
         "use_pcr_filter":      use_pcr_filter,
         "use_earnings_filter": use_earnings_filter,
+        "use_dividend_filter": use_dividend_filter,
         "diagnostic_mode":     diagnostic_mode,
     }
 
@@ -1048,8 +1137,8 @@ def main():
             "Breakeven", "Delta", "DTE", "Vencimiento",
             "IV_%", "RV_%", "IV_RV", "Ret_Anualizado_%",
             "OI", "Volumen", "Spread_%",
-            "SMA30", "Dist_SMA30_%", "SMA30_Sube",
-            "PCR",
+            "SMA30", "Dist_SMA30_%", "SMA30_Sube", "SMA10", "SMA10>SMA30",
+            "PCR", "Ex_Div_Date", "Div_Estimado",
         ]
         cols_show = [c for c in cols_show if c in df.columns]
 
@@ -1108,7 +1197,9 @@ def main():
 | 〰️ Spread bid-ask | {row['Spread_%']}% |
 | 📐 SMA30 | {row['SMA30']} ({row['Dist_SMA30_%']}% sobre SMA) |
 | ↗️ SMA30 subiendo | {row['SMA30_Sube']} |
+| ⏩ SMA10 | {row.get('SMA10', 'N/D')} (> SMA30: {row.get('SMA10>SMA30', 'N/D')}) |
 | 🗳️ PCR | {row['PCR']} |
+| 💵 Próxima ex-div / estimado | {row.get('Ex_Div_Date') or 'Sin dato'} / ${row.get('Div_Estimado') if row.get('Div_Estimado') is not None else 'N/D'} |
 """)
 
             st.markdown("---")
