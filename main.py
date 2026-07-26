@@ -2,6 +2,7 @@ import streamlit as st
 import sys
 import os
 from pathlib import Path
+
 # --- CONFIGURACIÓN DE RUTAS ---
 # Esto permite que 'from utils.utils import check_password' funcione siempre
 root_path = Path(__file__).parent.absolute()
