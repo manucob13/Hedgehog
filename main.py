@@ -96,7 +96,7 @@ screener_CC = st.Page(
 screener_ITM = st.Page(
     "Herramientas/08 CC ITM Screener.py", 
     title="Screener CC ITM", 
-    icon="🧲"
+    icon="📐"
 )
 broker_test = st.Page(
     "Herramientas/06 Broker Test.py", 
