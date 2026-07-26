@@ -27,6 +27,30 @@ PRECIO DEL SUBYACENTE PARA INTRÍNSECO/EXTRÍNSECO: precio en vivo (fast_info),
 con fallback automático y transparente al último cierre histórico si no hay
 precio en vivo disponible (fin de semana, fallo puntual de red, etc.)
 
+ARQUITECTURA (v3.4) — CAMBIOS DE ESTA REVISIÓN
+------------------------------------------------
+9. FIX DE THROTTLING DE CPU (Streamlit Community Cloud).
+   La revisión anterior, sin querer, empeoró esto: quitar el lock de la
+   Fase 1 le dio paralelismo real (bien) pero también concurrencia real de
+   CPU/red (coste); y el filtro de dividendos añadió 2 llamadas de red más
+   por superviviente en Fase 2 (de 3 a 5 por ticker). Para un universo de
+   miles de tickers, eso es carga real. Cuatro cambios para bajarla sin
+   perder lo anterior:
+     · get_daily_data() (la llamada más repetida, una por ticker en cada
+       escaneo) ahora está cacheada 30 min con @st.cache_data. Durante una
+       sesión de ajuste de parámetros, donde se relanza el escaneo varias
+       veces sobre el mismo universo en pocos minutos, esto evita repetir
+       miles de descargas idénticas.
+     · get_earnings_and_dividend_info() también cacheada (6h — earnings y
+       dividendos no cambian intradía) y solo se llama si al menos uno de
+       los dos filtros (earnings o dividendo) está activo; si ambos están
+       apagados, se ahorra por completo esa llamada de red.
+     · MAX_WORKERS baja de 4 a 3 en la Fase 1, para no saturar la CPU
+       compartida de la capa gratuita ahora que la concurrencia es real.
+     · Nuevo modo "prueba rápida con universo reducido": un campo opcional
+       para escanear solo un puñado de tickers mientras se ajustan
+       parámetros, en vez de relanzar el universo completo cada vez.
+
 ARQUITECTURA (v3.3) — CAMBIOS DE ESTA REVISIÓN
 ------------------------------------------------
 7. FILTRO DE TENDENCIA MÁS ROBUSTO.
@@ -158,13 +182,14 @@ logger.info(f"yfinance version = {getattr(yf, '__version__', 'desconocida')}")
 SOCKET_TIMEOUT = 15
 socket.setdefaulttimeout(SOCKET_TIMEOUT)
 
-# Concurrencia de la Fase 1 (descarga de precios). Antes era un slider en
-# la UI; se ha vuelto un valor fijo interno (ver punto 2/2b del docstring):
-# es un detalle de implementación, no una decisión de trading, y un valor
-# más alto en Streamlit Community Cloud (CPU compartida) puede disparar
-# throttling de la plataforma. 4 es un punto conservador que da
-# paralelismo real ahora que se ha quitado el lock que lo anulaba.
-MAX_WORKERS = 4
+# Concurrencia de la Fase 1 (descarga de precios). Es un valor fijo
+# interno, no un slider en la UI (ver punto 2/2b del docstring): es un
+# detalle de implementación, no una decisión de trading. Bajado de 4 a 3
+# tras el aviso de throttling de CPU (punto 9 del docstring): con el lock
+# quitado, la Fase 1 ahora sí satura CPU/red de verdad con concurrencia
+# real, así que 3 workers simultáneos es un punto más prudente para
+# Streamlit Community Cloud (CPU compartida) sin renunciar al paralelismo.
+MAX_WORKERS = 3
 
 # Spread bid-ask máximo permitido, como % del extrínseco en dólares del
 # candidato. Si el spread se come más de esto, el extrínseco "de mid
@@ -283,6 +308,7 @@ def refresh_universe():
 # 1. DATOS DIARIOS (Fase 1 — paralela de verdad, ver punto 2 del docstring)
 # ======================================================================
 
+@st.cache_data(ttl=1800, show_spinner=False)
 def get_daily_data(ticker):
     """Descarga precio diario AJUSTADO (auto_adjust=True) vía
     yf.Ticker(ticker).history(): en esta instalación yf.download() devuelve
@@ -295,7 +321,16 @@ def get_daily_data(ticker):
     distorsionaba la SMA30. Esta serie ajustada es solo para SMA30/RV10 y
     para el filtro de rango de precio de Fase 1 — el precio que realmente
     se usa para intrínseco/extrínseco en Fase 2 es el precio en vivo
-    (ver get_live_price)."""
+    (ver get_live_price).
+
+    CACHEADO 30 min (punto 9 del docstring, fix de throttling): esta es,
+    con diferencia, la llamada más repetida del pipeline — una por cada
+    ticker del universo, en cada escaneo. Durante una sesión normal de
+    ajuste de parámetros (extrínseco, OI, tendencia...) el usuario relanza
+    el escaneo varias veces sobre el mismo universo en pocos minutos; sin
+    caché, cada relanzamiento repite miles de descargas idénticas. 30 min
+    es corto para no servir datos desfasados en pleno día de mercado, pero
+    cubre de sobra una sesión de prueba de parámetros."""
     try:
         end   = datetime.now() + timedelta(days=1)
         start = end - timedelta(days=120)
@@ -464,10 +499,17 @@ def select_friday_expiration(expirations):
 # 6. EARNINGS PRÓXIMOS 7 DÍAS Y RIESGO DE DIVIDENDO (punto 5 del docstring)
 # ======================================================================
 
-def get_earnings_and_dividend_info(stock):
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def get_earnings_and_dividend_info(ticker):
     """Una sola función que reúne fecha de earnings y datos de dividendo,
     reutilizando stock.calendar para ambos y evitando llamadas de red
-    duplicadas.
+    duplicadas. Recibe el ticker (str) en vez de un objeto Ticker para que
+    st.cache_data pueda usarlo como clave de caché — un objeto yf.Ticker()
+    nuevo en cada llamada tendría una identidad distinta cada vez y el
+    caché nunca acertaría. Cacheado 6h: earnings/dividendos no cambian
+    intradía, así que reconsultarlos en cada escaneo de prueba durante una
+    sesión de ajuste de parámetros es red/CPU desperdiciada — una causa
+    directa del throttling de Streamlit Community Cloud.
 
     Devuelve dict:
       - earnings_date: date o None
@@ -476,6 +518,7 @@ def get_earnings_and_dividend_info(stock):
     """
     info = {"earnings_date": None, "ex_div_date": None, "div_amount": None}
     try:
+        stock = yf.Ticker(ticker)
         cal = _with_timeout(lambda: stock.calendar)
         if cal:
             ed = cal.get("Earnings Date")
@@ -495,15 +538,12 @@ def get_earnings_and_dividend_info(stock):
                     info["ex_div_date"] = pd.to_datetime(exd).date()
                 except Exception:
                     pass
-    except Exception:
-        pass
 
-    try:
         divs = _with_timeout(lambda: stock.dividends)
         if divs is not None and not divs.empty:
             info["div_amount"] = float(divs.iloc[-1])
-    except Exception:
-        pass
+    except Exception as e:
+        _record_debug("error", f"{ticker}: calendario/dividendos: {e}")
 
     return info
 
@@ -695,7 +735,14 @@ def phase2_options_filter(survivor, params):
     try:
         stock = yf.Ticker(ticker)
 
-        cal_info = get_earnings_and_dividend_info(stock)
+        # Punto 9 del docstring: si ambos filtros (earnings y dividendo)
+        # están desactivados, no hace falta ni esta llamada — el objeto
+        # por defecto ya deja pasar todo. Menos red = menos CPU = menos
+        # riesgo de throttling en Streamlit Community Cloud.
+        if params["use_earnings_filter"] or params["use_dividend_filter"]:
+            cal_info = get_earnings_and_dividend_info(ticker)
+        else:
+            cal_info = {"earnings_date": None, "ex_div_date": None, "div_amount": None}
 
         if params["use_earnings_filter"] and has_earnings_this_week(cal_info["earnings_date"]):
             return None, "earnings_this_week"
@@ -890,7 +937,7 @@ def main():
         "Vencimiento próximo viernes · "
         "Ranking por mayor downside protection**"
     )
-    st.caption("⚙️ v3.2 — precio en vivo, Fase 1 paralela real, filtro de spread y de riesgo de dividendo")
+    st.caption("⚙️ v3.4 — caché anti-throttling, filtro de tendencia por niveles, dividendo visible")
     st.divider()
 
     # ── Universo ───────────────────────────────────────────────────────
@@ -1021,21 +1068,46 @@ def main():
     # ── Escaneo ────────────────────────────────────────────────────────
     st.markdown("### 🚀 Ejecutar Escaneo")
 
+    with st.expander("🧪 Prueba rápida con universo reducido (opcional)"):
+        st.caption(
+            "Cada escaneo completo del universo genera cientos o miles de "
+            "llamadas de red. Si estás ajustando parámetros (extrínseco, OI, "
+            "tendencia...) y vas a relanzar el escaneo varias veces seguidas, "
+            "prueba primero aquí con un puñado de tickers conocidos — así no "
+            "repites la carga completa cada vez que cambias un valor. Cuando "
+            "los parámetros te convenzan, deja esto vacío y lanza el escaneo "
+            "completo."
+        )
+        test_tickers_raw = st.text_input(
+            "Tickers de prueba (separados por coma o espacio)",
+            value="", placeholder="AAPL, MSFT, NVDA, KO",
+        )
+
+    test_tickers = [
+        _clean_ticker(t) for t in test_tickers_raw.replace(",", " ").split()
+    ] if test_tickers_raw.strip() else []
+    test_tickers = [t for t in test_tickers if t]
+
+    scan_universe = test_tickers if test_tickers else tickers_all
+
     scan_btn = st.button(
         "🎯 INICIAR ESCANEO",
         type="primary",
         use_container_width=True,
-        disabled=len(tickers_all) == 0,
+        disabled=len(scan_universe) == 0,
     )
 
-    st.caption(
-        f"ℹ️ Se escanearán **{len(tickers_all):,}** tickers · Fase 1 en paralelo (rápida) "
-        f"→ Fase 2 secuencial solo sobre los que sobrevivan a precio/SMA30 "
-        f"(más lenta, ~1-2s por ticker)."
-    )
+    if test_tickers:
+        st.caption(f"🧪 Modo prueba activo: se escanearán solo **{len(scan_universe)}** tickers.")
+    else:
+        st.caption(
+            f"ℹ️ Se escanearán **{len(scan_universe):,}** tickers · Fase 1 en paralelo (rápida) "
+            f"→ Fase 2 secuencial solo sobre los que sobrevivan a precio/SMA30 "
+            f"(más lenta, ~1-2s por ticker)."
+        )
 
     if scan_btn:
-        scan_tickers = tickers_all
+        scan_tickers = scan_universe
         if not scan_tickers:
             st.error("⚠️ El universo de tickers está vacío — pulsa 'Actualizar Universo'.")
             return
