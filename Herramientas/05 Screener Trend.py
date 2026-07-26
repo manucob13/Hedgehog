@@ -215,8 +215,19 @@ def get_daily_data(ticker, use_lock=True):
             _record_debug("no_daily_data", f"{ticker}: descarga vacía o insuficiente histórico")
             return None
 
-        if pd.isna(data["Close"].iloc[-1]):
-            _record_debug("no_daily_data", f"{ticker}: último Close es NaN")
+        # La última fila puede ser la sesión de HOY todavía sin cerrar
+        # (Close = NaN) cuando se pide end=mañana en horario de mercado.
+        # Quitamos esas filas incompletas en vez de descartar el ticker.
+        n_before = len(data)
+        tail_preview = data["Close"].tail(3).to_dict()
+        data = data.dropna(subset=["Close"])
+        n_after = len(data)
+        if data.empty or len(data) < 35:
+            _record_debug(
+                "no_daily_data",
+                f"{ticker}: filas antes={n_before} después de limpiar NaN={n_after} · "
+                f"últimas 3 Close (crudas)={tail_preview}"
+            )
             return None
 
         data.index = pd.to_datetime(data.index)
