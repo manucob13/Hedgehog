@@ -659,62 +659,7 @@ def main():
         "Vencimiento próximo viernes · "
         "Ranking por mayor downside protection**"
     )
-    st.caption("⚙️ v3 — pipeline en dos fases (precio en paralelo → opciones secuencial)")
-
-    # ── Test de conectividad directo, sin ninguna capa nuestra ─────────
-    with st.expander("🧪 Test de conectividad directo (1 ticker, sin lock/threads/wrapper)"):
-        st.caption(
-            f"yfinance instalado: **{getattr(yf, '__version__', 'desconocida')}** · "
-            "Esto llama a yf.download() puro, tal cual, para ver el dato crudo. "
-            "Los logs de esta prueba también salen en Streamlit Cloud → Manage app → Logs."
-        )
-        test_ticker = st.text_input("Ticker a probar", value="AAPL", key="raw_test_ticker")
-        if st.button("▶️ Probar ahora", key="raw_test_btn"):
-            t = _clean_ticker(test_ticker) or "AAPL"
-
-            st.markdown("**Método 1: `yf.download()`** (histórico: columnas mal aplanadas en esta instalación)")
-            try:
-                raw1 = yf.download(t, period="1mo", interval="1d", progress=False)
-                close_col = raw1["Close"] if raw1 is not None else None
-                is_series = hasattr(close_col, "dtype")
-                logger.info(f"[TEST] yf.download({t}) shape={raw1.shape if raw1 is not None else None} "
-                            f"close_is_series={is_series}")
-                if raw1 is None or raw1.empty:
-                    st.error("Devolvió None o vacío.")
-                else:
-                    st.write(f"Shape: {raw1.shape} · Columnas: {list(raw1.columns)} · "
-                              f"'Close' es Series (esperado) o DataFrame (roto): "
-                              f"{'Series ✅' if is_series else 'DataFrame ❌ — bug conocido en esta versión'}")
-                    st.dataframe(raw1.tail(5))
-            except Exception as e:
-                logger.error(f"[TEST] yf.download({t}) EXCEPCIÓN: {type(e).__name__}: {e}")
-                st.error(f"Excepción: {type(e).__name__}: {e}")
-
-            st.markdown("**Método 2: `yf.Ticker().history()`** (ruta distinta dentro de yfinance)")
-            try:
-                raw2 = yf.Ticker(t).history(period="1mo", interval="1d")
-                logger.info(f"[TEST] Ticker({t}).history() shape={raw2.shape if raw2 is not None else None}")
-                if raw2 is None or raw2.empty:
-                    st.error("Devolvió None o vacío.")
-                else:
-                    st.write(f"Shape: {raw2.shape} · Columnas: {list(raw2.columns)}")
-                    st.dataframe(raw2.tail(5))
-                    n_nan2 = raw2["Close"].isna().sum()
-                    st.write(f"Valores NaN en Close: {n_nan2} / {len(raw2)}")
-            except Exception as e:
-                logger.error(f"[TEST] Ticker({t}).history() EXCEPCIÓN: {type(e).__name__}: {e}")
-                st.error(f"Excepción: {type(e).__name__}: {e}")
-
-            st.markdown("**Método 3: `yf.Ticker().fast_info`** (endpoint de solo precio actual, distinto de los dos anteriores)")
-            try:
-                fi = yf.Ticker(t).fast_info
-                last_price = fi.get("lastPrice") if hasattr(fi, "get") else getattr(fi, "last_price", None)
-                logger.info(f"[TEST] fast_info({t}) lastPrice={last_price}")
-                st.write(f"last_price: {last_price}")
-            except Exception as e:
-                logger.error(f"[TEST] fast_info({t}) EXCEPCIÓN: {type(e).__name__}: {e}")
-                st.error(f"Excepción: {type(e).__name__}: {e}")
-
+    st.caption("⚙️ v3.1 — pipeline en dos fases (precio en paralelo → opciones secuencial)")
     st.divider()
 
     # ── Universo ───────────────────────────────────────────────────────
@@ -798,17 +743,6 @@ def main():
                  "en el rango objetivo, para ver los valores reales del mercado."
         )
 
-        st.markdown("**🧪 Subconjunto de depuración**")
-        use_custom_subset = st.checkbox(
-            "Usar solo un subconjunto de tickers", value=True,
-            help="Para iterar rápido en vez de escanear los 1000+ tickers cada vez."
-        )
-        custom_tickers_raw = st.text_input(
-            "Tickers (separados por coma)",
-            value="AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA,JPM,V,MA,UNH,HD,PG,JNJ,XOM,BAC,KO,PEP,DIS,NFLX",
-            disabled=not use_custom_subset,
-        )
-
     params = {
         "extrinsic_min":       extrinsic_min,
         "extrinsic_max":       extrinsic_max,
@@ -827,29 +761,23 @@ def main():
     # ── Escaneo ────────────────────────────────────────────────────────
     st.markdown("### 🚀 Ejecutar Escaneo")
 
-    custom_subset_preview = [
-        _clean_ticker(t) for t in custom_tickers_raw.split(",")
-    ] if use_custom_subset else []
-    custom_subset_preview = [t for t in custom_subset_preview if t]
-
     scan_btn = st.button(
         "🎯 INICIAR ESCANEO",
         type="primary",
         use_container_width=True,
-        disabled=(len(custom_subset_preview) == 0) if use_custom_subset else (len(tickers_all) == 0),
+        disabled=len(tickers_all) == 0,
     )
 
-    est_n = len(custom_subset_preview) if use_custom_subset else len(tickers_all)
     st.caption(
-        f"ℹ️ Se escanearán **{est_n:,}** tickers · Fase 1 en paralelo (rápida) "
+        f"ℹ️ Se escanearán **{len(tickers_all):,}** tickers · Fase 1 en paralelo (rápida) "
         f"→ Fase 2 secuencial solo sobre los que sobrevivan a precio/SMA30 "
         f"(más lenta, ~1-2s por ticker)."
     )
 
     if scan_btn:
-        scan_tickers = custom_subset_preview if use_custom_subset else tickers_all
+        scan_tickers = tickers_all
         if not scan_tickers:
-            st.error("⚠️ El subconjunto de tickers está vacío — revisa el campo de texto.")
+            st.error("⚠️ El universo de tickers está vacío — pulsa 'Actualizar Universo'.")
             return
 
         progress_bar = st.progress(0)
