@@ -1,4 +1,5 @@
 import streamlit as st
+import plotly.graph_objects as go
 from pathlib import Path
 from datetime import date
 
@@ -15,6 +16,37 @@ MESES_LARGO = [
 ]
 
 DIAS_SEMANA = ["LUN", "MAR", "MIÉ", "JUE", "VIE", "SÁB"]
+
+
+# ---------------------------------------------------------------------------
+# Gráfico de barras: P&L por mes (ENE-DIC) del año seleccionado
+# ---------------------------------------------------------------------------
+
+def render_monthly_bar_chart(yearly_df):
+    colors = [
+        "#2ECC71" if v > 0 else ("#E74C3C" if v < 0 else "rgba(255,255,255,0.15)")
+        for v in yearly_df["pnl"]
+    ]
+
+    fig = go.Figure(go.Bar(
+        x=yearly_df["month_label"],
+        y=yearly_df["pnl"],
+        marker_color=colors,
+        hovertemplate="%{x}<br>P&amp;L: $%{y:,.2f}<extra></extra>",
+        text=[f"${v:,.0f}" if v != 0 else "" for v in yearly_df["pnl"]],
+        textposition="outside",
+    ))
+    fig.update_layout(
+        height=280,
+        margin=dict(l=10, r=10, t=20, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font={"color": "white"},
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.08)", tickprefix="$"),
+        showlegend=False,
+    )
+    return fig
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +153,7 @@ def main():
     if not DB_PATH.exists():
         st.info(
             "Todavía no has importado ninguna operación. Ve a la página "
-            "**Importar** para subir tu primer Flex Query de IBKR."
+            "**Actualizar** para traer tu primer reporte de IBKR."
         )
         return
 
@@ -131,38 +163,29 @@ def main():
     if equity.empty:
         st.info(
             "Todavía no hay datos guardados. Ve a la página "
-            "**Importar** para subir tu primer Flex Query de IBKR."
+            "**Actualizar** para traer tu primer reporte de IBKR."
         )
         return
 
     daily = daily_pnl(equity)
 
-    # --- Estado: año/mes actualmente mostrados ---
     today = date.today()
     if "cal_year" not in st.session_state:
         st.session_state.cal_year = today.year
     if "cal_month" not in st.session_state:
         st.session_state.cal_month = today.month
 
-    # --- Fila resumen anual (ENE..DIC + TOTAL) ---
-    st.subheader(f"Resumen anual {st.session_state.cal_year}")
     ys = yearly_summary(daily, st.session_state.cal_year)
     total_year = yearly_total(daily, st.session_state.cal_year)
 
-    year_cols = st.columns(13)
-    for i, row in ys.iterrows():
-        with year_cols[i]:
-            color = "green" if row["pnl"] > 0 else ("red" if row["pnl"] < 0 else "gray")
-            st.caption(row["month_label"])
-            st.markdown(f":{color}[**${row['pnl']:,.0f}**]")
-    with year_cols[12]:
-        color = "green" if total_year > 0 else ("red" if total_year < 0 else "gray")
-        st.caption("TOTAL")
-        st.markdown(f":{color}[**${total_year:,.0f}**]")
+    color_total = "green" if total_year > 0 else ("red" if total_year < 0 else "gray")
+    sign_total = "+" if total_year > 0 else ""
+    st.subheader(f"Resumen anual {st.session_state.cal_year}")
+    st.markdown(f"**Total del año:** :{color_total}[{sign_total}${total_year:,.2f}]")
+    st.plotly_chart(render_monthly_bar_chart(ys), use_container_width=True)
 
     st.markdown("---")
 
-    # --- Navegación de mes ---
     nav1, nav2, nav3, nav4 = st.columns([1, 3, 1, 1])
     with nav1:
         if st.button("◀", use_container_width=True):
@@ -201,13 +224,11 @@ def main():
     main_col, side_col = st.columns([3, 1])
 
     with main_col:
-        # Cabecera de días
         header_cols = st.columns(7)
         for i, dia in enumerate(DIAS_SEMANA):
             header_cols[i].markdown(f"**{dia}**")
         header_cols[6].markdown("**SEM**")
 
-        # Filas de semanas
         for week in mc["weeks"]:
             row_cols = st.columns(7)
             for i, d in enumerate(week["days"]):
