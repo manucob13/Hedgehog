@@ -19,7 +19,8 @@ son una preferencia de trading):
   capturado (si no, la prima "no es real") [fijo]
 - Extrínseco >= umbral mínimo del subyacente [toggle: modo diagnóstico lo ignora]
 - Bid > 0 y Ask > 0 (opción realmente cotizada) [fijo]
-- Vencimiento = próximo viernes (DTE ≤ 7)
+- Vencimiento = el más cercano al DTE objetivo configurado, dentro de una
+  tolerancia en días [selector, ver punto 14]
 
 RANKING: mayor downside protection % primero (prima total/precio — más deep
 ITM = más protección; ver punto 11 del docstring)
@@ -27,6 +28,43 @@ PRECIO DE OPCIÓN: midprice (bid+ask)/2 siempre
 PRECIO DEL SUBYACENTE PARA INTRÍNSECO/EXTRÍNSECO: precio en vivo (fast_info),
 con fallback automático y transparente al último cierre histórico si no hay
 precio en vivo disponible (fin de semana, fallo puntual de red, etc.)
+
+ARQUITECTURA (v3.7) — CAMBIOS DE ESTA REVISIÓN
+------------------------------------------------
+14. DTE CONFIGURABLE (antes: fijo al próximo viernes, DTE≤7).
+El vencimiento ya no está atado a "próximo viernes, DTE≤7". Ahora la UI
+tiene un "DTE objetivo" (número de días) y una tolerancia (± días); el
+screener busca, entre los vencimientos realmente listados para cada
+ticker, el que tenga el DTE calendario más cercano al objetivo dentro de
+esa tolerancia. Ya no se exige que sea viernes — si el objetivo cae en
+una semana con vencimiento mensual o en cualquier otro día listado, ese
+también es válido. Si hay empate en distancia al objetivo, se prefiere el
+DTE más corto (más conservador, menos exposición a tiempo). Cambios:
+  · select_friday_expiration() se sustituye por
+    select_expiration_by_dte(expirations, target_dte, tolerance).
+  · params ahora lleva "dte_target" y "dte_tolerance".
+  · Motivo de descarte "no_friday_expiration" pasa a llamarse
+    "no_expiration_in_dte_range".
+  · next_friday() se mantiene sin uso por si se quiere recuperar el
+    comportamiento anterior más adelante, pero ya no se llama desde
+    ningún sitio.
+15. BOTÓN "RESETEAR TODO".
+Antes, la única forma de forzar datos frescos era esperar a que expirase
+el caché (30 min para precios, 6h para earnings/dividendos) o reiniciar
+la app manualmente. Si el usuario cambiaba un filtro y volvía a lanzar
+el escaneo, el pipeline seguía corriendo completo (Fase 1 + Fase 2) pero
+podía servir de caché datos de precio/earnings ya descargados en la
+sesión — lo cual es correcto para no martillear la red, pero no daba una
+forma explícita de decir "quiero absolutamente todo desde cero". Se
+añade un botón "🧹 Resetear Todo" que:
+  · Vacía el caché de get_daily_data() y get_earnings_and_dividend_info()
+    (st.cache_data.clear() por función), forzando descargas nuevas en el
+    siguiente escaneo.
+  · Borra de session_state los resultados, el embudo de diagnóstico, las
+    muestras de debug/precio y la marca de tiempo del último escaneo.
+  · NO toca el universo de tickers (eso ya tiene su propio botón
+    "Actualizar Universo") ni los valores de los widgets de filtros —
+    solo limpia caché de datos y resultados de escaneo.
 
 ARQUITECTURA (v3.6) — CAMBIOS DE ESTA REVISIÓN
 ------------------------------------------------
@@ -267,7 +305,7 @@ REASON_ORDER = [
     "weak_trend",
     "earnings_this_week",
     "no_expirations",
-    "no_friday_expiration",
+    "no_expiration_in_dte_range",
     "no_calls_chain",
     "pcr_bearish",
     "no_itm_candidate",
@@ -284,7 +322,7 @@ REASON_LABELS = {
     "weak_trend": "Tendencia insuficiente: SMA30 sin pendiente alcista o SMA10 no confirma (Fase 1)",
     "earnings_this_week": "Earnings en los próximos 7 días (Fase 2)",
     "no_expirations": "Sin vencimientos de opciones listados (Fase 2)",
-    "no_friday_expiration": "Sin vencimiento viernes con DTE≤7 (Fase 2)",
+    "no_expiration_in_dte_range": "Sin vencimiento dentro del rango DTE configurado (Fase 2)",
     "no_calls_chain": "Cadena de calls vacía/no disponible (Fase 2)",
     "pcr_bearish": "PCR ≥ 1.0 — sesgo bajista (Fase 2)",
     "no_itm_candidate": "Sin strike ITM que cumpla extrínseco/OI/bid/ask/spread (Fase 2)",
@@ -380,7 +418,9 @@ def get_daily_data(ticker):
     el escaneo varias veces sobre el mismo universo en pocos minutos; sin
     caché, cada relanzamiento repite miles de descargas idénticas. 30 min
     es corto para no servir datos desfasados en pleno día de mercado, pero
-    cubre de sobra una sesión de prueba de parámetros."""
+    cubre de sobra una sesión de prueba de parámetros. El botón "Resetear
+    Todo" (punto 15 del docstring) vacía este caché manualmente cuando el
+    usuario quiere datos frescos ya."""
     try:
         end = datetime.now() + timedelta(days=1)
         start = end - timedelta(days=120)
@@ -513,30 +553,47 @@ def bs_delta(S, K, T_years, sigma, r=RISK_FREE_RATE):
         return None
 
 # ======================================================================
-# 5. PRÓXIMO VIERNES (DTE ≤ 7)
+# 5. VENCIMIENTO POR DTE OBJETIVO (punto 14 del docstring)
 # ======================================================================
 
 def next_friday():
+    """Se mantiene sin uso activo (ver punto 14 del docstring) por si se
+    quiere recuperar el comportamiento anterior (fijo a viernes) más
+    adelante."""
     today = date.today()
     days_ahead = (4 - today.weekday()) % 7
     if days_ahead == 0:
         days_ahead = 7
     return today + timedelta(days=days_ahead)
 
-def select_friday_expiration(expirations):
-    target = next_friday()
+def select_expiration_by_dte(expirations, target_dte, tolerance):
+    """Selecciona, de entre los vencimientos realmente listados para el
+    ticker, el que tenga el DTE calendario más cercano a target_dte,
+    exigiendo que la distancia no supere tolerance días. No se restringe
+    a viernes: si el vencimiento más cercano al objetivo es mensual o
+    cualquier otro día, también es válido (punto 14 del docstring).
+
+    En caso de empate en distancia al objetivo, se queda con el DTE más
+    corto (menos exposición a tiempo). Devuelve (exp_str, dte) o
+    (None, None) si ningún vencimiento cae dentro de la tolerancia."""
     today = date.today()
+    best = None
+    best_diff = None
     for exp_str in expirations:
-        exp = datetime.strptime(exp_str, "%Y-%m-%d").date()
+        try:
+            exp = datetime.strptime(exp_str, "%Y-%m-%d").date()
+        except Exception:
+            continue
         dte = (exp - today).days
-        if exp == target and 1 <= dte <= 7:
-            return exp_str, dte
-    for exp_str in expirations:
-        exp = datetime.strptime(exp_str, "%Y-%m-%d").date()
-        dte = (exp - today).days
-        if exp.weekday() == 4 and 1 <= dte <= 7:
-            return exp_str, dte
-    return None, None
+        if dte <= 0:
+            continue
+        diff = abs(dte - target_dte)
+        if diff > tolerance:
+            continue
+        if best_diff is None or diff < best_diff or (diff == best_diff and dte < best[1]):
+            best = (exp_str, dte)
+            best_diff = diff
+    return best if best else (None, None)
 
 # ======================================================================
 # 6. EARNINGS PRÓXIMOS 7 DÍAS Y RIESGO DE DIVIDENDO (punto 5 del docstring)
@@ -552,7 +609,8 @@ def get_earnings_and_dividend_info(ticker):
     caché nunca acertaría. Cacheado 6h: earnings/dividendos no cambian
     intradía, así que reconsultarlos en cada escaneo de prueba durante una
     sesión de ajuste de parámetros es red/CPU desperdiciada — una causa
-    directa del throttling de Streamlit Community Cloud.
+    directa del throttling de Streamlit Community Cloud. El botón
+    "Resetear Todo" (punto 15 del docstring) vacía este caché manualmente.
 
     Devuelve dict:
     - earnings_date: date o None
@@ -805,9 +863,14 @@ def phase2_options_filter(survivor, params):
         if not expirations:
             return None, "no_expirations"
 
-        exp_str, dte = select_friday_expiration(expirations)
+        # Punto 14 del docstring: DTE configurable — se busca el
+        # vencimiento cuyo DTE esté más cerca del objetivo, dentro de la
+        # tolerancia configurada en la UI, sin restringir a viernes.
+        exp_str, dte = select_expiration_by_dte(
+            expirations, params["dte_target"], params["dte_tolerance"]
+        )
         if exp_str is None:
-            return None, "no_friday_expiration"
+            return None, "no_expiration_in_dte_range"
         exp_date_obj = datetime.strptime(exp_str, "%Y-%m-%d").date()
 
         # Punto 1: precio en vivo para todo lo que dependa de precisión de
@@ -939,6 +1002,22 @@ def run_screener(tickers, params, progress_bar, status_text):
     return df, funnel, debug_snapshot, price_snapshot
 
 # ======================================================================
+# 10b. RESET COMPLETO (punto 15 del docstring)
+# ======================================================================
+
+def reset_everything():
+    """Vacía el caché de datos (precio diario y earnings/dividendos) y
+    borra los resultados de la sesión, para forzar un escaneo 100% desde
+    cero en el próximo click de 'INICIAR ESCANEO'. No toca el universo de
+    tickers (tiene su propio botón) ni los valores de los widgets de
+    filtros — el usuario decide esos aparte."""
+    get_daily_data.clear()
+    get_earnings_and_dividend_info.clear()
+    for key in ("results", "funnel", "debug_snapshot", "price_snapshot",
+                "scan_ts", "scanned_total"):
+        st.session_state.pop(key, None)
+
+# ======================================================================
 # 11. GRÁFICO DE PRECIO
 # ======================================================================
 
@@ -986,10 +1065,21 @@ def main():
     st.title("🎯 Deep ITM Covered Call Screener")
     st.markdown(
         "**Objetivo: extrínseco mínimo semanal · "
-        "Vencimiento próximo viernes · "
+        "Vencimiento por DTE objetivo configurable · "
         "Ranking por mayor downside protection**"
     )
-    st.caption("⚙️ v3.6 — downside protection corregida (incluye extrínseco), aviso IV/RV extremo, fix ticker cleaning")
+    st.caption("⚙️ v3.7 — DTE configurable (ya no fijo a viernes), botón de reset total de caché")
+
+    col_title, col_reset = st.columns([5, 1])
+    with col_reset:
+        if st.button("🧹 Resetear Todo", use_container_width=True,
+                      help="Vacía el caché de precios y earnings/dividendos, y borra los "
+                           "resultados del último escaneo. El universo de tickers y los "
+                           "valores de los filtros no se tocan."):
+            reset_everything()
+            st.success("Caché y resultados borrados — listo para un escaneo limpio.")
+            st.rerun()
+
     st.divider()
 
     # ── Universo ───────────────────────────────────────────────────────
@@ -1048,16 +1138,28 @@ def main():
         st.markdown("**💧 Liquidez mínima**")
         min_oi = st.number_input("OI mínimo del strike", min_value=10, max_value=10000, value=100, step=50)
 
-        st.markdown("**📅 Próximo viernes**")
-        today = date.today()
-        friday = next_friday()
-        dte_days = (friday - today).days
-        st.info(f"📅 Próximo viernes: **{friday.strftime('%d %b %Y')}** (DTE: {dte_days} días)")
-
+        st.markdown("**🎯 DTE objetivo**")
+        dte_target = st.number_input(
+            "DTE objetivo (días calendario)",
+            min_value=1, max_value=60, value=7, step=1,
+            help="Se busca, entre los vencimientos realmente listados para "
+                 "cada ticker, el que tenga el DTE más cercano a este valor "
+                 "(ya no está fijo al próximo viernes)."
+        )
+        dte_tolerance = st.number_input(
+            "Tolerancia (± días)",
+            min_value=0, max_value=15, value=2, step=1,
+            help="Un vencimiento solo se considera válido si su DTE está a "
+                 "esta distancia o menos del DTE objetivo. Súbela si un "
+                 "ticker no tiene vencimientos justo en el día que buscas."
+        )
+        preview_target = date.today() + timedelta(days=int(dte_target))
         st.caption(
-            f"El precio del subyacente para intrínseco/extrínseco se toma en vivo "
-            f"en el momento del escaneo, con fallback automático al último cierre "
-            f"si no hay precio en vivo disponible (fin de semana, etc.)."
+            f"📅 Un vencimiento con DTE={dte_target} caería alrededor del "
+            f"**{preview_target.strftime('%d %b %Y')}** (± {dte_tolerance}d). "
+            f"El precio del subyacente para intrínseco/extrínseco se toma en "
+            f"vivo en el momento del escaneo, con fallback automático al "
+            f"último cierre si no hay precio en vivo disponible."
         )
 
     with c3:
@@ -1107,6 +1209,8 @@ def main():
         "min_price": min_price,
         "max_price": max_price,
         "min_oi": min_oi,
+        "dte_target": int(dte_target),
+        "dte_tolerance": int(dte_tolerance),
         "trend_strength": trend_strength,
         "use_pcr_filter": use_pcr_filter,
         "use_earnings_filter": use_earnings_filter,
@@ -1123,11 +1227,12 @@ def main():
         st.caption(
             "Cada escaneo completo del universo genera cientos o miles de "
             "llamadas de red. Si estás ajustando parámetros (extrínseco, OI, "
-            "tendencia...) y vas a relanzar el escaneo varias veces seguidas, "
-            "prueba primero aquí con un puñado de tickers conocidos — así no "
-            "repites la carga completa cada vez que cambias un valor. Cuando "
-            "los parámetros te convenzan, deja esto vacío y lanza el escaneo "
-            "completo."
+            "tendencia, DTE...) y vas a relanzar el escaneo varias veces "
+            "seguidas, prueba primero aquí con un puñado de tickers conocidos "
+            "— así no repites la carga completa cada vez que cambias un valor. "
+            "Cuando los parámetros te convenzan, deja esto vacío y lanza el "
+            "escaneo completo. Si además quieres forzar datos 100% frescos "
+            "(ignorando lo ya cacheado), usa el botón '🧹 Resetear Todo' arriba."
         )
         test_tickers_raw = st.text_input(
             "Tickers de prueba (separados por coma o espacio)",
