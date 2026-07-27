@@ -17,12 +17,42 @@ DB_PATH = Path(__file__).parent / "data" / "processed" / "cartera.db"
 
 
 # ---------------------------------------------------------------------------
+# Gráfico lineal de evolución del NLV
+# ---------------------------------------------------------------------------
+
+def render_nlv_line_chart(equity_df):
+    df = equity_df.sort_values("reportDate")
+
+    is_up = df["total"].iloc[-1] >= df["total"].iloc[0]
+    line_color = "#2ECC71" if is_up else "#E74C3C"
+    fill_color = "rgba(46,204,113,0.10)" if is_up else "rgba(231,76,60,0.10)"
+
+    fig = go.Figure(go.Scatter(
+        x=df["reportDate"],
+        y=df["total"],
+        mode="lines",
+        line=dict(color=line_color, width=2),
+        fill="tozeroy",
+        fillcolor=fill_color,
+        hovertemplate="%{x|%d/%m/%Y}<br>NLV: $%{y:,.2f}<extra></extra>",
+    ))
+    fig.update_layout(
+        height=320,
+        margin=dict(l=10, r=10, t=10, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font={"color": "white"},
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.08)", tickprefix="$"),
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # Gauges (Plotly)
 # ---------------------------------------------------------------------------
 
 def render_profit_factor_gauge(pf_value):
-    display_value = 0.0 if pf_value is None else min(pf_value, 3.0)
-
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=pf_value if pf_value is not None else 0.0,
@@ -83,7 +113,7 @@ def main():
     if not DB_PATH.exists():
         st.info(
             "Todavía no has importado ninguna operación. Ve a la página "
-            "**Importar** para subir tu primer Flex Query de IBKR."
+            "**Actualizar** para traer tu primer reporte de IBKR."
         )
         return
 
@@ -93,17 +123,15 @@ def main():
     if trades.empty and equity.empty:
         st.info(
             "Todavía no hay datos guardados. Ve a la página "
-            "**Importar** para subir tu primer Flex Query de IBKR."
+            "**Actualizar** para traer tu primer reporte de IBKR."
         )
         return
 
     today = date.today()
     year = today.year
 
-    # --- Resumen de cuenta (NLV / Caja / Invertido / Rentab. YTD) ---
     acc = account_summary(equity) if not equity.empty else None
 
-    # --- Operaciones cerradas del año en curso (YTD) ---
     closed_ytd = filter_closed_trades(
         trades, date_from=date(year, 1, 1), date_to=today
     ) if not trades.empty else trades
@@ -115,7 +143,6 @@ def main():
     st.caption(f"Período: 01/01/{year} → {today.strftime('%d/%m/%Y')} (año en curso)")
     st.markdown("---")
 
-    # --- Fila de tarjetas: Resumen de cuenta ---
     st.subheader("Resumen de cuenta")
     col1, col2, col3, col4 = st.columns(4)
     if acc:
@@ -130,7 +157,14 @@ def main():
 
     st.markdown("---")
 
-    # --- Fila: Gauges + P&L acumulado ---
+    st.subheader("Evolución del valor de la cartera (NLV)")
+    if equity.empty:
+        st.caption("Sin datos suficientes para el gráfico")
+    else:
+        st.plotly_chart(render_nlv_line_chart(equity), use_container_width=True)
+
+    st.markdown("---")
+
     gcol1, gcol2, gcol3 = st.columns(3)
 
     with gcol1:
@@ -160,7 +194,6 @@ def main():
 
     st.markdown("---")
 
-    # --- Crédito abierto ---
     st.subheader("Crédito abierto")
     positions = read_open_positions(DB_PATH)
     if positions.empty:
