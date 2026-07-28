@@ -17,7 +17,8 @@ son una preferencia de trading):
   con dividendo >= extrínseco capturado) [toggle, ON por defecto]
 - Spread bid-ask no superior al 50% del extrínseco
   capturado (si no, la prima "no es real") [fijo]
-- Extrínseco >= umbral mínimo del subyacente [toggle: modo diagnóstico lo ignora]
+- Extrínseco: umbral mínimo por defecto, o banda mín–máx opcional [toggle:
+  modo diagnóstico ignora ambos]
 - Bid > 0 y Ask > 0 (opción realmente cotizada) [fijo]
 - Vencimiento = el más cercano al DTE objetivo configurado, dentro de una
   tolerancia en días [selector, ver punto 14]
@@ -28,6 +29,30 @@ PRECIO DE OPCIÓN: midprice (bid+ask)/2 siempre
 PRECIO DEL SUBYACENTE PARA INTRÍNSECO/EXTRÍNSECO: precio en vivo (fast_info),
 con fallback automático y transparente al último cierre histórico si no hay
 precio en vivo disponible (fin de semana, fallo puntual de red, etc.)
+
+ARQUITECTURA (v3.9) — CAMBIOS DE ESTA REVISIÓN
+------------------------------------------------
+19. BANDA DE EXTRÍNSECO OPCIONAL (antes: solo umbral mínimo, sin techo).
+El extrínseco mínimo (0.85% por defecto) se mantiene como comportamiento
+por defecto, pero ahora hay un checkbox "Usar banda de extrínseco
+(mín–máx)" para quien quiera acotar también por arriba (p. ej. 0.85% a
+1.00%), en vez de dejar pasar cualquier extrínseco por encima del
+mínimo. Cambios:
+  · UI: checkbox use_extrinsic_band (desactivado por defecto). Si está
+    desactivado, se ve el mismo campo único de siempre ("Extrínseco
+    mínimo"), comportamiento idéntico al de antes. Si está activado,
+    aparecen dos campos ("Extrínseco mínimo (%)" / "Extrínseco máximo
+    (%)"), con validación: si el máximo queda por debajo del mínimo se
+    avisa y se intercambian automáticamente.
+  · find_deep_itm_candidate() recibe un nuevo parámetro
+    extrinsic_max_pct (puede ser None). Si es None, filtra igual que
+    antes (umbral, x >= mínimo). Si no es None, filtra por banda
+    (mínimo <= x <= máximo).
+  · params ahora lleva "extrinsic_max" (None cuando no se usa banda).
+  · candidate["in_target_band"] (y la columna "En_Banda" en resultados)
+    ahora refleja "cumple el mínimo Y, si hay banda activa, también el
+    máximo" — en modo umbral (sin banda) el significado no cambia.
+  · Modo diagnóstico sigue ignorando ambos límites, igual que antes.
 
 ARQUITECTURA (v3.8) — CAMBIOS DE ESTA REVISIÓN
 ------------------------------------------------
@@ -719,14 +744,16 @@ def compute_pcr(calls, puts, current_price, range_pct=15):
 # ======================================================================
 
 def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
-                             extrinsic_min_pct,
+                             extrinsic_min_pct, extrinsic_max_pct,
                              min_oi, diagnostic_mode=False):
-    """extrinsic_min_pct actúa como UMBRAL MÍNIMO (punto 10 del docstring):
-    pasan todos los strikes con extrinsic_pct >= extrinsic_min_pct, sin
-    techo superior. En modo diagnóstico, se ignora este umbral y se
-    devuelve el mejor candidato ITM real del mercado (por downside
-    protection), para poder ver los valores reales aunque no cumplan el
-    mínimo configurado."""
+    """extrinsic_min_pct actúa como UMBRAL MÍNIMO por defecto (punto 10 del
+    docstring): pasan todos los strikes con extrinsic_pct >= extrinsic_min_pct,
+    sin techo superior. Si extrinsic_max_pct no es None (punto 19 del
+    docstring — banda opcional), el filtro pasa a ser una BANDA:
+    extrinsic_min_pct <= extrinsic_pct <= extrinsic_max_pct. En modo
+    diagnóstico, se ignoran ambos límites y se devuelve el mejor
+    candidato ITM real del mercado (por downside protection), para poder
+    ver los valores reales aunque no cumplan lo configurado."""
     try:
         itm = calls_df[calls_df["strike"] < current_price].copy()
         if itm.empty:
@@ -781,6 +808,12 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
 
         if diagnostic_mode:
             candidates = itm
+        elif extrinsic_max_pct is not None:
+            # Punto 19: banda opcional — extrínseco entre mínimo y máximo.
+            candidates = itm[
+                (itm["extrinsic_pct"] >= extrinsic_min_pct)
+                & (itm["extrinsic_pct"] <= extrinsic_max_pct)
+            ]
         else:
             # Punto 10: umbral mínimo, sin techo superior.
             candidates = itm[itm["extrinsic_pct"] >= extrinsic_min_pct]
@@ -793,6 +826,11 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
         iv = float(best.get("impliedVolatility") or 0)
         delta = bs_delta(current_price, float(best["strike"]), T_years, iv) if iv > 0 else None
 
+        best_extrinsic_pct = float(best["extrinsic_pct"])
+        meets_range = best_extrinsic_pct >= extrinsic_min_pct
+        if extrinsic_max_pct is not None:
+            meets_range = meets_range and best_extrinsic_pct <= extrinsic_max_pct
+
         return {
             "strike": float(best["strike"]),
             "mid": round(float(best["mid"]), 2),
@@ -800,7 +838,7 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
             "ask": round(float(best["ask"]), 2),
             "intrinsic": round(float(best["intrinsic"]), 2),
             "extrinsic": round(float(best["extrinsic"]), 2),
-            "extrinsic_pct": round(float(best["extrinsic_pct"]), 3),
+            "extrinsic_pct": round(best_extrinsic_pct, 3),
             "downside_prot": round(float(best["downside_prot"]), 2),
             "downside_prot_intrinsic": round(float(best["downside_prot_intrinsic"]), 2),
             "spread_pct": round(float(best["spread_pct"]), 2),
@@ -810,8 +848,9 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
             "delta": delta,
             # Se mantiene la clave "in_target_band" (y la columna "En_Banda"
             # en resultados) por compatibilidad con el resto del pipeline;
-            # su significado ahora es "extrínseco >= mínimo configurado".
-            "in_target_band": bool(float(best["extrinsic_pct"]) >= extrinsic_min_pct),
+            # su significado ahora es "cumple el mínimo (y el máximo, si hay
+            # banda activa) configurados".
+            "in_target_band": bool(meets_range),
         }
     except Exception:
         return None
@@ -920,7 +959,7 @@ def phase2_options_filter(survivor, params):
 
         candidate = find_deep_itm_candidate(
             calls, current_price, dte,
-            params["extrinsic_min"],
+            params["extrinsic_min"], params["extrinsic_max"],
             params["min_oi"], diagnostic_mode=params["diagnostic_mode"],
         )
         if candidate is None:
@@ -1111,7 +1150,8 @@ def quick_lookup(ticker, target_date, tolerance, params):
 
     candidate = find_deep_itm_candidate(
         calls, out["current_price"], dte,
-        params["extrinsic_min"], params["min_oi"], diagnostic_mode=True,
+        params["extrinsic_min"], params["extrinsic_max"],
+        params["min_oi"], diagnostic_mode=True,
     )
     out["candidate"] = candidate
     if candidate is None:
@@ -1181,8 +1221,9 @@ def main():
         "Ranking por mayor downside protection**"
     )
     st.caption(
-        "⚙️ v3.8 — precio con inputs claros, vencimiento por calendario, "
-        "consulta individual de ticker + botón de reset total de caché"
+        "⚙️ v3.9 — banda de extrínseco opcional, precio con inputs claros, "
+        "vencimiento por calendario, consulta individual de ticker + "
+        "botón de reset total de caché"
     )
 
     col_title, col_reset = st.columns([5, 1])
@@ -1235,14 +1276,45 @@ def main():
     c1, c2, c3 = st.columns(3)
 
     with c1:
-        st.markdown("**💰 Extrínseco mínimo**")
-        extrinsic_min = st.number_input(
-            "Extrínseco mínimo (% del precio, semanal)",
-            min_value=0.10, max_value=5.00, value=0.85, step=0.05,
-            help="Umbral mínimo: pasan todos los strikes con extrínseco >= "
-                 "este valor, sin techo superior. Un extrínseco más alto "
-                 "que el mínimo es mejor, no se descarta."
+        st.markdown("**💰 Extrínseco**")
+        use_extrinsic_band = st.checkbox(
+            "Usar banda de extrínseco (mín–máx) en vez de solo mínimo",
+            value=False,
+            help="Desactivado (por defecto): se comporta como umbral mínimo, "
+                 "sin techo — pasan todos los strikes con extrínseco >= el "
+                 "valor que pongas. Activado: pasan solo los strikes cuyo "
+                 "extrínseco caiga DENTRO de la banda mín–máx, por ejemplo "
+                 "0.85% a 1.00%.",
         )
+        if use_extrinsic_band:
+            ecol1, ecol2 = st.columns(2)
+            with ecol1:
+                extrinsic_min = st.number_input(
+                    "Extrínseco mínimo (%)",
+                    min_value=0.10, max_value=5.00, value=0.85, step=0.05,
+                )
+            with ecol2:
+                extrinsic_max = st.number_input(
+                    "Extrínseco máximo (%)",
+                    min_value=0.10, max_value=10.00, value=1.00, step=0.05,
+                )
+            if extrinsic_max < extrinsic_min:
+                st.error(
+                    f"⚠️ El extrínseco máximo ({extrinsic_max}%) es menor que "
+                    f"el mínimo ({extrinsic_min}%) — se intercambian automáticamente."
+                )
+                extrinsic_min, extrinsic_max = extrinsic_max, extrinsic_min
+            st.caption(f"✅ Banda activa: **{extrinsic_min}% — {extrinsic_max}%**")
+        else:
+            extrinsic_min = st.number_input(
+                "Extrínseco mínimo (% del precio, semanal)",
+                min_value=0.10, max_value=5.00, value=0.85, step=0.05,
+                help="Umbral mínimo: pasan todos los strikes con extrínseco >= "
+                     "este valor, sin techo superior. Un extrínseco más alto "
+                     "que el mínimo es mejor, no se descarta."
+            )
+            extrinsic_max = None
+            st.caption(f"✅ Umbral activo: **≥ {extrinsic_min}%** (sin techo)")
 
         st.markdown("**💲 Precio del subyacente**")
         st.caption("Solo se escanean tickers cuyo precio actual caiga dentro de este rango.")
@@ -1341,6 +1413,7 @@ def main():
 
     params = {
         "extrinsic_min": extrinsic_min,
+        "extrinsic_max": extrinsic_max,
         "min_price": min_price,
         "max_price": max_price,
         "min_oi": min_oi,
