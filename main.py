@@ -2,6 +2,7 @@ import streamlit as st
 import sys
 import os
 from pathlib import Path
+
 # --- CONFIGURACIÓN DE RUTAS ---
 # Esto permite que 'from utils.utils import check_password' funcione siempre
 root_path = Path(__file__).parent.absolute()
@@ -74,22 +75,6 @@ cartera_importar = st.Page(
     title="Importar", 
     icon="⬆️"
 )
-# --- Sección DIVIDENDOS ---
-dividendos_panel = st.Page(
-    "Dividendos/00 Panel.py", 
-    title="Panel", 
-    icon="💰"
-)
-dividendos_asignacion = st.Page(
-    "Dividendos/01 Asignacion.py", 
-    title="Asignación", 
-    icon="🎯"
-)
-dividendos_importar = st.Page(
-    "Dividendos/02 Importar.py", 
-    title="Importar", 
-    icon="⬆️"
-)
 # --- Sección HERRAMIENTAS ---
 vix_term = st.Page(
     "Herramientas/01 VIX Term Structure.py", 
@@ -141,11 +126,6 @@ pg = st.navigation({
         cartera_calendario,
         cartera_operaciones,
         cartera_importar
-    ],
-    "DIVIDENDOS": [
-        dividendos_panel,
-        dividendos_asignacion,
-        dividendos_importar
     ],
     "HERRAMIENTAS": [
         vix_term, 
