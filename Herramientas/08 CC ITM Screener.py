@@ -29,6 +29,36 @@ PRECIO DEL SUBYACENTE PARA INTRÍNSECO/EXTRÍNSECO: precio en vivo (fast_info),
 con fallback automático y transparente al último cierre histórico si no hay
 precio en vivo disponible (fin de semana, fallo puntual de red, etc.)
 
+ARQUITECTURA (v3.8) — CAMBIOS DE ESTA REVISIÓN
+------------------------------------------------
+16. SELECCIÓN DE PRECIO MÁS CLARA (antes: un único st.slider de rango).
+El slider de doble extremo era ambiguo de leer de un vistazo. Se
+sustituye por dos st.number_input independientes ("Precio mínimo ($)" /
+"Precio máximo ($)"), con validación explícita: si el mínimo queda por
+encima del máximo se avisa y se intercambian automáticamente, y siempre
+se muestra debajo el rango activo en texto ("Rango activo: $X — $Y").
+17. VENCIMIENTO OBJETIVO CON CALENDARIO (antes: número de días "DTE
+objetivo"). El campo numérico de DTE se sustituye por un st.date_input
+— un calendario desplegable donde se elige directamente la fecha de
+vencimiento deseada. El DTE objetivo que usa el pipeline se calcula
+internamente como (fecha_elegida - hoy).days; el resto del
+comportamiento (búsqueda del vencimiento real más cercano dentro de la
+tolerancia, ver punto 14) no cambia.
+18. CONSULTA INDIVIDUAL: TICKER + VENCIMIENTO → DATOS DIRECTOS.
+Nueva sección "🔎 Consulta Individual" entre los parámetros y el
+escaneo masivo. El usuario mete un ticker y una fecha de vencimiento (el
+mismo calendario que el punto 17) y obtiene precio, SMA30, RV10,
+earnings, el mejor strike ITM (extrínseco, prima, downside protection,
+delta, IV, spread, OI/volumen), PCR y riesgo de dividendo — todo en un
+solo click, vía la nueva función quick_lookup(). A propósito NO aplica
+los filtros duros de tendencia/PCR/earnings/dividendo/extrínseco mínimo
+del escaneo masivo (esos aquí son solo datos informativos): el objetivo
+es poder revisar un nombre puntual sin que el pipeline lo descarte
+silenciosamente. El único filtro que sí se respeta es el conjunto fijo
+de find_deep_itm_candidate (bid>0, ask>0, spread≤50% del extrínseco, OI
+mínimo configurado) para que el candidato mostrado sea comparable con lo
+que devolvería el escáner completo.
+
 ARQUITECTURA (v3.7) — CAMBIOS DE ESTA REVISIÓN
 ------------------------------------------------
 14. DTE CONFIGURABLE (antes: fijo al próximo viernes, DTE≤7).
@@ -1018,6 +1048,88 @@ def reset_everything():
         st.session_state.pop(key, None)
 
 # ======================================================================
+# 10c. CONSULTA INDIVIDUAL: ticker + DTE → datos directos (punto 3)
+# ======================================================================
+
+def quick_lookup(ticker, target_date, tolerance, params):
+    """Consulta puntual de UN solo ticker para una fecha de vencimiento
+    objetivo. A diferencia del escaneo masivo, esto es solo informativo:
+    NO aplica los filtros duros de tendencia/PCR/earnings/dividendo/
+    extrínseco mínimo — los muestra todos como datos, para que el usuario
+    decida, en vez de descartar el ticker sin explicación. El único dato
+    que sí se calcula igual que en el escaneo es el mejor candidato ITM
+    (find_deep_itm_candidate en modo diagnóstico, es decir sin techo ni
+    umbral), para que el resultado sea comparable con lo que vería el
+    escáner completo.
+
+    Devuelve un dict; si algo falla en el camino, la clave "error" trae
+    un mensaje explicando en qué paso se detuvo, y los datos ya
+    obtenidos hasta ese punto se incluyen igualmente."""
+    out = {"ticker": ticker, "error": None}
+
+    data = get_daily_data(ticker)
+    if data is None:
+        out["error"] = "Sin datos diarios suficientes para este ticker."
+        return out
+
+    close = data["Close"]
+    fallback_price = float(close.iloc[-1])
+    out["trend"] = get_trend_info(close)
+    out["rv"] = get_rv10(close)
+
+    stock = yf.Ticker(ticker)
+    out["cal_info"] = get_earnings_and_dividend_info(ticker)
+    out["current_price"] = get_live_price(stock, fallback_price)
+    out["earnings_soon"] = has_earnings_this_week(out["cal_info"]["earnings_date"])
+
+    expirations = _with_timeout(lambda: stock.options)
+    if not expirations:
+        out["error"] = "Este ticker no tiene vencimientos de opciones listados."
+        return out
+
+    today = date.today()
+    target_dte = (target_date - today).days
+    exp_str, dte = select_expiration_by_dte(expirations, target_dte, tolerance)
+    if exp_str is None:
+        out["error"] = (
+            f"Ningún vencimiento listado cae dentro de ±{tolerance} días de "
+            f"{target_date.strftime('%d %b %Y')} (DTE objetivo={target_dte})."
+        )
+        out["expirations_available"] = expirations
+        return out
+    exp_date_obj = datetime.strptime(exp_str, "%Y-%m-%d").date()
+    out["exp_str"] = exp_str
+    out["dte"] = dte
+
+    chain = _with_timeout(lambda: stock.option_chain(exp_str))
+    calls, puts = chain.calls, chain.puts
+    if calls is None or calls.empty:
+        out["error"] = f"Cadena de calls vacía para el vencimiento {exp_str}."
+        return out
+
+    out["pcr"] = compute_pcr(calls, puts, out["current_price"])
+
+    candidate = find_deep_itm_candidate(
+        calls, out["current_price"], dte,
+        params["extrinsic_min"], params["min_oi"], diagnostic_mode=True,
+    )
+    out["candidate"] = candidate
+    if candidate is None:
+        out["error"] = (
+            "No hay ningún strike ITM que pase los filtros fijos (bid>0, "
+            "ask>0, spread≤50% del extrínseco, OI mínimo) para este "
+            "vencimiento."
+        )
+        return out
+
+    out["meets_extrinsic_min"] = candidate["in_target_band"]
+    out["dividend_risk"] = has_dividend_risk(
+        out["cal_info"]["ex_div_date"], out["cal_info"]["div_amount"],
+        exp_date_obj, candidate["extrinsic"],
+    )
+    return out
+
+# ======================================================================
 # 11. GRÁFICO DE PRECIO
 # ======================================================================
 
@@ -1068,7 +1180,10 @@ def main():
         "Vencimiento por DTE objetivo configurable · "
         "Ranking por mayor downside protection**"
     )
-    st.caption("⚙️ v3.7 — DTE configurable (ya no fijo a viernes), botón de reset total de caché")
+    st.caption(
+        "⚙️ v3.8 — precio con inputs claros, vencimiento por calendario, "
+        "consulta individual de ticker + botón de reset total de caché"
+    )
 
     col_title, col_reset = st.columns([5, 1])
     with col_reset:
@@ -1130,22 +1245,43 @@ def main():
         )
 
         st.markdown("**💲 Precio del subyacente**")
-        min_price, max_price = st.slider(
-            "Rango de precio ($)", min_value=5, max_value=1000, value=(20, 500), step=5,
-        )
+        st.caption("Solo se escanean tickers cuyo precio actual caiga dentro de este rango.")
+        pcol1, pcol2 = st.columns(2)
+        with pcol1:
+            min_price = st.number_input(
+                "Precio mínimo ($)", min_value=1, max_value=10000, value=20, step=5,
+                help="Tickers por debajo de este precio no se escanean.",
+            )
+        with pcol2:
+            max_price = st.number_input(
+                "Precio máximo ($)", min_value=1, max_value=10000, value=500, step=5,
+                help="Tickers por encima de este precio no se escanean.",
+            )
+        if min_price > max_price:
+            st.error(
+                f"⚠️ El precio mínimo (${min_price:,}) es mayor que el máximo "
+                f"(${max_price:,}) — se intercambian automáticamente."
+            )
+            min_price, max_price = max_price, min_price
+        st.caption(f"✅ Rango activo: **${min_price:,} — ${max_price:,}**")
 
     with c2:
         st.markdown("**💧 Liquidez mínima**")
         min_oi = st.number_input("OI mínimo del strike", min_value=10, max_value=10000, value=100, step=50)
 
-        st.markdown("**🎯 DTE objetivo**")
-        dte_target = st.number_input(
-            "DTE objetivo (días calendario)",
-            min_value=1, max_value=60, value=7, step=1,
-            help="Se busca, entre los vencimientos realmente listados para "
-                 "cada ticker, el que tenga el DTE más cercano a este valor "
-                 "(ya no está fijo al próximo viernes)."
+        st.markdown("**🎯 Vencimiento objetivo**")
+        target_date = st.date_input(
+            "Fecha de vencimiento objetivo",
+            value=date.today() + timedelta(days=7),
+            min_value=date.today() + timedelta(days=1),
+            max_value=date.today() + timedelta(days=180),
+            format="DD/MM/YYYY",
+            help="Elige la fecha con el calendario. Se buscará, entre los "
+                 "vencimientos realmente listados para cada ticker, el que "
+                 "esté más cerca de esta fecha (ya no está fijo al próximo "
+                 "viernes).",
         )
+        dte_target = (target_date - date.today()).days
         dte_tolerance = st.number_input(
             "Tolerancia (± días)",
             min_value=0, max_value=15, value=2, step=1,
@@ -1153,10 +1289,9 @@ def main():
                  "esta distancia o menos del DTE objetivo. Súbela si un "
                  "ticker no tiene vencimientos justo en el día que buscas."
         )
-        preview_target = date.today() + timedelta(days=int(dte_target))
         st.caption(
-            f"📅 Un vencimiento con DTE={dte_target} caería alrededor del "
-            f"**{preview_target.strftime('%d %b %Y')}** (± {dte_tolerance}d). "
+            f"📅 Objetivo: **{target_date.strftime('%d %b %Y')}** "
+            f"(DTE={dte_target} días, ± {dte_tolerance}d). "
             f"El precio del subyacente para intrínseco/extrínseco se toma en "
             f"vivo en el momento del escaneo, con fallback automático al "
             f"último cierre si no hay precio en vivo disponible."
@@ -1219,6 +1354,98 @@ def main():
     }
 
     st.divider()
+
+    # ── Consulta individual (punto 3) ──────────────────────────────────
+    st.markdown("### 🔎 Consulta Individual (ticker + vencimiento)")
+    st.caption(
+        "Mete un ticker y una fecha de vencimiento y te devuelve los datos "
+        "directamente — sin pasar por los filtros de tendencia, PCR, "
+        "earnings o dividendo del escaneo masivo (esos aquí son solo "
+        "informativos, no descartan el ticker). Usa el extrínseco mínimo "
+        "y el OI mínimo configurados arriba solo para marcar si el mejor "
+        "strike los cumple, no para ocultarlo."
+    )
+
+    lq1, lq2, lq3, lq4 = st.columns([2, 2, 1, 1])
+    with lq1:
+        lookup_ticker_raw = st.text_input("Ticker", value="", placeholder="AAPL")
+    with lq2:
+        lookup_target_date = st.date_input(
+            "Fecha de vencimiento",
+            value=date.today() + timedelta(days=7),
+            min_value=date.today() + timedelta(days=1),
+            max_value=date.today() + timedelta(days=180),
+            format="DD/MM/YYYY",
+            key="lookup_date",
+        )
+    with lq3:
+        lookup_tolerance = st.number_input(
+            "Tolerancia (±d)", min_value=0, max_value=15, value=3, step=1, key="lookup_tol",
+        )
+    with lq4:
+        st.markdown("&nbsp;")
+        lookup_btn = st.button("🔎 Consultar", use_container_width=True)
+
+    if lookup_btn:
+        lookup_ticker = _clean_ticker(lookup_ticker_raw)
+        if not lookup_ticker:
+            st.error("⚠️ Escribe un ticker válido.")
+        else:
+            with st.spinner(f"Consultando {lookup_ticker}..."):
+                st.session_state["lookup_result"] = quick_lookup(
+                    lookup_ticker, lookup_target_date, int(lookup_tolerance), params
+                )
+
+    lr = st.session_state.get("lookup_result")
+    if lr:
+        st.markdown(f"#### 📄 {lr['ticker']}")
+
+        if lr.get("current_price") is not None:
+            trend = lr.get("trend") or {}
+            cal_info = lr.get("cal_info") or {}
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("💲 Precio", f"${lr['current_price']:.2f}")
+            m2.metric("📐 SMA30", f"{trend.get('sma30', 'N/D')}")
+            m3.metric("📈 RV10 anualizada", f"{lr.get('rv', 'N/D')}%")
+            m4.metric(
+                "📅 Earnings ≤7d",
+                "⚠️ Sí" if lr.get("earnings_soon") else "No",
+            )
+
+        if lr.get("error"):
+            st.warning(f"⚠️ {lr['error']}")
+
+        candidate = lr.get("candidate")
+        if candidate:
+            cal_info = lr.get("cal_info") or {}
+            st.markdown(f"**Vencimiento usado:** {lr['exp_str']} (DTE: {lr['dte']}d)")
+            colr1, colr2 = st.columns(2)
+            with colr1:
+                st.markdown(f"""
+| Concepto | Valor |
+|---|---|
+| 🎯 Strike (deep ITM) | **${candidate['strike']}** |
+| 💵 Prima Mid | ${candidate['mid']} |
+| 📊 Bid / Ask | ${candidate['bid']} / ${candidate['ask']} |
+| 🔺 Intrínseco | ${candidate['intrinsic']} |
+| 🔹 Extrínseco | ${candidate['extrinsic']} ({candidate['extrinsic_pct']}%) |
+| ✅ Cumple extrínseco mínimo | {"Sí" if lr.get('meets_extrinsic_min') else "No"} |
+""")
+            with colr2:
+                st.markdown(f"""
+| Concepto | Valor |
+|---|---|
+| 🛡️ Downside protection (prima total) | **{candidate['downside_prot']}%** |
+| 🧱 · solo intrínseco | {candidate['downside_prot_intrinsic']}% |
+| 📐 Delta | {candidate.get('delta', 'N/D')} |
+| 📈 IV | {candidate.get('iv_pct', 'N/D')}% |
+| 〰️ Spread | {candidate['spread_pct']}% |
+| 💧 OI / Volumen | {candidate['oi']:,} / {candidate['volume']:,} |
+| 🗳️ PCR | {lr.get('pcr', 'N/D')} |
+| 💵 Riesgo dividendo | {"⚠️ Sí" if lr.get('dividend_risk') else "No"} |
+""")
+
+        st.divider()
 
     # ── Escaneo ────────────────────────────────────────────────────────
     st.markdown("### 🚀 Ejecutar Escaneo")
