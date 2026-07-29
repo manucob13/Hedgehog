@@ -6,12 +6,14 @@ Trading API, vía alpaca-py), en sustitución de yfinance para la Fase 2 del
 screener de covered calls deep ITM (cadena de opciones: vencimientos, bid,
 ask, mid, open interest, IV).
 
-ALCANCE — deliberadamente acotado a opciones:
-Este módulo NO toca precio en vivo del subyacente, earnings ni dividendos —
-eso se sigue obteniendo vía yfinance en el fichero principal del screener.
-Alpaca aquí solo resuelve: (a) qué vencimientos existen para un ticker,
-(b) si esos vencimientos tienen cadencia semanal real (filtro fijo nuevo),
-y (c) la cadena de calls/puts de un vencimiento EXACTO con bid/ask/OI/IV.
+ALCANCE:
+Este módulo resuelve, todo vía Alpaca: (a) el precio en vivo del
+subyacente, (b) qué vencimientos de opciones existen para un ticker,
+(c) si esos vencimientos tienen cadencia semanal real (filtro fijo), y
+(d) la cadena de calls/puts de un vencimiento EXACTO con bid/ask/OI/IV.
+Earnings y dividendos siguen viniendo de yfinance en el fichero
+principal — Alpaca no los expone en un formato equivalente y no hacía
+falta cambiarlos.
 
 CREDENCIALES
 ------------
@@ -27,10 +29,13 @@ Si tu secrets.toml usa otros nombres de clave, ajusta get_alpaca_clients().
 
 FEED DE DATOS
 -------------
-Por defecto se usa el feed "indicative" (gratuito, no requiere suscripción
-OPRA). Si tu cuenta de Alpaca tiene la suscripción de datos de opciones OPRA
-activada y quieres bid/ask más precisos y profundos, cambia DEFAULT_FEED a
-OptionsFeed.OPRA más abajo.
+Opciones: por defecto se usa el feed "indicative" (gratuito, no requiere
+suscripción OPRA). Si tu cuenta de Alpaca tiene la suscripción de datos de
+opciones OPRA activada y quieres bid/ask más precisos y profundos, cambia
+DEFAULT_OPTIONS_FEED a OptionsFeed.OPRA más abajo.
+Acciones (precio en vivo del subyacente): por defecto se usa el feed "iex"
+(gratuito). Si tu cuenta tiene suscripción SIP, cambia DEFAULT_STOCK_FEED
+a DataFeed.SIP para precios consolidados de todos los mercados.
 
 VENCIMIENTO EXACTO, SIN TOLERANCIA
 -----------------------------------
@@ -53,14 +58,19 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import GetOptionContractsRequest
 from alpaca.trading.enums import ContractType, AssetStatus
 from alpaca.data.historical.option import OptionHistoricalDataClient
-from alpaca.data.requests import OptionChainRequest
-from alpaca.data.enums import OptionsFeed
+from alpaca.data.historical.stock import StockHistoricalDataClient
+from alpaca.data.requests import OptionChainRequest, StockLatestTradeRequest
+from alpaca.data.enums import OptionsFeed, DataFeed
 
 logger = logging.getLogger("cc_itm_screener")
 
-# Feed gratuito por defecto. Cambiar a OptionsFeed.OPRA si la cuenta tiene
-# la suscripción de datos de opciones OPRA activada.
-DEFAULT_FEED = OptionsFeed.INDICATIVE
+# Feed de opciones gratuito por defecto. Cambiar a OptionsFeed.OPRA si la
+# cuenta tiene la suscripción de datos de opciones OPRA activada.
+DEFAULT_OPTIONS_FEED = OptionsFeed.INDICATIVE
+
+# Feed de acciones gratuito por defecto (precio en vivo del subyacente).
+# Cambiar a DataFeed.SIP si la cuenta tiene esa suscripción.
+DEFAULT_STOCK_FEED = DataFeed.IEX
 
 # Ventana hacia delante (días) en la que se listan vencimientos disponibles.
 CONTRACTS_LOOKAHEAD_DAYS = 60
@@ -80,8 +90,10 @@ WEEKLY_WINDOW_DAYS = 45
 
 @st.cache_resource(show_spinner=False)
 def get_alpaca_clients():
-    """Crea (y cachea a nivel de proceso) el TradingClient y el
-    OptionHistoricalDataClient de Alpaca a partir de st.secrets."""
+    """Crea (y cachea a nivel de proceso) el TradingClient, el
+    OptionHistoricalDataClient y el StockHistoricalDataClient de Alpaca a
+    partir de st.secrets. Devuelve (trading_client, option_data_client,
+    stock_data_client)."""
     try:
         creds = st.secrets["alpaca"]
         api_key = creds["api_key"]
@@ -96,7 +108,8 @@ def get_alpaca_clients():
 
     trading_client = TradingClient(api_key, secret_key, paper=paper)
     option_data_client = OptionHistoricalDataClient(api_key, secret_key)
-    return trading_client, option_data_client
+    stock_data_client = StockHistoricalDataClient(api_key, secret_key)
+    return trading_client, option_data_client, stock_data_client
 
 
 def _get_page_token(resp):
@@ -123,7 +136,7 @@ def get_option_expirations(ticker):
     Cacheado 6h: el calendario de vencimientos disponibles no cambia
     intradía, igual criterio que get_earnings_and_dividend_info() en el
     fichero principal."""
-    trading_client, _ = get_alpaca_clients()
+    trading_client, _, _ = get_alpaca_clients()
     today = date.today()
     expirations = set()
     page_token = None
@@ -179,7 +192,7 @@ def _contracts_for_expiration(ticker, expiration_date):
     """Metadatos de contrato (incluye open_interest) para AMBOS lados
     (calls y puts) del vencimiento exacto `expiration_date`. Paginado.
     Devuelve dict {symbol: OptionContract}."""
-    trading_client, _ = get_alpaca_clients()
+    trading_client, _, _ = get_alpaca_clients()
     contracts = {}
     page_token = None
     while True:
@@ -199,7 +212,7 @@ def _contracts_for_expiration(ticker, expiration_date):
     return contracts
 
 
-def get_option_chain(ticker, expiration_date, feed=DEFAULT_FEED):
+def get_option_chain(ticker, expiration_date, feed=DEFAULT_OPTIONS_FEED):
     """Cadena de opciones completa (calls y puts por separado) para el
     vencimiento EXACTO `expiration_date` (date o 'YYYY-MM-DD'). Sin
     fallback a otro vencimiento: si `expiration_date` no está realmente
@@ -235,7 +248,7 @@ def get_option_chain(ticker, expiration_date, feed=DEFAULT_FEED):
         if not contracts:
             return None, None
 
-        _, option_data_client = get_alpaca_clients()
+        _, option_data_client, _ = get_alpaca_clients()
         chain_req = OptionChainRequest(
             underlying_symbol=ticker,
             expiration_date=exp_str,
@@ -284,3 +297,30 @@ def get_option_chain(ticker, expiration_date, feed=DEFAULT_FEED):
         logger.warning(f"[{ticker}] error obteniendo cadena de opciones en Alpaca "
                         f"para {exp_str}: {e}")
         return None, None
+
+
+# ======================================================================
+# Precio en vivo del subyacente
+# ======================================================================
+
+def get_live_price(ticker, fallback_price, feed=DEFAULT_STOCK_FEED):
+    """Precio en vivo del subyacente vía la última operación (latest
+    trade) de Alpaca, con fallback transparente a `fallback_price` (el
+    cierre histórico ya calculado en Fase 1 con yfinance) si Alpaca no
+    devuelve dato o la llamada falla — por ejemplo fuera de horario en
+    cuentas sin overnight/extended hours, o un fallo puntual de red.
+
+    No se cachea: a diferencia de vencimientos/contratos (que cambian
+    poco intradía), el precio en vivo debe pedirse fresco cada vez que
+    se construye un candidato en Fase 2, igual que hacía antes la versión
+    basada en yfinance fast_info."""
+    try:
+        _, _, stock_data_client = get_alpaca_clients()
+        req = StockLatestTradeRequest(symbol_or_symbols=ticker, feed=feed)
+        trades = stock_data_client.get_stock_latest_trade(req)
+        trade = trades.get(ticker) if trades else None
+        if trade is not None and trade.price is not None and float(trade.price) > 0:
+            return float(trade.price)
+    except Exception as e:
+        logger.warning(f"[{ticker}] precio en vivo de Alpaca falló, uso fallback histórico: {e}")
+    return fallback_price
