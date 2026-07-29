@@ -1,3 +1,19 @@
+import streamlit as st
+import sys
+import os
+from pathlib import Path
+# --- CONFIGURACIÓN DE RUTAS ---
+# Esto permite que 'from utils.utils import check_password' funcione siempre
+root_path = Path(__file__).parent.absolute()
+if str(root_path) not in sys.path:
+    sys.path.append(str(root_path))
+# 1. CONFIGURACIÓN GLOBAL DE LA PESTAÑA Y LAYOUT
+st.set_page_config(
+    page_title="Hedgehog opciones",
+    layout="wide",
+    page_icon="🦔"
+)
+# 2. DEFINICIÓN DE LAS PÁGINAS
 # --- Sección ESTRATEGIAS → Time Edge ---
 te_signals = st.Page(
     "Estrategias/TE/00 TE Signals.py", 
@@ -137,3 +153,32 @@ broker_test = st.Page(
     icon="🔌",
     url_path="broker-test"
 )
+# 3. CREACIÓN DE LA NAVEGACIÓN JERÁRQUICA
+pg = st.navigation({
+    "Time Edge": [te_signals, te_op_21dte,te_op_60dte],
+    "Triple Calendar": [tc_signals, tc_calculos,tc_ajustes],
+    "WEIC": [weic_calculos],
+    "CARTERA": [
+        cartera_panel,
+        cartera_calendario,
+        cartera_operaciones,
+        cartera_importar
+    ],
+    "DIVIDENDOS": [
+        dividendos_panel,
+        dividendos_asignacion,
+        dividendos_importar
+    ],
+    "HERRAMIENTAS": [
+        vix_term, 
+        trend_Zscore,
+        gex_analyzer,
+        screener_risk,
+        screener_trend,
+        screener_CC,
+        screener_ITM,
+        broker_test
+    ]
+})
+# 4. EJECUCIÓN
+pg.run()
