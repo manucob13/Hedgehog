@@ -1,5 +1,4 @@
 import streamlit as st
-import pandas as pd
 from pathlib import Path
 from datetime import datetime
 
@@ -10,12 +9,7 @@ from Dividendos.core.ingestion.ibkr_flex_service import (
     save_raw_xml,
     FlexServiceError,
 )
-from Dividendos.core.storage.db import (
-    save_flex_import,
-    read_import_log,
-    save_target_allocation,
-    read_target_allocation,
-)
+from Dividendos.core.storage.db import save_flex_import, read_import_log
 
 DB_PATH = Path(__file__).parent / "data" / "processed" / "dividendos.db"
 RAW_DIR = Path(__file__).parent / "data" / "raw"
@@ -121,57 +115,6 @@ def main():
                 )
             for err in errors:
                 st.error(f"❌ Error procesando {err}")
-
-    st.markdown("---")
-
-    # -----------------------------------------------------------------
-    # Tabla de asignación objetivo (CSV/XLSX subido por el usuario)
-    # -----------------------------------------------------------------
-    st.markdown("### 🎯 Tabla de asignación objetivo")
-    st.caption(
-        "Sube tu tabla con columnas **Ticker** y **Target_%** (acepta variantes como "
-        "'Target %', 'Objetivo %', etc.). Incluye una fila con Ticker = **CASH** si "
-        "quieres fijar también el % objetivo de liquidez. Cada subida sustituye la "
-        "tabla anterior por completo."
-    )
-
-    allocation_file = st.file_uploader(
-        "Selecciona tu CSV o XLSX de asignación objetivo",
-        type=["csv", "xlsx"],
-        key="allocation_uploader",
-    )
-
-    if allocation_file is not None:
-        try:
-            if allocation_file.name.lower().endswith(".xlsx"):
-                target_df = pd.read_excel(allocation_file)
-            else:
-                target_df = pd.read_csv(allocation_file)
-
-            st.dataframe(target_df, use_container_width=True, hide_index=True)
-
-            if st.button("💾 Guardar tabla de asignación objetivo", type="primary"):
-                n = save_target_allocation(DB_PATH, target_df)
-                st.success(f"✅ Guardados {n} tickers en la tabla de asignación objetivo.")
-                st.rerun()
-        except Exception as e:
-            st.error(f"❌ No se pudo leer el archivo: {e}")
-
-    current_target = read_target_allocation(DB_PATH) if DB_PATH.exists() else pd.DataFrame()
-    if not current_target.empty:
-        st.markdown("**Tabla de asignación objetivo actual guardada:**")
-        st.dataframe(
-            current_target,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "ticker": "Ticker",
-                "target_pct": st.column_config.NumberColumn("% objetivo", format="%.2f%%"),
-                "updated_at": "Actualizado",
-            },
-        )
-    else:
-        st.info("Todavía no has subido ninguna tabla de asignación objetivo.")
 
     st.markdown("---")
 
