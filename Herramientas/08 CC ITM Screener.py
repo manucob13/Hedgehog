@@ -1585,48 +1585,47 @@ def main():
 
     # ── Embudo de diagnóstico ─────────────────────────────────────────
     if "funnel" in st.session_state:
-        st.markdown("### 🔎 Embudo de diagnóstico")
-        st.caption("Cuántos tickers se descartaron en cada paso del último escaneo.")
-        funnel = st.session_state["funnel"]
-        total_scanned = st.session_state["scanned_total"]
-        rows = []
-        for code in REASON_ORDER:
-            n = funnel.get(code, 0)
-            if n == 0 and code != "ok":
-                continue
-            pct = round(n / total_scanned * 100, 1) if total_scanned else 0
-            rows.append({"Motivo": REASON_LABELS[code], "Tickers": n, "% del universo": pct})
-        df_funnel = pd.DataFrame(rows)
-        st.dataframe(df_funnel, use_container_width=True, hide_index=True)
+        with st.expander("🔎 Embudo de diagnóstico (cuántos tickers se descartaron en cada paso)"):
+            funnel = st.session_state["funnel"]
+            total_scanned = st.session_state["scanned_total"]
+            rows = []
+            for code in REASON_ORDER:
+                n = funnel.get(code, 0)
+                if n == 0 and code != "ok":
+                    continue
+                pct = round(n / total_scanned * 100, 1) if total_scanned else 0
+                rows.append({"Motivo": REASON_LABELS[code], "Tickers": n, "% del universo": pct})
+            df_funnel = pd.DataFrame(rows)
+            st.dataframe(df_funnel, use_container_width=True, hide_index=True)
 
-        debug_snapshot = st.session_state.get("debug_snapshot", {})
-        if debug_snapshot:
-            with st.expander("🐛 Ver mensajes de error reales (muestras)"):
-                for code in REASON_ORDER:
-                    msgs = debug_snapshot.get(code)
-                    if not msgs:
-                        continue
-                    st.markdown(f"**{REASON_LABELS[code]}**")
-                    for m in msgs:
-                        st.code(m, language=None)
+            debug_snapshot = st.session_state.get("debug_snapshot", {})
+            if debug_snapshot:
+                with st.expander("🐛 Ver mensajes de error reales (muestras)"):
+                    for code in REASON_ORDER:
+                        msgs = debug_snapshot.get(code)
+                        if not msgs:
+                            continue
+                        st.markdown(f"**{REASON_LABELS[code]}**")
+                        for m in msgs:
+                            st.code(m, language=None)
 
-        price_snapshot = st.session_state.get("price_snapshot", [])
-        if price_snapshot:
-            with st.expander("💲 Ver distribución real de precios obtenidos (Fase 1)"):
-                df_prices = pd.DataFrame(price_snapshot, columns=["Ticker", "Precio"])
-                pmin, pmax = df_prices["Precio"].min(), df_prices["Precio"].max()
-                pmed = df_prices["Precio"].median()
-                st.write(
-                    f"**{len(df_prices)}** precios obtenidos · "
-                    f"mín: **${pmin:.2f}** · mediana: **${pmed:.2f}** · máx: **${pmax:.2f}**"
-                )
-                colp1, colp2 = st.columns(2)
-                with colp1:
-                    st.markdown("Más bajos")
-                    st.dataframe(df_prices.sort_values("Precio").head(15), hide_index=True, use_container_width=True)
-                with colp2:
-                    st.markdown("Más altos")
-                    st.dataframe(df_prices.sort_values("Precio", ascending=False).head(15), hide_index=True, use_container_width=True)
+            price_snapshot = st.session_state.get("price_snapshot", [])
+            if price_snapshot:
+                with st.expander("💲 Ver distribución real de precios obtenidos (Fase 1)"):
+                    df_prices = pd.DataFrame(price_snapshot, columns=["Ticker", "Precio"])
+                    pmin, pmax = df_prices["Precio"].min(), df_prices["Precio"].max()
+                    pmed = df_prices["Precio"].median()
+                    st.write(
+                        f"**{len(df_prices)}** precios obtenidos · "
+                        f"mín: **${pmin:.2f}** · mediana: **${pmed:.2f}** · máx: **${pmax:.2f}**"
+                    )
+                    colp1, colp2 = st.columns(2)
+                    with colp1:
+                        st.markdown("Más bajos")
+                        st.dataframe(df_prices.sort_values("Precio").head(15), hide_index=True, use_container_width=True)
+                    with colp2:
+                        st.markdown("Más altos")
+                        st.dataframe(df_prices.sort_values("Precio", ascending=False).head(15), hide_index=True, use_container_width=True)
         st.divider()
 
     # ── Resultados ─────────────────────────────────────────────────────
