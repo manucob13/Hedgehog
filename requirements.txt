@@ -17,6 +17,7 @@ bs4
 nest-asyncio
 ib_insync
 pandas_ta
+alpaca-py>=0.43.5
 
 
 
