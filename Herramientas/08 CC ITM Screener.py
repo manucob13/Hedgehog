@@ -20,8 +20,10 @@ son una preferencia de trading):
 - Extrínseco: umbral mínimo por defecto, o banda mín–máx opcional [toggle:
   modo diagnóstico ignora ambos]
 - Bid > 0 y Ask > 0 (opción realmente cotizada) [fijo]
-- Vencimiento = el más cercano al DTE objetivo configurado, dentro de una
-  tolerancia en días [selector, ver punto 14]
+- Ticker con opciones semanales listadas (cadencia real de ~7 días entre
+  vencimientos, no solo mensuales) [fijo]
+- Vencimiento = EXACTAMENTE la fecha objetivo configurada, sin tolerancia:
+  si ese vencimiento no existe para el ticker, se descarta [fijo]
 
 RANKING: mayor downside protection % primero (prima total/precio — más deep
 ITM = más protección; ver punto 11 del docstring)
@@ -29,6 +31,47 @@ PRECIO DE OPCIÓN: midprice (bid+ask)/2 siempre
 PRECIO DEL SUBYACENTE PARA INTRÍNSECO/EXTRÍNSECO: precio en vivo (fast_info),
 con fallback automático y transparente al último cierre histórico si no hay
 precio en vivo disponible (fin de semana, fallo puntual de red, etc.)
+
+ARQUITECTURA (v3.10) — CAMBIOS DE ESTA REVISIÓN
+------------------------------------------------
+20. CADENA DE OPCIONES: DE YFINANCE A ALPACA.
+La descarga de vencimientos y de la cadena de calls/puts (strike, bid,
+ask, open interest, IV) en Fase 2 pasa de yfinance a Alpaca (Trading API
++ Market Data API), vía el nuevo módulo utils/utils_alpaca.py. yfinance
+se sigue usando para todo lo demás (precio en vivo del subyacente en
+Fase 2, earnings/dividendos, precio diario/SMA30 de Fase 1) — el cambio
+está acotado a datos de opciones. Motivo: mayor fiabilidad de bid/ask y
+open interest que el scraping no oficial de Yahoo. Requiere credenciales
+de Alpaca en st.secrets (ver docstring de utils_alpaca.py). Cambios:
+  · phase2_options_filter() y quick_lookup() llaman a
+    get_option_expirations(ticker) y get_option_chain(ticker, exp) de
+    utils_alpaca en vez de stock.options / stock.option_chain(exp_str).
+  · Las columnas del DataFrame de opciones (strike, bid, ask,
+    openInterest, impliedVolatility, volume) se mantienen idénticas a
+    las que devolvía yfinance, así que find_deep_itm_candidate() y
+    compute_pcr() no han cambiado.
+  · "volume" en resultados es ahora una aproximación (tamaño de la
+    última operación, no volumen acumulado del día) — ver nota en
+    utils_alpaca.get_option_chain(). No se usa en ningún filtro duro.
+21. NUEVO FILTRO FIJO: OPCIONES SEMANALES.
+El escáner es semanal por diseño (ver docstring histórico, entrada de
+Entry timing). Antes, un ticker con vencimientos solo mensuales podía
+colarse igualmente si por casualidad el vencimiento mensual caía dentro
+de la tolerancia de días configurada. Se añade un filtro FIJO (no
+configurable, igual categoría que bid>0/ask>0/spread≤50%):
+has_weekly_options() en utils_alpaca, que exige una cadencia real de
+~7 días entre vencimientos consecutivos dentro de las próximas ~6
+semanas. Nuevo motivo de descarte "no_weekly_options".
+22. VENCIMIENTO EXACTO, SIN TOLERANCIA (se retira dte_tolerance).
+Consecuencia directa del punto 21: si el escáner ya garantiza que el
+ticker tiene opciones semanales, no tiene sentido buscar "el vencimiento
+más cercano dentro de una tolerancia" — se exige que el vencimiento
+elegido en el calendario de la UI exista EXACTAMENTE para ese ticker.
+select_expiration_by_dte() y el campo "Tolerancia (± días)" de la UI
+(tanto en el escaneo masivo como en la Consulta Individual) desaparecen.
+Motivo de descarte renombrado: "no_expiration_in_dte_range" →
+"no_expiration_exact_dte". Strike, bid, ask y mid del resultado
+corresponden siempre al DTE marcado, ni más ni menos.
 
 ARQUITECTURA (v3.9) — CAMBIOS DE ESTA REVISIÓN
 ------------------------------------------------
@@ -68,7 +111,8 @@ objetivo"). El campo numérico de DTE se sustituye por un st.date_input
 vencimiento deseada. El DTE objetivo que usa el pipeline se calcula
 internamente como (fecha_elegida - hoy).days; el resto del
 comportamiento (búsqueda del vencimiento real más cercano dentro de la
-tolerancia, ver punto 14) no cambia.
+tolerancia, ver punto 14) no cambia. [Nota v3.10: la tolerancia
+desaparece, ver punto 22 — el vencimiento ahora debe ser exacto.]
 18. CONSULTA INDIVIDUAL: TICKER + VENCIMIENTO → DATOS DIRECTOS.
 Nueva sección "🔎 Consulta Individual" entre los parámetros y el
 escaneo masivo. El usuario mete un ticker y una fecha de vencimiento (el
@@ -79,10 +123,11 @@ solo click, vía la nueva función quick_lookup(). A propósito NO aplica
 los filtros duros de tendencia/PCR/earnings/dividendo/extrínseco mínimo
 del escaneo masivo (esos aquí son solo datos informativos): el objetivo
 es poder revisar un nombre puntual sin que el pipeline lo descarte
-silenciosamente. El único filtro que sí se respeta es el conjunto fijo
-de find_deep_itm_candidate (bid>0, ask>0, spread≤50% del extrínseco, OI
-mínimo configurado) para que el candidato mostrado sea comparable con lo
-que devolvería el escáner completo.
+silenciosamente. Los filtros que sí se respetan son los fijos de
+find_deep_itm_candidate (bid>0, ask>0, spread≤50% del extrínseco, OI
+mínimo configurado) y, desde v3.10, opciones semanales + vencimiento
+exacto, para que el candidato mostrado sea comparable con lo que
+devolvería el escáner completo.
 
 ARQUITECTURA (v3.7) — CAMBIOS DE ESTA REVISIÓN
 ------------------------------------------------
@@ -94,15 +139,9 @@ ticker, el que tenga el DTE calendario más cercano al objetivo dentro de
 esa tolerancia. Ya no se exige que sea viernes — si el objetivo cae en
 una semana con vencimiento mensual o en cualquier otro día listado, ese
 también es válido. Si hay empate en distancia al objetivo, se prefiere el
-DTE más corto (más conservador, menos exposición a tiempo). Cambios:
-  · select_friday_expiration() se sustituye por
-    select_expiration_by_dte(expirations, target_dte, tolerance).
-  · params ahora lleva "dte_target" y "dte_tolerance".
-  · Motivo de descarte "no_friday_expiration" pasa a llamarse
-    "no_expiration_in_dte_range".
-  · next_friday() se mantiene sin uso por si se quiere recuperar el
-    comportamiento anterior más adelante, pero ya no se llama desde
-    ningún sitio.
+DTE más corto (más conservador, menos exposición a tiempo). [Nota v3.10:
+este punto queda obsoleto — ver punto 22, ya no hay tolerancia ni
+selección por distancia, el vencimiento debe ser exacto.]
 15. BOTÓN "RESETEAR TODO".
 Antes, la única forma de forzar datos frescos era esperar a que expirase
 el caché (30 min para precios, 6h para earnings/dividendos) o reiniciar
@@ -114,7 +153,8 @@ forma explícita de decir "quiero absolutamente todo desde cero". Se
 añade un botón "🧹 Resetear Todo" que:
   · Vacía el caché de get_daily_data() y get_earnings_and_dividend_info()
     (st.cache_data.clear() por función), forzando descargas nuevas en el
-    siguiente escaneo.
+    siguiente escaneo. [Nota v3.10: también vacía el caché de
+    get_option_expirations() de Alpaca.]
   · Borra de session_state los resultados, el embudo de diagnóstico, las
     muestras de debug/precio y la marca de tiempo del último escaneo.
   · NO toca el universo de tickers (eso ya tiene su propio botón
@@ -290,7 +330,9 @@ yf.download(), y por la que existe el socket.setdefaulttimeout()):
 - yf.download() devolvía columnas mal aplanadas en esta instalación
   (AttributeError sobre 'Close' incluso con multi_level_index=False) —
   confirmado con el test de conectividad en vivo. Ticker().history() sí
-  funciona limpio. → Todo el pipeline usa Ticker().history().
+  funciona limpio. → Todo el pipeline usa Ticker().history() para PRECIO
+  DIARIO del subyacente (Fase 1). Los datos de OPCIONES (Fase 2) usan
+  Alpaca desde v3.10, ver punto 20.
 - La última fila de cada descarga puede ser la sesión de HOY sin cerrar
   (Close = NaN) — se filtra con dropna(subset=["Close"]).
 - socket.setdefaulttimeout() como red de seguridad barata contra cuelgues
@@ -313,6 +355,11 @@ import plotly.express as px
 
 from utils.utils import check_password
 from utils.tickers import create_tickers_universe
+from utils.utils_alpaca import (
+    get_option_expirations,
+    has_weekly_options,
+    get_option_chain,
+)
 
 warnings.filterwarnings('ignore')
 
@@ -360,7 +407,8 @@ REASON_ORDER = [
     "weak_trend",
     "earnings_this_week",
     "no_expirations",
-    "no_expiration_in_dte_range",
+    "no_weekly_options",
+    "no_expiration_exact_dte",
     "no_calls_chain",
     "pcr_bearish",
     "no_itm_candidate",
@@ -376,9 +424,10 @@ REASON_LABELS = {
     "below_sma30": "Precio ≤ SMA30 — no alcista (Fase 1)",
     "weak_trend": "Tendencia insuficiente: SMA30 sin pendiente alcista o SMA10 no confirma (Fase 1)",
     "earnings_this_week": "Earnings en los próximos 7 días (Fase 2)",
-    "no_expirations": "Sin vencimientos de opciones listados (Fase 2)",
-    "no_expiration_in_dte_range": "Sin vencimiento dentro del rango DTE configurado (Fase 2)",
-    "no_calls_chain": "Cadena de calls vacía/no disponible (Fase 2)",
+    "no_expirations": "Sin vencimientos de opciones listados en Alpaca (Fase 2)",
+    "no_weekly_options": "Sin cadencia de opciones semanales (Fase 2) [fijo]",
+    "no_expiration_exact_dte": "Sin vencimiento EXACTO en la fecha objetivo (Fase 2) [fijo]",
+    "no_calls_chain": "Cadena de calls vacía/no disponible en Alpaca (Fase 2)",
     "pcr_bearish": "PCR ≥ 1.0 — sesgo bajista (Fase 2)",
     "no_itm_candidate": "Sin strike ITM que cumpla extrínseco/OI/bid/ask/spread (Fase 2)",
     "dividend_risk": "Riesgo de asignación por dividendo antes del vencimiento (Fase 2)",
@@ -608,50 +657,7 @@ def bs_delta(S, K, T_years, sigma, r=RISK_FREE_RATE):
         return None
 
 # ======================================================================
-# 5. VENCIMIENTO POR DTE OBJETIVO (punto 14 del docstring)
-# ======================================================================
-
-def next_friday():
-    """Se mantiene sin uso activo (ver punto 14 del docstring) por si se
-    quiere recuperar el comportamiento anterior (fijo a viernes) más
-    adelante."""
-    today = date.today()
-    days_ahead = (4 - today.weekday()) % 7
-    if days_ahead == 0:
-        days_ahead = 7
-    return today + timedelta(days=days_ahead)
-
-def select_expiration_by_dte(expirations, target_dte, tolerance):
-    """Selecciona, de entre los vencimientos realmente listados para el
-    ticker, el que tenga el DTE calendario más cercano a target_dte,
-    exigiendo que la distancia no supere tolerance días. No se restringe
-    a viernes: si el vencimiento más cercano al objetivo es mensual o
-    cualquier otro día, también es válido (punto 14 del docstring).
-
-    En caso de empate en distancia al objetivo, se queda con el DTE más
-    corto (menos exposición a tiempo). Devuelve (exp_str, dte) o
-    (None, None) si ningún vencimiento cae dentro de la tolerancia."""
-    today = date.today()
-    best = None
-    best_diff = None
-    for exp_str in expirations:
-        try:
-            exp = datetime.strptime(exp_str, "%Y-%m-%d").date()
-        except Exception:
-            continue
-        dte = (exp - today).days
-        if dte <= 0:
-            continue
-        diff = abs(dte - target_dte)
-        if diff > tolerance:
-            continue
-        if best_diff is None or diff < best_diff or (diff == best_diff and dte < best[1]):
-            best = (exp_str, dte)
-            best_diff = diff
-    return best if best else (None, None)
-
-# ======================================================================
-# 6. EARNINGS PRÓXIMOS 7 DÍAS Y RIESGO DE DIVIDENDO (punto 5 del docstring)
+# 5. EARNINGS PRÓXIMOS 7 DÍAS Y RIESGO DE DIVIDENDO (punto 5 del docstring)
 # ======================================================================
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
@@ -722,7 +728,7 @@ def has_dividend_risk(ex_div_date, div_amount, exp_date_obj, extrinsic_dollar):
     return False
 
 # ======================================================================
-# 7. PUT/CALL RATIO (sobre una cadena ya descargada, sin red)
+# 6. PUT/CALL RATIO (sobre una cadena ya descargada, sin red)
 # ======================================================================
 
 def compute_pcr(calls, puts, current_price, range_pct=15):
@@ -740,7 +746,7 @@ def compute_pcr(calls, puts, current_price, range_pct=15):
         return None
 
 # ======================================================================
-# 8. CANDIDATO DEEP ITM
+# 7. CANDIDATO DEEP ITM
 # ======================================================================
 
 def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
@@ -856,7 +862,7 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
         return None
 
 # ======================================================================
-# 9a. FASE 1 — precio diario + SMA30 (paralela)
+# 8a. FASE 1 — precio diario + SMA30 (paralela)
 # ======================================================================
 
 def phase1_price_filter(ticker, params):
@@ -904,22 +910,24 @@ def phase1_price_filter(ticker, params):
         return None, "error"
 
 # ======================================================================
-# 9b. FASE 2 — opciones (SECUENCIAL, sin threads)
+# 8b. FASE 2 — opciones (SECUENCIAL, sin threads)
 # ======================================================================
 
 def phase2_options_filter(survivor, params):
     """Recibe el registro de la Fase 1 y añade las métricas de opciones.
-    Se llama en un bucle for normal, nunca dentro de un ThreadPoolExecutor,
-    para no mezclar esta API de yfinance con las descargas paralelas."""
+    Se llama en un bucle for normal, nunca dentro de un ThreadPoolExecutor.
+
+    Datos de opciones (vencimientos + cadena) vía Alpaca (utils_alpaca),
+    ver punto 20 del docstring. Precio en vivo del subyacente, earnings y
+    dividendos se siguen obteniendo vía yfinance, sin cambios."""
     ticker = survivor["Ticker"]
     fallback_price = survivor["current_price"]
+    target_date = params["target_expiration_date"]  # date, vencimiento EXACTO exigido
     try:
         stock = yf.Ticker(ticker)
 
         # Punto 9 del docstring: si ambos filtros (earnings y dividendo)
-        # están desactivados, no hace falta ni esta llamada — el objeto
-        # por defecto ya deja pasar todo. Menos red = menos CPU = menos
-        # riesgo de throttling en Streamlit Community Cloud.
+        # están desactivados, no hace falta ni esta llamada.
         if params["use_earnings_filter"] or params["use_dividend_filter"]:
             cal_info = get_earnings_and_dividend_info(ticker)
         else:
@@ -928,28 +936,30 @@ def phase2_options_filter(survivor, params):
         if params["use_earnings_filter"] and has_earnings_this_week(cal_info["earnings_date"]):
             return None, "earnings_this_week"
 
-        expirations = _with_timeout(lambda: stock.options)
+        expirations = get_option_expirations(ticker)
         if not expirations:
             return None, "no_expirations"
 
-        # Punto 14 del docstring: DTE configurable — se busca el
-        # vencimiento cuyo DTE esté más cerca del objetivo, dentro de la
-        # tolerancia configurada en la UI, sin restringir a viernes.
-        exp_str, dte = select_expiration_by_dte(
-            expirations, params["dte_target"], params["dte_tolerance"]
-        )
-        if exp_str is None:
-            return None, "no_expiration_in_dte_range"
-        exp_date_obj = datetime.strptime(exp_str, "%Y-%m-%d").date()
+        # Punto 21 del docstring: filtro FIJO — el ticker debe tener
+        # cadencia real de opciones semanales, no solo mensuales.
+        if not has_weekly_options(expirations):
+            return None, "no_weekly_options"
+
+        # Punto 22 del docstring: sin tolerancia — el vencimiento elegido
+        # en la UI debe existir EXACTAMENTE para este ticker, o se descarta.
+        if target_date not in expirations:
+            return None, "no_expiration_exact_dte"
+
+        exp_date_obj = target_date
+        exp_str = target_date.isoformat()
+        dte = (exp_date_obj - date.today()).days
 
         # Punto 1: precio en vivo para todo lo que dependa de precisión de
         # precio (PCR, intrínseco/extrínseco), con fallback transparente
         # al cierre histórico ya calculado en Fase 1.
         current_price = get_live_price(stock, fallback_price)
 
-        chain = _with_timeout(lambda: stock.option_chain(exp_str))
-        calls = chain.calls
-        puts = chain.puts
+        calls, puts = get_option_chain(ticker, exp_date_obj)
         if calls is None or calls.empty:
             return None, "no_calls_chain"
 
@@ -966,7 +976,6 @@ def phase2_options_filter(survivor, params):
             return None, "no_itm_candidate"
 
         # Punto 5 / punto 8: riesgo de asignación anticipada por dividendo.
-        # Ahora es un toggle visible en la UI (antes siempre activo y opaco).
         if params["use_dividend_filter"] and has_dividend_risk(
             cal_info["ex_div_date"], cal_info["div_amount"],
             exp_date_obj, candidate["extrinsic"]
@@ -1019,7 +1028,7 @@ def phase2_options_filter(survivor, params):
         return None, "error"
 
 # ======================================================================
-# 10. ORQUESTADOR: Fase 1 (paralela) → Fase 2 (secuencial)
+# 9. ORQUESTADOR: Fase 1 (paralela) → Fase 2 (secuencial)
 # ======================================================================
 
 def run_screener(tickers, params, progress_bar, status_text):
@@ -1071,35 +1080,37 @@ def run_screener(tickers, params, progress_bar, status_text):
     return df, funnel, debug_snapshot, price_snapshot
 
 # ======================================================================
-# 10b. RESET COMPLETO (punto 15 del docstring)
+# 9b. RESET COMPLETO (punto 15 del docstring)
 # ======================================================================
 
 def reset_everything():
-    """Vacía el caché de datos (precio diario y earnings/dividendos) y
-    borra los resultados de la sesión, para forzar un escaneo 100% desde
-    cero en el próximo click de 'INICIAR ESCANEO'. No toca el universo de
-    tickers (tiene su propio botón) ni los valores de los widgets de
-    filtros — el usuario decide esos aparte."""
+    """Vacía el caché de datos (precio diario, earnings/dividendos y
+    vencimientos de Alpaca) y borra los resultados de la sesión, para
+    forzar un escaneo 100% desde cero en el próximo click de 'INICIAR
+    ESCANEO'. No toca el universo de tickers (tiene su propio botón) ni
+    los valores de los widgets de filtros — el usuario decide esos aparte."""
     get_daily_data.clear()
     get_earnings_and_dividend_info.clear()
+    get_option_expirations.clear()
     for key in ("results", "funnel", "debug_snapshot", "price_snapshot",
                 "scan_ts", "scanned_total"):
         st.session_state.pop(key, None)
 
 # ======================================================================
-# 10c. CONSULTA INDIVIDUAL: ticker + DTE → datos directos (punto 3)
+# 9c. CONSULTA INDIVIDUAL: ticker + DTE → datos directos (punto 18)
 # ======================================================================
 
-def quick_lookup(ticker, target_date, tolerance, params):
+def quick_lookup(ticker, target_date, params):
     """Consulta puntual de UN solo ticker para una fecha de vencimiento
-    objetivo. A diferencia del escaneo masivo, esto es solo informativo:
-    NO aplica los filtros duros de tendencia/PCR/earnings/dividendo/
-    extrínseco mínimo — los muestra todos como datos, para que el usuario
-    decida, en vez de descartar el ticker sin explicación. El único dato
-    que sí se calcula igual que en el escaneo es el mejor candidato ITM
-    (find_deep_itm_candidate en modo diagnóstico, es decir sin techo ni
-    umbral), para que el resultado sea comparable con lo que vería el
-    escáner completo.
+    objetivo EXACTA (sin tolerancia, punto 22 del docstring). A diferencia
+    del escaneo masivo, esto es solo informativo para tendencia/PCR/
+    earnings/dividendo/extrínseco mínimo — se muestran todos como datos,
+    para que el usuario decida, en vez de descartar el ticker sin
+    explicación. Lo que SÍ se exige siempre, porque es filtro fijo:
+    opciones semanales, vencimiento exacto, y dentro de
+    find_deep_itm_candidate (bid>0, ask>0, spread≤50% del extrínseco, OI
+    mínimo configurado) — para que el resultado sea comparable con lo que
+    devolvería el escáner completo.
 
     Devuelve un dict; si algo falla en el camino, la clave "error" trae
     un mensaje explicando en qué paso se detuvo, y los datos ya
@@ -1121,29 +1132,34 @@ def quick_lookup(ticker, target_date, tolerance, params):
     out["current_price"] = get_live_price(stock, fallback_price)
     out["earnings_soon"] = has_earnings_this_week(out["cal_info"]["earnings_date"])
 
-    expirations = _with_timeout(lambda: stock.options)
+    expirations = get_option_expirations(ticker)
     if not expirations:
-        out["error"] = "Este ticker no tiene vencimientos de opciones listados."
+        out["error"] = "Este ticker no tiene vencimientos de opciones listados en Alpaca."
         return out
 
-    today = date.today()
-    target_dte = (target_date - today).days
-    exp_str, dte = select_expiration_by_dte(expirations, target_dte, tolerance)
-    if exp_str is None:
-        out["error"] = (
-            f"Ningún vencimiento listado cae dentro de ±{tolerance} días de "
-            f"{target_date.strftime('%d %b %Y')} (DTE objetivo={target_dte})."
-        )
-        out["expirations_available"] = expirations
+    out["has_weekly"] = has_weekly_options(expirations)
+    if not out["has_weekly"]:
+        out["error"] = "Este ticker no tiene cadencia de opciones semanales (filtro fijo)."
         return out
-    exp_date_obj = datetime.strptime(exp_str, "%Y-%m-%d").date()
+
+    if target_date not in expirations:
+        out["error"] = (
+            f"No hay vencimiento EXACTO el {target_date.strftime('%d %b %Y')} para este "
+            f"ticker (sin tolerancia). Vencimientos disponibles cercanos: "
+            f"{', '.join(e.isoformat() for e in expirations if abs((e - target_date).days) <= 14) or 'ninguno cerca'}."
+        )
+        out["expirations_available"] = [e.isoformat() for e in expirations]
+        return out
+
+    exp_date_obj = target_date
+    exp_str = target_date.isoformat()
+    dte = (exp_date_obj - date.today()).days
     out["exp_str"] = exp_str
     out["dte"] = dte
 
-    chain = _with_timeout(lambda: stock.option_chain(exp_str))
-    calls, puts = chain.calls, chain.puts
+    calls, puts = get_option_chain(ticker, exp_date_obj)
     if calls is None or calls.empty:
-        out["error"] = f"Cadena de calls vacía para el vencimiento {exp_str}."
+        out["error"] = f"Cadena de calls vacía para el vencimiento {exp_str} en Alpaca."
         return out
 
     out["pcr"] = compute_pcr(calls, puts, out["current_price"])
@@ -1170,7 +1186,7 @@ def quick_lookup(ticker, target_date, tolerance, params):
     return out
 
 # ======================================================================
-# 11. GRÁFICO DE PRECIO
+# 10. GRÁFICO DE PRECIO
 # ======================================================================
 
 def plot_price(ticker):
@@ -1205,7 +1221,7 @@ def plot_price(ticker):
         return None
 
 # ======================================================================
-# 12. INTERFAZ STREAMLIT
+# 11. INTERFAZ STREAMLIT
 # ======================================================================
 
 def main():
@@ -1217,21 +1233,21 @@ def main():
     st.title("🎯 Deep ITM Covered Call Screener")
     st.markdown(
         "**Objetivo: extrínseco mínimo semanal · "
-        "Vencimiento por DTE objetivo configurable · "
+        "Vencimiento EXACTO (sin tolerancia) · "
         "Ranking por mayor downside protection**"
     )
     st.caption(
-        "⚙️ v3.9 — banda de extrínseco opcional, precio con inputs claros, "
-        "vencimiento por calendario, consulta individual de ticker + "
-        "botón de reset total de caché"
+        "⚙️ v3.10 — cadena de opciones vía Alpaca, filtro fijo de opciones "
+        "semanales, vencimiento exacto sin tolerancia, botón de reset "
+        "total de caché"
     )
 
     col_title, col_reset = st.columns([5, 1])
     with col_reset:
         if st.button("🧹 Resetear Todo", use_container_width=True,
-                      help="Vacía el caché de precios y earnings/dividendos, y borra los "
-                           "resultados del último escaneo. El universo de tickers y los "
-                           "valores de los filtros no se tocan."):
+                      help="Vacía el caché de precios, earnings/dividendos y vencimientos "
+                           "de Alpaca, y borra los resultados del último escaneo. El "
+                           "universo de tickers y los valores de los filtros no se tocan."):
             reset_everything()
             st.success("Caché y resultados borrados — listo para un escaneo limpio.")
             st.rerun()
@@ -1341,32 +1357,26 @@ def main():
         st.markdown("**💧 Liquidez mínima**")
         min_oi = st.number_input("OI mínimo del strike", min_value=10, max_value=10000, value=100, step=50)
 
-        st.markdown("**🎯 Vencimiento objetivo**")
+        st.markdown("**🎯 Vencimiento objetivo (EXACTO)**")
         target_date = st.date_input(
             "Fecha de vencimiento objetivo",
             value=date.today() + timedelta(days=7),
             min_value=date.today() + timedelta(days=1),
             max_value=date.today() + timedelta(days=180),
             format="DD/MM/YYYY",
-            help="Elige la fecha con el calendario. Se buscará, entre los "
-                 "vencimientos realmente listados para cada ticker, el que "
-                 "esté más cerca de esta fecha (ya no está fijo al próximo "
-                 "viernes).",
+            help="Elige la fecha con el calendario. El ticker debe tener un "
+                 "vencimiento que caiga EXACTAMENTE en este día — no hay "
+                 "tolerancia ni búsqueda del más cercano. Si el ticker no "
+                 "cotiza opciones justo ese día, se descarta.",
         )
         dte_target = (target_date - date.today()).days
-        dte_tolerance = st.number_input(
-            "Tolerancia (± días)",
-            min_value=0, max_value=15, value=2, step=1,
-            help="Un vencimiento solo se considera válido si su DTE está a "
-                 "esta distancia o menos del DTE objetivo. Súbela si un "
-                 "ticker no tiene vencimientos justo en el día que buscas."
-        )
         st.caption(
             f"📅 Objetivo: **{target_date.strftime('%d %b %Y')}** "
-            f"(DTE={dte_target} días, ± {dte_tolerance}d). "
+            f"(DTE={dte_target} días, exacto, sin tolerancia). "
             f"El precio del subyacente para intrínseco/extrínseco se toma en "
             f"vivo en el momento del escaneo, con fallback automático al "
-            f"último cierre si no hay precio en vivo disponible."
+            f"último cierre si no hay precio en vivo disponible. Strike, "
+            f"bid, ask y mid corresponden siempre a este DTE."
         )
 
     with c3:
@@ -1407,8 +1417,9 @@ def main():
                  "el mínimo configurado, para ver los valores reales del mercado."
         )
         st.caption(
-            "Siempre activos (no configurables): bid>0 y ask>0, y spread ≤ 50% "
-            "del extrínseco (una prima con spread grande no es capturable de verdad)."
+            "Siempre activos (no configurables): bid>0 y ask>0, spread ≤ 50% "
+            "del extrínseco, opciones semanales listadas, y vencimiento "
+            "EXACTO en la fecha objetivo (sin tolerancia)."
         )
 
     params = {
@@ -1417,8 +1428,7 @@ def main():
         "min_price": min_price,
         "max_price": max_price,
         "min_oi": min_oi,
-        "dte_target": int(dte_target),
-        "dte_tolerance": int(dte_tolerance),
+        "target_expiration_date": target_date,
         "trend_strength": trend_strength,
         "use_pcr_filter": use_pcr_filter,
         "use_earnings_filter": use_earnings_filter,
@@ -1428,23 +1438,22 @@ def main():
 
     st.divider()
 
-    # ── Consulta individual (punto 3) ──────────────────────────────────
+    # ── Consulta individual (punto 18) ─────────────────────────────────
     st.markdown("### 🔎 Consulta Individual (ticker + vencimiento)")
     st.caption(
-        "Mete un ticker y una fecha de vencimiento y te devuelve los datos "
-        "directamente — sin pasar por los filtros de tendencia, PCR, "
+        "Mete un ticker y una fecha de vencimiento EXACTA y te devuelve los "
+        "datos directamente — sin pasar por los filtros de tendencia, PCR, "
         "earnings o dividendo del escaneo masivo (esos aquí son solo "
-        "informativos, no descartan el ticker). Usa el extrínseco mínimo "
-        "y el OI mínimo configurados arriba solo para marcar si el mejor "
-        "strike los cumple, no para ocultarlo."
+        "informativos, no descartan el ticker). Sí se exigen siempre, por "
+        "ser filtros fijos: opciones semanales y vencimiento exacto."
     )
 
-    lq1, lq2, lq3, lq4 = st.columns([2, 2, 1, 1])
+    lq1, lq2, lq3 = st.columns([2, 2, 1])
     with lq1:
         lookup_ticker_raw = st.text_input("Ticker", value="", placeholder="AAPL")
     with lq2:
         lookup_target_date = st.date_input(
-            "Fecha de vencimiento",
+            "Fecha de vencimiento (exacta)",
             value=date.today() + timedelta(days=7),
             min_value=date.today() + timedelta(days=1),
             max_value=date.today() + timedelta(days=180),
@@ -1452,10 +1461,6 @@ def main():
             key="lookup_date",
         )
     with lq3:
-        lookup_tolerance = st.number_input(
-            "Tolerancia (±d)", min_value=0, max_value=15, value=3, step=1, key="lookup_tol",
-        )
-    with lq4:
         st.markdown("&nbsp;")
         lookup_btn = st.button("🔎 Consultar", use_container_width=True)
 
@@ -1466,7 +1471,7 @@ def main():
         else:
             with st.spinner(f"Consultando {lookup_ticker}..."):
                 st.session_state["lookup_result"] = quick_lookup(
-                    lookup_ticker, lookup_target_date, int(lookup_tolerance), params
+                    lookup_ticker, lookup_target_date, params
                 )
 
     lr = st.session_state.get("lookup_result")
@@ -1475,7 +1480,6 @@ def main():
 
         if lr.get("current_price") is not None:
             trend = lr.get("trend") or {}
-            cal_info = lr.get("cal_info") or {}
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("💲 Precio", f"${lr['current_price']:.2f}")
             m2.metric("📐 SMA30", f"{trend.get('sma30', 'N/D')}")
@@ -1490,7 +1494,6 @@ def main():
 
         candidate = lr.get("candidate")
         if candidate:
-            cal_info = lr.get("cal_info") or {}
             st.markdown(f"**Vencimiento usado:** {lr['exp_str']} (DTE: {lr['dte']}d)")
             colr1, colr2 = st.columns(2)
             with colr1:
@@ -1527,7 +1530,7 @@ def main():
         st.caption(
             "Cada escaneo completo del universo genera cientos o miles de "
             "llamadas de red. Si estás ajustando parámetros (extrínseco, OI, "
-            "tendencia, DTE...) y vas a relanzar el escaneo varias veces "
+            "tendencia...) y vas a relanzar el escaneo varias veces "
             "seguidas, prueba primero aquí con un puñado de tickers conocidos "
             "— así no repites la carga completa cada vez que cambias un valor. "
             "Cuando los parámetros te convenzan, deja esto vacío y lanza el "
