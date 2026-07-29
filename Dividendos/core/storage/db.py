@@ -13,8 +13,8 @@ Diseño:
       contenido completo de la tabla (siempre refleja el último import).
     - cash_transactions: una fila por movimiento (dividendos, retenciones,
       intereses...). Clave primaria = transactionID, igual que trades.
-    - target_allocation: tabla subida por el usuario (no viene de IBKR),
-      siempre refleja la última tabla subida (se sustituye entera).
+    - target_allocation: tabla editada por el usuario en la app (no viene
+      de IBKR), siempre refleja la última versión guardada.
     - import_log: registro de cada importación realizada (auditoría).
 """
 
@@ -62,7 +62,7 @@ CASH_TRANSACTION_COLUMNS = [
     "dateTime", "reportDate", "settleDate", "exDate", "transactionID",
 ]
 
-TARGET_ALLOCATION_COLUMNS = ["ticker", "target_pct", "updated_at"]
+TARGET_ALLOCATION_COLUMNS = ["ticker", "description", "target_pct", "updated_at"]
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +107,7 @@ def init_db(db_path: str | Path) -> None:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS target_allocation (
                 "ticker" TEXT PRIMARY KEY,
+                "description" TEXT,
                 "target_pct" TEXT,
                 "updated_at" TEXT
             )
@@ -261,10 +262,6 @@ def save_flex_import(
 ) -> dict:
     """
     Guarda en SQLite el resultado de `flex_query.import_flex_report(...)`.
-
-    parsed_data debe tener las claves: trades, open_positions,
-    equity_summary, change_in_nav, cash_report (esta última no se persiste,
-    se recalcula todo a partir de trades/equity_summary).
 
     Devuelve un resumen con el número de filas guardadas en cada tabla.
     """
@@ -427,21 +424,23 @@ def read_import_log(db_path: str | Path) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Asignación objetivo (subida por el usuario, no viene de IBKR)
+# Asignación objetivo (editada por el usuario en la propia app)
 # ---------------------------------------------------------------------------
 
 def _normalize_allocation_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Acepta variantes razonables de nombres de columna en el CSV/XLSX subido
-    (Ticker/ticker, Target_%/target_pct/Target %...) y las normaliza a
-    'ticker' y 'target_pct'.
+    Acepta variantes razonables de nombres de columna
+    (Ticker/ticker, Target_%/target_pct/Target %..., Descr./description...)
+    y las normaliza a 'ticker', 'description' y 'target_pct'.
     """
     rename_map = {}
     for col in df.columns:
         key = col.strip().lower()
         if "ticker" in key or key == "symbol":
             rename_map[col] = "ticker"
-        elif "target" in key or "%" in key or "pct" in key:
+        elif "descr" in key or key == "description":
+            rename_map[col] = "description"
+        elif "target" in key or "%" in key or "pct" in key or "obj" in key:
             rename_map[col] = "target_pct"
     return df.rename(columns=rename_map)
 
@@ -449,11 +448,12 @@ def _normalize_allocation_columns(df: pd.DataFrame) -> pd.DataFrame:
 def save_target_allocation(db_path: str | Path, df: pd.DataFrame) -> int:
     """
     Sustituye por completo la tabla de asignación objetivo por la que se
-    acaba de subir (mismo patrón que open_positions: siempre refleja la
-    última tabla subida, no es histórico).
+    acaba de guardar (mismo patrón que open_positions: siempre refleja la
+    última versión, no es histórico).
 
-    df puede traer variantes de nombres de columna (Ticker, Target_%, etc.),
-    se normalizan automáticamente. Devuelve el número de tickers guardados.
+    df puede traer variantes de nombres de columna (Ticker, Target_%,
+    Descr., etc.), se normalizan automáticamente. La columna 'description'
+    es opcional. Devuelve el número de tickers guardados.
     """
     init_db(db_path)
     conn = get_connection(db_path)
@@ -464,15 +464,23 @@ def save_target_allocation(db_path: str | Path, df: pd.DataFrame) -> int:
             return 0
 
         df = _normalize_allocation_columns(df)
+        if "description" not in df.columns:
+            df["description"] = ""
         now = datetime.now().isoformat(timespec="seconds")
 
         rows = [
-            (str(row["ticker"]).upper().strip(), float(row["target_pct"]), now)
+            (
+                str(row["ticker"]).upper().strip(),
+                str(row.get("description", "") or ""),
+                float(row["target_pct"]),
+                now,
+            )
             for _, row in df.iterrows()
         ]
         conn.executemany(
-            'INSERT OR REPLACE INTO target_allocation ("ticker", "target_pct", "updated_at") '
-            "VALUES (?, ?, ?)",
+            'INSERT OR REPLACE INTO target_allocation '
+            '("ticker", "description", "target_pct", "updated_at") '
+            "VALUES (?, ?, ?, ?)",
             rows,
         )
         conn.commit()
