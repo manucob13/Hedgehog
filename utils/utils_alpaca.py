@@ -212,6 +212,11 @@ def _contracts_for_expiration(ticker, expiration_date):
     return contracts
 
 
+# Guarda el desglose diagnóstico de la última llamada a get_option_chain()
+# (ver get_last_chain_diag() más abajo).
+_last_chain_diag = {}
+
+
 def get_option_chain(ticker, expiration_date, feed=DEFAULT_OPTIONS_FEED):
     """Cadena de opciones completa (calls y puts por separado) para el
     vencimiento EXACTO `expiration_date` (date o 'YYYY-MM-DD'). Sin
@@ -235,7 +240,18 @@ def get_option_chain(ticker, expiration_date, feed=DEFAULT_OPTIONS_FEED):
     puramente informativa, NO es volumen total del día. No se usa en
     ningún filtro duro, solo se muestra en la tabla de resultados (igual
     que antes).
+
+    DIAGNÓSTICO (get_last_chain_diag()): tras cada llamada, este módulo
+    guarda un dict con el desglose de dónde se pierde el dato si el
+    resultado sale corto o vacío: cuántos contratos hay listados
+    (TradingClient), cuántos snapshots de mercado devuelve Alpaca para
+    ellos, y de esos, cuántos traen bid/ask realmente cotizado (>0). Es
+    habitual que con el feed "indicative" (gratuito) los contratos existan
+    y aparezcan en el snapshot pero sin bid/ask real en strikes deep ITM
+    poco negociados — eso se ve aquí como snapshots_total alto pero
+    quotes_with_bid_ask bajo.
     """
+    global _last_chain_diag
     if isinstance(expiration_date, str):
         exp_str = expiration_date
         exp_date = datetime.strptime(expiration_date, "%Y-%m-%d").date()
@@ -243,9 +259,20 @@ def get_option_chain(ticker, expiration_date, feed=DEFAULT_OPTIONS_FEED):
         exp_date = expiration_date
         exp_str = expiration_date.isoformat()
 
+    diag = {
+        "feed": feed.value if hasattr(feed, "value") else str(feed),
+        "contracts_total": 0,
+        "snapshots_total": 0,
+        "quotes_with_bid_ask": 0,
+        "calls_total": 0,
+        "puts_total": 0,
+    }
+
     try:
         contracts = _contracts_for_expiration(ticker, exp_date)
+        diag["contracts_total"] = len(contracts)
         if not contracts:
+            _last_chain_diag = diag
             return None, None
 
         _, option_data_client, _ = get_alpaca_clients()
@@ -255,6 +282,7 @@ def get_option_chain(ticker, expiration_date, feed=DEFAULT_OPTIONS_FEED):
             feed=feed,
         )
         snapshots = option_data_client.get_option_chain(chain_req)
+        diag["snapshots_total"] = len(snapshots) if snapshots else 0
 
         rows = []
         for symbol, snap in snapshots.items():
@@ -265,6 +293,8 @@ def get_option_chain(ticker, expiration_date, feed=DEFAULT_OPTIONS_FEED):
             q = snap.latest_quote
             bid = float(q.bid_price) if (q is not None and q.bid_price is not None) else 0.0
             ask = float(q.ask_price) if (q is not None and q.ask_price is not None) else 0.0
+            if bid > 0 and ask > 0:
+                diag["quotes_with_bid_ask"] += 1
 
             iv = snap.implied_volatility
             iv = float(iv) if iv is not None else None
@@ -287,16 +317,32 @@ def get_option_chain(ticker, expiration_date, feed=DEFAULT_OPTIONS_FEED):
             })
 
         if not rows:
+            _last_chain_diag = diag
             return None, None
 
         df = pd.DataFrame(rows)
         calls_df = df[df["_type"] == "call"].drop(columns=["_type"]).reset_index(drop=True)
         puts_df = df[df["_type"] == "put"].drop(columns=["_type"]).reset_index(drop=True)
+        diag["calls_total"] = len(calls_df)
+        diag["puts_total"] = len(puts_df)
+        _last_chain_diag = diag
         return calls_df, puts_df
     except Exception as e:
         logger.warning(f"[{ticker}] error obteniendo cadena de opciones en Alpaca "
                         f"para {exp_str}: {e}")
+        diag["error"] = str(e)
+        _last_chain_diag = diag
         return None, None
+
+
+def get_last_chain_diag():
+    """Desglose diagnóstico de la última llamada a get_option_chain()
+    (ver docstring de esa función). Pensado para mostrarse en la UI de
+    Consulta Individual cuando el candidato sale vacío, para saber si el
+    problema es que no hay contratos, no hay snapshots, o hay snapshots
+    pero sin bid/ask cotizado (típico del feed "indicative" en strikes
+    deep ITM poco negociados)."""
+    return dict(_last_chain_diag)
 
 
 # ======================================================================
