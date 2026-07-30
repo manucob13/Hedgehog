@@ -112,6 +112,11 @@ def init_db(db_path: str | Path) -> None:
                 "updated_at" TEXT
             )
         """)
+        # Migración: si la tabla ya existía de una versión anterior sin la
+        # columna 'description', la añadimos ahora sin perder datos.
+        existing_cols = {row[1] for row in conn.execute('PRAGMA table_info("target_allocation")')}
+        if "description" not in existing_cols:
+            conn.execute('ALTER TABLE target_allocation ADD COLUMN "description" TEXT')
         conn.execute("""
             CREATE TABLE IF NOT EXISTS import_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
