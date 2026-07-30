@@ -380,6 +380,7 @@ from utils.utils_alpaca import (
     has_weekly_options,
     get_option_chain,
     get_live_price,
+    get_last_chain_diag,
 )
 
 warnings.filterwarnings('ignore')
@@ -1147,8 +1148,16 @@ def quick_lookup(ticker, target_date, params):
     out["dte"] = dte
 
     calls, puts = get_option_chain(ticker, exp_date_obj)
+    out["chain_diag"] = get_last_chain_diag()
     if calls is None or calls.empty:
-        out["error"] = f"Cadena de calls vacía para el vencimiento {exp_str} en Alpaca."
+        d = out["chain_diag"]
+        out["error"] = (
+            f"Cadena de calls vacía para el vencimiento {exp_str} en Alpaca "
+            f"(feed: {d.get('feed', '?')}) — contratos listados: "
+            f"{d.get('contracts_total', 0)}, snapshots devueltos: "
+            f"{d.get('snapshots_total', 0)}, con bid/ask cotizado: "
+            f"{d.get('quotes_with_bid_ask', 0)}."
+        )
         return out
 
     out["pcr"] = compute_pcr(calls, puts, out["current_price"])
@@ -1160,10 +1169,19 @@ def quick_lookup(ticker, target_date, params):
     )
     out["candidate"] = candidate
     if candidate is None:
+        itm_rows = calls[calls["strike"] < out["current_price"]]
+        n_itm = len(itm_rows)
+        n_itm_quoted = int(((itm_rows["bid"] > 0) & (itm_rows["ask"] > 0)).sum()) if n_itm else 0
         out["error"] = (
-            "No hay ningún strike ITM que pase los filtros fijos (bid>0, "
-            "ask>0, spread≤50% del extrínseco, OI mínimo) para este "
-            "vencimiento."
+            f"No hay ningún strike ITM que pase los filtros fijos (bid>0, "
+            f"ask>0, spread≤50% del extrínseco, OI mínimo) para este "
+            f"vencimiento. De {n_itm} strikes ITM en la cadena, solo "
+            f"{n_itm_quoted} traen bid/ask realmente cotizado por Alpaca "
+            f"(feed: {out['chain_diag'].get('feed', '?')}) — si el número es "
+            f"bajo o 0, el feed 'indicative' probablemente no está dando "
+            f"cotización real para esos strikes deep ITM; prueba con OPRA "
+            f"si tu cuenta tiene esa suscripción, o consulta en horario de "
+            f"mercado."
         )
         return out
 
