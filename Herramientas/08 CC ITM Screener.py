@@ -39,15 +39,17 @@ ARQUITECTURA (v3.13) — CAMBIOS DE ESTA REVISIÓN
 25. FILTROS ADICIONALES SOBRE RESULTADOS (post-escaneo, sin red).
 Nueva cajita "🔧 Filtros adicionales sobre resultados" justo encima de
 las métricas/tabs de Resultados, con dos checkboxes independientes:
-"Downside protection mínimo (%)" y "DTE mínimo", cada uno con su
+"Downside protection mínimo (%)" y "Delta mínimo", cada uno con su
 number_input (deshabilitado si el checkbox está apagado). Se aplican
 sobre el DataFrame que ya devolvió el último escaneo (df_all) — no
 disparan ninguna llamada de red ni relanzan Fase 1/Fase 2, solo acotan
 qué filas de ese resultado se muestran en las métricas, el ranking, el
-detalle y los gráficos. La columna Rank NO se recalcula al filtrar —
-sigue reflejando la posición dentro del escaneo completo, para no
-perder esa referencia. Si el filtro deja la tabla vacía, se avisa y no
-se intenta pintar métricas/tabs sobre un DataFrame vacío.
+detalle y los gráficos. El filtro de Delta excluye filas sin delta
+calculable (IV no disponible), ya que no hay valor con el que comparar.
+La columna Rank NO se recalcula al filtrar — sigue reflejando la
+posición dentro del escaneo completo, para no perder esa referencia.
+Si el filtro deja la tabla vacía, se avisa y no se intenta pintar
+métricas/tabs sobre un DataFrame vacío.
 
 ARQUITECTURA (v3.12) — CAMBIOS DE ESTA REVISIÓN
 ------------------------------------------------
@@ -1375,7 +1377,7 @@ def main():
     )
     st.caption(
         "⚙️ v3.13 — filtros adicionales sobre resultados (downside protection y "
-        "DTE mínimos) · filtro de OI opcional en el escaneo (OFF por defecto) y "
+        "delta mínimos) · filtro de OI opcional en el escaneo (OFF por defecto) y "
         "eliminado de Consulta Individual · datos de opciones/precio vía Alpaca"
     )
 
@@ -1819,19 +1821,22 @@ def main():
             disabled=not use_min_prot_filter, key="min_prot_value",
         )
     with colrf2:
-        use_min_dte_filter = st.checkbox("DTE mínimo", value=False)
-        min_dte_value = st.number_input(
-            "Valor mínimo (días)", min_value=0, max_value=180, value=5, step=1,
-            disabled=not use_min_dte_filter, key="min_dte_value",
+        use_min_delta_filter = st.checkbox("Delta mínimo", value=False)
+        min_delta_value = st.number_input(
+            "Valor mínimo", min_value=0.0, max_value=1.0, value=0.85, step=0.01,
+            disabled=not use_min_delta_filter, key="min_delta_value",
+            help="Delta calculado por Black-Scholes (columna 'Delta' de la tabla). "
+                 "Filas sin delta calculable (IV no disponible) se excluyen al "
+                 "activar este filtro, ya que no se puede comparar."
         )
 
     df = df_all.copy()
     if use_min_prot_filter:
         df = df[df["Downside_Prot_%"] >= min_prot_value]
-    if use_min_dte_filter:
-        df = df[df["DTE"] >= min_dte_value]
+    if use_min_delta_filter:
+        df = df[df["Delta"].notna() & (df["Delta"] >= min_delta_value)]
 
-    if use_min_prot_filter or use_min_dte_filter:
+    if use_min_prot_filter or use_min_delta_filter:
         st.caption(f"ℹ️ Mostrando **{len(df)}** de {len(df_all)} candidatos tras aplicar estos filtros.")
 
     st.divider()
