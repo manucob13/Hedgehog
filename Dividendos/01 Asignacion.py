@@ -71,10 +71,18 @@ def render_deviation_chart(result_df):
         hovertemplate="%{y}<br>Desviación: %{x:+.2f} pp<br>%{customdata}<extra></extra>",
         text=bar_text,
         textposition="outside",
+        cliponaxis=False,  # evita que Plotly recorte el texto en el borde del eje
     ))
+
+    # Ampliamos el rango del eje X más allá del valor máximo/mínimo real,
+    # para dejar hueco visual donde quepa el texto "outside" de las barras
+    # más largas (si no, ese texto se corta justo en el borde del gráfico).
+    max_abs = max(abs(df["deviation_pct"].max()), abs(df["deviation_pct"].min()), 0.1)
+    x_range = [-max_abs * 1.9, max_abs * 1.9]
+
     fig.update_layout(
         height=max(300, 32 * len(df)),
-        margin=dict(l=10, r=110, t=20, b=10),
+        margin=dict(l=10, r=20, t=20, b=10),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         font={"color": "white"},
@@ -82,6 +90,7 @@ def render_deviation_chart(result_df):
             showgrid=True, gridcolor="rgba(255,255,255,0.08)",
             zeroline=True, zerolinecolor="rgba(255,255,255,0.3)",
             title="Desviación (puntos porcentuales) — azul = por debajo, rojo = por encima",
+            range=x_range,
         ),
         yaxis=dict(showgrid=False),
     )
