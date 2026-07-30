@@ -158,7 +158,7 @@ pg = st.navigation({
     "Time Edge": [te_signals, te_op_21dte,te_op_60dte],
     "Triple Calendar": [tc_signals, tc_calculos,tc_ajustes],
     "WEIC": [weic_calculos],
-    "CARTERA": [
+    "OPCIONES": [
         cartera_panel,
         cartera_calendario,
         cartera_operaciones,
