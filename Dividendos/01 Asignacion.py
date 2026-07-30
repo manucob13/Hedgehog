@@ -49,18 +49,32 @@ def render_deviation_chart(result_df):
 
     colors = ["#E74C3C" if v > 0 else "#3498DB" for v in df["deviation_pct"]]
 
+    def _detail_label(row):
+        """Acciones de diferencia si aplica (no-CASH y precio conocido);
+        si no, muestra la diferencia en $ (caso CASH o sin precio)."""
+        if row["ticker"] == "CASH" or pd.isna(row["shares_diff"]):
+            return f"{row['diff_value']:+,.0f} $"
+        return f"{row['shares_diff']:+.1f} acciones"
+
+    detail_labels = df.apply(_detail_label, axis=1)
+    bar_text = [
+        f"{pp:+.2f} pp ({detail})"
+        for pp, detail in zip(df["deviation_pct"], detail_labels)
+    ]
+
     fig = go.Figure(go.Bar(
         y=df["ticker"],
         x=df["deviation_pct"],
         orientation="h",
         marker_color=colors,
-        hovertemplate="%{y}<br>Desviación: %{x:+.2f} pp<extra></extra>",
-        text=[f"{v:+.2f} pp" for v in df["deviation_pct"]],
+        customdata=detail_labels,
+        hovertemplate="%{y}<br>Desviación: %{x:+.2f} pp<br>%{customdata}<extra></extra>",
+        text=bar_text,
         textposition="outside",
     ))
     fig.update_layout(
-        height=max(300, 28 * len(df)),
-        margin=dict(l=10, r=40, t=20, b=10),
+        height=max(300, 32 * len(df)),
+        margin=dict(l=10, r=110, t=20, b=10),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         font={"color": "white"},
