@@ -34,6 +34,21 @@ PRECIO DEL SUBYACENTE PARA INTRÍNSECO/EXTRÍNSECO: precio en vivo vía Alpaca
 histórico (yfinance, Fase 1) si Alpaca no devuelve precio en vivo disponible
 (fin de semana, fallo puntual de red, etc.)
 
+ARQUITECTURA (v3.13) — CAMBIOS DE ESTA REVISIÓN
+------------------------------------------------
+25. FILTROS ADICIONALES SOBRE RESULTADOS (post-escaneo, sin red).
+Nueva cajita "🔧 Filtros adicionales sobre resultados" justo encima de
+las métricas/tabs de Resultados, con dos checkboxes independientes:
+"Downside protection mínimo (%)" y "DTE mínimo", cada uno con su
+number_input (deshabilitado si el checkbox está apagado). Se aplican
+sobre el DataFrame que ya devolvió el último escaneo (df_all) — no
+disparan ninguna llamada de red ni relanzan Fase 1/Fase 2, solo acotan
+qué filas de ese resultado se muestran en las métricas, el ranking, el
+detalle y los gráficos. La columna Rank NO se recalcula al filtrar —
+sigue reflejando la posición dentro del escaneo completo, para no
+perder esa referencia. Si el filtro deja la tabla vacía, se avisa y no
+se intenta pintar métricas/tabs sobre un DataFrame vacío.
+
 ARQUITECTURA (v3.12) — CAMBIOS DE ESTA REVISIÓN
 ------------------------------------------------
 24. FILTRO DE OI: OPCIONAL EN EL ESCANEO, ELIMINADO DE CONSULTA INDIVIDUAL.
@@ -1359,9 +1374,9 @@ def main():
         "Ranking por mayor downside protection**"
     )
     st.caption(
-        "⚙️ v3.12 — filtro de OI opcional en el escaneo (OFF por defecto) y "
-        "eliminado de Consulta Individual · precio en vivo/vencimientos/cadena "
-        "vía Alpaca · earnings/dividendos y precio diario/SMA30 vía yfinance"
+        "⚙️ v3.13 — filtros adicionales sobre resultados (downside protection y "
+        "DTE mínimos) · filtro de OI opcional en el escaneo (OFF por defecto) y "
+        "eliminado de Consulta Individual · datos de opciones/precio vía Alpaca"
     )
 
     col_title, col_reset = st.columns([5, 1])
@@ -1786,8 +1801,44 @@ def main():
         st.info("👆 Configura los parámetros y pulsa **INICIAR ESCANEO**.")
         return
 
-    df = st.session_state["results"]
+    df_all = st.session_state["results"]
     ts = st.session_state["scan_ts"]
+
+    # ── Filtros adicionales sobre resultados (punto 25 del docstring) ──
+    st.markdown("#### 🔧 Filtros adicionales sobre resultados")
+    st.caption(
+        "Se aplican sobre los candidatos ya encontrados en el último escaneo — "
+        "no relanzan la descarga de datos, solo acotan la tabla/gráficos de "
+        "abajo. Rank conserva la posición del escaneo completo (sin re-numerar)."
+    )
+    colrf1, colrf2 = st.columns(2)
+    with colrf1:
+        use_min_prot_filter = st.checkbox("Downside protection mínimo (%)", value=False)
+        min_prot_value = st.number_input(
+            "Valor mínimo (%)", min_value=0.0, max_value=100.0, value=10.0, step=0.5,
+            disabled=not use_min_prot_filter, key="min_prot_value",
+        )
+    with colrf2:
+        use_min_dte_filter = st.checkbox("DTE mínimo", value=False)
+        min_dte_value = st.number_input(
+            "Valor mínimo (días)", min_value=0, max_value=180, value=5, step=1,
+            disabled=not use_min_dte_filter, key="min_dte_value",
+        )
+
+    df = df_all.copy()
+    if use_min_prot_filter:
+        df = df[df["Downside_Prot_%"] >= min_prot_value]
+    if use_min_dte_filter:
+        df = df[df["DTE"] >= min_dte_value]
+
+    if use_min_prot_filter or use_min_dte_filter:
+        st.caption(f"ℹ️ Mostrando **{len(df)}** de {len(df_all)} candidatos tras aplicar estos filtros.")
+
+    st.divider()
+
+    if df.empty:
+        st.warning("⚠️ Ningún candidato del último escaneo cumple estos filtros adicionales. Ajusta los valores de arriba.")
+        return
 
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("📊 Candidatos totales", len(df))
