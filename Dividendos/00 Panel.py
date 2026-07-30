@@ -4,19 +4,94 @@ from pathlib import Path
 from datetime import date
 
 from utils.utils import check_password
-from Dividendos.core.storage.db import read_trades, read_equity_summary, read_open_positions, read_cash_transactions
+from Dividendos.core.storage.db import (
+    read_trades,
+    read_equity_summary,
+    read_open_positions,
+    read_cash_transactions,
+    read_target_allocation,
+)
 from Dividendos.core.processing.metrics import (
     filter_closed_trades,
-    profit_factor,
-    win_rate,
     pnl_summary,
+    win_rate,
     account_summary,
     dividends_by_month,
     dividends_total,
     account_growth_by_month,
 )
+from Dividendos.core.processing.allocation import compare_allocation
 
 DB_PATH = Path(__file__).parent / "data" / "processed" / "dividendos.db"
+
+
+# ---------------------------------------------------------------------------
+# Gráfico lineal de evolución del NLV
+# ---------------------------------------------------------------------------
+
+def render_nlv_line_chart(equity_df):
+    df = equity_df.sort_values("reportDate")
+
+    is_up = df["total"].iloc[-1] >= df["total"].iloc[0]
+    line_color = "#2ECC71" if is_up else "#E74C3C"
+    fill_color = "rgba(46,204,113,0.10)" if is_up else "rgba(231,76,60,0.10)"
+
+    fig = go.Figure(go.Scatter(
+        x=df["reportDate"],
+        y=df["total"],
+        mode="lines",
+        line=dict(color=line_color, width=2),
+        fill="tozeroy",
+        fillcolor=fill_color,
+        hovertemplate="%{x|%d/%m/%Y}<br>NLV: $%{y:,.2f}<extra></extra>",
+    ))
+    fig.update_layout(
+        height=320,
+        margin=dict(l=10, r=10, t=10, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font={"color": "white"},
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.08)", tickprefix="$"),
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Gráfico de barras: crecimiento mensual de la cuenta (%)
+# ---------------------------------------------------------------------------
+
+def render_growth_chart(growth_df):
+    df = growth_df[growth_df["end_nlv"].notna()].copy()
+    if df.empty:
+        return None
+
+    colors = ["#2ECC71" if v >= 0 else "#E74C3C" for v in df["growth_pct"]]
+
+    fig = go.Figure(go.Bar(
+        x=df["month_label"],
+        y=df["growth_pct"],
+        marker_color=colors,
+        customdata=df["growth_abs"],
+        hovertemplate="%{x}<br>Crecimiento: %{y:+.2f}%<br>($%{customdata:+,.0f})<extra></extra>",
+        text=[f"{v:+.2f}%" for v in df["growth_pct"]],
+        textposition="outside",
+    ))
+    fig.update_layout(
+        height=280,
+        margin=dict(l=10, r=10, t=20, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font={"color": "white"},
+        xaxis=dict(showgrid=False),
+        yaxis=dict(
+            showgrid=True, gridcolor="rgba(255,255,255,0.08)",
+            zeroline=True, zerolinecolor="rgba(255,255,255,0.3)",
+            ticksuffix="%",
+        ),
+        showlegend=False,
+    )
+    return fig
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +175,12 @@ def main():
 
     st.markdown("---")
 
+    # --- Gráfico lineal: evolución del valor de cartera (NLV) ---
+    st.subheader("Evolución del valor de la cartera (NLV)")
+    st.plotly_chart(render_nlv_line_chart(equity), use_container_width=True)
+
+    st.markdown("---")
+
     # --- P&L (trading, si lo hay) ---
     closed_ytd = filter_closed_trades(
         trades, date_from=date(year, 1, 1), date_to=today
@@ -112,7 +193,7 @@ def main():
     net = pnl["net_pnl"]
     color = "green" if net >= 0 else "red"
     sign = "+" if net >= 0 else ""
-    p1.markdown(f"**P&L neto**")
+    p1.markdown("**P&L neto**")
     p1.markdown(f"### :{color}[{sign}${net:,.2f}]")
     p2.metric("Ganancias brutas", f"${pnl['gross_profit']:,.2f}")
     p3.metric("Pérdidas brutas", f"${pnl['gross_loss']:,.2f}")
@@ -124,26 +205,15 @@ def main():
 
     st.markdown("---")
 
-    # --- Tarjetas de crecimiento mensual de la cuenta ---
+    # --- Crecimiento mensual de la cuenta (gráfico de barras) ---
     st.subheader(f"Crecimiento mensual de la cuenta {year}")
     growth = account_growth_by_month(equity, year)
-    months_with_data = growth[growth["end_nlv"].notna()]
+    growth_chart = render_growth_chart(growth)
 
-    if months_with_data.empty:
+    if growth_chart is None:
         st.caption("Sin datos suficientes todavía")
     else:
-        cards_per_row = 6
-        rows_needed = [months_with_data[i:i + cards_per_row] for i in range(0, len(months_with_data), cards_per_row)]
-        for chunk in rows_needed:
-            cols = st.columns(len(chunk))
-            for col, (_, row) in zip(cols, chunk.iterrows()):
-                growth_pct = row["growth_pct"]
-                color = "green" if (growth_pct or 0) >= 0 else "red"
-                sign = "+" if (growth_pct or 0) >= 0 else ""
-                with col:
-                    st.markdown(f"**{row['month_label']}**")
-                    st.markdown(f":{color}[{sign}{growth_pct:.2f}%]" if growth_pct is not None else "—")
-                    st.caption(f"${row['growth_abs']:,.0f}" if row["growth_abs"] is not None else "")
+        st.plotly_chart(growth_chart, use_container_width=True)
 
     st.markdown("---")
 
@@ -161,12 +231,51 @@ def main():
 
     st.markdown("---")
 
-    # --- Instrumentos / holdings ---
+    # --- Instrumentos / holdings, con desviación vs. objetivo ---
     st.subheader("Instrumentos y acciones que tienes")
     positions = read_open_positions(DB_PATH)
+    target = read_target_allocation(DB_PATH)
+
     if positions.empty:
         st.caption("Sin posiciones abiertas")
+    elif not target.empty and acc:
+        result = compare_allocation(positions, target, acc["nlv"], cash_value=acc["cash"])
+        result["deviation_pct"] = result["current_pct"] - result["target_pct"]
+        result = result.sort_values("current_value", ascending=False)
+
+        def _color_deviation(val):
+            if val > 0:
+                return "color: #2ECC71"
+            if val < 0:
+                return "color: #E74C3C"
+            return ""
+
+        cols = [
+            "ticker", "shares_held", "price", "current_value",
+            "current_pct", "target_pct", "deviation_pct",
+        ]
+        styled = result[cols].style.map(_color_deviation, subset=["deviation_pct"])
+
+        st.dataframe(
+            styled,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "ticker": "Ticker",
+                "shares_held": st.column_config.NumberColumn("Acciones", format="%.2f"),
+                "price": st.column_config.NumberColumn("Precio", format="$%.2f"),
+                "current_value": st.column_config.NumberColumn("Valor", format="$%.2f"),
+                "current_pct": st.column_config.NumberColumn("% actual", format="%.2f%%"),
+                "target_pct": st.column_config.NumberColumn("% objetivo", format="%.2f%%"),
+                "deviation_pct": st.column_config.NumberColumn("Diferencia (pp)", format="%+.2f"),
+            },
+        )
+        st.caption(
+            "🟢 Verde = por encima del objetivo · 🔴 Rojo = por debajo del objetivo. "
+            "Detalle completo en la página **Asignación**."
+        )
     else:
+        # Sin tabla de asignación guardada: tabla simple, sin comparación
         cols_to_show = [
             c for c in [
                 "symbol", "assetCategory", "position", "markPrice",
@@ -186,6 +295,10 @@ def main():
                 "percentOfNAV": st.column_config.NumberColumn("% NLV", format="%.2f%%"),
                 "fifoPnlUnrealized": st.column_config.NumberColumn("P&L no realizado", format="$%.2f"),
             },
+        )
+        st.caption(
+            "Ve a la página **Asignación** para definir tu tabla objetivo y "
+            "ver aquí la diferencia con tus holdings."
         )
 
 
