@@ -854,6 +854,91 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
     except Exception:
         return None
 
+
+def find_deep_itm_debug_funnel(calls_df, current_price, min_oi):
+    """Réplica, paso a paso, de los filtros FIJOS de
+    find_deep_itm_candidate() (bid>0/ask>0/mid>0, OI mínimo, extrínseco>0,
+    spread≤50% del extrínseco) para diagnosticar en qué escalón se queda
+    en cero un vencimiento que en la Consulta Individual devuelve "sin
+    candidato" aunque la cadena sí traiga bid/ask cotizado. Solo se usa en
+    quick_lookup — no afecta al pipeline de escaneo masivo. Devuelve un
+    dict con el recuento de strikes ITM que sobreviven a cada paso."""
+    out = {"itm_total": 0, "with_bid_ask": 0, "meets_min_oi": 0,
+           "extrinsic_positive": 0, "spread_ok": 0, "oi_median_with_quotes": None}
+    try:
+        itm = calls_df[calls_df["strike"] < current_price].copy()
+        out["itm_total"] = len(itm)
+        if itm.empty:
+            return out
+
+        itm["bid"] = pd.to_numeric(itm["bid"], errors="coerce").fillna(0)
+        itm["ask"] = pd.to_numeric(itm["ask"], errors="coerce").fillna(0)
+        itm["mid"] = (itm["bid"] + itm["ask"]) / 2
+        itm = itm[(itm["bid"] > 0) & (itm["ask"] > 0) & (itm["mid"] > 0)]
+        out["with_bid_ask"] = len(itm)
+        if itm.empty:
+            return out
+
+        itm["oi"] = pd.to_numeric(
+            itm.get("openInterest", pd.Series(0, index=itm.index)), errors="coerce"
+        ).fillna(0)
+        out["oi_median_with_quotes"] = float(itm["oi"].median())
+        itm = itm[itm["oi"] >= min_oi]
+        out["meets_min_oi"] = len(itm)
+        if itm.empty:
+            return out
+
+        itm["intrinsic"] = current_price - itm["strike"]
+        itm["extrinsic"] = itm["mid"] - itm["intrinsic"]
+        itm = itm[itm["extrinsic"] > 0]
+        out["extrinsic_positive"] = len(itm)
+        if itm.empty:
+            return out
+
+        itm["spread_dollar"] = itm["ask"] - itm["bid"]
+        itm = itm[itm["spread_dollar"] <= itm["extrinsic"] * (SPREAD_MAX_PCT_OF_EXTRINSIC / 100)]
+        out["spread_ok"] = len(itm)
+        return out
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+
+def _explain_deep_itm_funnel(funnel, min_oi):
+    """Traduce find_deep_itm_debug_funnel() a un mensaje humano que señala
+    el primer escalón que se queda en cero."""
+    if funnel.get("itm_total", 0) == 0:
+        return "No hay ningún strike con strike < precio actual en la cadena descargada (raro — revisa el precio en vivo)."
+    if funnel.get("with_bid_ask", 0) == 0:
+        return f"De {funnel['itm_total']} strikes ITM, ninguno tiene bid/ask > 0 cotizado."
+    if funnel.get("meets_min_oi", 0) == 0:
+        oi_med = funnel.get("oi_median_with_quotes")
+        oi_txt = f"{oi_med:.0f}" if oi_med is not None else "N/D"
+        return (
+            f"De {funnel['with_bid_ask']} strikes ITM con bid/ask válido, NINGUNO llega "
+            f"al OI mínimo configurado ({min_oi:.0f}) — mediana de open interest real en "
+            f"esos strikes: {oi_txt}. Esto es lo más probable con Alpaca: el open interest "
+            f"que reporta el TradingClient para contratos de opciones suele venir bajo o en "
+            f"0 para muchos nombres fuera de índices muy líquidos, aunque el contrato SÍ "
+            f"tenga bid/ask cotizado. Baja 'OI mínimo del strike' en Parámetros (prueba con "
+            f"0 o 1 para confirmar el diagnóstico) o acepta que el OI de Alpaca no es "
+            f"comparable al de OPRA/broker tradicional para este universo."
+        )
+    if funnel.get("extrinsic_positive", 0) == 0:
+        return (
+            f"De {funnel['meets_min_oi']} strikes ITM con OI suficiente, NINGUNO tiene "
+            f"extrínseco positivo (el midprice cotizado está por debajo del valor "
+            f"intrínseco) — cotización probablemente poco fiable en este momento/feed."
+        )
+    if funnel.get("spread_ok", 0) == 0:
+        return (
+            f"De {funnel['extrinsic_positive']} strikes con extrínseco positivo, NINGUNO "
+            f"tiene spread bid-ask ≤ 50% de su extrínseco — la prima de mid price no es "
+            f"realmente capturable en ninguno."
+        )
+    return "Deberían quedar candidatos con estos filtros — revisa el extrínseco mínimo configurado."
+
+
 # ======================================================================
 # 8a. FASE 1 — precio diario + SMA30 (paralela)
 # ======================================================================
@@ -1169,19 +1254,12 @@ def quick_lookup(ticker, target_date, params):
     )
     out["candidate"] = candidate
     if candidate is None:
-        itm_rows = calls[calls["strike"] < out["current_price"]]
-        n_itm = len(itm_rows)
-        n_itm_quoted = int(((itm_rows["bid"] > 0) & (itm_rows["ask"] > 0)).sum()) if n_itm else 0
+        funnel = find_deep_itm_debug_funnel(calls, out["current_price"], params["min_oi"])
+        out["itm_funnel"] = funnel
         out["error"] = (
-            f"No hay ningún strike ITM que pase los filtros fijos (bid>0, "
-            f"ask>0, spread≤50% del extrínseco, OI mínimo) para este "
-            f"vencimiento. De {n_itm} strikes ITM en la cadena, solo "
-            f"{n_itm_quoted} traen bid/ask realmente cotizado por Alpaca "
-            f"(feed: {out['chain_diag'].get('feed', '?')}) — si el número es "
-            f"bajo o 0, el feed 'indicative' probablemente no está dando "
-            f"cotización real para esos strikes deep ITM; prueba con OPRA "
-            f"si tu cuenta tiene esa suscripción, o consulta en horario de "
-            f"mercado."
+            "No hay ningún strike ITM que pase los filtros fijos (bid>0, ask>0, "
+            "spread≤50% del extrínseco, OI mínimo) para este vencimiento. "
+            + _explain_deep_itm_funnel(funnel, params["min_oi"])
         )
         return out
 
