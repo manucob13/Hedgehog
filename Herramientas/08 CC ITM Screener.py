@@ -11,7 +11,8 @@ son una preferencia de trading):
   Ninguno / Básico (Close>SMA30) / Medio (+ SMA30
   con pendiente alcista) / Fuerte (+ SMA10>SMA30)
 - PCR < 1.0 (sesgo alcista) [toggle]
-- OI > 100 (liquidez mínima)
+- OI > mínimo configurable (liquidez) [toggle, OFF por defecto desde v3.12 —
+  ver punto 24: el OI de Alpaca no siempre es fiable]
 - Sin earnings en los próximos 7 días [toggle]
 - Sin riesgo de dividendo (ex-div antes de vto.
   con dividendo >= extrínseco capturado) [toggle, ON por defecto]
@@ -32,6 +33,36 @@ PRECIO DEL SUBYACENTE PARA INTRÍNSECO/EXTRÍNSECO: precio en vivo vía Alpaca
 (latest trade), con fallback automático y transparente al último cierre
 histórico (yfinance, Fase 1) si Alpaca no devuelve precio en vivo disponible
 (fin de semana, fallo puntual de red, etc.)
+
+ARQUITECTURA (v3.12) — CAMBIOS DE ESTA REVISIÓN
+------------------------------------------------
+24. FILTRO DE OI: OPCIONAL EN EL ESCANEO, ELIMINADO DE CONSULTA INDIVIDUAL.
+Diagnóstico real en producción: para varios tickers (confirmado con
+TOST), los 24 strikes ITM del vencimiento tenían bid/ask perfectamente
+cotizados por Alpaca, pero TODOS con open_interest = 0 reportado por el
+TradingClient — el filtro de OI mínimo (100 por defecto) los descartaba
+en bloque sin que el motivo fuera obvio desde la UI. El open interest de
+Alpaca no siempre es comparable al de OPRA/un broker tradicional para
+nombres fuera de los índices más líquidos, aunque el bid/ask sí sea real.
+Cambios:
+  · find_deep_itm_candidate() recibe un nuevo parámetro apply_oi_filter
+    (default True). Si es False, se omite el paso de filtrar por OI —
+    el valor de OI se sigue calculando y devolviendo en el candidato
+    (se sigue viendo en la tabla de resultados), solo deja de ser un
+    filtro duro.
+  · Escaneo masivo: nuevo checkbox "Exigir OI mínimo del strike" en
+    Parámetros → Liquidez mínima, DESACTIVADO por defecto. El
+    number_input de OI mínimo se deshabilita visualmente cuando el
+    checkbox está apagado. params ahora lleva "use_oi_filter".
+  · Consulta Individual (quick_lookup): deja de usar el OI como filtro
+    en NINGÚN caso — llama a find_deep_itm_candidate(..., 
+    apply_oi_filter=False) siempre, sea cual sea el checkbox del escaneo
+    masivo, porque el objetivo de esa sección es revisar el ticker sin
+    que un dato de OI potencialmente poco fiable oculte el resultado.
+  · find_deep_itm_debug_funnel() (el desglose paso a paso que explica un
+    "sin candidato" en Consulta Individual) ya no incluye un escalón de
+    OI — coherente con que ya no se filtra ahí. El OI mediano se sigue
+    mostrando como dato informativo dentro del mensaje de diagnóstico.
 
 ARQUITECTURA (v3.11) — CAMBIOS DE ESTA REVISIÓN
 ------------------------------------------------
@@ -744,7 +775,7 @@ def compute_pcr(calls, puts, current_price, range_pct=15):
 
 def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
                              extrinsic_min_pct, extrinsic_max_pct,
-                             min_oi, diagnostic_mode=False):
+                             min_oi, diagnostic_mode=False, apply_oi_filter=True):
     """extrinsic_min_pct actúa como UMBRAL MÍNIMO por defecto (punto 10 del
     docstring): pasan todos los strikes con extrinsic_pct >= extrinsic_min_pct,
     sin techo superior. Si extrinsic_max_pct no es None (punto 19 del
@@ -752,7 +783,15 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
     extrinsic_min_pct <= extrinsic_pct <= extrinsic_max_pct. En modo
     diagnóstico, se ignoran ambos límites y se devuelve el mejor
     candidato ITM real del mercado (por downside protection), para poder
-    ver los valores reales aunque no cumplan lo configurado."""
+    ver los valores reales aunque no cumplan lo configurado.
+
+    apply_oi_filter (punto 24 del docstring, v3.12): si False, se omite
+    por completo el filtro de OI mínimo — el open interest que reporta
+    Alpaca viene con frecuencia en 0 o muy bajo para nombres fuera de los
+    índices más líquidos, incluso con bid/ask real cotizado, así que
+    exigirlo por defecto puede vaciar el escáner sin que el motivo sea
+    evidente. El valor de OI se sigue devolviendo en el candidato (para
+    mostrarlo en la tabla), solo deja de usarse como filtro duro."""
     try:
         itm = calls_df[calls_df["strike"] < current_price].copy()
         if itm.empty:
@@ -772,9 +811,11 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
         itm["oi"] = pd.to_numeric(
             itm.get("openInterest", pd.Series(0, index=itm.index)), errors="coerce"
         ).fillna(0)
-        itm = itm[itm["oi"] >= min_oi]
-        if itm.empty:
-            return None
+        # Punto 24: filtro de OI ahora opcional (ver docstring de la función).
+        if apply_oi_filter:
+            itm = itm[itm["oi"] >= min_oi]
+            if itm.empty:
+                return None
 
         itm["intrinsic"] = current_price - itm["strike"]
         itm["extrinsic"] = itm["mid"] - itm["intrinsic"]
@@ -855,16 +896,20 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
         return None
 
 
-def find_deep_itm_debug_funnel(calls_df, current_price, min_oi):
-    """Réplica, paso a paso, de los filtros FIJOS de
-    find_deep_itm_candidate() (bid>0/ask>0/mid>0, OI mínimo, extrínseco>0,
-    spread≤50% del extrínseco) para diagnosticar en qué escalón se queda
-    en cero un vencimiento que en la Consulta Individual devuelve "sin
-    candidato" aunque la cadena sí traiga bid/ask cotizado. Solo se usa en
-    quick_lookup — no afecta al pipeline de escaneo masivo. Devuelve un
-    dict con el recuento de strikes ITM que sobreviven a cada paso."""
-    out = {"itm_total": 0, "with_bid_ask": 0, "meets_min_oi": 0,
-           "extrinsic_positive": 0, "spread_ok": 0, "oi_median_with_quotes": None}
+def find_deep_itm_debug_funnel(calls_df, current_price):
+    """Réplica, paso a paso, de los filtros que Consulta Individual SÍ
+    aplica siempre (bid>0/ask>0/mid>0, extrínseco>0, spread≤50% del
+    extrínseco) para diagnosticar en qué escalón se queda en cero un
+    vencimiento que devuelve "sin candidato" aunque la cadena sí traiga
+    bid/ask cotizado. Desde v3.12, el OI mínimo NO se aplica aquí (punto
+    24 del docstring) — se mantiene solo como dato informativo (mediana),
+    nunca como filtro, porque en Consulta Individual el objetivo es
+    revisar el ticker sin que un OI de Alpaca poco fiable oculte el dato.
+    Solo se usa en quick_lookup — no afecta al pipeline de escaneo
+    masivo. Devuelve un dict con el recuento de strikes ITM que
+    sobreviven a cada paso."""
+    out = {"itm_total": 0, "with_bid_ask": 0, "extrinsic_positive": 0,
+           "spread_ok": 0, "oi_median": None}
     try:
         itm = calls_df[calls_df["strike"] < current_price].copy()
         out["itm_total"] = len(itm)
@@ -882,11 +927,7 @@ def find_deep_itm_debug_funnel(calls_df, current_price, min_oi):
         itm["oi"] = pd.to_numeric(
             itm.get("openInterest", pd.Series(0, index=itm.index)), errors="coerce"
         ).fillna(0)
-        out["oi_median_with_quotes"] = float(itm["oi"].median())
-        itm = itm[itm["oi"] >= min_oi]
-        out["meets_min_oi"] = len(itm)
-        if itm.empty:
-            return out
+        out["oi_median"] = float(itm["oi"].median())  # informativo, no filtra
 
         itm["intrinsic"] = current_price - itm["strike"]
         itm["extrinsic"] = itm["mid"] - itm["intrinsic"]
@@ -904,37 +945,27 @@ def find_deep_itm_debug_funnel(calls_df, current_price, min_oi):
         return out
 
 
-def _explain_deep_itm_funnel(funnel, min_oi):
+def _explain_deep_itm_funnel(funnel):
     """Traduce find_deep_itm_debug_funnel() a un mensaje humano que señala
     el primer escalón que se queda en cero."""
     if funnel.get("itm_total", 0) == 0:
         return "No hay ningún strike con strike < precio actual en la cadena descargada (raro — revisa el precio en vivo)."
     if funnel.get("with_bid_ask", 0) == 0:
         return f"De {funnel['itm_total']} strikes ITM, ninguno tiene bid/ask > 0 cotizado."
-    if funnel.get("meets_min_oi", 0) == 0:
-        oi_med = funnel.get("oi_median_with_quotes")
-        oi_txt = f"{oi_med:.0f}" if oi_med is not None else "N/D"
-        return (
-            f"De {funnel['with_bid_ask']} strikes ITM con bid/ask válido, NINGUNO llega "
-            f"al OI mínimo configurado ({min_oi:.0f}) — mediana de open interest real en "
-            f"esos strikes: {oi_txt}. Esto es lo más probable con Alpaca: el open interest "
-            f"que reporta el TradingClient para contratos de opciones suele venir bajo o en "
-            f"0 para muchos nombres fuera de índices muy líquidos, aunque el contrato SÍ "
-            f"tenga bid/ask cotizado. Baja 'OI mínimo del strike' en Parámetros (prueba con "
-            f"0 o 1 para confirmar el diagnóstico) o acepta que el OI de Alpaca no es "
-            f"comparable al de OPRA/broker tradicional para este universo."
-        )
+    oi_med = funnel.get("oi_median")
+    oi_txt = f"{oi_med:.0f}" if oi_med is not None else "N/D"
     if funnel.get("extrinsic_positive", 0) == 0:
         return (
-            f"De {funnel['meets_min_oi']} strikes ITM con OI suficiente, NINGUNO tiene "
-            f"extrínseco positivo (el midprice cotizado está por debajo del valor "
-            f"intrínseco) — cotización probablemente poco fiable en este momento/feed."
+            f"De {funnel['with_bid_ask']} strikes ITM con bid/ask válido (mediana de OI "
+            f"informativo: {oi_txt}, sin filtrar por él aquí), NINGUNO tiene extrínseco "
+            f"positivo (el midprice cotizado está por debajo del valor intrínseco) — "
+            f"cotización probablemente poco fiable en este momento/feed."
         )
     if funnel.get("spread_ok", 0) == 0:
         return (
-            f"De {funnel['extrinsic_positive']} strikes con extrínseco positivo, NINGUNO "
-            f"tiene spread bid-ask ≤ 50% de su extrínseco — la prima de mid price no es "
-            f"realmente capturable en ninguno."
+            f"De {funnel['extrinsic_positive']} strikes con extrínseco positivo (mediana de "
+            f"OI informativo: {oi_txt}), NINGUNO tiene spread bid-ask ≤ 50% de su "
+            f"extrínseco — la prima de mid price no es realmente capturable en ninguno."
         )
     return "Deberían quedar candidatos con estos filtros — revisa el extrínseco mínimo configurado."
 
@@ -1047,6 +1078,7 @@ def phase2_options_filter(survivor, params):
             calls, current_price, dte,
             params["extrinsic_min"], params["extrinsic_max"],
             params["min_oi"], diagnostic_mode=params["diagnostic_mode"],
+            apply_oi_filter=params["use_oi_filter"],
         )
         if candidate is None:
             return None, "no_itm_candidate"
@@ -1247,19 +1279,24 @@ def quick_lookup(ticker, target_date, params):
 
     out["pcr"] = compute_pcr(calls, puts, out["current_price"])
 
+    # Punto 24 del docstring (v3.12): Consulta Individual NUNCA filtra por
+    # OI mínimo — apply_oi_filter=False siempre aquí, sea cual sea el
+    # toggle del escaneo masivo. El OI se sigue mostrando en la tabla como
+    # dato informativo, pero no descarta el ticker.
     candidate = find_deep_itm_candidate(
         calls, out["current_price"], dte,
         params["extrinsic_min"], params["extrinsic_max"],
-        params["min_oi"], diagnostic_mode=True,
+        params["min_oi"], diagnostic_mode=True, apply_oi_filter=False,
     )
     out["candidate"] = candidate
     if candidate is None:
-        funnel = find_deep_itm_debug_funnel(calls, out["current_price"], params["min_oi"])
+        funnel = find_deep_itm_debug_funnel(calls, out["current_price"])
         out["itm_funnel"] = funnel
         out["error"] = (
             "No hay ningún strike ITM que pase los filtros fijos (bid>0, ask>0, "
-            "spread≤50% del extrínseco, OI mínimo) para este vencimiento. "
-            + _explain_deep_itm_funnel(funnel, params["min_oi"])
+            "spread≤50% del extrínseco) para este vencimiento — el OI mínimo NO "
+            "se aplica aquí. "
+            + _explain_deep_itm_funnel(funnel)
         )
         return out
 
@@ -1322,9 +1359,9 @@ def main():
         "Ranking por mayor downside protection**"
     )
     st.caption(
-        "⚙️ v3.11 — precio en vivo, vencimientos y cadena de opciones vía "
-        "Alpaca · earnings/dividendos y precio diario/SMA30 vía yfinance · "
-        "filtro fijo de opciones semanales · vencimiento exacto sin tolerancia"
+        "⚙️ v3.12 — filtro de OI opcional en el escaneo (OFF por defecto) y "
+        "eliminado de Consulta Individual · precio en vivo/vencimientos/cadena "
+        "vía Alpaca · earnings/dividendos y precio diario/SMA30 vía yfinance"
     )
 
     col_title, col_reset = st.columns([5, 1])
@@ -1440,7 +1477,24 @@ def main():
 
     with c2:
         st.markdown("**💧 Liquidez mínima**")
-        min_oi = st.number_input("OI mínimo del strike", min_value=10, max_value=10000, value=100, step=50)
+        use_oi_filter = st.checkbox(
+            "Exigir OI mínimo del strike", value=False,
+            help="Desactivado por defecto (v3.12): el open interest que reporta "
+                 "Alpaca viene con frecuencia en 0 o muy bajo para nombres fuera "
+                 "de los índices más líquidos, incluso con bid/ask real cotizado "
+                 "— exigirlo por defecto puede vaciar el escáner sin que el "
+                 "motivo sea evidente (ver embudo de diagnóstico, motivo "
+                 "'no_itm_candidate'). Actívalo si confías en el dato de OI para "
+                 "tu universo, o si quieres priorizar solo nombres con liquidez "
+                 "histórica alta reportada."
+        )
+        min_oi = st.number_input(
+            "OI mínimo del strike", min_value=10, max_value=10000, value=100, step=50,
+            disabled=not use_oi_filter,
+            help="Solo se aplica si el checkbox de arriba está activado."
+        )
+        if not use_oi_filter:
+            st.caption("ℹ️ OI mínimo NO se está aplicando — el open interest solo se muestra como dato informativo.")
 
         st.markdown("**🎯 Vencimiento objetivo (EXACTO)**")
         target_date = st.date_input(
@@ -1513,6 +1567,7 @@ def main():
         "min_price": min_price,
         "max_price": max_price,
         "min_oi": min_oi,
+        "use_oi_filter": use_oi_filter,
         "target_expiration_date": target_date,
         "trend_strength": trend_strength,
         "use_pcr_filter": use_pcr_filter,
@@ -1528,9 +1583,9 @@ def main():
     st.caption(
         "Mete un ticker y una fecha de vencimiento EXACTA y te devuelve los "
         "datos directamente — sin pasar por los filtros de tendencia, PCR, "
-        "earnings o dividendo del escaneo masivo (esos aquí son solo "
-        "informativos, no descartan el ticker). Sí se exigen siempre, por "
-        "ser filtros fijos: opciones semanales y vencimiento exacto."
+        "earnings, dividendo NI OI mínimo del escaneo masivo (esos aquí son "
+        "solo informativos, no descartan el ticker). Sí se exigen siempre, "
+        "por ser filtros fijos: opciones semanales y vencimiento exacto."
     )
 
     lq1, lq2, lq3 = st.columns([2, 2, 1])
