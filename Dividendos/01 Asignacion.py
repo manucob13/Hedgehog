@@ -1,12 +1,41 @@
 import streamlit as st
 import plotly.graph_objects as go
+import pandas as pd
 from pathlib import Path
 
 from utils.utils import check_password
-from Dividendos.core.storage.db import read_open_positions, read_equity_summary, read_target_allocation
+from Dividendos.core.storage.db import (
+    read_open_positions,
+    read_equity_summary,
+    read_target_allocation,
+    save_target_allocation,
+)
 from Dividendos.core.processing.allocation import compare_allocation
 
 DB_PATH = Path(__file__).parent / "data" / "processed" / "dividendos.db"
+
+# Datos iniciales (tu tabla real). Solo se usan para precargar el editor
+# la primera vez, si todavía no hay nada guardado en la base de datos.
+DEFAULT_ALLOCATION = pd.DataFrame([
+    ("SCHD", "Núcleo calidad USA (dividendos crecientes)", 17.37),
+    ("JEPQ", "Covered calls Nasdaq (yield alto)", 8.76),
+    ("VYM", "Alto dividendo diversificado USA", 8.22),
+    ("SPYI", "Covered calls SPY (yield alto)", 7.79),
+    ("O", "REIT defensivo, \"Monthly Dividend Company\"", 6.82),
+    ("IDVO", "Internacional + covered calls", 6.61),
+    ("VYMI", "ETF International High Dividend Yield ETF", 6.13),
+    ("SMDV", "SmallCap Dividend Aristocrats", 6.13),
+    ("UTG", "Utilities defensivo, yield alto", 5.64),
+    ("BIT", "Renta Fija (Descuento)", 4.48),
+    ("PDI", "Renta Fija (Max Yield)", 4.48),
+    ("XLV", "Healthcare defensivo", 3.88),
+    ("BALI", "Commodities, diversificación", 3.17),
+    ("AMDW", "AMD Covered Call Strategy ETF", 2.92),
+    ("VNQ", "REIT diversificado USA", 2.10),
+    ("LTC", "REIT de salud con dividendos mensuales", 2.00),
+    ("UTF", "Infraestructura global con dividendos mensuales y yield elevado", 2.00),
+    ("CASH", "Liquidez", 1.50),
+], columns=["ticker", "description", "target_pct"])
 
 
 # ---------------------------------------------------------------------------
@@ -53,18 +82,65 @@ def main():
     st.set_page_config(page_title="Asignación - Dividendos", page_icon="🎯", layout="wide")
     st.title("🎯 Asignación: holdings vs. objetivo")
 
+    # -----------------------------------------------------------------
+    # Editor de la tabla de asignación objetivo (siempre disponible)
+    # -----------------------------------------------------------------
+    target = read_target_allocation(DB_PATH) if DB_PATH.exists() else pd.DataFrame()
+    using_defaults = target.empty
+    if using_defaults:
+        target = DEFAULT_ALLOCATION.copy()
+
+    st.subheader("✏️ Tabla de asignación objetivo")
+    if using_defaults:
+        st.info(
+            "Todavía no has guardado ninguna tabla: te muestro tu tabla inicial. "
+            "Edítala si quieres y pulsa **Guardar cambios**."
+        )
+    st.caption(
+        "Modifica los % objetivo (o añade/quita filas) y pulsa **Guardar cambios**. "
+        "Usa el ticker especial **CASH** para fijar el % objetivo de liquidez."
+    )
+
+    edit_cols = ["ticker", "description", "target_pct"]
+    editable_source = target[edit_cols] if set(edit_cols).issubset(target.columns) else target
+
+    edited = st.data_editor(
+        editable_source,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",
+        column_config={
+            "ticker": st.column_config.TextColumn("Ticker", required=True),
+            "description": st.column_config.TextColumn("Descripción", width="large"),
+            "target_pct": st.column_config.NumberColumn(
+                "% objetivo", format="%.2f%%", min_value=0.0, max_value=100.0, required=True
+            ),
+        },
+        key="allocation_editor",
+    )
+
+    total_pct = edited["target_pct"].sum() if not edited.empty else 0.0
+    color = "green" if abs(total_pct - 100) < 0.5 else "orange"
+    st.markdown(f"**Suma total:** :{color}[{total_pct:.2f}%] (idealmente 100%)")
+
+    if st.button("💾 Guardar cambios", type="primary"):
+        try:
+            n = save_target_allocation(DB_PATH, edited)
+            st.success(f"✅ Guardados {n} tickers.")
+            st.rerun()
+        except Exception as e:
+            st.error(f"❌ No se pudo guardar: {e}")
+
+    st.markdown("---")
+
+    # -----------------------------------------------------------------
+    # Comparación con holdings reales (solo si ya hay datos importados)
+    # -----------------------------------------------------------------
     if not DB_PATH.exists():
         st.info(
             "Todavía no has importado ninguna operación. Ve a la página "
-            "**Importar** para traer tu primer reporte de IBKR."
-        )
-        return
-
-    target = read_target_allocation(DB_PATH)
-    if target.empty:
-        st.warning(
-            "Todavía no has subido tu tabla de asignación objetivo. "
-            "Ve a la página **Importar** y súbela (columnas Ticker + Target_%)."
+            "**Importar** para traer tu primer reporte de IBKR y ver aquí "
+            "la comparación contra tus holdings reales."
         )
         return
 
@@ -79,7 +155,14 @@ def main():
     nlv = float(last_row["total"])
     cash = float(last_row["cash"])
 
-    result = compare_allocation(positions, target, nlv, cash_value=cash)
+    # Usamos siempre la tabla ya guardada en BD para la comparación (no la
+    # versión sin guardar del editor, para evitar confusión).
+    saved_target = read_target_allocation(DB_PATH)
+    if saved_target.empty:
+        st.info("Guarda tu tabla de asignación objetivo arriba para ver la comparación.")
+        return
+
+    result = compare_allocation(positions, saved_target, nlv, cash_value=cash)
 
     if result.empty:
         st.info("No hay datos suficientes para comparar la asignación.")
@@ -154,18 +237,6 @@ def main():
         "al objetivo; negativo = tienes ese exceso sobre el objetivo. Para la fila "
         "CASH no aplica el concepto de acciones, usa la columna 'Diferencia $'."
     )
-
-    with st.expander("📋 Tu tabla de asignación objetivo actual"):
-        st.dataframe(
-            target,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "ticker": "Ticker",
-                "target_pct": st.column_config.NumberColumn("% objetivo", format="%.2f%%"),
-                "updated_at": "Actualizado",
-            },
-        )
 
 
 if __name__ == "__main__":
