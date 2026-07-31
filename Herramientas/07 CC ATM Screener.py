@@ -13,7 +13,7 @@ son una preferencia de trading):
 - PCR < 1.0 (sesgo alcista) [toggle]
 - OI > mínimo configurable (liquidez) [toggle, OFF por defecto desde v3.12 —
   ver punto 24: el OI de Alpaca no siempre es fiable]
-- Sin earnings en los próximos 7 días [toggle]
+- Sin earnings entre hoy y el vencimiento objetivo (no ventana fija) [toggle]
 - Sin riesgo de dividendo (ex-div antes de vto.
   con dividendo >= extrínseco capturado) [toggle, ON por defecto]
 - Spread bid-ask no superior al 50% del extrínseco
@@ -33,6 +33,29 @@ PRECIO DEL SUBYACENTE PARA INTRÍNSECO/EXTRÍNSECO: precio en vivo vía Alpaca
 (latest trade), con fallback automático y transparente al último cierre
 histórico (yfinance, Fase 1) si Alpaca no devuelve precio en vivo disponible
 (fin de semana, fallo puntual de red, etc.)
+
+ARQUITECTURA (v3.14) — CAMBIOS DE ESTA REVISIÓN
+------------------------------------------------
+26. FILTRO DE EARNINGS LIGADO AL VENCIMIENTO OBJETIVO (antes: ventana
+fija de 7 días desde hoy).
+Bug real reportado: con un vencimiento objetivo más allá de 7 días
+(p.ej. 14-16 días), el filtro de earnings solo miraba "hoy → hoy+7",
+así que un earnings dentro de la vida real de la opción pero fuera de
+esa ventana fija (caso CDE, earnings el 2 de agosto) no se pillaba. Al
+revés, con un vencimiento a 2-3 días, un earnings que cae DESPUÉS de
+expirar la opción (irrelevante para esa posición) sí se pillaba por
+estar dentro de los 7 días desde hoy — falso positivo. Cambios:
+  · has_earnings_this_week(earnings_date) se sustituye por
+    has_earnings_before_expiration(earnings_date, target_date): la
+    ventana pasa a ser "hoy → vencimiento objetivo", ambos inclusive —
+    la única ventana que importa para esa posición concreta.
+  · phase2_options_filter() y quick_lookup() pasan target_date (que ya
+    tenían disponible) en vez de depender de una constante de 7 días.
+  · Motivo de descarte renombrado: "earnings_this_week" →
+    "earnings_before_expiration".
+  · UI: checkbox "Excluir earnings próximos 7 días" → "Excluir earnings
+    antes del vencimiento objetivo"; métrica de Consulta Individual
+    "Earnings ≤7d" → "Earnings antes del vto.".
 
 ARQUITECTURA (v3.13) — CAMBIOS DE ESTA REVISIÓN
 ------------------------------------------------
@@ -475,7 +498,7 @@ REASON_ORDER = [
     "sma30_unavailable",
     "below_sma30",
     "weak_trend",
-    "earnings_this_week",
+    "earnings_before_expiration",
     "no_expirations",
     "no_weekly_options",
     "no_expiration_exact_dte",
@@ -493,7 +516,7 @@ REASON_LABELS = {
     "sma30_unavailable": "No hay suficiente histórico para SMA30 (Fase 1)",
     "below_sma30": "Precio ≤ SMA30 — no alcista (Fase 1)",
     "weak_trend": "Tendencia insuficiente: SMA30 sin pendiente alcista o SMA10 no confirma (Fase 1)",
-    "earnings_this_week": "Earnings en los próximos 7 días (Fase 2)",
+    "earnings_before_expiration": "Earnings antes del vencimiento objetivo (Fase 2)",
     "no_expirations": "Sin vencimientos de opciones listados en Alpaca (Fase 2)",
     "no_weekly_options": "Sin cadencia de opciones semanales (Fase 2) [fijo]",
     "no_expiration_exact_dte": "Sin vencimiento EXACTO en la fecha objetivo (Fase 2) [fijo]",
@@ -750,10 +773,28 @@ def get_earnings_and_dividend_info(ticker):
 
     return info
 
-def has_earnings_this_week(earnings_date):
+def has_earnings_before_expiration(earnings_date, target_date):
+    """True si hay earnings conocidos entre hoy y la fecha de vencimiento
+    objetivo, ambos inclusive (punto 26 del docstring, v3.14).
+
+    Sustituye a la ventana fija de 7 días (has_earnings_this_week): esa
+    ventana estaba desligada del DTE elegido en la UI, lo que daba dos
+    fallos según el caso:
+    - Vencimiento LEJOS (p.ej. 14-16 días): un earnings que cae DENTRO de
+      la vida de la opción pero fuera de esos 7 días fijos no se pillaba
+      — caso real reportado con CDE (earnings el 2 de agosto sin haberse
+      descartado con un vencimiento objetivo más adelante).
+    - Vencimiento CERCA (p.ej. 2-3 días): un earnings que cae DESPUÉS de
+      expirar la opción (por tanto irrelevante para esa posición) se
+      pillaba igualmente si caía dentro de los 7 días desde hoy — falso
+      positivo.
+
+    Ahora la ventana es exactamente "hoy → vencimiento objetivo", que es
+    la única ventana que importa: earnings después del vencimiento no
+    afectan a esa opción concreta, y earnings antes de hoy tampoco."""
     if earnings_date is None:
         return False
-    return date.today() <= earnings_date <= (date.today() + timedelta(days=7))
+    return date.today() <= earnings_date <= target_date
 
 def has_dividend_risk(ex_div_date, div_amount, exp_date_obj, extrinsic_dollar):
     """True si hay una ex-date de dividendo antes o el mismo día del
@@ -1057,8 +1098,8 @@ def phase2_options_filter(survivor, params):
         else:
             cal_info = {"earnings_date": None, "ex_div_date": None, "div_amount": None}
 
-        if params["use_earnings_filter"] and has_earnings_this_week(cal_info["earnings_date"]):
-            return None, "earnings_this_week"
+        if params["use_earnings_filter"] and has_earnings_before_expiration(cal_info["earnings_date"], target_date):
+            return None, "earnings_before_expiration"
 
         expirations = get_option_expirations(ticker)
         if not expirations:
@@ -1144,6 +1185,7 @@ def phase2_options_filter(survivor, params):
             "SMA10": survivor.get("sma10"),
             "SMA10>SMA30": survivor.get("sma10_above_sma30"),
             "PCR": pcr,
+            "Earnings_Date": cal_info["earnings_date"].isoformat() if cal_info["earnings_date"] else None,
             "Ex_Div_Date": cal_info["ex_div_date"].isoformat() if cal_info["ex_div_date"] else None,
             "Div_Estimado": cal_info["div_amount"],
         }
@@ -1254,7 +1296,7 @@ def quick_lookup(ticker, target_date, params):
 
     out["cal_info"] = get_earnings_and_dividend_info(ticker)
     out["current_price"] = get_live_price(ticker, fallback_price)
-    out["earnings_soon"] = has_earnings_this_week(out["cal_info"]["earnings_date"])
+    out["earnings_soon"] = has_earnings_before_expiration(out["cal_info"]["earnings_date"], target_date)
 
     expirations = get_option_expirations(ticker)
     if not expirations:
@@ -1376,9 +1418,9 @@ def main():
         "Ranking por mayor downside protection**"
     )
     st.caption(
-        "⚙️ v3.13 — filtros adicionales sobre resultados (downside protection y "
-        "delta mínimos) · filtro de OI opcional en el escaneo (OFF por defecto) y "
-        "eliminado de Consulta Individual · datos de opciones/precio vía Alpaca"
+        "⚙️ v3.14 — filtro de earnings ligado al vencimiento objetivo (no ventana "
+        "fija de 7 días) · filtros adicionales sobre resultados (protección/delta) "
+        "· OI opcional en el escaneo · datos de opciones/precio vía Alpaca"
     )
 
     col_title, col_reset = st.columns([5, 1])
@@ -1557,7 +1599,13 @@ def main():
         trend_strength = trend_options[trend_label]
 
         use_pcr_filter = st.checkbox("PCR < 1.0 (sesgo alcista)", value=True)
-        use_earnings_filter = st.checkbox("Excluir earnings próximos 7 días", value=True)
+        use_earnings_filter = st.checkbox(
+            "Excluir earnings antes del vencimiento objetivo", value=True,
+            help="Descarta el ticker si tiene earnings conocidos entre hoy y la "
+                 "fecha de vencimiento elegida arriba (no una ventana fija de "
+                 "días) — un earnings después de expirar la opción no afecta a "
+                 "esa posición y no la descarta."
+        )
         use_dividend_filter = st.checkbox(
             "Excluir riesgo de asignación por dividendo", value=True,
             help="Descarta el candidato si hay una fecha ex-dividendo antes o el "
@@ -1637,13 +1685,19 @@ def main():
 
         if lr.get("current_price") is not None:
             trend = lr.get("trend") or {}
+            cal_info = lr.get("cal_info") or {}
+            ed = cal_info.get("earnings_date")
+            ed_txt = ed.strftime("%d %b %Y") if ed else "sin dato"
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("💲 Precio", f"${lr['current_price']:.2f}")
             m2.metric("📐 SMA30", f"{trend.get('sma30', 'N/D')}")
             m3.metric("📈 RV10 anualizada", f"{lr.get('rv', 'N/D')}%")
             m4.metric(
-                "📅 Earnings ≤7d",
-                "⚠️ Sí" if lr.get("earnings_soon") else "No",
+                "📅 Earnings antes del vto.",
+                f"⚠️ Sí ({ed_txt})" if lr.get("earnings_soon") else f"No ({ed_txt})",
+                help="La fecha entre paréntesis es la que devuelve yfinance para este "
+                     "ticker ('sin dato' si yfinance no la reporta). 'Sí' significa que "
+                     "cae entre hoy y la fecha de vencimiento objetivo elegida arriba."
             )
 
         if lr.get("error"):
@@ -1863,7 +1917,7 @@ def main():
             "IV_%", "RV_%", "IV_RV", "Ret_Anualizado_%",
             "OI", "Volumen", "Spread_%",
             "SMA30", "Dist_SMA30_%", "SMA30_Sube", "SMA10", "SMA10>SMA30",
-            "PCR", "Ex_Div_Date", "Div_Estimado",
+            "PCR", "Earnings_Date", "Ex_Div_Date", "Div_Estimado",
         ]
         cols_show = [c for c in cols_show if c in df.columns]
 
@@ -1955,6 +2009,7 @@ def main():
 | ↗️ SMA30 subiendo | {row['SMA30_Sube']} |
 | ⏩ SMA10 | {row.get('SMA10', 'N/D')} (> SMA30: {row.get('SMA10>SMA30', 'N/D')}) |
 | 🗳️ PCR | {row['PCR']} |
+| 📅 Earnings | {row.get('Earnings_Date') or 'Sin dato'} |
 | 💵 Próxima ex-div / estimado | {row.get('Ex_Div_Date') or 'Sin dato'} / ${row.get('Div_Estimado') if row.get('Div_Estimado') is not None else 'N/D'} |
 """)
 
