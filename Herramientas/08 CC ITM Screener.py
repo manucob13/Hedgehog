@@ -1638,7 +1638,7 @@ def main():
         trend_label = st.selectbox(
             "📈 Tendencia alcista",
             options=list(trend_options.keys()),
-            index=2,  # "Medio" por defecto
+            index=0,  # "Ninguno" por defecto
             help="Básico = comportamiento anterior (un solo cruce, da falsos "
                  "positivos cerca de la media). Medio añade que la propia SMA30 "
                  "esté subiendo, no solo que el precio esté por encima. Fuerte "
