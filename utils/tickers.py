@@ -82,6 +82,7 @@ def get_all_etf_names():
         "UVXY": "ProShares Ultra VIX Short-Term Futures ETF",
         "VXX": "iPath Series B S&P 500 VIX Short-Term Futures ETN",
         "SVXY": "ProShares Short VIX Short-Term Futures ETF",
+        "TNA": "Direxion Daily Small Cap Bull 3X Shares",
 
         # --- Semiconductores / Hardware (5) ---
         "SOXL": "Direxion Daily Semiconductor Bull 3X",
