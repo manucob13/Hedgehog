@@ -135,6 +135,12 @@ screener_trend = st.Page(
     icon="🚀",
     url_path="screener-trend"
 )
+regime_hmm = st.Page(
+    "Herramientas/06 Regime HMM.py", 
+    title="Regime HMM", 
+    icon="🧭",
+    url_path="regime-hmm"
+)
 screener_CC = st.Page(
     "Herramientas/07 CC ATM Screener.py", 
     title="Screener CC ATM", 
@@ -146,12 +152,6 @@ screener_ITM = st.Page(
     title="Screener CC ITM", 
     icon="📐",
     url_path="screener-itm"
-)
-broker_test = st.Page(
-    "Herramientas/06 Broker Test.py", 
-    title="Broker Test", 
-    icon="🔌",
-    url_path="broker-test"
 )
 # 3. CREACIÓN DE LA NAVEGACIÓN JERÁRQUICA
 pg = st.navigation({
@@ -175,9 +175,9 @@ pg = st.navigation({
         gex_analyzer,
         screener_risk,
         screener_trend,
+        regime_hmm,
         screener_CC,
-        screener_ITM,
-        broker_test
+        screener_ITM
     ]
 })
 # 4. EJECUCIÓN
