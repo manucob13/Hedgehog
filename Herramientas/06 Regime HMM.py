@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 from hmmlearn.hmm import GaussianHMM
+from sklearn.preprocessing import StandardScaler
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -60,10 +61,13 @@ REGIME_COLORS = {
 # FEATURE ENGINEERING
 # ============================================================================
 
-def build_features(df, vol_window=8, mom_window=12):
+def build_features(df, vol_window=12, mom_window=12, return_smooth=3):
     """
     Construye el set de features para el HMM a partir de datos semanales:
-      - Retorno semanal
+      - Retorno suavizado (media móvil de `return_smooth` semanas): el retorno
+        semanal crudo es casi puro ruido para separar regímenes en un solo
+        ticker, así que se suaviza ligeramente para quedarnos con la
+        componente de tendencia y no con el ruido semana a semana.
       - Volatilidad realizada (rolling, anualizada)
       - Momentum (retorno acumulado a mom_window semanas)
 
@@ -73,12 +77,13 @@ def build_features(df, vol_window=8, mom_window=12):
     """
     close = df["Close"].astype(float).squeeze()
 
-    returns = close.pct_change()
-    volatility = returns.rolling(vol_window).std() * np.sqrt(52)  # anualizada (datos semanales)
+    raw_returns = close.pct_change()
+    returns_smoothed = raw_returns.rolling(return_smooth).mean()
+    volatility = raw_returns.rolling(vol_window).std() * np.sqrt(52)  # anualizada (datos semanales)
     momentum = close.pct_change(mom_window)
 
     feat = pd.DataFrame({
-        "returns": returns,
+        "returns": returns_smoothed,
         "volatility": volatility,
         "momentum": momentum,
     }, index=df.index).dropna()
@@ -89,23 +94,76 @@ def build_features(df, vol_window=8, mom_window=12):
 # HMM: FIT + CLASIFICACIÓN EN 3 ESTADOS
 # ============================================================================
 
-def fit_hmm_regimes(features, n_states=3, n_iter=1000, random_state=42):
+def apply_min_duration(labels, min_run=3):
+    """
+    Filtro de confirmación mínima ("debounce"): un cambio de régimen solo se
+    confirma si el nuevo régimen se sostiene durante al menos `min_run`
+    periodos consecutivos. Si no, se mantiene el régimen anterior.
+
+    Esto es lo que evita que el gráfico "parpadee" entre colores semana a
+    semana cuando el HMM está indeciso entre dos estados con probabilidades
+    parecidas.
+    """
+    labels = labels.copy()
+    values = labels.tolist()
+    smoothed = values.copy()
+
+    current_label = values[0]
+    candidate_label = current_label
+    candidate_count = 0
+
+    for i in range(1, len(values)):
+        val = values[i]
+        if val == current_label:
+            candidate_label = current_label
+            candidate_count = 0
+        else:
+            if val == candidate_label:
+                candidate_count += 1
+            else:
+                candidate_label = val
+                candidate_count = 1
+            if candidate_count >= min_run:
+                current_label = candidate_label
+                candidate_count = 0
+        smoothed[i] = current_label
+
+    return pd.Series(smoothed, index=labels.index, name=labels.name)
+
+
+def fit_hmm_regimes(features, n_states=3, n_iter=1000, random_state=42,
+                     sticky_strength=15.0, min_run=3):
     """
     Ajusta un Gaussian HMM de covarianza completa sobre las features y
     devuelve:
-      - la serie de estados (Viterbi, más probable path)
+      - la serie de estados suavizada (Viterbi + filtro de duración mínima)
       - las probabilidades filtradas por fecha (predict_proba)
       - el mapeo estado->etiqueta (ALCISTA/BAJISTA/RANGO) basado en el
         retorno medio de cada estado
       - el modelo ajustado y la matriz de transición
+
+    Dos mejoras clave frente a un HMM "vanilla" para evitar el parpadeo
+    entre regímenes semana a semana:
+      1. Las features se escalan (media 0, varianza 1) antes de entrenar,
+         para que ninguna variable domine la covarianza solo por su escala.
+      2. Se usa un prior "sticky" (transmat_prior con diagonal reforzada)
+         que penaliza los cambios de estado durante el entrenamiento,
+         forzando al modelo a aprender una matriz de transición persistente
+         en vez de una que cambie de estado cada pocos periodos.
     """
-    X = features.values
+    scaler = StandardScaler()
+    X = scaler.fit_transform(features.values)
+
+    # Prior de Dirichlet para la matriz de transición: valores altos en la
+    # diagonal empujan al modelo hacia transiciones persistentes.
+    transmat_prior = np.full((n_states, n_states), 1.0) + np.eye(n_states) * sticky_strength
 
     model = GaussianHMM(
         n_components=n_states,
         covariance_type="full",
         n_iter=n_iter,
         random_state=random_state,
+        transmat_prior=transmat_prior,
     )
     model.fit(X)
 
@@ -130,7 +188,8 @@ def fit_hmm_regimes(features, n_states=3, n_iter=1000, random_state=42):
         for i, s in enumerate(order):
             label_map[s] = f"ESTADO_{s}"
 
-    regime_labels = pd.Series([label_map[s] for s in states], index=features.index, name="Regime")
+    regime_labels_raw = pd.Series([label_map[s] for s in states], index=features.index, name="Regime")
+    regime_labels = apply_min_duration(regime_labels_raw, min_run=min_run)
 
     return regime_labels, proba, label_map, model, mean_returns
 
@@ -184,12 +243,28 @@ def main():
     with col_input3:
         lookback_months = st.slider("Meses a visualizar", 1, 36, 12)
     with col_input4:
-        vol_window = st.slider("Ventana Vol (sem.)", 4, 26, 8)
+        vol_window = st.slider("Ventana Vol (sem.)", 4, 26, 12)
+
+    col_input5, col_input6 = st.columns(2)
+    with col_input5:
+        sticky_strength = st.slider(
+            "Persistencia del régimen", 0, 50, 15,
+            help="Cuanto más alto, más le cuesta al modelo cambiar de régimen. "
+                 "Sube este valor si ves demasiado 'parpadeo' entre colores."
+        )
+    with col_input6:
+        min_run = st.slider(
+            "Confirmación mínima (semanas)", 1, 8, 3,
+            help="Un cambio de régimen solo se confirma si se mantiene al menos "
+                 "este número de semanas seguidas; si no, se ignora."
+        )
 
     if st.button("🚀 ANALIZAR", use_container_width=True):
         st.session_state.ticker = ticker
         st.session_state.df = download_weekly_data(ticker, years_back)
         st.session_state.vol_window = vol_window
+        st.session_state.sticky_strength = sticky_strength
+        st.session_state.min_run = min_run
         st.session_state.analyzed = True
 
     if st.session_state.analyzed and st.session_state.df is not None:
@@ -198,7 +273,12 @@ def main():
 
         with st.spinner("Ajustando HMM..."):
             features = build_features(df, vol_window=st.session_state.get("vol_window", vol_window))
-            regime_labels, proba, label_map, model, mean_returns = fit_hmm_regimes(features, n_states=3)
+            regime_labels, proba, label_map, model, mean_returns = fit_hmm_regimes(
+                features,
+                n_states=3,
+                sticky_strength=st.session_state.get("sticky_strength", sticky_strength),
+                min_run=st.session_state.get("min_run", min_run),
+            )
 
         # Unir regímenes al df original (índices alineados con features, que
         # pierde las primeras filas por los rolling windows)
@@ -343,17 +423,25 @@ def main():
             st.markdown("""
             **Metodología: Gaussian Hidden Markov Model (3 estados, covarianza completa)**
 
-            - Features: retorno semanal, volatilidad realizada (rolling, anualizada) y momentum
-              (retorno acumulado a varias semanas).
+            - Features: retorno suavizado (media móvil corta, no el retorno crudo semana a
+              semana, que es casi puro ruido), volatilidad realizada (rolling, anualizada)
+              y momentum (retorno acumulado a varias semanas). Las tres se **escalan**
+              (media 0, varianza 1) antes de entrenar para que ninguna domine por su escala.
             - El modelo se ajusta con `hmmlearn.GaussianHMM`, estimando por EM (Baum-Welch)
-              tanto las medias/covarianzas de cada estado como la matriz de transición.
+              las medias/covarianzas de cada estado y la matriz de transición.
+            - Se usa un **prior "sticky"** sobre la matriz de transición (`transmat_prior` con
+              diagonal reforzada) para que el modelo tienda a mantener el régimen en vez de
+              alternar cada pocas semanas — esto es clave con pocos datos (un solo ticker).
+            - Tras el Viterbi, se aplica un **filtro de confirmación mínima**: un cambio de
+              régimen solo se acepta si se sostiene un número mínimo de semanas seguidas.
             - Los 3 estados se etiquetan automáticamente según su **retorno medio**:
               el de mayor retorno → **ALCISTA**, el de menor → **BAJISTA**, el intermedio → **RANGO**.
-            - La clasificación de cada semana usa el camino más probable (Viterbi), y además
-              se muestra la probabilidad filtrada de cada régimen para el dato más reciente.
             - A diferencia de un sistema de umbrales fijos (MACD-V, Z-Score), el HMM aprende
-              las fronteras entre regímenes directamente de los datos de cada ticker, y modela
-              explícitamente la persistencia (matriz de transición) en lugar de asumirla.
+              las fronteras entre regímenes directamente de los datos de cada ticker, aunque
+              con un solo activo la señal es más ruidosa que en el enfoque multivariante del
+              paper original (224 variables) — de ahí la importancia de los ajustes anteriores.
+            - Si sigue "parpadeando" para tu ticker, sube el slider de **Persistencia** o el
+              de **Confirmación mínima**; si lo ves demasiado lento para reaccionar, bájalos.
             """)
 
     elif st.session_state.analyzed and st.session_state.df is None:
