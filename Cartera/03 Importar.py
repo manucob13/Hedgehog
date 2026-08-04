@@ -10,13 +10,56 @@ from Cartera.core.ingestion.ibkr_flex_service import (
     FlexServiceError,
 )
 from Cartera.core.storage.db import save_flex_import, read_import_log
+from Cartera.core.storage.github_sync import download_db, upload_db
 
 DB_PATH = Path(__file__).parent / "data" / "processed" / "cartera.db"
 RAW_DIR = Path(__file__).parent / "data" / "raw"
+REMOTE_DB_PATH = "cartera.db"  # ruta dentro del repo privado hedgehog-data
+
+
+def _get_github_secrets():
+    """Devuelve (token, repo, branch) o None si no están configurados los secrets."""
+    try:
+        gh = st.secrets["github_data"]
+        return gh["token"], gh["repo"], gh.get("branch", "main")
+    except (KeyError, FileNotFoundError):
+        return None
+
+
+def _sync_down():
+    """Descarga la última versión de la BD desde GitHub antes de leer/escribir.
+    Si falla o no hay secrets, sigue con lo que haya en local (silencioso)."""
+    creds = _get_github_secrets()
+    if creds is None:
+        return
+    token, repo, branch = creds
+    try:
+        download_db(DB_PATH, REMOTE_DB_PATH, token, repo, branch)
+    except Exception as e:
+        st.warning(f"⚠️ No se pudo sincronizar con GitHub (usando datos locales): {e}")
+
+
+def _sync_up():
+    """Sube la BD local actualizada a GitHub. Muestra error si falla,
+    porque aquí sí es importante que el usuario lo sepa (riesgo de perder datos)."""
+    creds = _get_github_secrets()
+    if creds is None:
+        st.warning(
+            "⚠️ No hay credenciales de GitHub en Secrets (`[github_data]`), "
+            "los datos NO se están respaldando de forma persistente."
+        )
+        return
+    token, repo, branch = creds
+    try:
+        upload_db(
+            DB_PATH, REMOTE_DB_PATH, token, repo, branch,
+            commit_message=f"Cartera: actualización {datetime.now().isoformat(timespec='minutes')}",
+        )
+    except Exception as e:
+        st.error(f"❌ No se pudo guardar en GitHub (respaldo persistente): {e}")
 
 
 def _do_import(xml_text_or_path, source_label: str):
-    """Parsea y guarda en SQLite. Devuelve el dict-resumen de save_flex_import."""
     parsed = import_flex_report(xml_text_or_path)
     return save_flex_import(DB_PATH, parsed, source_file=source_label)
 
@@ -24,6 +67,9 @@ def _do_import(xml_text_or_path, source_label: str):
 def main():
     st.set_page_config(page_title="Actualizar - Cartera", page_icon="⬆️", layout="wide")
     st.title("⬆️ Actualizar operaciones")
+
+    # Traer la última versión persistida antes de mostrar/editar nada
+    _sync_down()
 
     # -----------------------------------------------------------------
     # Opción principal: automático desde IBKR
@@ -55,7 +101,6 @@ def main():
                 st.error(f"❌ Error de conexión con IBKR: {e}")
                 return
 
-        # Guardamos el XML descargado en data/raw/ para auditoría
         raw_path = save_raw_xml(xml_text, RAW_DIR)
 
         with st.spinner("Guardando en la base de datos..."):
@@ -64,6 +109,9 @@ def main():
             except Exception as e:
                 st.error(f"❌ Error al procesar el XML recibido: {e}")
                 return
+
+        with st.spinner("Guardando copia persistente en GitHub..."):
+            _sync_up()
 
         st.success(
             f"✅ Actualizado desde IBKR: **{summary['n_trades']}** operaciones, "
@@ -85,6 +133,7 @@ def main():
             "Selecciona uno o varios archivos XML",
             type=["xml"],
             accept_multiple_files=True,
+            key="xml_uploader",
         )
 
         if uploaded_files and st.button("📥 Importar archivo(s)", use_container_width=True):
@@ -107,6 +156,8 @@ def main():
                         errors.append(f"**{uploaded_file.name}**: {e}")
 
             if total_trades or total_equity:
+                with st.spinner("Guardando copia persistente en GitHub..."):
+                    _sync_up()
                 st.success(
                     f"✅ Importación manual completada: **{total_trades}** operaciones, "
                     f"**{total_equity}** días de NLV, "
