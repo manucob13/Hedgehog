@@ -21,8 +21,25 @@ from Dividendos.core.processing.metrics import (
     account_growth_by_month,
 )
 from Dividendos.core.processing.allocation import compare_allocation
+from Dividendos.core.storage.github_sync import download_db
 
 DB_PATH = Path(__file__).parent / "data" / "processed" / "dividendos.db"
+REMOTE_DB_PATH = "dividendos.db"
+
+
+def _sync_down():
+    """Trae la última versión de la BD desde GitHub antes de leer, por si
+    el contenedor de Streamlit se reinició desde la última visita."""
+    gh = st.secrets.get("github_data")
+    if not gh:
+        return
+    token, repo, branch = gh.get("token"), gh.get("repo"), gh.get("branch", "main")
+    if not token or not repo:
+        return
+    try:
+        download_db(DB_PATH, REMOTE_DB_PATH, token, repo, branch)
+    except Exception:
+        pass  # si falla, seguimos con lo que haya en local sin romper la página
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +156,8 @@ def render_dividends_chart(monthly_df):
 def main():
     st.set_page_config(page_title="Panel - Dividendos", page_icon="💰", layout="wide")
     st.title("💰 Panel de Dividendos")
+
+    _sync_down()
 
     if not DB_PATH.exists():
         st.info(
