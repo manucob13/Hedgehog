@@ -10,9 +10,57 @@ from Dividendos.core.ingestion.ibkr_flex_service import (
     FlexServiceError,
 )
 from Dividendos.core.storage.db import save_flex_import, read_import_log
+from Dividendos.core.storage.github_sync import download_db, upload_db
 
 DB_PATH = Path(__file__).parent / "data" / "processed" / "dividendos.db"
 RAW_DIR = Path(__file__).parent / "data" / "raw"
+REMOTE_DB_PATH = "dividendos.db"  # ruta dentro del repo privado hedgehog-data
+
+
+def _get_github_secrets():
+    """Devuelve (token, repo, branch) o None si no están configurados los secrets."""
+    gh = st.secrets.get("github_data")
+    if not gh:
+        return None
+    token = gh.get("token")
+    repo = gh.get("repo")
+    branch = gh.get("branch", "main")
+    if not token or not repo:
+        return None
+    return token, repo, branch
+
+
+def _sync_down():
+    """Descarga la última versión de la BD desde GitHub antes de leer/escribir.
+    Si falla o no hay secrets, sigue con lo que haya en local (silencioso)."""
+    creds = _get_github_secrets()
+    if creds is None:
+        return
+    token, repo, branch = creds
+    try:
+        download_db(DB_PATH, REMOTE_DB_PATH, token, repo, branch)
+    except Exception as e:
+        st.warning(f"⚠️ No se pudo sincronizar con GitHub (usando datos locales): {e}")
+
+
+def _sync_up():
+    """Sube la BD local actualizada a GitHub. Muestra error si falla,
+    porque aquí sí es importante que el usuario lo sepa (riesgo de perder datos)."""
+    creds = _get_github_secrets()
+    if creds is None:
+        st.warning(
+            "⚠️ No hay credenciales de GitHub en Secrets (`[github_data]`), "
+            "los datos NO se están respaldando de forma persistente."
+        )
+        return
+    token, repo, branch = creds
+    try:
+        upload_db(
+            DB_PATH, REMOTE_DB_PATH, token, repo, branch,
+            commit_message=f"Dividendos: actualización {datetime.now().isoformat(timespec='minutes')}",
+        )
+    except Exception as e:
+        st.error(f"❌ No se pudo guardar en GitHub (respaldo persistente): {e}")
 
 
 def _do_import(xml_text_or_path, source_label: str):
@@ -23,6 +71,9 @@ def _do_import(xml_text_or_path, source_label: str):
 def main():
     st.set_page_config(page_title="Importar - Dividendos", page_icon="⬆️", layout="wide")
     st.title("⬆️ Importar operaciones (cuenta de dividendos)")
+
+    # Traer la última versión persistida antes de mostrar/editar nada
+    _sync_down()
 
     # -----------------------------------------------------------------
     # Opción principal: automático desde IBKR
@@ -62,6 +113,9 @@ def main():
             except Exception as e:
                 st.error(f"❌ Error al procesar el XML recibido: {e}")
                 return
+
+        with st.spinner("Guardando copia persistente en GitHub..."):
+            _sync_up()
 
         st.success(
             f"✅ Actualizado desde IBKR: **{summary['n_trades']}** operaciones, "
@@ -108,6 +162,8 @@ def main():
                         errors.append(f"**{uploaded_file.name}**: {e}")
 
             if total_trades or total_equity:
+                with st.spinner("Guardando copia persistente en GitHub..."):
+                    _sync_up()
                 st.success(
                     f"✅ Importación manual completada: **{total_trades}** operaciones, "
                     f"**{total_equity}** días de NLV, **{total_positions}** posiciones, "
