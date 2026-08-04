@@ -7,8 +7,25 @@ from utils.utils import check_password
 from Cartera.core.storage.db import read_trades, read_equity_summary
 from Cartera.core.processing.calendar import daily_pnl, monthly_calendar, yearly_summary, yearly_total
 from Cartera.core.processing.metrics import tickers_traded
+from Cartera.core.storage.github_sync import download_db
 
 DB_PATH = Path(__file__).parent / "data" / "processed" / "cartera.db"
+REMOTE_DB_PATH = "cartera.db"
+
+
+def _sync_down():
+    """Trae la última versión de la BD desde GitHub antes de leer, por si
+    el contenedor de Streamlit se reinició desde la última visita."""
+    gh = st.secrets.get("github_data")
+    if not gh:
+        return
+    token, repo, branch = gh.get("token"), gh.get("repo"), gh.get("branch", "main")
+    if not token or not repo:
+        return
+    try:
+        download_db(DB_PATH, REMOTE_DB_PATH, token, repo, branch)
+    except Exception:
+        pass  # si falla, seguimos con lo que haya en local sin romper la página
 
 MESES_LARGO = [
     "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
@@ -150,6 +167,8 @@ def main():
     st.set_page_config(page_title="Calendario - Cartera", page_icon="🗓️", layout="wide")
     st.title("🗓️ Calendario")
 
+    _sync_down()
+
     if not DB_PATH.exists():
         st.info(
             "Todavía no has importado ninguna operación. Ve a la página "
@@ -169,12 +188,14 @@ def main():
 
     daily = daily_pnl(equity)
 
+    # --- Estado: año/mes actualmente mostrados ---
     today = date.today()
     if "cal_year" not in st.session_state:
         st.session_state.cal_year = today.year
     if "cal_month" not in st.session_state:
         st.session_state.cal_month = today.month
 
+    # --- Resumen anual: gráfico de barras ENE..DIC ---
     ys = yearly_summary(daily, st.session_state.cal_year)
     total_year = yearly_total(daily, st.session_state.cal_year)
 
@@ -186,6 +207,7 @@ def main():
 
     st.markdown("---")
 
+    # --- Navegación de mes ---
     nav1, nav2, nav3, nav4 = st.columns([1, 3, 1, 1])
     with nav1:
         if st.button("◀", use_container_width=True):
@@ -224,11 +246,13 @@ def main():
     main_col, side_col = st.columns([3, 1])
 
     with main_col:
+        # Cabecera de días
         header_cols = st.columns(7)
         for i, dia in enumerate(DIAS_SEMANA):
             header_cols[i].markdown(f"**{dia}**")
         header_cols[6].markdown("**SEM**")
 
+        # Filas de semanas
         for week in mc["weeks"]:
             row_cols = st.columns(7)
             for i, d in enumerate(week["days"]):
