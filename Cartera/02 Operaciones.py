@@ -5,18 +5,37 @@ from datetime import date, timedelta
 from utils.utils import check_password
 from Cartera.core.storage.db import read_trades
 from Cartera.core.processing.metrics import filter_closed_trades, pnl_summary, win_rate
+from Cartera.core.storage.github_sync import download_db
 
 DB_PATH = Path(__file__).parent / "data" / "processed" / "cartera.db"
+REMOTE_DB_PATH = "cartera.db"
+
+
+def _sync_down():
+    """Trae la última versión de la BD desde GitHub antes de leer, por si
+    el contenedor de Streamlit se reinició desde la última visita."""
+    gh = st.secrets.get("github_data")
+    if not gh:
+        return
+    token, repo, branch = gh.get("token"), gh.get("repo"), gh.get("branch", "main")
+    if not token or not repo:
+        return
+    try:
+        download_db(DB_PATH, REMOTE_DB_PATH, token, repo, branch)
+    except Exception:
+        pass  # si falla, seguimos con lo que haya en local sin romper la página
 
 
 def main():
     st.set_page_config(page_title="Operaciones - Cartera", page_icon="📋", layout="wide")
     st.title("📋 Operaciones")
 
+    _sync_down()
+
     if not DB_PATH.exists():
         st.info(
             "Todavía no has importado ninguna operación. Ve a la página "
-            "**Importar** para subir tu primer Flex Query de IBKR."
+            "**Actualizar** para traer tu primer reporte de IBKR."
         )
         return
 
@@ -25,7 +44,7 @@ def main():
     if trades.empty:
         st.info(
             "Todavía no hay operaciones guardadas. Ve a la página "
-            "**Importar** para subir tu primer Flex Query de IBKR."
+            "**Actualizar** para traer tu primer reporte de IBKR."
         )
         return
 
