@@ -12,8 +12,25 @@ from Cartera.core.processing.metrics import (
     pnl_summary,
     account_summary,
 )
+from Cartera.core.storage.github_sync import download_db
 
 DB_PATH = Path(__file__).parent / "data" / "processed" / "cartera.db"
+REMOTE_DB_PATH = "cartera.db"
+
+
+def _sync_down():
+    """Trae la última versión de la BD desde GitHub antes de leer, por si
+    el contenedor de Streamlit se reinició desde la última visita."""
+    gh = st.secrets.get("github_data")
+    if not gh:
+        return
+    token, repo, branch = gh.get("token"), gh.get("repo"), gh.get("branch", "main")
+    if not token or not repo:
+        return
+    try:
+        download_db(DB_PATH, REMOTE_DB_PATH, token, repo, branch)
+    except Exception:
+        pass  # si falla, seguimos con lo que haya en local sin romper la página
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +127,8 @@ def main():
     st.set_page_config(page_title="Panel - Cartera", page_icon="📊", layout="wide")
     st.title("📊 Panel")
 
+    _sync_down()
+
     if not DB_PATH.exists():
         st.info(
             "Todavía no has importado ninguna operación. Ve a la página "
@@ -130,8 +149,10 @@ def main():
     today = date.today()
     year = today.year
 
+    # --- Resumen de cuenta (NLV / Caja / Invertido / Rentab. YTD) ---
     acc = account_summary(equity) if not equity.empty else None
 
+    # --- Operaciones cerradas del año en curso (YTD) ---
     closed_ytd = filter_closed_trades(
         trades, date_from=date(year, 1, 1), date_to=today
     ) if not trades.empty else trades
@@ -143,6 +164,7 @@ def main():
     st.caption(f"Período: 01/01/{year} → {today.strftime('%d/%m/%Y')} (año en curso)")
     st.markdown("---")
 
+    # --- Fila de tarjetas: Resumen de cuenta ---
     st.subheader("Resumen de cuenta")
     col1, col2, col3, col4 = st.columns(4)
     if acc:
@@ -157,6 +179,7 @@ def main():
 
     st.markdown("---")
 
+    # --- Gráfico lineal: evolución del valor de cartera (NLV) ---
     st.subheader("Evolución del valor de la cartera (NLV)")
     if equity.empty:
         st.caption("Sin datos suficientes para el gráfico")
@@ -165,6 +188,7 @@ def main():
 
     st.markdown("---")
 
+    # --- Fila: Gauges + P&L acumulado ---
     gcol1, gcol2, gcol3 = st.columns(3)
 
     with gcol1:
@@ -194,6 +218,7 @@ def main():
 
     st.markdown("---")
 
+    # --- Crédito abierto ---
     st.subheader("Crédito abierto")
     positions = read_open_positions(DB_PATH)
     if positions.empty:
