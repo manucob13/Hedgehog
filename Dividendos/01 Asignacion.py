@@ -11,8 +11,54 @@ from Dividendos.core.storage.db import (
     save_target_allocation,
 )
 from Dividendos.core.processing.allocation import compare_allocation
+from Dividendos.core.storage.github_sync import download_db, upload_db
+from datetime import datetime
 
 DB_PATH = Path(__file__).parent / "data" / "processed" / "dividendos.db"
+REMOTE_DB_PATH = "dividendos.db"
+
+
+def _get_github_secrets():
+    gh = st.secrets.get("github_data")
+    if not gh:
+        return None
+    token, repo = gh.get("token"), gh.get("repo")
+    branch = gh.get("branch", "main")
+    if not token or not repo:
+        return None
+    return token, repo, branch
+
+
+def _sync_down():
+    """Trae la última versión de la BD desde GitHub antes de leer, por si
+    el contenedor de Streamlit se reinició desde la última visita."""
+    creds = _get_github_secrets()
+    if creds is None:
+        return
+    token, repo, branch = creds
+    try:
+        download_db(DB_PATH, REMOTE_DB_PATH, token, repo, branch)
+    except Exception:
+        pass  # si falla, seguimos con lo que haya en local sin romper la página
+
+
+def _sync_up():
+    """Sube la BD local actualizada a GitHub tras guardar cambios."""
+    creds = _get_github_secrets()
+    if creds is None:
+        st.warning(
+            "⚠️ No hay credenciales de GitHub en Secrets (`[github_data]`), "
+            "los datos NO se están respaldando de forma persistente."
+        )
+        return
+    token, repo, branch = creds
+    try:
+        upload_db(
+            DB_PATH, REMOTE_DB_PATH, token, repo, branch,
+            commit_message=f"Dividendos: asignación objetivo actualizada {datetime.now().isoformat(timespec='minutes')}",
+        )
+    except Exception as e:
+        st.error(f"❌ No se pudo guardar en GitHub (respaldo persistente): {e}")
 
 # Datos iniciales (tu tabla real). Solo se usan para precargar el editor
 # la primera vez, si todavía no hay nada guardado en la base de datos.
@@ -105,6 +151,8 @@ def main():
     st.set_page_config(page_title="Asignación - Dividendos", page_icon="🎯", layout="wide")
     st.title("🎯 Asignación: holdings vs. objetivo")
 
+    _sync_down()
+
     # -----------------------------------------------------------------
     # Editor de la tabla de asignación objetivo (siempre disponible)
     # -----------------------------------------------------------------
@@ -149,6 +197,8 @@ def main():
     if st.button("💾 Guardar cambios", type="primary"):
         try:
             n = save_target_allocation(DB_PATH, edited)
+            with st.spinner("Guardando copia persistente en GitHub..."):
+                _sync_up()
             st.success(f"✅ Guardados {n} tickers.")
             st.rerun()
         except Exception as e:
