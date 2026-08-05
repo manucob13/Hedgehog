@@ -1,504 +1,47 @@
 """
 Deep ITM Covered Call Screener
 ================================
-Objetivo: encontrar covered calls deep ITM con extrínseco >= umbral mínimo semanal.
+Objetivo: encontrar covered calls deep ITM con extrínseco >= umbral mínimo
+semanal, con el strike más profundo posible que cumpla ese mínimo.
 
-FILTROS DUROS (todos activables/desactivables desde la UI salvo los marcados
-[fijo], que siempre están activos porque protegen la validez del dato, no
-son una preferencia de trading):
+FILTROS (todos activables/desactivables desde la UI salvo los marcados
+[fijo], que siempre están activos porque protegen la validez del dato):
 - Precio del subyacente: rango configurable
-- Tendencia alcista, 4 niveles de exigencia [selector]
-  Ninguno / Básico (Close>SMA30) / Medio (+ SMA30
-  con pendiente alcista) / Fuerte (+ SMA10>SMA30)
+- Tendencia alcista, 4 niveles: Ninguno / Básico (Close>SMA30) / Medio
+  (+ SMA30 con pendiente alcista) / Fuerte (+ SMA10>SMA30) [selector]
 - PCR < 1.0 (sesgo alcista) [toggle]
-- OI > mínimo configurable (liquidez) [toggle, OFF por defecto desde v3.12 —
-  ver punto 24: el OI de Alpaca no siempre es fiable]
-- Sin earnings entre la fecha de ENTRADA y el vencimiento (no ventana fija) [toggle]
-- Sin riesgo de dividendo (ex-div entre entrada y vto.
-  con dividendo >= extrínseco capturado) [toggle, ON por defecto]
-- Spread bid-ask no superior a X% del extrínseco capturado (si no, la
-  prima "no es real") [toggle, OFF por defecto desde v3.16 — ver punto
-  29: en deep ITM puede descartar los strikes más profundos]
-- Extrínseco: umbral mínimo por defecto, o banda mín–máx opcional [toggle:
-  modo diagnóstico ignora ambos]
+- OI mínimo del strike (liquidez) [toggle, OFF por defecto — el OI que
+  reporta Alpaca no siempre es fiable para nombres poco líquidos]
+- Sin earnings entre la fecha de ENTRADA y el vencimiento [toggle]
+- Sin riesgo de dividendo (ex-div entre entrada y vencimiento con
+  dividendo >= extrínseco capturado) [toggle, ON por defecto]
+- Spread bid-ask <= X% del extrínseco [toggle, OFF por defecto — en deep
+  ITM puede descartar los strikes más profundos, que son justo los que
+  interesan; revisa Spread_% en la tabla en vez de confiar en el filtro]
+- Extrínseco: umbral mínimo, o banda mín–máx opcional [toggle; modo
+  diagnóstico ignora ambos]
 - Bid > 0 y Ask > 0 (opción realmente cotizada) [fijo]
-- Ticker con opciones semanales listadas (cadencia real de ~7 días entre
-  vencimientos, no solo mensuales) [fijo]
-- Vencimiento = EXACTAMENTE la fecha objetivo configurada, sin tolerancia:
-  si ese vencimiento no existe para el ticker, se descarta [fijo]
+- Ticker con opciones semanales listadas (cadencia real de ~7 días) [fijo]
+- Vencimiento = EXACTAMENTE la fecha objetivo, sin tolerancia [fijo]
+- Filtros adicionales POST-escaneo (sobre resultados ya obtenidos, sin
+  red): protección intrínseca mínima, delta mínimo, OI mínimo, volumen
+  mínimo — acotan la tabla/gráficos sin relanzar el escaneo.
 
-RANKING: mayor downside protection % primero (prima total/precio — más deep
-ITM = más protección; ver punto 11 del docstring)
-PRECIO DE OPCIÓN: midprice (bid+ask)/2 siempre
-PRECIO DEL SUBYACENTE PARA INTRÍNSECO/EXTRÍNSECO: precio en vivo vía Alpaca
-(latest trade), con fallback automático y transparente al último cierre
-histórico (yfinance, Fase 1) si Alpaca no devuelve precio en vivo disponible
-(fin de semana, fallo puntual de red, etc.)
-
-ARQUITECTURA (v3.16) — CAMBIOS DE ESTA REVISIÓN
-------------------------------------------------
-29. FILTRO DE SPREAD: OPCIONAL EN EL ESCANEO, ELIMINADO DE CONSULTA
-INDIVIDUAL (misma categoría que el punto 24, OI).
-Diagnóstico real en producción: para SMCI, el strike 21.5-22 tenía
-extrínseco del 1.5-2.06% (por encima del mínimo configurado) pero un
-spread bid-ask de ~$2 sobre un extrínseco de solo ~$0.5-0.6 — más del
-300% del extrínseco. El filtro fijo de spread≤50% lo descartaba en
-bloque, y el escáner terminaba eligiendo el strike 25 (más superficial,
-menos downside protection) porque era el strike más profundo que SÍ
-sobrevivía al filtro de spread, no el más profundo que cumplía el
-extrínseco mínimo pedido. En deep ITM el spread en dólares no se reduce
-al mismo ritmo que el extrínseco al profundizar, así que este filtro
-penaliza sistemáticamente los strikes más deep ITM — justo los que el
-screener está diseñado para priorizar. Cambios:
-  · find_deep_itm_candidate() recibe apply_spread_filter (default True)
-    y spread_max_pct (default 50.0, antes constante fija
-    SPREAD_MAX_PCT_OF_EXTRINSIC). Si apply_spread_filter es False, se
-    omite el paso — Spread_% se sigue calculando y mostrando en la
-    tabla, solo deja de ser un filtro duro.
-  · Escaneo masivo: nuevo checkbox "Exigir spread ≤ X% del extrínseco"
-    en Parámetros → Liquidez mínima, DESACTIVADO por defecto, con
-    number_input del umbral (default 50%, deshabilitado si el checkbox
-    está apagado). params ahora lleva "use_spread_filter" y
-    "spread_max_pct".
-  · Consulta Individual (quick_lookup): deja de filtrar por spread en
-    NINGÚN caso (apply_spread_filter=False siempre), mismo criterio que
-    ya tenía el OI — el objetivo es ver el mejor strike ITM real y
-    decidir con Spread_% a la vista.
-  · find_deep_itm_debug_funnel() pierde el escalón "spread_ok" (ya no
-    gatea nada en Consulta Individual) y pasa a reportar la mediana de
-    spread/extrínseco como dato puramente informativo, igual que ya
-    hacía con la mediana de OI.
-
-ARQUITECTURA (v3.15) — CAMBIOS DE ESTA REVISIÓN
-------------------------------------------------
-27. FECHA DE ENTRADA: EARNINGS/DIVIDENDOS LIGADOS AL PERIODO REAL DE LA
-POSICIÓN (antes: ventana desde "hoy", ver punto 26 — quedaba obsoleto
-en cuanto la entrada real no era hoy mismo).
-Nueva sección "📆 Periodo de la posición" en Parámetros, con un
-st.date_input "Fecha de entrada" (calendario, igual que el de
-vencimiento) justo antes del de "Fecha de vencimiento objetivo". El
-vencimiento pasa a exigir min_value = entrada+1 día (con aviso si se
-deja mal configurado) — ya no es independiente de la entrada. Cambios:
-  · has_earnings_before_expiration(earnings_date, target_date) se
-    sustituye por has_earnings_in_period(earnings_date, entry_date,
-    target_date): la ventana pasa a ser "entrada → vencimiento", no
-    "hoy → vencimiento". Motivo de descarte renombrado:
-    "earnings_before_expiration" → "earnings_in_period".
-  · has_dividend_risk() recibe un nuevo parámetro entry_date — la
-    comprobación de ex-dividendo pasa de "hoy → vencimiento" a
-    "entrada → vencimiento".
-  · params ahora lleva "entry_date". phase2_options_filter() lo lee de
-    ahí; quick_lookup() lo recibe como argumento propio
-    (quick_lookup(ticker, entry_date, target_date, params)).
-  · Consulta Individual tiene su PROPIA "Fecha de entrada" (independiente
-    de la del escaneo masivo), junto al selector de vencimiento — mismo
-    patrón que ya tenía el vencimiento ahí.
-  · UI: checkbox "Excluir earnings antes del vencimiento objetivo" →
-    "Excluir earnings entre entrada y vencimiento"; métrica de Consulta
-    Individual "Earnings antes del vto." → "Earnings en el periodo".
-  · DTE (usado en Black-Scholes/retorno anualizado) sigue calculándose
-    como (vencimiento − HOY).days, sin cambios — la fecha de entrada
-    solo acota la ventana de earnings/dividendos, no el time-to-expiry
-    real de la opción.
-28. NUEVOS VALORES POR DEFECTO.
-Extrínseco mínimo: 0.85% → 0.95% (y banda opcional 0.85–1.00% →
-0.95–1.10%, mismo ancho). Precio del subyacente: $20–$500 → $15–$50.
-
-ARQUITECTURA (v3.14) — CAMBIOS DE ESTA REVISIÓN
-------------------------------------------------
-26. FILTRO DE EARNINGS LIGADO AL VENCIMIENTO OBJETIVO (antes: ventana
-fija de 7 días desde hoy).
-Bug real reportado: con un vencimiento objetivo más allá de 7 días
-(p.ej. 14-16 días), el filtro de earnings solo miraba "hoy → hoy+7",
-así que un earnings dentro de la vida real de la opción pero fuera de
-esa ventana fija (caso CDE, earnings el 2 de agosto) no se pillaba. Al
-revés, con un vencimiento a 2-3 días, un earnings que cae DESPUÉS de
-expirar la opción (irrelevante para esa posición) sí se pillaba por
-estar dentro de los 7 días desde hoy — falso positivo. Cambios:
-  · has_earnings_this_week(earnings_date) se sustituye por
-    has_earnings_before_expiration(earnings_date, target_date): la
-    ventana pasa a ser "hoy → vencimiento objetivo", ambos inclusive —
-    la única ventana que importa para esa posición concreta.
-  · phase2_options_filter() y quick_lookup() pasan target_date (que ya
-    tenían disponible) en vez de depender de una constante de 7 días.
-  · Motivo de descarte renombrado: "earnings_this_week" →
-    "earnings_before_expiration".
-  · UI: checkbox "Excluir earnings próximos 7 días" → "Excluir earnings
-    antes del vencimiento objetivo"; métrica de Consulta Individual
-    "Earnings ≤7d" → "Earnings antes del vto.".
-
-ARQUITECTURA (v3.13) — CAMBIOS DE ESTA REVISIÓN
-------------------------------------------------
-25. FILTROS ADICIONALES SOBRE RESULTADOS (post-escaneo, sin red).
-Nueva cajita "🔧 Filtros adicionales sobre resultados" justo encima de
-las métricas/tabs de Resultados, con dos checkboxes independientes:
-"Downside protection mínimo (%)" y "Delta mínimo", cada uno con su
-number_input (deshabilitado si el checkbox está apagado). Se aplican
-sobre el DataFrame que ya devolvió el último escaneo (df_all) — no
-disparan ninguna llamada de red ni relanzan Fase 1/Fase 2, solo acotan
-qué filas de ese resultado se muestran en las métricas, el ranking, el
-detalle y los gráficos. El filtro de Delta excluye filas sin delta
-calculable (IV no disponible), ya que no hay valor con el que comparar.
-La columna Rank NO se recalcula al filtrar — sigue reflejando la
-posición dentro del escaneo completo, para no perder esa referencia.
-Si el filtro deja la tabla vacía, se avisa y no se intenta pintar
-métricas/tabs sobre un DataFrame vacío.
-
-ARQUITECTURA (v3.12) — CAMBIOS DE ESTA REVISIÓN
-------------------------------------------------
-24. FILTRO DE OI: OPCIONAL EN EL ESCANEO, ELIMINADO DE CONSULTA INDIVIDUAL.
-Diagnóstico real en producción: para varios tickers (confirmado con
-TOST), los 24 strikes ITM del vencimiento tenían bid/ask perfectamente
-cotizados por Alpaca, pero TODOS con open_interest = 0 reportado por el
-TradingClient — el filtro de OI mínimo (100 por defecto) los descartaba
-en bloque sin que el motivo fuera obvio desde la UI. El open interest de
-Alpaca no siempre es comparable al de OPRA/un broker tradicional para
-nombres fuera de los índices más líquidos, aunque el bid/ask sí sea real.
-Cambios:
-  · find_deep_itm_candidate() recibe un nuevo parámetro apply_oi_filter
-    (default True). Si es False, se omite el paso de filtrar por OI —
-    el valor de OI se sigue calculando y devolviendo en el candidato
-    (se sigue viendo en la tabla de resultados), solo deja de ser un
-    filtro duro.
-  · Escaneo masivo: nuevo checkbox "Exigir OI mínimo del strike" en
-    Parámetros → Liquidez mínima, DESACTIVADO por defecto. El
-    number_input de OI mínimo se deshabilita visualmente cuando el
-    checkbox está apagado. params ahora lleva "use_oi_filter".
-  · Consulta Individual (quick_lookup): deja de usar el OI como filtro
-    en NINGÚN caso — llama a find_deep_itm_candidate(..., 
-    apply_oi_filter=False) siempre, sea cual sea el checkbox del escaneo
-    masivo, porque el objetivo de esa sección es revisar el ticker sin
-    que un dato de OI potencialmente poco fiable oculte el resultado.
-  · find_deep_itm_debug_funnel() (el desglose paso a paso que explica un
-    "sin candidato" en Consulta Individual) ya no incluye un escalón de
-    OI — coherente con que ya no se filtra ahí. El OI mediano se sigue
-    mostrando como dato informativo dentro del mensaje de diagnóstico.
-
-ARQUITECTURA (v3.11) — CAMBIOS DE ESTA REVISIÓN
-------------------------------------------------
-23. PRECIO EN VIVO: DE YFINANCE (FAST_INFO) A ALPACA (LATEST TRADE).
-El precio en vivo del subyacente, usado para todo lo que depende de
-precisión de precio (PCR, intrínseco/extrínseco, downside protection),
-pasa de stock.fast_info (yfinance) a get_live_price() en
-utils_alpaca.py, vía StockHistoricalDataClient.get_stock_latest_trade()
-(feed "iex", gratuito, configurable a "sip" si la cuenta tiene esa
-suscripción). Mismo comportamiento de fallback que antes: si Alpaca no
-devuelve precio (mercado cerrado sin datos, fallo de red puntual), se
-usa el último cierre histórico ya calculado en Fase 1. yfinance queda
-acotado a: precio diario/SMA30 de Fase 1, y earnings/dividendos — no se
-ha tocado nada de eso. get_live_price() ya no recibe un objeto
-yf.Ticker() como antes (stock.fast_info); ahora recibe el ticker (str)
-directamente, igual que el resto de funciones de utils_alpaca.
-
-ARQUITECTURA (v3.10) — CAMBIOS DE ESTA REVISIÓN
-------------------------------------------------
-20. CADENA DE OPCIONES: DE YFINANCE A ALPACA.
-La descarga de vencimientos y de la cadena de calls/puts (strike, bid,
-ask, open interest, IV) en Fase 2 pasa de yfinance a Alpaca (Trading API
-+ Market Data API), vía el nuevo módulo utils/utils_alpaca.py. yfinance
-se sigue usando para todo lo demás (precio en vivo del subyacente en
-Fase 2, earnings/dividendos, precio diario/SMA30 de Fase 1) — el cambio
-está acotado a datos de opciones. Motivo: mayor fiabilidad de bid/ask y
-open interest que el scraping no oficial de Yahoo. Requiere credenciales
-de Alpaca en st.secrets (ver docstring de utils_alpaca.py). Cambios:
-  · phase2_options_filter() y quick_lookup() llaman a
-    get_option_expirations(ticker) y get_option_chain(ticker, exp) de
-    utils_alpaca en vez de stock.options / stock.option_chain(exp_str).
-  · Las columnas del DataFrame de opciones (strike, bid, ask,
-    openInterest, impliedVolatility, volume) se mantienen idénticas a
-    las que devolvía yfinance, así que find_deep_itm_candidate() y
-    compute_pcr() no han cambiado.
-  · "volume" en resultados es ahora una aproximación (tamaño de la
-    última operación, no volumen acumulado del día) — ver nota en
-    utils_alpaca.get_option_chain(). No se usa en ningún filtro duro.
-21. NUEVO FILTRO FIJO: OPCIONES SEMANALES.
-El escáner es semanal por diseño (ver docstring histórico, entrada de
-Entry timing). Antes, un ticker con vencimientos solo mensuales podía
-colarse igualmente si por casualidad el vencimiento mensual caía dentro
-de la tolerancia de días configurada. Se añade un filtro FIJO (no
-configurable, igual categoría que bid>0/ask>0/spread≤50%):
-has_weekly_options() en utils_alpaca, que exige una cadencia real de
-~7 días entre vencimientos consecutivos dentro de las próximas ~6
-semanas. Nuevo motivo de descarte "no_weekly_options".
-22. VENCIMIENTO EXACTO, SIN TOLERANCIA (se retira dte_tolerance).
-Consecuencia directa del punto 21: si el escáner ya garantiza que el
-ticker tiene opciones semanales, no tiene sentido buscar "el vencimiento
-más cercano dentro de una tolerancia" — se exige que el vencimiento
-elegido en el calendario de la UI exista EXACTAMENTE para ese ticker.
-select_expiration_by_dte() y el campo "Tolerancia (± días)" de la UI
-(tanto en el escaneo masivo como en la Consulta Individual) desaparecen.
-Motivo de descarte renombrado: "no_expiration_in_dte_range" →
-"no_expiration_exact_dte". Strike, bid, ask y mid del resultado
-corresponden siempre al DTE marcado, ni más ni menos.
-
-ARQUITECTURA (v3.9) — CAMBIOS DE ESTA REVISIÓN
-------------------------------------------------
-19. BANDA DE EXTRÍNSECO OPCIONAL (antes: solo umbral mínimo, sin techo).
-El extrínseco mínimo (0.85% por defecto) se mantiene como comportamiento
-por defecto, pero ahora hay un checkbox "Usar banda de extrínseco
-(mín–máx)" para quien quiera acotar también por arriba (p. ej. 0.85% a
-1.00%), en vez de dejar pasar cualquier extrínseco por encima del
-mínimo. Cambios:
-  · UI: checkbox use_extrinsic_band (desactivado por defecto). Si está
-    desactivado, se ve el mismo campo único de siempre ("Extrínseco
-    mínimo"), comportamiento idéntico al de antes. Si está activado,
-    aparecen dos campos ("Extrínseco mínimo (%)" / "Extrínseco máximo
-    (%)"), con validación: si el máximo queda por debajo del mínimo se
-    avisa y se intercambian automáticamente.
-  · find_deep_itm_candidate() recibe un nuevo parámetro
-    extrinsic_max_pct (puede ser None). Si es None, filtra igual que
-    antes (umbral, x >= mínimo). Si no es None, filtra por banda
-    (mínimo <= x <= máximo).
-  · params ahora lleva "extrinsic_max" (None cuando no se usa banda).
-  · candidate["in_target_band"] (y la columna "En_Banda" en resultados)
-    ahora refleja "cumple el mínimo Y, si hay banda activa, también el
-    máximo" — en modo umbral (sin banda) el significado no cambia.
-  · Modo diagnóstico sigue ignorando ambos límites, igual que antes.
-
-ARQUITECTURA (v3.8) — CAMBIOS DE ESTA REVISIÓN
-------------------------------------------------
-16. SELECCIÓN DE PRECIO MÁS CLARA (antes: un único st.slider de rango).
-El slider de doble extremo era ambiguo de leer de un vistazo. Se
-sustituye por dos st.number_input independientes ("Precio mínimo ($)" /
-"Precio máximo ($)"), con validación explícita: si el mínimo queda por
-encima del máximo se avisa y se intercambian automáticamente, y siempre
-se muestra debajo el rango activo en texto ("Rango activo: $X — $Y").
-17. VENCIMIENTO OBJETIVO CON CALENDARIO (antes: número de días "DTE
-objetivo"). El campo numérico de DTE se sustituye por un st.date_input
-— un calendario desplegable donde se elige directamente la fecha de
-vencimiento deseada. El DTE objetivo que usa el pipeline se calcula
-internamente como (fecha_elegida - hoy).days; el resto del
-comportamiento (búsqueda del vencimiento real más cercano dentro de la
-tolerancia, ver punto 14) no cambia. [Nota v3.10: la tolerancia
-desaparece, ver punto 22 — el vencimiento ahora debe ser exacto.]
-18. CONSULTA INDIVIDUAL: TICKER + VENCIMIENTO → DATOS DIRECTOS.
-Nueva sección "🔎 Consulta Individual" entre los parámetros y el
-escaneo masivo. El usuario mete un ticker y una fecha de vencimiento (el
-mismo calendario que el punto 17) y obtiene precio, SMA30, RV10,
-earnings, el mejor strike ITM (extrínseco, prima, downside protection,
-delta, IV, spread, OI/volumen), PCR y riesgo de dividendo — todo en un
-solo click, vía la nueva función quick_lookup(). A propósito NO aplica
-los filtros duros de tendencia/PCR/earnings/dividendo/extrínseco mínimo
-del escaneo masivo (esos aquí son solo datos informativos): el objetivo
-es poder revisar un nombre puntual sin que el pipeline lo descarte
-silenciosamente. Los filtros que sí se respetan son los fijos de
-find_deep_itm_candidate (bid>0, ask>0, spread≤50% del extrínseco, OI
-mínimo configurado) y, desde v3.10, opciones semanales + vencimiento
-exacto, para que el candidato mostrado sea comparable con lo que
-devolvería el escáner completo.
-
-ARQUITECTURA (v3.7) — CAMBIOS DE ESTA REVISIÓN
-------------------------------------------------
-14. DTE CONFIGURABLE (antes: fijo al próximo viernes, DTE≤7).
-El vencimiento ya no está atado a "próximo viernes, DTE≤7". Ahora la UI
-tiene un "DTE objetivo" (número de días) y una tolerancia (± días); el
-screener busca, entre los vencimientos realmente listados para cada
-ticker, el que tenga el DTE calendario más cercano al objetivo dentro de
-esa tolerancia. Ya no se exige que sea viernes — si el objetivo cae en
-una semana con vencimiento mensual o en cualquier otro día listado, ese
-también es válido. Si hay empate en distancia al objetivo, se prefiere el
-DTE más corto (más conservador, menos exposición a tiempo). [Nota v3.10:
-este punto queda obsoleto — ver punto 22, ya no hay tolerancia ni
-selección por distancia, el vencimiento debe ser exacto.]
-15. BOTÓN "RESETEAR TODO".
-Antes, la única forma de forzar datos frescos era esperar a que expirase
-el caché (30 min para precios, 6h para earnings/dividendos) o reiniciar
-la app manualmente. Si el usuario cambiaba un filtro y volvía a lanzar
-el escaneo, el pipeline seguía corriendo completo (Fase 1 + Fase 2) pero
-podía servir de caché datos de precio/earnings ya descargados en la
-sesión — lo cual es correcto para no martillear la red, pero no daba una
-forma explícita de decir "quiero absolutamente todo desde cero". Se
-añade un botón "🧹 Resetear Todo" que:
-  · Vacía el caché de get_daily_data() y get_earnings_and_dividend_info()
-    (st.cache_data.clear() por función), forzando descargas nuevas en el
-    siguiente escaneo. [Nota v3.10: también vacía el caché de
-    get_option_expirations() de Alpaca.]
-  · Borra de session_state los resultados, el embudo de diagnóstico, las
-    muestras de debug/precio y la marca de tiempo del último escaneo.
-  · NO toca el universo de tickers (eso ya tiene su propio botón
-    "Actualizar Universo") ni los valores de los widgets de filtros —
-    solo limpia caché de datos y resultados de escaneo.
-
-ARQUITECTURA (v3.6) — CAMBIOS DE ESTA REVISIÓN
-------------------------------------------------
-11. FIX: DOWNSIDE_PROT_% DEBE INCLUIR EL EXTRÍNSECO, NO SOLO EL INTRÍNSECO.
-Contrastado con la metodología estándar del sector (p. ej. Born To Sell,
-uno de los screeners de referencia para deep ITM covered calls): la
-protección real de una covered call es la prima TOTAL cobrada
-(intrínseco + extrínseco) respecto al precio — es la misma distancia
-que separa el precio actual del Breakeven (current_price - mid). El
-código calculaba Downside_Prot_% usando SOLO el intrínseco
-(itm["intrinsic"] / current_price), lo cual es inconsistente con el
-propio Breakeven (que sí usa la prima completa) e infravalora la
-protección real exactamente en el importe del extrínseco cobrado — la
-misma magnitud que todo el screener está optimizando. Se corrige a
-itm["mid"] / current_price, y se añade una columna nueva,
-Prot_Intrinseca_%, para quien quiera ver por separado la parte "dura"
-(estructural, no perecedera) de la protección frente a la parte que
-depende del valor tiempo cobrado.
-12. AVISO VISUAL DE IV/RV EXTREMO ("demasiado bueno para ser verdad").
-Al quitar el techo de extrínseco (v3.5), también se abre la puerta a
-primas anormalmente altas por riesgo de evento (FDA, litigios, rumor de
-M&A) que ni el filtro de earnings ni el de tendencia detectan — Born To
-Sell advierte explícitamente de este patrón (su ejemplo: un 110% de
-retorno anualizado con 40% de protección resultó ser una biotech con
-catalizador FDA pendiente). La columna IV_RV ya existía pero era fácil
-pasarla por alto; ahora se resalta visualmente en la tabla cuando el
-ratio es alto (>=1.8 aviso, >=2.5 alerta), como recordatorio para
-investigar el nombre antes de operar. Sigue siendo solo un aviso, no un
-filtro — un IV alto puede ser perfectamente legítimo en un nombre
-volátil de toda la vida.
-13. FIX: _clean_ticker() tenía un reemplazo inútil (.replace("&", "&"),
-no hace nada). Se corrige a .replace("&amp;", "&") — necesario si el
-universo se scrapea de tablas HTML donde tickers como "AT&T" pueden
-llegar sin decodificar como "AT&amp;T".
-
-ARQUITECTURA (v3.5) — CAMBIOS DE ESTA REVISIÓN
-------------------------------------------------
-10. EXTRÍNSECO COMO UMBRAL MÍNIMO (antes: banda ±0.15%).
-Antes el usuario fijaba un "extrínseco objetivo" y el filtro construía
-automáticamente una banda [objetivo-0.15%, objetivo+0.15%] — cualquier
-strike con extrínseco por ENCIMA del techo también se descartaba, lo
-cual no tiene sentido económico (más extrínseco cobrado = mejor, no
-peor). Ahora el campo de la UI es directamente "Extrínseco mínimo (%)"
-y actúa como umbral: pasan todos los strikes con extrínseco_% >= ese
-valor, sin techo. Cambios:
-  · UI: un solo st.number_input "extrinsic_min" (ya no hay
-    extrinsic_target ni cálculo de extrinsic_max).
-  · find_deep_itm_candidate(): el filtro de banda
-    (extrinsic_min_pct <= x <= extrinsic_max_pct) pasa a ser un
-    filtro de umbral (x >= extrinsic_min_pct); ya no recibe
-    extrinsic_max_pct.
-  · candidate["in_target_band"] se renombra conceptualmente a
-    "cumple umbral" pero se mantiene la clave "in_target_band" (y la
-    columna "En_Banda" en resultados) para no romper el resto del
-    pipeline/UI; su significado ahora es "extrínseco >= mínimo".
-  · modo diagnóstico sigue igual: ignora el umbral por completo y
-    devuelve el mejor candidato ITM real del mercado.
-
-ARQUITECTURA (v3.4) — CAMBIOS DE ESTA REVISIÓN
-------------------------------------------------
-9. FIX DE THROTTLING DE CPU (Streamlit Community Cloud).
-La revisión anterior, sin querer, empeoró esto: quitar el lock de la
-Fase 1 le dio paralelismo real (bien) pero también concurrencia real de
-CPU/red (coste); y el filtro de dividendos añadió 2 llamadas de red más
-por superviviente en Fase 2 (de 3 a 5 por ticker). Para un universo de
-miles de tickers, eso es carga real. Cuatro cambios para bajarla sin
-perder lo anterior:
-· get_daily_data() (la llamada más repetida, una por ticker en cada
-  escaneo) ahora está cacheada 30 min con @st.cache_data. Durante una
-  sesión de ajuste de parámetros, donde se relanza el escaneo varias
-  veces sobre el mismo universo en pocos minutos, esto evita repetir
-  miles de descargas idénticas.
-· get_earnings_and_dividend_info() también cacheada (6h — earnings y
-  dividendos no cambian intradía) y solo se llama si al menos uno de
-  los dos filtros (earnings o dividendo) está activo; si ambos están
-  apagados, se ahorra por completo esa llamada de red.
-· MAX_WORKERS baja de 4 a 3 en la Fase 1, para no saturar la CPU
-  compartida de la capa gratuita ahora que la concurrencia es real.
-· Nuevo modo "prueba rápida con universo reducido": un campo opcional
-  para escanear solo un puñado de tickers mientras se ajustan
-  parámetros, en vez de relanzar el universo completo cada vez.
-
-ARQUITECTURA (v3.3) — CAMBIOS DE ESTA REVISIÓN
-------------------------------------------------
-7. FILTRO DE TENDENCIA MÁS ROBUSTO.
-Antes "alcista" era solo Close > SMA30, un único cruce que da muchos
-falsos positivos justo cuando el precio está pegado a la media (cruza
-por arriba y por abajo varias veces en pocos días sin que haya
-tendencia real). Ya se calculaba slope_up (si la SMA30 sube o baja)
-pero nunca se usaba para filtrar, solo se mostraba en la tabla. Ahora
-hay 3 niveles seleccionables en la UI, de menos a más exigente:
-· Básico: Close > SMA30 (comportamiento anterior)
-· Medio: + la propia SMA30 tiene pendiente alcista (no basta con
-  estar por encima de una media que está bajando)
-· Fuerte: + SMA10 > SMA30 (el corto plazo también confirma; evita
-  operar tendencias de fondo ya agotadas)
-Los rechazos por pendiente/cruce SMA10 usan un motivo de embudo nuevo,
-"weak_trend", separado de "below_sma30", para poder diferenciar en el
-diagnóstico si el problema es el nivel de precio o el momentum.
-8. RIESGO DE DIVIDENDO VISIBLE Y CONTROLABLE.
-El filtro de dividendo (punto 5, v3.2) era correcto pero opaco: se
-aplicaba siempre sin checkbox propio y sin mostrar el dato subyacente,
-así que no había forma de verificar por qué se descartaba un ticker ni
-de desactivarlo si se quería. Ahora es un checkbox más en "Filtros
-activables" (activado por defecto) y las columnas Ex_Div_Date /
-Div_Estimado aparecen en la tabla de resultados para los candidatos
-que sí pasan, de forma que el dato esté siempre a la vista.
-
-ARQUITECTURA (v3.2) — CAMBIOS DE ESTA REVISIÓN
-------------------------------------------------
-1. PRECIO EN VIVO PARA EL CÁLCULO DE INTRÍNSECO/EXTRÍNSECO. [Nota v3.11:
-el mecanismo concreto (stock.fast_info) queda obsoleto, ver punto 23 —
-la idea de fondo (precio en vivo con fallback al cierre) se mantiene,
-solo cambia la fuente a Alpaca.]
-Antes, current_price salía siempre del último Close histórico (día
-anterior o cierre ya viejo). Con una banda de extrínseco de solo
-±0.15%, correr esto a media sesión del viernes con un precio de ayer
-podía desalinear completamente el cálculo. Ahora, en Fase 2, se pide
-stock.fast_info justo antes de construir el candidato — esto devuelve
-el precio en vivo si el mercado está abierto, y el último precio
-conocido (= último cierre) si está cerrado. Mismo código sirve para
-"viernes a media sesión" y "fin de semana", sin ramas especiales.
-El Close histórico se sigue usando (ahora ajustado, ver punto 4) solo
-para SMA30/RV10, donde no hace falta esa precisión al segundo.
-2. FASE 1 REALMENTE PARALELA.
-El _yfinance_lock envolvía toda la descarga dentro de cada tarea del
-ThreadPoolExecutor, así que aunque hubiera N workers configurados solo
-una descarga corría a la vez — el paralelismo no existía en la
-práctica. Se ha quitado el lock: el propio ThreadPoolExecutor(max_workers=N)
-ya acota la concurrencia real a N descargas simultáneas, que es
-justamente lo que se buscaba. La concurrencia deja de ser un control
-expuesto en la UI (ver punto 2b) y pasa a ser un valor fijo interno
-conservador, para no generar throttling en Streamlit Community Cloud.
-2b. Se retira de la UI el slider "Requests en paralelo": es un detalle de
-implementación, no una decisión de trading, y no debería exigir que el
-usuario entienda internals de threading para usar el screener. Sigue
-funcionando exactamente igual por debajo, con MAX_WORKERS fijado a un
-valor seguro.
-3. FILTRO DE SPREAD RELATIVO AL EXTRÍNSECO.
-Un OI alto (acumulado histórico) no garantiza que el spread bid-ask
-actual sea razonable, sobre todo en deep ITM. Si el spread se come una
-parte grande del extrínseco que se supone que estás cobrando, la prima
-"real" capturable es mucho menor que la que muestra el mid price. Se
-añade un filtro fijo: el spread en dólares no puede superar el 50% del
-extrínseco en dólares del candidato.
-4. AUTO-ADJUST EN LA SERIE DIARIA.
-get_daily_data() usaba auto_adjust=False. Si un ticker tuvo un split en
-los últimos 120 días, el Close crudo tiene un salto de escala que
-distorsiona la SMA30 (falsos "por debajo/encima de SMA30"). Ahora se
-pide la serie ajustada (auto_adjust=True) para el cálculo de
-SMA30/RV10/rango de precio en Fase 1.
-5. FILTRO DE RIESGO DE DIVIDENDO.
-No basta con evitar earnings: en covered calls deep ITM, la asignación
-anticipada más probable ocurre justo antes de una fecha ex-dividendo
-cuando el extrínseco que le queda a la opción es menor que el
-dividendo a cobrar (a quien tiene la call comprada le compensa
-ejercer antes para cobrar el dividendo). Se añade una consulta de
-calendario de dividendos (ex-date) y del último dividendo pagado (como
-estimación del próximo importe); si la ex-date cae antes o el mismo
-día del vencimiento y el dividendo estimado es >= extrínseco del
-candidato, se descarta con el motivo "dividend_risk".
-6. VALIDACIÓN DE ASK.
-Antes solo se exigía bid > 0. Si ask viene en 0/NaN (dato faltante, no
-spread real), el mid quedaba artificialmente bajo (mid = bid/2),
-pudiendo colar candidatos con extrínseco distorsionado. Ahora se exige
-también ask > 0.
-
-Historial de diagnóstico previo (se mantiene por referencia, sigue siendo
-la razón de fondo por la que el pipeline usa Ticker().history() y no
-yf.download(), y por la que existe el socket.setdefaulttimeout()):
-- yf.download() devolvía columnas mal aplanadas en esta instalación
-  (AttributeError sobre 'Close' incluso con multi_level_index=False) —
-  confirmado con el test de conectividad en vivo. Ticker().history() sí
-  funciona limpio. → Todo el pipeline usa Ticker().history() para PRECIO
-  DIARIO del subyacente (Fase 1). Los datos de OPCIONES (Fase 2) usan
-  Alpaca desde v3.10, ver punto 20.
-- La última fila de cada descarga puede ser la sesión de HOY sin cerrar
-  (Close = NaN) — se filtra con dropna(subset=["Close"]).
-- socket.setdefaulttimeout() como red de seguridad barata contra cuelgues
-  de red sin usar un ThreadPoolExecutor nuevo por llamada.
+SELECCIÓN DE STRIKE (dentro de cada ticker): entre los strikes ITM que
+cumplen todos los filtros, se elige el de mayor downside protection
+(mid/precio) — en la práctica, el strike más profundo cuyo extrínseco
+siga >= el mínimo configurado.
+RANKING (entre tickers): por Prot_Intrinseca_% (precio-strike / precio)
+descendente.
+PRECIO DE OPCIÓN: midprice (bid+ask)/2 siempre.
+PRECIO DEL SUBYACENTE: en vivo vía Alpaca (latest trade), con fallback al
+último cierre histórico (yfinance) si Alpaca no devuelve dato.
+DATOS: opciones (vencimientos, cadena, precio en vivo) vía Alpaca —
+utils/utils_alpaca.py. Precio diario/SMA30/RV10 y earnings/dividendos vía
+yfinance. yf.Ticker().history() en vez de yf.download() porque esta
+instalación devuelve columnas mal aplanadas con yf.download().
 """
+
 
 import streamlit as st
 import pandas as pd
@@ -544,9 +87,9 @@ SOCKET_TIMEOUT = 15
 socket.setdefaulttimeout(SOCKET_TIMEOUT)
 
 # Concurrencia de la Fase 1 (descarga de precios). Es un valor fijo
-# interno, no un slider en la UI (ver punto 2/2b del docstring): es un
+# interno, no un slider en la UI: es un
 # detalle de implementación, no una decisión de trading. Bajado de 4 a 3
-# tras el aviso de throttling de CPU (punto 9 del docstring): con el lock
+# tras el aviso de throttling de CPU: con el lock
 # quitado, la Fase 1 ahora sí satura CPU/red de verdad con concurrencia
 # real, así que 3 workers simultáneos es un punto más prudente para
 # Streamlit Community Cloud (CPU compartida) sin renunciar al paralelismo.
@@ -554,7 +97,7 @@ MAX_WORKERS = 3
 
 # Spread bid-ask máximo permitido, como % del extrínseco en dólares del
 # candidato. Si el spread se come más de esto, el extrínseco "de mid
-# price" no es realmente capturable. Ver punto 3 del docstring.
+# price" no es realmente capturable.
 SPREAD_MAX_PCT_OF_EXTRINSIC = 50.0
 
 _N = NormalDist()
@@ -660,7 +203,7 @@ def refresh_universe():
     return get_full_universe()
 
 # ======================================================================
-# 1. DATOS DIARIOS (Fase 1 — paralela de verdad, ver punto 2 del docstring)
+# 1. DATOS DIARIOS (Fase 1 — paralela de verdad)
 # ======================================================================
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -671,14 +214,14 @@ def get_daily_data(ticker):
     con el test de conectividad: AttributeError sobre 'Close'), mientras
     que Ticker().history() funciona limpio.
 
-    auto_adjust=True (punto 4 del docstring): sin ajustar, un split en los
+    auto_adjust=True: sin ajustar, un split en los
     últimos 120 días metía un salto de escala en el Close crudo que
     distorsionaba la SMA30. Esta serie ajustada es solo para SMA30/RV10 y
     para el filtro de rango de precio de Fase 1 — el precio que realmente
     se usa para intrínseco/extrínseco en Fase 2 es el precio en vivo
     (ver get_live_price).
 
-    CACHEADO 30 min (punto 9 del docstring, fix de throttling): esta es,
+    CACHEADO 30 min (fix de throttling): esta es,
     con diferencia, la llamada más repetida del pipeline — una por cada
     ticker del universo, en cada escaneo. Durante una sesión normal de
     ajuste de parámetros (extrínseco, OI, tendencia...) el usuario relanza
@@ -686,7 +229,7 @@ def get_daily_data(ticker):
     caché, cada relanzamiento repite miles de descargas idénticas. 30 min
     es corto para no servir datos desfasados en pleno día de mercado, pero
     cubre de sobra una sesión de prueba de parámetros. El botón "Resetear
-    Todo" (punto 15 del docstring) vacía este caché manualmente cuando el
+    Todo" vacía este caché manualmente cuando el
     usuario quiere datos frescos ya."""
     try:
         end = datetime.now() + timedelta(days=1)
@@ -730,7 +273,7 @@ def get_daily_data(ticker):
         return None
 
 # ======================================================================
-# 2. TENDENCIA: SMA30 + pendiente + SMA10 (punto 7 del docstring)
+# 2. TENDENCIA: SMA30 + pendiente + SMA10
 # ======================================================================
 
 def get_trend_info(close):
@@ -791,7 +334,7 @@ def bs_delta(S, K, T_years, sigma, r=RISK_FREE_RATE):
         return None
 
 # ======================================================================
-# 5. EARNINGS PRÓXIMOS 7 DÍAS Y RIESGO DE DIVIDENDO (punto 5 del docstring)
+# 5. EARNINGS Y RIESGO DE DIVIDENDO
 # ======================================================================
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
@@ -805,7 +348,7 @@ def get_earnings_and_dividend_info(ticker):
     intradía, así que reconsultarlos en cada escaneo de prueba durante una
     sesión de ajuste de parámetros es red/CPU desperdiciada — una causa
     directa del throttling de Streamlit Community Cloud. El botón
-    "Resetear Todo" (punto 15 del docstring) vacía este caché manualmente.
+    "Resetear Todo" vacía este caché manualmente.
 
     Devuelve dict:
     - earnings_date: date o None
@@ -845,8 +388,7 @@ def get_earnings_and_dividend_info(ticker):
 
 def has_earnings_in_period(earnings_date, entry_date, target_date):
     """True si hay earnings conocidos entre la fecha de ENTRADA elegida y
-    la fecha de vencimiento objetivo, ambas inclusive (punto 27 del
-    docstring, v3.15).
+    la fecha de vencimiento objetivo, ambas inclusive.
 
     Sustituye a has_earnings_before_expiration(), que usaba "hoy" como
     inicio de la ventana en vez de la fecha de entrada real que el
@@ -865,7 +407,7 @@ def has_dividend_risk(ex_div_date, div_amount, entry_date, exp_date_obj, extrins
     extrínseco del candidato (riesgo real de asignación anticipada). Si
     no hay datos suficientes de dividendo, no se bloquea — más vale un
     falso negativo aquí que descartar candidatos válidos por falta de
-    dato. Punto 27 del docstring, v3.15: antes usaba "hoy" como inicio de
+    dato. Antes usaba "hoy" como inicio de
     la ventana en vez de la fecha de entrada elegida por el usuario."""
     if ex_div_date is None or div_amount is None or div_amount <= 0:
         return False
@@ -899,16 +441,16 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
                              extrinsic_min_pct, extrinsic_max_pct,
                              min_oi, diagnostic_mode=False, apply_oi_filter=True,
                              apply_spread_filter=True, spread_max_pct=SPREAD_MAX_PCT_OF_EXTRINSIC):
-    """extrinsic_min_pct actúa como UMBRAL MÍNIMO por defecto (punto 10 del
-    docstring): pasan todos los strikes con extrinsic_pct >= extrinsic_min_pct,
-    sin techo superior. Si extrinsic_max_pct no es None (punto 19 del
-    docstring — banda opcional), el filtro pasa a ser una BANDA:
+    """extrinsic_min_pct actúa como UMBRAL MÍNIMO por defecto: pasan todos
+    los strikes con extrinsic_pct >= extrinsic_min_pct, sin techo superior.
+    Si extrinsic_max_pct no es None (banda opcional), el filtro pasa a ser
+    una BANDA:
     extrinsic_min_pct <= extrinsic_pct <= extrinsic_max_pct. En modo
     diagnóstico, se ignoran ambos límites y se devuelve el mejor
     candidato ITM real del mercado (por downside protection), para poder
     ver los valores reales aunque no cumplan lo configurado.
 
-    apply_oi_filter (punto 24 del docstring, v3.12): si False, se omite
+    apply_oi_filter: si False, se omite
     por completo el filtro de OI mínimo — el open interest que reporta
     Alpaca viene con frecuencia en 0 o muy bajo para nombres fuera de los
     índices más líquidos, incluso con bid/ask real cotizado, así que
@@ -916,7 +458,7 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
     evidente. El valor de OI se sigue devolviendo en el candidato (para
     mostrarlo en la tabla), solo deja de usarse como filtro duro.
 
-    apply_spread_filter / spread_max_pct (punto 29 del docstring, v3.16):
+    apply_spread_filter / spread_max_pct:
     si apply_spread_filter es False, se omite el filtro de spread≤X% del
     extrínseco. Diagnóstico real (caso SMCI): en deep ITM el spread en
     dólares no baja tan rápido como el extrínseco al profundizar más, así
@@ -935,7 +477,7 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
         itm["ask"] = pd.to_numeric(itm["ask"], errors="coerce").fillna(0)
         itm["mid"] = (itm["bid"] + itm["ask"]) / 2
 
-        # Punto 6: exigir también ask > 0. Un ask en 0/NaN no es un spread
+        # Exigir también ask > 0: un ask en 0/NaN no es un spread
         # real de $0, es un dato faltante — sin esto el mid quedaba
         # artificialmente bajo (mid = bid/2) y distorsionaba el extrínseco.
         itm = itm[(itm["bid"] > 0) & (itm["ask"] > 0) & (itm["mid"] > 0)]
@@ -945,7 +487,7 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
         itm["oi"] = pd.to_numeric(
             itm.get("openInterest", pd.Series(0, index=itm.index)), errors="coerce"
         ).fillna(0)
-        # Punto 24: filtro de OI ahora opcional (ver docstring de la función).
+        # Filtro de OI ahora opcional (ver docstring de la función).
         if apply_oi_filter:
             itm = itm[itm["oi"] >= min_oi]
             if itm.empty:
@@ -956,14 +498,11 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
         itm["extrinsic_pct"] = itm["extrinsic"] / current_price * 100
         itm["spread_dollar"] = itm["ask"] - itm["bid"]
         itm["spread_pct"] = itm["spread_dollar"] / itm["mid"] * 100
-        # Punto 11 del docstring: la protección real de una covered call es
-        # la prima TOTAL cobrada (intrínseco + extrínseco) respecto al
-        # precio, no solo el intrínseco. Es la misma cantidad que ya usa
-        # Breakeven (current_price - mid) — antes este campo solo restaba
-        # el intrínseco, infravalorando la protección real por el importe
-        # exacto del extrínseco cobrado (justo lo que se está optimizando
-        # en todo el screener). Coincide con la metodología estándar del
-        # sector (p.ej. Born To Sell: protección = prima total / precio).
+        # downside_prot: protección real = prima TOTAL (intrínseco+
+        # extrínseco) / precio, no solo el intrínseco — se usa para elegir
+        # el strike más profundo dentro de cada ticker (ver más abajo).
+        # downside_prot_intrinsic (Prot_Intrinseca_%) es la que se expone
+        # en la tabla de resultados y se usa para el ranking entre tickers.
         itm["downside_prot"] = itm["mid"] / current_price * 100
         itm["downside_prot_intrinsic"] = itm["intrinsic"] / current_price * 100
 
@@ -971,7 +510,7 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
         if itm.empty:
             return None
 
-        # Punto 3 (opcional desde punto 29, v3.16): el spread no puede
+        # (Opcional): el spread no puede
         # comerse más de spread_max_pct% del extrínseco que se supone que
         # se está cobrando — si no, el mid price no representa una prima
         # realmente capturable. Ver docstring de la función para el caso
@@ -986,13 +525,13 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
         if diagnostic_mode:
             candidates = itm
         elif extrinsic_max_pct is not None:
-            # Punto 19: banda opcional — extrínseco entre mínimo y máximo.
+            # Banda opcional — extrínseco entre mínimo y máximo.
             candidates = itm[
                 (itm["extrinsic_pct"] >= extrinsic_min_pct)
                 & (itm["extrinsic_pct"] <= extrinsic_max_pct)
             ]
         else:
-            # Punto 10: umbral mínimo, sin techo superior.
+            # Umbral mínimo, sin techo superior.
             candidates = itm[itm["extrinsic_pct"] >= extrinsic_min_pct]
         if candidates.empty:
             return None
@@ -1023,10 +562,9 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
             "volume": int(pd.to_numeric(best.get("volume", 0), errors="coerce") or 0),
             "iv_pct": round(iv * 100, 2) if iv > 0 else None,
             "delta": delta,
-            # Se mantiene la clave "in_target_band" (y la columna "En_Banda"
-            # en resultados) por compatibilidad con el resto del pipeline;
-            # su significado ahora es "cumple el mínimo (y el máximo, si hay
-            # banda activa) configurados".
+            # "in_target_band": cumple el mínimo (y el máximo, si hay banda
+            # activa) configurados. Se usa en Consulta Individual; ya no se
+            # expone como columna en la tabla del escaneo masivo.
             "in_target_band": bool(meets_range),
         }
     except Exception:
@@ -1038,8 +576,8 @@ def find_deep_itm_debug_funnel(calls_df, current_price):
     aplica siempre (bid>0/ask>0/mid>0, extrínseco>0) para diagnosticar en
     qué escalón se queda en cero un vencimiento que devuelve "sin
     candidato" aunque la cadena sí traiga bid/ask cotizado. Ni el OI
-    mínimo (desde v3.12, punto 24) ni el spread≤X% del extrínseco (desde
-    v3.16, punto 29) se aplican aquí — se mantienen solo como datos
+    mínimo ni el spread≤X% del extrínseco se aplican aquí — se mantienen
+    solo como datos
     informativos (mediana de OI, spread mediano), nunca como filtro,
     porque en Consulta Individual el objetivo es revisar el ticker sin
     que un dato de Alpaca poco fiable oculte el resultado. Solo se usa en
@@ -1073,7 +611,7 @@ def find_deep_itm_debug_funnel(calls_df, current_price):
         if itm.empty:
             return out
 
-        # Informativo únicamente (punto 29, v3.16) — no filtra aquí.
+        # Informativo únicamente — no filtra aquí.
         itm["spread_dollar"] = itm["ask"] - itm["bid"]
         itm["spread_pct_of_extrinsic"] = itm["spread_dollar"] / itm["extrinsic"] * 100
         out["spread_pct_median"] = float(itm["spread_pct_of_extrinsic"].median())
@@ -1166,15 +704,15 @@ def phase2_options_filter(survivor, params):
     Se llama en un bucle for normal, nunca dentro de un ThreadPoolExecutor.
 
     Datos de opciones (vencimientos + cadena) vía Alpaca (utils_alpaca),
-    ver punto 20 del docstring. Precio en vivo del subyacente, earnings y
+    Precio en vivo del subyacente, earnings y
     dividendos se siguen obteniendo vía yfinance, sin cambios."""
     ticker = survivor["Ticker"]
     fallback_price = survivor["current_price"]
     target_date = params["target_expiration_date"]  # date, vencimiento EXACTO exigido
     entry_date = params["entry_date"]  # date, inicio del periodo para earnings/dividendos
     try:
-        # Punto 9 del docstring: si ambos filtros (earnings y dividendo)
-        # están desactivados, no hace falta ni esta llamada.
+        # Si ambos filtros (earnings y dividendo) están desactivados, no
+        # hace falta ni esta llamada.
         if params["use_earnings_filter"] or params["use_dividend_filter"]:
             cal_info = get_earnings_and_dividend_info(ticker)
         else:
@@ -1187,13 +725,13 @@ def phase2_options_filter(survivor, params):
         if not expirations:
             return None, "no_expirations"
 
-        # Punto 21 del docstring: filtro FIJO — el ticker debe tener
-        # cadencia real de opciones semanales, no solo mensuales.
+        # Filtro FIJO — el ticker debe tener cadencia real de opciones
+        # semanales, no solo mensuales.
         if not has_weekly_options(expirations):
             return None, "no_weekly_options"
 
-        # Punto 22 del docstring: sin tolerancia — el vencimiento elegido
-        # en la UI debe existir EXACTAMENTE para este ticker, o se descarta.
+        # Sin tolerancia — el vencimiento elegido en la UI debe existir
+        # EXACTAMENTE para este ticker, o se descarta.
         if target_date not in expirations:
             return None, "no_expiration_exact_dte"
 
@@ -1201,7 +739,7 @@ def phase2_options_filter(survivor, params):
         exp_str = target_date.isoformat()
         dte = (exp_date_obj - date.today()).days
 
-        # Punto 11 (v3.11): precio en vivo vía Alpaca (latest trade), con
+        # Precio en vivo vía Alpaca (latest trade), con
         # fallback transparente al cierre histórico de Fase 1 (yfinance)
         # si Alpaca no devuelve dato.
         current_price = get_live_price(ticker, fallback_price)
@@ -1225,7 +763,7 @@ def phase2_options_filter(survivor, params):
         if candidate is None:
             return None, "no_itm_candidate"
 
-        # Punto 5 / punto 8: riesgo de asignación anticipada por dividendo.
+        # Riesgo de asignación anticipada por dividendo.
         if params["use_dividend_filter"] and has_dividend_risk(
             cal_info["ex_div_date"], cal_info["div_amount"],
             entry_date, exp_date_obj, candidate["extrinsic"]
@@ -1236,8 +774,6 @@ def phase2_options_filter(survivor, params):
             round(candidate["iv_pct"] / survivor["rv"], 3)
             if (candidate["iv_pct"] and survivor["rv"] and survivor["rv"] > 0) else None
         )
-        annualized = round(candidate["extrinsic_pct"] * (365 / dte), 1) if dte > 0 else None
-        breakeven = round(current_price - candidate["mid"], 2)
 
         result = {
             "Ticker": ticker,
@@ -1245,21 +781,17 @@ def phase2_options_filter(survivor, params):
             "Vencimiento": exp_str,
             "DTE": dte,
             "Strike": candidate["strike"],
-            "Downside_Prot_%": candidate["downside_prot"],
             "Prot_Intrinseca_%": candidate["downside_prot_intrinsic"],
             "Extrínseco_%": candidate["extrinsic_pct"],
-            "En_Banda": candidate["in_target_band"],
             "Prima_Mid": candidate["mid"],
             "Bid": candidate["bid"],
             "Ask": candidate["ask"],
             "Intrínseco": candidate["intrinsic"],
             "Extrínseco_$": candidate["extrinsic"],
-            "Breakeven": breakeven,
             "Delta": candidate["delta"],
             "IV_%": candidate["iv_pct"],
             "RV_%": survivor["rv"],
             "IV_RV": iv_rv_ratio,
-            "Ret_Anualizado_%": annualized,
             "OI": candidate["oi"],
             "Volumen": candidate["volume"],
             "Spread_%": candidate["spread_pct"],
@@ -1269,9 +801,6 @@ def phase2_options_filter(survivor, params):
             "SMA10": survivor.get("sma10"),
             "SMA10>SMA30": survivor.get("sma10_above_sma30"),
             "PCR": pcr,
-            "Earnings_Date": cal_info["earnings_date"].isoformat() if cal_info["earnings_date"] else None,
-            "Ex_Div_Date": cal_info["ex_div_date"].isoformat() if cal_info["ex_div_date"] else None,
-            "Div_Estimado": cal_info["div_amount"],
         }
         return result, "ok"
     except Exception as e:
@@ -1287,7 +816,7 @@ def run_screener(tickers, params, progress_bar, status_text):
     funnel = {r: 0 for r in REASON_ORDER}
     total = len(tickers)
 
-    # ── FASE 1: precio + SMA30, en paralelo de verdad (ver punto 2) ────
+    # ── FASE 1: precio + SMA30, en paralelo de verdad ────────────────
     status_text.text(f"🔍 Fase 1/2 — precio y tendencia: 0/{total}")
     survivors = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -1321,7 +850,7 @@ def run_screener(tickers, params, progress_bar, status_text):
 
     df = pd.DataFrame(results)
     if not df.empty:
-        df = df.sort_values("Downside_Prot_%", ascending=False).reset_index(drop=True)
+        df = df.sort_values("Prot_Intrinseca_%", ascending=False).reset_index(drop=True)
         df.insert(0, "Rank", range(1, len(df) + 1))
 
     with _debug_lock:
@@ -1331,7 +860,7 @@ def run_screener(tickers, params, progress_bar, status_text):
     return df, funnel, debug_snapshot, price_snapshot
 
 # ======================================================================
-# 9b. RESET COMPLETO (punto 15 del docstring)
+# 9b. RESET COMPLETO
 # ======================================================================
 
 def reset_everything():
@@ -1348,12 +877,12 @@ def reset_everything():
         st.session_state.pop(key, None)
 
 # ======================================================================
-# 9c. CONSULTA INDIVIDUAL: ticker + DTE → datos directos (punto 18)
+# 9c. CONSULTA INDIVIDUAL: ticker + DTE → datos directos
 # ======================================================================
 
 def quick_lookup(ticker, entry_date, target_date, params):
     """Consulta puntual de UN solo ticker para un periodo entrada→
-    vencimiento EXACTO (sin tolerancia, punto 22 del docstring). A
+    vencimiento EXACTO (sin tolerancia). A
     diferencia del escaneo masivo, esto es solo informativo para
     tendencia/PCR/earnings/dividendo/extrínseco mínimo — se muestran
     todos como datos, para que el usuario decida, en vez de descartar el
@@ -1422,11 +951,11 @@ def quick_lookup(ticker, entry_date, target_date, params):
 
     out["pcr"] = compute_pcr(calls, puts, out["current_price"])
 
-    # Punto 24 del docstring (v3.12): Consulta Individual NUNCA filtra por
+    # Consulta Individual NUNCA filtra por
     # OI mínimo — apply_oi_filter=False siempre aquí, sea cual sea el
     # toggle del escaneo masivo. El OI se sigue mostrando en la tabla como
     # dato informativo, pero no descarta el ticker.
-    # Punto 29 (v3.16): tampoco filtra por spread — mismo criterio, para
+    # Tampoco filtra por spread — mismo criterio, para
     # que el usuario vea el mejor strike ITM real y decida con Spread_%
     # a la vista, en vez de que el filtro lo oculte sin explicación.
     candidate = find_deep_itm_candidate(
@@ -1452,6 +981,59 @@ def quick_lookup(ticker, entry_date, target_date, params):
         out["cal_info"]["ex_div_date"], out["cal_info"]["div_amount"],
         entry_date, exp_date_obj, candidate["extrinsic"],
     )
+    return out
+
+# ======================================================================
+# 9d. CALCULADORA: strike → prima objetivo para un extrínseco% dado
+# ======================================================================
+
+def build_extrinsic_calculator(ticker, target_date, extrinsic_min_pct, extrinsic_max_pct):
+    """Para un ticker y vencimiento EXACTO, calcula por cada strike ITM la
+    prima (mid) mínima/máxima que haría falta para alcanzar el extrínseco
+    objetivo, y la compara con el bid/ask real que cotiza Alpaca ahora
+    mismo. extrinsic_max_pct puede ser None (solo mínimo, sin techo).
+    No aplica ningún filtro fijo del pipeline (OI, spread, tendencia...)
+    — es una calculadora informativa, no un escáner."""
+    out = {"ticker": ticker, "error": None, "current_price": None, "rows": None}
+
+    data = get_daily_data(ticker)
+    if data is None:
+        out["error"] = "Sin datos diarios suficientes para este ticker."
+        return out
+    fallback_price = float(data["Close"].iloc[-1])
+    current_price = get_live_price(ticker, fallback_price)
+    out["current_price"] = current_price
+
+    expirations = get_option_expirations(ticker)
+    if not expirations:
+        out["error"] = "Este ticker no tiene vencimientos de opciones listados en Alpaca."
+        return out
+    if target_date not in expirations:
+        out["error"] = f"No hay vencimiento EXACTO el {target_date.strftime('%d %b %Y')} para este ticker."
+        return out
+
+    calls, _ = get_option_chain(ticker, target_date)
+    if calls is None or calls.empty:
+        out["error"] = "Cadena de calls vacía en Alpaca para ese vencimiento."
+        return out
+
+    itm = calls[calls["strike"] < current_price].copy()
+    if itm.empty:
+        out["error"] = "No hay strikes ITM para el precio actual."
+        return out
+
+    itm["bid"] = pd.to_numeric(itm["bid"], errors="coerce").fillna(0)
+    itm["ask"] = pd.to_numeric(itm["ask"], errors="coerce").fillna(0)
+    itm["mid_real"] = (itm["bid"] + itm["ask"]) / 2
+    itm["intrinsic"] = current_price - itm["strike"]
+    itm["prima_obj_min"] = itm["intrinsic"] + (extrinsic_min_pct / 100) * current_price
+    if extrinsic_max_pct is not None:
+        itm["prima_obj_max"] = itm["intrinsic"] + (extrinsic_max_pct / 100) * current_price
+    else:
+        itm["prima_obj_max"] = None
+    itm["cumple_min_real"] = itm["mid_real"] >= itm["prima_obj_min"]
+
+    out["rows"] = itm.sort_values("strike", ascending=False).reset_index(drop=True)
     return out
 
 # ======================================================================
@@ -1503,12 +1085,13 @@ def main():
     st.markdown(
         "**Objetivo: extrínseco mínimo semanal · "
         "Vencimiento EXACTO (sin tolerancia) · "
-        "Ranking por mayor downside protection**"
+        "Ranking por mayor protección intrínseca**"
     )
     st.caption(
-        "⚙️ v3.16 — filtro de spread opcional (OFF por defecto, ver 'Liquidez "
-        "mínima') · earnings/dividendos ligados al periodo entrada→vencimiento "
-        "· defaults: extrínseco 0.95%, precio $15–$50 · datos vía Alpaca"
+        "⚙️ OI y spread mínimos opcionales (OFF por defecto) · earnings/dividendos "
+        "ligados al periodo entrada→vencimiento · filtros adicionales sobre "
+        "resultados (protección/delta/OI/volumen) · calculadora de extrínseco por "
+        "strike · datos vía Alpaca"
     )
 
     col_title, col_reset = st.columns([5, 1])
@@ -1626,7 +1209,7 @@ def main():
         st.markdown("**💧 Liquidez mínima**")
         use_oi_filter = st.checkbox(
             "Exigir OI mínimo del strike", value=False,
-            help="Desactivado por defecto (v3.12): el open interest que reporta "
+            help="Desactivado por defecto: el open interest que reporta "
                  "Alpaca viene con frecuencia en 0 o muy bajo para nombres fuera "
                  "de los índices más líquidos, incluso con bid/ask real cotizado "
                  "— exigirlo por defecto puede vaciar el escáner sin que el "
@@ -1646,7 +1229,7 @@ def main():
         st.markdown("**〰️ Spread bid-ask**")
         use_spread_filter = st.checkbox(
             "Exigir spread ≤ X% del extrínseco", value=False,
-            help="Desactivado por defecto (v3.16): en deep ITM el spread bid-ask "
+            help="Desactivado por defecto: en deep ITM el spread bid-ask "
                  "en dólares no baja tan rápido como el extrínseco al ir más "
                  "profundo, así que este filtro puede excluir en bloque justo los "
                  "strikes MÁS profundos (los de mayor downside protection) aunque "
@@ -1742,9 +1325,7 @@ def main():
                  "'Fecha de entrada' y el vencimiento (ambas inclusive) y el "
                  "dividendo estimado es mayor o igual que el extrínseco capturado "
                  "(a quien tiene la call comprada le compensaría ejercer antes "
-                 "para cobrar el dividendo). El dato de Ex_Div_Date/Div_Estimado "
-                 "se ve en la tabla de resultados aunque este filtro esté "
-                 "desactivado."
+                 "para cobrar el dividendo)."
         )
         diagnostic_mode = st.checkbox(
             "🔬 Modo diagnóstico (ignora el umbral de extrínseco)", value=False,
@@ -1778,7 +1359,7 @@ def main():
 
     st.divider()
 
-    # ── Consulta individual (punto 18) ─────────────────────────────────
+    # ── Consulta individual ────────────────────────────────────────────
     st.markdown("### 🔎 Consulta Individual (ticker + periodo)")
     st.caption(
         "Mete un ticker, una fecha de entrada y una fecha de vencimiento EXACTA "
@@ -1881,6 +1462,87 @@ def main():
 """)
 
         st.divider()
+
+    # ── Calculadora de extrínseco por strike ────────────────────────────
+    st.markdown("### 🧮 Calculadora de Extrínseco por Strike")
+    st.caption(
+        "Para un ticker y vencimiento, calcula la prima (mid) mínima que "
+        "necesitarías en cada strike ITM para alcanzar tu extrínseco "
+        "objetivo, y la compara con el bid/ask real que cotiza el mercado "
+        "ahora mismo. El precio del subyacente se pide en vivo cada vez "
+        "que pulsas Calcular."
+    )
+
+    cc1, cc2, cc3 = st.columns([2, 1.5, 1.5])
+    with cc1:
+        calc_ticker_raw = st.text_input("Ticker", value="", placeholder="AAPL", key="calc_ticker_input")
+    with cc2:
+        calc_entry_date = st.date_input(
+            "Fecha de entrada", value=date.today(),
+            min_value=date.today(), max_value=date.today() + timedelta(days=179),
+            format="DD/MM/YYYY", key="calc_entry_date",
+        )
+    with cc3:
+        calc_target_date = st.date_input(
+            "Fecha de vencimiento (exacta)",
+            value=max(calc_entry_date + timedelta(days=7), date.today() + timedelta(days=1)),
+            min_value=calc_entry_date + timedelta(days=1),
+            max_value=calc_entry_date + timedelta(days=180),
+            format="DD/MM/YYYY", key="calc_target_date_input",
+        )
+
+    cc4, cc5, cc6 = st.columns([1.5, 1.5, 1])
+    with cc4:
+        calc_extrinsic_min = st.number_input(
+            "Extrínseco mínimo objetivo (%)", min_value=0.10, max_value=5.00,
+            value=0.95, step=0.05, key="calc_extrinsic_min",
+        )
+    with cc5:
+        calc_extrinsic_max = st.number_input(
+            "Extrínseco máximo objetivo (%) — 0 = sin techo", min_value=0.0,
+            max_value=10.0, value=0.0, step=0.05, key="calc_extrinsic_max",
+        )
+    with cc6:
+        st.markdown("&nbsp;")
+        calc_btn = st.button("🔄 Calcular", use_container_width=True, key="calc_btn")
+
+    if calc_btn:
+        calc_ticker = _clean_ticker(calc_ticker_raw)
+        if not calc_ticker:
+            st.error("⚠️ Escribe un ticker válido.")
+        else:
+            with st.spinner(f"Calculando {calc_ticker}..."):
+                st.session_state["calc_result"] = build_extrinsic_calculator(
+                    calc_ticker, calc_target_date, calc_extrinsic_min,
+                    calc_extrinsic_max if calc_extrinsic_max > 0 else None,
+                )
+
+    cr = st.session_state.get("calc_result")
+    if cr:
+        st.markdown(f"#### 📄 {cr['ticker']}")
+        if cr.get("current_price") is not None:
+            st.metric("💲 Precio en vivo", f"${cr['current_price']:.2f}")
+        if cr.get("error"):
+            st.warning(f"⚠️ {cr['error']}")
+        rows = cr.get("rows")
+        if rows is not None and not rows.empty:
+            disp = rows[[
+                "strike", "intrinsic", "prima_obj_min", "prima_obj_max",
+                "bid", "ask", "mid_real", "cumple_min_real",
+            ]].copy()
+            disp.columns = [
+                "Strike", "Intrínseco", "Prima objetivo mín", "Prima objetivo máx",
+                "Bid real", "Ask real", "Mid real", "Cumple mín. real",
+            ]
+            st.dataframe(disp.round(2), use_container_width=True, hide_index=True)
+            st.caption(
+                "'Prima objetivo mín/máx' = mid que necesitas para llegar al "
+                "extrínseco objetivo en ese strike. 'Mid real' es lo que cotiza "
+                "el mercado ahora — si es >= 'Prima objetivo mín', ese strike ya "
+                "cumple tu objetivo con los precios actuales."
+            )
+
+    st.divider()
 
     # ── Escaneo ────────────────────────────────────────────────────────
     st.markdown("### 🚀 Ejecutar Escaneo")
@@ -2008,18 +1670,18 @@ def main():
     df_all = st.session_state["results"]
     ts = st.session_state["scan_ts"]
 
-    # ── Filtros adicionales sobre resultados (punto 25 del docstring) ──
+    # ── Filtros adicionales sobre resultados ───────────────────────────
     st.markdown("#### 🔧 Filtros adicionales sobre resultados")
     st.caption(
         "Se aplican sobre los candidatos ya encontrados en el último escaneo — "
         "no relanzan la descarga de datos, solo acotan la tabla/gráficos de "
         "abajo. Rank conserva la posición del escaneo completo (sin re-numerar)."
     )
-    colrf1, colrf2 = st.columns(2)
+    colrf1, colrf2, colrf3, colrf4 = st.columns(4)
     with colrf1:
-        use_min_prot_filter = st.checkbox("Downside protection mínimo (%)", value=False)
+        use_min_prot_filter = st.checkbox("Prot. intrínseca mínima (%)", value=False)
         min_prot_value = st.number_input(
-            "Valor mínimo (%)", min_value=0.0, max_value=100.0, value=10.0, step=0.5,
+            "Valor mínimo (%)", min_value=0.0, max_value=100.0, value=5.0, step=0.5,
             disabled=not use_min_prot_filter, key="min_prot_value",
         )
     with colrf2:
@@ -2027,18 +1689,36 @@ def main():
         min_delta_value = st.number_input(
             "Valor mínimo", min_value=0.0, max_value=1.0, value=0.85, step=0.01,
             disabled=not use_min_delta_filter, key="min_delta_value",
-            help="Delta calculado por Black-Scholes (columna 'Delta' de la tabla). "
-                 "Filas sin delta calculable (IV no disponible) se excluyen al "
+            help="Filas sin delta calculable (IV no disponible) se excluyen al "
                  "activar este filtro, ya que no se puede comparar."
+        )
+    with colrf3:
+        use_min_oi_post_filter = st.checkbox("OI mínimo", value=False)
+        min_oi_post_value = st.number_input(
+            "Valor mínimo", min_value=0, max_value=100000, value=100, step=50,
+            disabled=not use_min_oi_post_filter, key="min_oi_post_value",
+        )
+    with colrf4:
+        use_min_vol_post_filter = st.checkbox("Volumen mínimo", value=False)
+        min_vol_post_value = st.number_input(
+            "Valor mínimo", min_value=0, max_value=100000, value=10, step=10,
+            disabled=not use_min_vol_post_filter, key="min_vol_post_value",
+            help="'Volumen' aquí es una aproximación de Alpaca (tamaño de la última "
+                 "operación), no el volumen acumulado del día."
         )
 
     df = df_all.copy()
     if use_min_prot_filter:
-        df = df[df["Downside_Prot_%"] >= min_prot_value]
+        df = df[df["Prot_Intrinseca_%"] >= min_prot_value]
     if use_min_delta_filter:
         df = df[df["Delta"].notna() & (df["Delta"] >= min_delta_value)]
+    if use_min_oi_post_filter:
+        df = df[df["OI"] >= min_oi_post_value]
+    if use_min_vol_post_filter:
+        df = df[df["Volumen"] >= min_vol_post_value]
 
-    if use_min_prot_filter or use_min_delta_filter:
+    any_post_filter = use_min_prot_filter or use_min_delta_filter or use_min_oi_post_filter or use_min_vol_post_filter
+    if any_post_filter:
         st.caption(f"ℹ️ Mostrando **{len(df)}** de {len(df_all)} candidatos tras aplicar estos filtros.")
 
     st.divider()
@@ -2049,7 +1729,7 @@ def main():
 
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("📊 Candidatos totales", len(df))
-    k2.metric("🛡️ Downside prot. máx.", f"{df['Downside_Prot_%'].max():.2f}%")
+    k2.metric("🛡️ Prot. intrínseca máx.", f"{df['Prot_Intrinseca_%'].max():.2f}%")
     k3.metric("💰 Extrínseco medio", f"{df['Extrínseco_%'].mean():.3f}%")
     k4.metric("🕐 Escaneo", ts.strftime("%H:%M:%S"))
 
@@ -2059,13 +1739,13 @@ def main():
 
     with tab1:
         cols_show = [
-            "Rank", "Ticker", "Precio", "Strike", "Downside_Prot_%", "Prot_Intrinseca_%",
-            "Extrínseco_%", "En_Banda", "Prima_Mid", "Bid", "Ask",
-            "Breakeven", "Delta", "DTE", "Vencimiento",
-            "IV_%", "RV_%", "IV_RV", "Ret_Anualizado_%",
+            "Rank", "Ticker", "Precio", "Strike", "Prot_Intrinseca_%",
+            "Extrínseco_%", "Prima_Mid", "Bid", "Ask",
+            "Delta", "DTE", "Vencimiento",
+            "IV_%", "RV_%", "IV_RV",
             "OI", "Volumen", "Spread_%",
             "SMA30", "Dist_SMA30_%", "SMA30_Sube", "SMA10", "SMA10>SMA30",
-            "PCR", "Earnings_Date", "Ex_Div_Date", "Div_Estimado",
+            "PCR",
         ]
         cols_show = [c for c in cols_show if c in df.columns]
 
@@ -2077,13 +1757,10 @@ def main():
             return ""
 
         def color_iv_rv(val):
-            # Punto 12 del docstring: un IV muy por encima de la RV suele
-            # indicar riesgo de evento (FDA, litigio, M&A rumor) que ni el
-            # filtro de earnings ni el de tendencia detectan — Born To Sell
-            # advierte de esto explícitamente (retornos "demasiado buenos
-            # para ser verdad" suelen ser biotechs con catalizador binario
-            # pendiente). Es solo un aviso visual, no un filtro: a veces el
-            # IV alto es legítimo (nombre volátil de toda la vida).
+            # Un IV muy por encima de la RV suele indicar riesgo de evento
+            # (FDA, litigio, M&A rumor) que ni el filtro de earnings ni el
+            # de tendencia detectan. Es solo un aviso visual, no un filtro:
+            # a veces el IV alto es legítimo (nombre volátil de siempre).
             try:
                 if val is None or pd.isna(val):
                     return ""
@@ -2095,7 +1772,7 @@ def main():
                 pass
             return ""
 
-        styler = df[cols_show].style.map(color_downside, subset=["Downside_Prot_%"])
+        styler = df[cols_show].style.map(color_downside, subset=["Prot_Intrinseca_%"])
         if "IV_RV" in cols_show:
             styler = styler.map(color_iv_rv, subset=["IV_RV"])
 
@@ -2108,7 +1785,7 @@ def main():
                 "🟧🟥 IV_RV resaltado = la IV de la opción supera con creces la "
                 "volatilidad realizada reciente. No es necesariamente malo, pero "
                 "conviene mirar por qué antes de operar (catalizador conocido, "
-                "M&A, litigio, evento regulatorio...) — ver punto 12 del docstring."
+                "M&A, litigio, evento regulatorio...)."
             )
 
         csv = df.to_csv(index=False).encode("utf-8")
@@ -2137,10 +1814,7 @@ def main():
 | 📊 Bid / Ask | ${row['Bid']} / ${row['Ask']} |
 | 🔺 Intrínseco | ${row['Intrínseco']} |
 | 🔹 Extrínseco | ${row['Extrínseco_$']} ({row['Extrínseco_%']}%) |
-| 🎯 Cumple umbral mínimo | {"Sí" if row.get('En_Banda') else "No (modo diagnóstico)"} |
-| 🛡️ Downside protection (prima total) | **{row['Downside_Prot_%']}%** |
-| 🧱 · de la cual, solo intrínseco | {row.get('Prot_Intrinseca_%', 'N/D')}% |
-| ⚖️ Breakeven | ${row['Breakeven']} |
+| 🛡️ Protección intrínseca | **{row['Prot_Intrinseca_%']}%** |
 | 📐 Delta | {row['Delta']} |
 """)
 
@@ -2150,35 +1824,32 @@ def main():
 | Concepto | Valor |
 |---|---|
 | 📈 IV / RV | {row['IV_%']}% / {row['RV_%']}% (ratio: {row['IV_RV']}) |
-| 🔄 Retorno anualizado | {row['Ret_Anualizado_%']}% |
 | 💧 OI / Volumen | {row['OI']:,} / {row['Volumen']:,} |
 | 〰️ Spread bid-ask | {row['Spread_%']}% |
 | 📐 SMA30 | {row['SMA30']} ({row['Dist_SMA30_%']}% sobre SMA) |
 | ↗️ SMA30 subiendo | {row['SMA30_Sube']} |
 | ⏩ SMA10 | {row.get('SMA10', 'N/D')} (> SMA30: {row.get('SMA10>SMA30', 'N/D')}) |
 | 🗳️ PCR | {row['PCR']} |
-| 📅 Earnings | {row.get('Earnings_Date') or 'Sin dato'} |
-| 💵 Próxima ex-div / estimado | {row.get('Ex_Div_Date') or 'Sin dato'} / ${row.get('Div_Estimado') if row.get('Div_Estimado') is not None else 'N/D'} |
 """)
 
             st.markdown("---")
             st.markdown("### 💡 Interpretación")
 
-            prot = row["Downside_Prot_%"]
+            prot = row["Prot_Intrinseca_%"]
             ext = row["Extrínseco_%"]
 
-            if prot >= 15:
-                st.success(f"🟢 **Protección excelente**: el precio puede caer un {prot:.1f}% antes de que entres en pérdida (incluye la prima total cobrada, no solo el intrínseco).")
-            elif prot >= 10:
-                st.warning(f"🟡 **Protección moderada**: el precio puede caer un {prot:.1f}% antes de pérdida (prima total).")
+            if prot >= 10:
+                st.success(f"🟢 **Protección intrínseca alta**: el precio puede caer un {prot:.1f}% antes de que la call salga del dinero.")
+            elif prot >= 5:
+                st.warning(f"🟡 **Protección intrínseca moderada**: {prot:.1f}% de margen hasta el strike.")
             else:
-                st.error(f"🔴 **Protección baja**: solo {prot:.1f}% de margen bajista (prima total).")
+                st.error(f"🔴 **Protección intrínseca baja**: solo {prot:.1f}% de margen hasta el strike.")
 
             st.info(
                 f"Con un extrínseco del **{ext}%** sobre un precio de **${row['Precio']}**, "
                 f"cobras **${row['Extrínseco_$']}** por acción de prima pura (valor tiempo). "
-                f"Si el subyacente cierra por encima del strike **${row['Strike']}** el viernes, "
-                f"te quedas esa prima íntegra."
+                f"Si el subyacente cierra por encima del strike **${row['Strike']}** al "
+                f"vencimiento, te quedas esa prima íntegra."
             )
 
     with tab3:
@@ -2197,23 +1868,23 @@ def main():
 
         with col_g2:
             fig_scatter = px.scatter(
-                df, x="Extrínseco_%", y="Downside_Prot_%", text="Ticker",
-                color="Downside_Prot_%",
+                df, x="Extrínseco_%", y="Prot_Intrinseca_%", text="Ticker",
+                color="Prot_Intrinseca_%",
                 color_continuous_scale=["#dd6974", "#e8af34", "#6daa45"],
-                title="Downside Protection vs Extrínseco%",
+                title="Protección Intrínseca vs Extrínseco%",
                 template="plotly_dark", height=420,
-                labels={"Extrínseco_%": "Extrínseco (%)", "Downside_Prot_%": "Downside Protection (%)"},
+                labels={"Extrínseco_%": "Extrínseco (%)", "Prot_Intrinseca_%": "Protección Intrínseca (%)"},
             )
             fig_scatter.update_traces(textposition="top center", marker_size=10)
             st.plotly_chart(fig_scatter, use_container_width=True)
 
         fig_bar = px.bar(
-            df.head(20), x="Ticker", y="Downside_Prot_%",
-            color="Downside_Prot_%",
+            df.head(20), x="Ticker", y="Prot_Intrinseca_%",
+            color="Prot_Intrinseca_%",
             color_continuous_scale=["#dd6974", "#e8af34", "#6daa45"],
-            title="Top 20 — Downside Protection % (mayor = más deep ITM)",
+            title="Top 20 — Protección Intrínseca % (mayor = más deep ITM)",
             template="plotly_dark", height=400,
-            labels={"Downside_Prot_%": "Downside Protection (%)"},
+            labels={"Prot_Intrinseca_%": "Protección Intrínseca (%)"},
         )
         st.plotly_chart(fig_bar, use_container_width=True)
 
