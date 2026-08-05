@@ -984,17 +984,24 @@ def quick_lookup(ticker, entry_date, target_date, params):
     return out
 
 # ======================================================================
-# 9d. CALCULADORA: strike → prima objetivo para un extrínseco% dado
+# 9d. CALCULADORA: combo buy-write (precio - prima call) para un strike
 # ======================================================================
 
-def build_extrinsic_calculator(ticker, target_date, extrinsic_min_pct, extrinsic_max_pct):
-    """Para un ticker y vencimiento EXACTO, calcula por cada strike ITM la
-    prima (mid) mínima/máxima que haría falta para alcanzar el extrínseco
-    objetivo, y la compara con el bid/ask real que cotiza Alpaca ahora
-    mismo. extrinsic_max_pct puede ser None (solo mínimo, sin techo).
-    No aplica ningún filtro fijo del pipeline (OI, spread, tendencia...)
-    — es una calculadora informativa, no un escáner."""
-    out = {"ticker": ticker, "error": None, "current_price": None, "rows": None}
+def build_buywrite_combo_calculator(ticker, target_date, strike, extrinsic_min_pct, extrinsic_max_pct):
+    """Calculadora de combo buy-write (comprar la acción + vender la call,
+    a débito neto) para un STRIKE que el usuario elige a mano.
+
+    Fórmula: prima_call = intrínseco + extrínseco = (precio - strike) +
+    extrínseco → combo (débito) = precio - prima_call = strike - extrínseco.
+    Como el extrínseco baja el combo, para EXIGIR un extrínseco mínimo el
+    combo debe ser COMO MUCHO:
+        combo_max = strike - (extrinsic_min_pct/100) * precio
+    Si además se fija un extrínseco máximo (banda), el combo no debe bajar
+    de combo_min = strike - (extrinsic_max_pct/100) * precio.
+
+    Si el vencimiento y el strike existen en la cadena real de Alpaca,
+    también devuelve el combo REAL (precio - mid real) para comparar."""
+    out = {"ticker": ticker, "error": None, "current_price": None}
 
     data = get_daily_data(ticker)
     if data is None:
@@ -1004,36 +1011,35 @@ def build_extrinsic_calculator(ticker, target_date, extrinsic_min_pct, extrinsic
     current_price = get_live_price(ticker, fallback_price)
     out["current_price"] = current_price
 
-    expirations = get_option_expirations(ticker)
-    if not expirations:
-        out["error"] = "Este ticker no tiene vencimientos de opciones listados en Alpaca."
-        return out
-    if target_date not in expirations:
-        out["error"] = f"No hay vencimiento EXACTO el {target_date.strftime('%d %b %Y')} para este ticker."
-        return out
-
-    calls, _ = get_option_chain(ticker, target_date)
-    if calls is None or calls.empty:
-        out["error"] = "Cadena de calls vacía en Alpaca para ese vencimiento."
-        return out
-
-    itm = calls[calls["strike"] < current_price].copy()
-    if itm.empty:
-        out["error"] = "No hay strikes ITM para el precio actual."
-        return out
-
-    itm["bid"] = pd.to_numeric(itm["bid"], errors="coerce").fillna(0)
-    itm["ask"] = pd.to_numeric(itm["ask"], errors="coerce").fillna(0)
-    itm["mid_real"] = (itm["bid"] + itm["ask"]) / 2
-    itm["intrinsic"] = current_price - itm["strike"]
-    itm["prima_obj_min"] = itm["intrinsic"] + (extrinsic_min_pct / 100) * current_price
+    intrinsic = current_price - strike
+    out["intrinsic"] = intrinsic
+    out["premium_min"] = intrinsic + (extrinsic_min_pct / 100) * current_price
+    out["combo_max"] = strike - (extrinsic_min_pct / 100) * current_price
     if extrinsic_max_pct is not None:
-        itm["prima_obj_max"] = itm["intrinsic"] + (extrinsic_max_pct / 100) * current_price
+        out["premium_max"] = intrinsic + (extrinsic_max_pct / 100) * current_price
+        out["combo_min"] = strike - (extrinsic_max_pct / 100) * current_price
     else:
-        itm["prima_obj_max"] = None
-    itm["cumple_min_real"] = itm["mid_real"] >= itm["prima_obj_min"]
+        out["premium_max"] = None
+        out["combo_min"] = None
 
-    out["rows"] = itm.sort_values("strike", ascending=False).reset_index(drop=True)
+    # Comparación opcional con datos reales de mercado, si el vencimiento
+    # y el strike existen tal cual en la cadena de Alpaca.
+    out["real_bid"] = out["real_ask"] = out["real_mid"] = out["real_combo"] = None
+    out["cumple_real"] = None
+    expirations = get_option_expirations(ticker)
+    if expirations and target_date in expirations:
+        calls, _ = get_option_chain(ticker, target_date)
+        if calls is not None and not calls.empty:
+            match = calls[calls["strike"] == strike]
+            if not match.empty:
+                row = match.iloc[0]
+                bid = float(row["bid"]) if pd.notna(row["bid"]) else 0.0
+                ask = float(row["ask"]) if pd.notna(row["ask"]) else 0.0
+                if bid > 0 and ask > 0:
+                    mid = (bid + ask) / 2
+                    out["real_bid"], out["real_ask"], out["real_mid"] = bid, ask, mid
+                    out["real_combo"] = current_price - mid
+                    out["cumple_real"] = out["real_combo"] <= out["combo_max"]
     return out
 
 # ======================================================================
@@ -1463,26 +1469,36 @@ def main():
 
         st.divider()
 
-    # ── Calculadora de extrínseco por strike ────────────────────────────
-    st.markdown("### 🧮 Calculadora de Extrínseco por Strike")
+    # ── Calculadora de combo buy-write ──────────────────────────────────
+    st.markdown("### 🧮 Calculadora de Combo Buy-Write")
     st.caption(
-        "Para un ticker y vencimiento, calcula la prima (mid) mínima que "
-        "necesitarías en cada strike ITM para alcanzar tu extrínseco "
-        "objetivo, y la compara con el bid/ask real que cotiza el mercado "
-        "ahora mismo. El precio del subyacente se pide en vivo cada vez "
-        "que pulsas Calcular."
+        "Combo = comprar la acción + vender la call, a débito neto. "
+        "Fórmula: combo = strike − extrínseco = strike − (extrínseco% × "
+        "precio). Metes ticker + strike + tu extrínseco objetivo (mín, y "
+        "máx opcional) y te da el precio de combo MÁXIMO que deberías "
+        "pagar para cumplir el mínimo (y el mínimo, si fijas un techo). "
+        "El precio del subyacente se pide en vivo cada vez que pulsas "
+        "Calcular; si el strike existe en la cadena real de Alpaca para "
+        "esa fecha, también te da el combo REAL para comparar."
     )
 
-    cc1, cc2, cc3 = st.columns([2, 1.5, 1.5])
+    cc1, cc2 = st.columns([2, 1])
     with cc1:
         calc_ticker_raw = st.text_input("Ticker", value="", placeholder="AAPL", key="calc_ticker_input")
     with cc2:
+        calc_strike = st.number_input(
+            "Strike", min_value=0.01, max_value=100000.0, value=25.0, step=0.5,
+            key="calc_strike_input",
+        )
+
+    cc3, cc4 = st.columns(2)
+    with cc3:
         calc_entry_date = st.date_input(
             "Fecha de entrada", value=date.today(),
             min_value=date.today(), max_value=date.today() + timedelta(days=179),
             format="DD/MM/YYYY", key="calc_entry_date",
         )
-    with cc3:
+    with cc4:
         calc_target_date = st.date_input(
             "Fecha de vencimiento (exacta)",
             value=max(calc_entry_date + timedelta(days=7), date.today() + timedelta(days=1)),
@@ -1491,18 +1507,18 @@ def main():
             format="DD/MM/YYYY", key="calc_target_date_input",
         )
 
-    cc4, cc5, cc6 = st.columns([1.5, 1.5, 1])
-    with cc4:
+    cc5, cc6, cc7 = st.columns([1.5, 1.5, 1])
+    with cc5:
         calc_extrinsic_min = st.number_input(
             "Extrínseco mínimo objetivo (%)", min_value=0.10, max_value=5.00,
             value=0.95, step=0.05, key="calc_extrinsic_min",
         )
-    with cc5:
+    with cc6:
         calc_extrinsic_max = st.number_input(
             "Extrínseco máximo objetivo (%) — 0 = sin techo", min_value=0.0,
             max_value=10.0, value=0.0, step=0.05, key="calc_extrinsic_max",
         )
-    with cc6:
+    with cc7:
         st.markdown("&nbsp;")
         calc_btn = st.button("🔄 Calcular", use_container_width=True, key="calc_btn")
 
@@ -1512,35 +1528,40 @@ def main():
             st.error("⚠️ Escribe un ticker válido.")
         else:
             with st.spinner(f"Calculando {calc_ticker}..."):
-                st.session_state["calc_result"] = build_extrinsic_calculator(
-                    calc_ticker, calc_target_date, calc_extrinsic_min,
+                st.session_state["calc_result"] = build_buywrite_combo_calculator(
+                    calc_ticker, calc_target_date, calc_strike, calc_extrinsic_min,
                     calc_extrinsic_max if calc_extrinsic_max > 0 else None,
                 )
 
     cr = st.session_state.get("calc_result")
     if cr:
-        st.markdown(f"#### 📄 {cr['ticker']}")
-        if cr.get("current_price") is not None:
-            st.metric("💲 Precio en vivo", f"${cr['current_price']:.2f}")
+        st.markdown(f"#### 📄 {cr['ticker']} — Strike ${calc_strike}")
         if cr.get("error"):
             st.warning(f"⚠️ {cr['error']}")
-        rows = cr.get("rows")
-        if rows is not None and not rows.empty:
-            disp = rows[[
-                "strike", "intrinsic", "prima_obj_min", "prima_obj_max",
-                "bid", "ask", "mid_real", "cumple_min_real",
-            ]].copy()
-            disp.columns = [
-                "Strike", "Intrínseco", "Prima objetivo mín", "Prima objetivo máx",
-                "Bid real", "Ask real", "Mid real", "Cumple mín. real",
+        if cr.get("current_price") is not None:
+            m1, m2, m3 = st.columns(3)
+            m1.metric("💲 Precio en vivo", f"${cr['current_price']:.2f}")
+            m2.metric("🔺 Intrínseco", f"${cr['intrinsic']:.2f}")
+            m3.metric("📦 Combo MÁXIMO objetivo", f"${cr['combo_max']:.2f}")
+
+            rows = [
+                {"Concepto": "Prima call objetivo mínima", "Valor": f"${cr['premium_min']:.2f}"},
+                {"Concepto": "Combo (débito) MÁXIMO a pagar", "Valor": f"${cr['combo_max']:.2f}"},
             ]
-            st.dataframe(disp.round(2), use_container_width=True, hide_index=True)
-            st.caption(
-                "'Prima objetivo mín/máx' = mid que necesitas para llegar al "
-                "extrínseco objetivo en ese strike. 'Mid real' es lo que cotiza "
-                "el mercado ahora — si es >= 'Prima objetivo mín', ese strike ya "
-                "cumple tu objetivo con los precios actuales."
-            )
+            if cr.get("combo_min") is not None:
+                rows.append({"Concepto": "Prima call objetivo máxima", "Valor": f"${cr['premium_max']:.2f}"})
+                rows.append({"Concepto": "Combo (débito) MÍNIMO a pagar", "Valor": f"${cr['combo_min']:.2f}"})
+            if cr.get("real_mid") is not None:
+                rows += [
+                    {"Concepto": "Bid / Ask real", "Valor": f"${cr['real_bid']:.2f} / ${cr['real_ask']:.2f}"},
+                    {"Concepto": "Mid real", "Valor": f"${cr['real_mid']:.2f}"},
+                    {"Concepto": "Combo REAL (precio − mid real)", "Valor": f"${cr['real_combo']:.2f}"},
+                    {"Concepto": "¿Cumple el objetivo con precios reales?", "Valor": "✅ Sí" if cr["cumple_real"] else "❌ No"},
+                ]
+            else:
+                rows.append({"Concepto": "Datos reales de mercado",
+                              "Valor": "No encontrados para ese strike/vencimiento exactos en Alpaca"})
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
     st.divider()
 
