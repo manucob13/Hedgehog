@@ -16,8 +16,9 @@ son una preferencia de trading):
 - Sin earnings entre la fecha de ENTRADA y el vencimiento (no ventana fija) [toggle]
 - Sin riesgo de dividendo (ex-div entre entrada y vto.
   con dividendo >= extrínseco capturado) [toggle, ON por defecto]
-- Spread bid-ask no superior al 50% del extrínseco
-  capturado (si no, la prima "no es real") [fijo]
+- Spread bid-ask no superior a X% del extrínseco capturado (si no, la
+  prima "no es real") [toggle, OFF por defecto desde v3.16 — ver punto
+  29: en deep ITM puede descartar los strikes más profundos]
 - Extrínseco: umbral mínimo por defecto, o banda mín–máx opcional [toggle:
   modo diagnóstico ignora ambos]
 - Bid > 0 y Ask > 0 (opción realmente cotizada) [fijo]
@@ -33,6 +34,40 @@ PRECIO DEL SUBYACENTE PARA INTRÍNSECO/EXTRÍNSECO: precio en vivo vía Alpaca
 (latest trade), con fallback automático y transparente al último cierre
 histórico (yfinance, Fase 1) si Alpaca no devuelve precio en vivo disponible
 (fin de semana, fallo puntual de red, etc.)
+
+ARQUITECTURA (v3.16) — CAMBIOS DE ESTA REVISIÓN
+------------------------------------------------
+29. FILTRO DE SPREAD: OPCIONAL EN EL ESCANEO, ELIMINADO DE CONSULTA
+INDIVIDUAL (misma categoría que el punto 24, OI).
+Diagnóstico real en producción: para SMCI, el strike 21.5-22 tenía
+extrínseco del 1.5-2.06% (por encima del mínimo configurado) pero un
+spread bid-ask de ~$2 sobre un extrínseco de solo ~$0.5-0.6 — más del
+300% del extrínseco. El filtro fijo de spread≤50% lo descartaba en
+bloque, y el escáner terminaba eligiendo el strike 25 (más superficial,
+menos downside protection) porque era el strike más profundo que SÍ
+sobrevivía al filtro de spread, no el más profundo que cumplía el
+extrínseco mínimo pedido. En deep ITM el spread en dólares no se reduce
+al mismo ritmo que el extrínseco al profundizar, así que este filtro
+penaliza sistemáticamente los strikes más deep ITM — justo los que el
+screener está diseñado para priorizar. Cambios:
+  · find_deep_itm_candidate() recibe apply_spread_filter (default True)
+    y spread_max_pct (default 50.0, antes constante fija
+    SPREAD_MAX_PCT_OF_EXTRINSIC). Si apply_spread_filter es False, se
+    omite el paso — Spread_% se sigue calculando y mostrando en la
+    tabla, solo deja de ser un filtro duro.
+  · Escaneo masivo: nuevo checkbox "Exigir spread ≤ X% del extrínseco"
+    en Parámetros → Liquidez mínima, DESACTIVADO por defecto, con
+    number_input del umbral (default 50%, deshabilitado si el checkbox
+    está apagado). params ahora lleva "use_spread_filter" y
+    "spread_max_pct".
+  · Consulta Individual (quick_lookup): deja de filtrar por spread en
+    NINGÚN caso (apply_spread_filter=False siempre), mismo criterio que
+    ya tenía el OI — el objetivo es ver el mejor strike ITM real y
+    decidir con Spread_% a la vista.
+  · find_deep_itm_debug_funnel() pierde el escalón "spread_ok" (ya no
+    gatea nada en Consulta Individual) y pasa a reportar la mediana de
+    spread/extrínseco como dato puramente informativo, igual que ya
+    hacía con la mediana de OI.
 
 ARQUITECTURA (v3.15) — CAMBIOS DE ESTA REVISIÓN
 ------------------------------------------------
@@ -862,7 +897,8 @@ def compute_pcr(calls, puts, current_price, range_pct=15):
 
 def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
                              extrinsic_min_pct, extrinsic_max_pct,
-                             min_oi, diagnostic_mode=False, apply_oi_filter=True):
+                             min_oi, diagnostic_mode=False, apply_oi_filter=True,
+                             apply_spread_filter=True, spread_max_pct=SPREAD_MAX_PCT_OF_EXTRINSIC):
     """extrinsic_min_pct actúa como UMBRAL MÍNIMO por defecto (punto 10 del
     docstring): pasan todos los strikes con extrinsic_pct >= extrinsic_min_pct,
     sin techo superior. Si extrinsic_max_pct no es None (punto 19 del
@@ -878,7 +914,18 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
     índices más líquidos, incluso con bid/ask real cotizado, así que
     exigirlo por defecto puede vaciar el escáner sin que el motivo sea
     evidente. El valor de OI se sigue devolviendo en el candidato (para
-    mostrarlo en la tabla), solo deja de usarse como filtro duro."""
+    mostrarlo en la tabla), solo deja de usarse como filtro duro.
+
+    apply_spread_filter / spread_max_pct (punto 29 del docstring, v3.16):
+    si apply_spread_filter es False, se omite el filtro de spread≤X% del
+    extrínseco. Diagnóstico real (caso SMCI): en deep ITM el spread en
+    dólares no baja tan rápido como el extrínseco al profundizar más, así
+    que este filtro puede excluir en bloque justo los strikes MÁS
+    profundos (los de mayor downside protection) aunque su extrínseco sí
+    cumpla el mínimo configurado — el algoritmo termina eligiendo un
+    strike más superficial de lo que el usuario buscaba, sin aviso. El
+    spread se sigue calculando y devolviendo (columna Spread_%), solo deja
+    de ser un filtro duro cuando está desactivado."""
     try:
         itm = calls_df[calls_df["strike"] < current_price].copy()
         if itm.empty:
@@ -924,14 +971,17 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
         if itm.empty:
             return None
 
-        # Punto 3: el spread no puede comerse más de la mitad del
-        # extrínseco que se supone que se está cobrando — si no, el mid
-        # price no representa una prima realmente capturable.
-        itm = itm[
-            itm["spread_dollar"] <= itm["extrinsic"] * (SPREAD_MAX_PCT_OF_EXTRINSIC / 100)
-        ]
-        if itm.empty:
-            return None
+        # Punto 3 (opcional desde punto 29, v3.16): el spread no puede
+        # comerse más de spread_max_pct% del extrínseco que se supone que
+        # se está cobrando — si no, el mid price no representa una prima
+        # realmente capturable. Ver docstring de la función para el caso
+        # real (SMCI) donde este filtro excluía los strikes más profundos.
+        if apply_spread_filter:
+            itm = itm[
+                itm["spread_dollar"] <= itm["extrinsic"] * (spread_max_pct / 100)
+            ]
+            if itm.empty:
+                return None
 
         if diagnostic_mode:
             candidates = itm
@@ -985,18 +1035,18 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
 
 def find_deep_itm_debug_funnel(calls_df, current_price):
     """Réplica, paso a paso, de los filtros que Consulta Individual SÍ
-    aplica siempre (bid>0/ask>0/mid>0, extrínseco>0, spread≤50% del
-    extrínseco) para diagnosticar en qué escalón se queda en cero un
-    vencimiento que devuelve "sin candidato" aunque la cadena sí traiga
-    bid/ask cotizado. Desde v3.12, el OI mínimo NO se aplica aquí (punto
-    24 del docstring) — se mantiene solo como dato informativo (mediana),
-    nunca como filtro, porque en Consulta Individual el objetivo es
-    revisar el ticker sin que un OI de Alpaca poco fiable oculte el dato.
-    Solo se usa en quick_lookup — no afecta al pipeline de escaneo
-    masivo. Devuelve un dict con el recuento de strikes ITM que
-    sobreviven a cada paso."""
+    aplica siempre (bid>0/ask>0/mid>0, extrínseco>0) para diagnosticar en
+    qué escalón se queda en cero un vencimiento que devuelve "sin
+    candidato" aunque la cadena sí traiga bid/ask cotizado. Ni el OI
+    mínimo (desde v3.12, punto 24) ni el spread≤X% del extrínseco (desde
+    v3.16, punto 29) se aplican aquí — se mantienen solo como datos
+    informativos (mediana de OI, spread mediano), nunca como filtro,
+    porque en Consulta Individual el objetivo es revisar el ticker sin
+    que un dato de Alpaca poco fiable oculte el resultado. Solo se usa en
+    quick_lookup — no afecta al pipeline de escaneo masivo. Devuelve un
+    dict con el recuento de strikes ITM que sobreviven a cada paso."""
     out = {"itm_total": 0, "with_bid_ask": 0, "extrinsic_positive": 0,
-           "spread_ok": 0, "oi_median": None}
+           "oi_median": None, "spread_pct_median": None}
     try:
         itm = calls_df[calls_df["strike"] < current_price].copy()
         out["itm_total"] = len(itm)
@@ -1023,9 +1073,10 @@ def find_deep_itm_debug_funnel(calls_df, current_price):
         if itm.empty:
             return out
 
+        # Informativo únicamente (punto 29, v3.16) — no filtra aquí.
         itm["spread_dollar"] = itm["ask"] - itm["bid"]
-        itm = itm[itm["spread_dollar"] <= itm["extrinsic"] * (SPREAD_MAX_PCT_OF_EXTRINSIC / 100)]
-        out["spread_ok"] = len(itm)
+        itm["spread_pct_of_extrinsic"] = itm["spread_dollar"] / itm["extrinsic"] * 100
+        out["spread_pct_median"] = float(itm["spread_pct_of_extrinsic"].median())
         return out
     except Exception as e:
         out["error"] = str(e)
@@ -1048,13 +1099,14 @@ def _explain_deep_itm_funnel(funnel):
             f"positivo (el midprice cotizado está por debajo del valor intrínseco) — "
             f"cotización probablemente poco fiable en este momento/feed."
         )
-    if funnel.get("spread_ok", 0) == 0:
-        return (
-            f"De {funnel['extrinsic_positive']} strikes con extrínseco positivo (mediana de "
-            f"OI informativo: {oi_txt}), NINGUNO tiene spread bid-ask ≤ 50% de su "
-            f"extrínseco — la prima de mid price no es realmente capturable en ninguno."
-        )
-    return "Deberían quedar candidatos con estos filtros — revisa el extrínseco mínimo configurado."
+    spread_med = funnel.get("spread_pct_median")
+    spread_txt = f"{spread_med:.0f}%" if spread_med is not None else "N/D"
+    return (
+        f"Debería haber candidato: {funnel['extrinsic_positive']} strikes con "
+        f"extrínseco positivo (mediana de OI informativo: {oi_txt}, mediana de "
+        f"spread/extrínseco informativo: {spread_txt} — ninguno de los dos filtra "
+        f"aquí). Si aun así no aparece, revisa el extrínseco mínimo configurado."
+    )
 
 
 # ======================================================================
@@ -1167,6 +1219,8 @@ def phase2_options_filter(survivor, params):
             params["extrinsic_min"], params["extrinsic_max"],
             params["min_oi"], diagnostic_mode=params["diagnostic_mode"],
             apply_oi_filter=params["use_oi_filter"],
+            apply_spread_filter=params["use_spread_filter"],
+            spread_max_pct=params["spread_max_pct"],
         )
         if candidate is None:
             return None, "no_itm_candidate"
@@ -1372,10 +1426,14 @@ def quick_lookup(ticker, entry_date, target_date, params):
     # OI mínimo — apply_oi_filter=False siempre aquí, sea cual sea el
     # toggle del escaneo masivo. El OI se sigue mostrando en la tabla como
     # dato informativo, pero no descarta el ticker.
+    # Punto 29 (v3.16): tampoco filtra por spread — mismo criterio, para
+    # que el usuario vea el mejor strike ITM real y decida con Spread_%
+    # a la vista, en vez de que el filtro lo oculte sin explicación.
     candidate = find_deep_itm_candidate(
         calls, out["current_price"], dte,
         params["extrinsic_min"], params["extrinsic_max"],
         params["min_oi"], diagnostic_mode=True, apply_oi_filter=False,
+        apply_spread_filter=False,
     )
     out["candidate"] = candidate
     if candidate is None:
@@ -1448,9 +1506,9 @@ def main():
         "Ranking por mayor downside protection**"
     )
     st.caption(
-        "⚙️ v3.15 — earnings/dividendos ligados al periodo entrada→vencimiento "
-        "(con fecha de entrada elegible) · defaults: extrínseco 0.95%, precio "
-        "$15–$50 · filtros adicionales sobre resultados · datos vía Alpaca"
+        "⚙️ v3.16 — filtro de spread opcional (OFF por defecto, ver 'Liquidez "
+        "mínima') · earnings/dividendos ligados al periodo entrada→vencimiento "
+        "· defaults: extrínseco 0.95%, precio $15–$50 · datos vía Alpaca"
     )
 
     col_title, col_reset = st.columns([5, 1])
@@ -1585,6 +1643,28 @@ def main():
         if not use_oi_filter:
             st.caption("ℹ️ OI mínimo NO se está aplicando — el open interest solo se muestra como dato informativo.")
 
+        st.markdown("**〰️ Spread bid-ask**")
+        use_spread_filter = st.checkbox(
+            "Exigir spread ≤ X% del extrínseco", value=False,
+            help="Desactivado por defecto (v3.16): en deep ITM el spread bid-ask "
+                 "en dólares no baja tan rápido como el extrínseco al ir más "
+                 "profundo, así que este filtro puede excluir en bloque justo los "
+                 "strikes MÁS profundos (los de mayor downside protection) aunque "
+                 "cumplan tu extrínseco mínimo — caso real detectado con SMCI, "
+                 "donde el strike óptimo (spread grande pero extrínseco ≥1%) se "
+                 "descartaba y el escáner elegía uno más superficial sin avisar. "
+                 "El spread se sigue mostrando en Spread_% como dato informativo — "
+                 "revísalo ahí antes de operar. Actívalo si prefieres que el "
+                 "escáner descarte automáticamente primas poco capturables."
+        )
+        spread_max_pct = st.number_input(
+            "Spread máximo (% del extrínseco)", min_value=10, max_value=300, value=50, step=10,
+            disabled=not use_spread_filter,
+            help="Solo se aplica si el checkbox de arriba está activado."
+        )
+        if not use_spread_filter:
+            st.caption("ℹ️ Spread máximo NO se está aplicando — revisa Spread_% en la tabla antes de operar.")
+
         st.markdown("**📆 Periodo de la posición**")
         entry_date = st.date_input(
             "Fecha de entrada",
@@ -1672,9 +1752,10 @@ def main():
                  "el mínimo configurado, para ver los valores reales del mercado."
         )
         st.caption(
-            "Siempre activos (no configurables): bid>0 y ask>0, spread ≤ 50% "
-            "del extrínseco, opciones semanales listadas, y vencimiento "
-            "EXACTO en la fecha objetivo (sin tolerancia)."
+            "Siempre activos (no configurables): bid>0 y ask>0, opciones "
+            "semanales listadas, y vencimiento EXACTO en la fecha objetivo "
+            "(sin tolerancia). OI y spread mínimos son opcionales — ver "
+            "'Liquidez mínima' arriba."
         )
 
     params = {
@@ -1684,6 +1765,8 @@ def main():
         "max_price": max_price,
         "min_oi": min_oi,
         "use_oi_filter": use_oi_filter,
+        "use_spread_filter": use_spread_filter,
+        "spread_max_pct": spread_max_pct,
         "target_expiration_date": target_date,
         "entry_date": entry_date,
         "trend_strength": trend_strength,
