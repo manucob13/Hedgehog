@@ -64,7 +64,6 @@ from utils.utils_alpaca import (
     has_weekly_options,
     get_option_chain,
     get_live_price,
-    get_last_chain_diag,
 )
 
 warnings.filterwarnings('ignore')
@@ -562,89 +561,12 @@ def find_deep_itm_candidate(calls_df, current_price, dte_calendar,
             "volume": int(pd.to_numeric(best.get("volume", 0), errors="coerce") or 0),
             "iv_pct": round(iv * 100, 2) if iv > 0 else None,
             "delta": delta,
-            # "in_target_band": cumple el mínimo (y el máximo, si hay banda
-            # activa) configurados. Se usa en Consulta Individual; ya no se
-            # expone como columna en la tabla del escaneo masivo.
+            # Cumple el mínimo (y el máximo, si hay banda activa) configurados.
             "in_target_band": bool(meets_range),
         }
     except Exception:
         return None
 
-
-def find_deep_itm_debug_funnel(calls_df, current_price):
-    """Réplica, paso a paso, de los filtros que Consulta Individual SÍ
-    aplica siempre (bid>0/ask>0/mid>0, extrínseco>0) para diagnosticar en
-    qué escalón se queda en cero un vencimiento que devuelve "sin
-    candidato" aunque la cadena sí traiga bid/ask cotizado. Ni el OI
-    mínimo ni el spread≤X% del extrínseco se aplican aquí — se mantienen
-    solo como datos
-    informativos (mediana de OI, spread mediano), nunca como filtro,
-    porque en Consulta Individual el objetivo es revisar el ticker sin
-    que un dato de Alpaca poco fiable oculte el resultado. Solo se usa en
-    quick_lookup — no afecta al pipeline de escaneo masivo. Devuelve un
-    dict con el recuento de strikes ITM que sobreviven a cada paso."""
-    out = {"itm_total": 0, "with_bid_ask": 0, "extrinsic_positive": 0,
-           "oi_median": None, "spread_pct_median": None}
-    try:
-        itm = calls_df[calls_df["strike"] < current_price].copy()
-        out["itm_total"] = len(itm)
-        if itm.empty:
-            return out
-
-        itm["bid"] = pd.to_numeric(itm["bid"], errors="coerce").fillna(0)
-        itm["ask"] = pd.to_numeric(itm["ask"], errors="coerce").fillna(0)
-        itm["mid"] = (itm["bid"] + itm["ask"]) / 2
-        itm = itm[(itm["bid"] > 0) & (itm["ask"] > 0) & (itm["mid"] > 0)]
-        out["with_bid_ask"] = len(itm)
-        if itm.empty:
-            return out
-
-        itm["oi"] = pd.to_numeric(
-            itm.get("openInterest", pd.Series(0, index=itm.index)), errors="coerce"
-        ).fillna(0)
-        out["oi_median"] = float(itm["oi"].median())  # informativo, no filtra
-
-        itm["intrinsic"] = current_price - itm["strike"]
-        itm["extrinsic"] = itm["mid"] - itm["intrinsic"]
-        itm = itm[itm["extrinsic"] > 0]
-        out["extrinsic_positive"] = len(itm)
-        if itm.empty:
-            return out
-
-        # Informativo únicamente — no filtra aquí.
-        itm["spread_dollar"] = itm["ask"] - itm["bid"]
-        itm["spread_pct_of_extrinsic"] = itm["spread_dollar"] / itm["extrinsic"] * 100
-        out["spread_pct_median"] = float(itm["spread_pct_of_extrinsic"].median())
-        return out
-    except Exception as e:
-        out["error"] = str(e)
-        return out
-
-
-def _explain_deep_itm_funnel(funnel):
-    """Traduce find_deep_itm_debug_funnel() a un mensaje humano que señala
-    el primer escalón que se queda en cero."""
-    if funnel.get("itm_total", 0) == 0:
-        return "No hay ningún strike con strike < precio actual en la cadena descargada (raro — revisa el precio en vivo)."
-    if funnel.get("with_bid_ask", 0) == 0:
-        return f"De {funnel['itm_total']} strikes ITM, ninguno tiene bid/ask > 0 cotizado."
-    oi_med = funnel.get("oi_median")
-    oi_txt = f"{oi_med:.0f}" if oi_med is not None else "N/D"
-    if funnel.get("extrinsic_positive", 0) == 0:
-        return (
-            f"De {funnel['with_bid_ask']} strikes ITM con bid/ask válido (mediana de OI "
-            f"informativo: {oi_txt}, sin filtrar por él aquí), NINGUNO tiene extrínseco "
-            f"positivo (el midprice cotizado está por debajo del valor intrínseco) — "
-            f"cotización probablemente poco fiable en este momento/feed."
-        )
-    spread_med = funnel.get("spread_pct_median")
-    spread_txt = f"{spread_med:.0f}%" if spread_med is not None else "N/D"
-    return (
-        f"Debería haber candidato: {funnel['extrinsic_positive']} strikes con "
-        f"extrínseco positivo (mediana de OI informativo: {oi_txt}, mediana de "
-        f"spread/extrínseco informativo: {spread_txt} — ninguno de los dos filtra "
-        f"aquí). Si aun así no aparece, revisa el extrínseco mínimo configurado."
-    )
 
 
 # ======================================================================
@@ -875,113 +797,6 @@ def reset_everything():
     for key in ("results", "funnel", "debug_snapshot", "price_snapshot",
                 "scan_ts", "scanned_total"):
         st.session_state.pop(key, None)
-
-# ======================================================================
-# 9c. CONSULTA INDIVIDUAL: ticker + DTE → datos directos
-# ======================================================================
-
-def quick_lookup(ticker, entry_date, target_date, params):
-    """Consulta puntual de UN solo ticker para un periodo entrada→
-    vencimiento EXACTO (sin tolerancia). A
-    diferencia del escaneo masivo, esto es solo informativo para
-    tendencia/PCR/earnings/dividendo/extrínseco mínimo — se muestran
-    todos como datos, para que el usuario decida, en vez de descartar el
-    ticker sin explicación. Lo que SÍ se exige siempre, porque es filtro
-    fijo: opciones semanales, vencimiento exacto, y dentro de
-    find_deep_itm_candidate (bid>0, ask>0, spread≤50% del extrínseco) —
-    para que el resultado sea comparable con lo que devolvería el
-    escáner completo.
-
-    Devuelve un dict; si algo falla en el camino, la clave "error" trae
-    un mensaje explicando en qué paso se detuvo, y los datos ya
-    obtenidos hasta ese punto se incluyen igualmente."""
-    out = {"ticker": ticker, "error": None}
-
-    data = get_daily_data(ticker)
-    if data is None:
-        out["error"] = "Sin datos diarios suficientes para este ticker."
-        return out
-
-    close = data["Close"]
-    fallback_price = float(close.iloc[-1])
-    out["trend"] = get_trend_info(close)
-    out["rv"] = get_rv10(close)
-
-    out["cal_info"] = get_earnings_and_dividend_info(ticker)
-    out["current_price"] = get_live_price(ticker, fallback_price)
-    out["earnings_soon"] = has_earnings_in_period(out["cal_info"]["earnings_date"], entry_date, target_date)
-
-    expirations = get_option_expirations(ticker)
-    if not expirations:
-        out["error"] = "Este ticker no tiene vencimientos de opciones listados en Alpaca."
-        return out
-
-    out["has_weekly"] = has_weekly_options(expirations)
-    if not out["has_weekly"]:
-        out["error"] = "Este ticker no tiene cadencia de opciones semanales (filtro fijo)."
-        return out
-
-    if target_date not in expirations:
-        out["error"] = (
-            f"No hay vencimiento EXACTO el {target_date.strftime('%d %b %Y')} para este "
-            f"ticker (sin tolerancia). Vencimientos disponibles cercanos: "
-            f"{', '.join(e.isoformat() for e in expirations if abs((e - target_date).days) <= 14) or 'ninguno cerca'}."
-        )
-        out["expirations_available"] = [e.isoformat() for e in expirations]
-        return out
-
-    exp_date_obj = target_date
-    exp_str = target_date.isoformat()
-    dte = (exp_date_obj - date.today()).days
-    out["exp_str"] = exp_str
-    out["dte"] = dte
-
-    calls, puts = get_option_chain(ticker, exp_date_obj)
-    out["chain_diag"] = get_last_chain_diag()
-    if calls is None or calls.empty:
-        d = out["chain_diag"]
-        out["error"] = (
-            f"Cadena de calls vacía para el vencimiento {exp_str} en Alpaca "
-            f"(feed: {d.get('feed', '?')}) — contratos listados: "
-            f"{d.get('contracts_total', 0)}, snapshots devueltos: "
-            f"{d.get('snapshots_total', 0)}, con bid/ask cotizado: "
-            f"{d.get('quotes_with_bid_ask', 0)}."
-        )
-        return out
-
-    out["pcr"] = compute_pcr(calls, puts, out["current_price"])
-
-    # Consulta Individual NUNCA filtra por
-    # OI mínimo — apply_oi_filter=False siempre aquí, sea cual sea el
-    # toggle del escaneo masivo. El OI se sigue mostrando en la tabla como
-    # dato informativo, pero no descarta el ticker.
-    # Tampoco filtra por spread — mismo criterio, para
-    # que el usuario vea el mejor strike ITM real y decida con Spread_%
-    # a la vista, en vez de que el filtro lo oculte sin explicación.
-    candidate = find_deep_itm_candidate(
-        calls, out["current_price"], dte,
-        params["extrinsic_min"], params["extrinsic_max"],
-        params["min_oi"], diagnostic_mode=True, apply_oi_filter=False,
-        apply_spread_filter=False,
-    )
-    out["candidate"] = candidate
-    if candidate is None:
-        funnel = find_deep_itm_debug_funnel(calls, out["current_price"])
-        out["itm_funnel"] = funnel
-        out["error"] = (
-            "No hay ningún strike ITM que pase los filtros fijos (bid>0, ask>0, "
-            "spread≤50% del extrínseco) para este vencimiento — el OI mínimo NO "
-            "se aplica aquí. "
-            + _explain_deep_itm_funnel(funnel)
-        )
-        return out
-
-    out["meets_extrinsic_min"] = candidate["in_target_band"]
-    out["dividend_risk"] = has_dividend_risk(
-        out["cal_info"]["ex_div_date"], out["cal_info"]["div_amount"],
-        entry_date, exp_date_obj, candidate["extrinsic"],
-    )
-    return out
 
 # ======================================================================
 # 9d. CALCULADORA: combo buy-write (precio - prima call) para un strike
@@ -1365,206 +1180,6 @@ def main():
 
     st.divider()
 
-    # ── Consulta individual ────────────────────────────────────────────
-    st.markdown("### 🔎 Consulta Individual (ticker + periodo)")
-    st.caption(
-        "Mete un ticker, una fecha de entrada y una fecha de vencimiento EXACTA "
-        "y te devuelve los datos directamente — sin pasar por los filtros de "
-        "tendencia, PCR, earnings, dividendo NI OI mínimo del escaneo masivo "
-        "(esos aquí son solo informativos, no descartan el ticker). Sí se "
-        "exigen siempre, por ser filtros fijos: opciones semanales y "
-        "vencimiento exacto."
-    )
-
-    lq1, lq2, lq3, lq4 = st.columns([2, 1.5, 1.5, 1])
-    with lq1:
-        lookup_ticker_raw = st.text_input("Ticker", value="", placeholder="AAPL")
-    with lq2:
-        lookup_entry_date = st.date_input(
-            "Fecha de entrada",
-            value=date.today(),
-            min_value=date.today(),
-            max_value=date.today() + timedelta(days=179),
-            format="DD/MM/YYYY",
-            key="lookup_entry_date",
-        )
-    with lq3:
-        lookup_target_date = st.date_input(
-            "Fecha de vencimiento (exacta)",
-            value=max(lookup_entry_date + timedelta(days=7), date.today() + timedelta(days=1)),
-            min_value=lookup_entry_date + timedelta(days=1),
-            max_value=lookup_entry_date + timedelta(days=180),
-            format="DD/MM/YYYY",
-            key="lookup_date",
-        )
-    with lq4:
-        st.markdown("&nbsp;")
-        lookup_btn = st.button("🔎 Consultar", use_container_width=True)
-
-    if lookup_target_date <= lookup_entry_date:
-        st.error("⚠️ El vencimiento debe ser posterior a la fecha de entrada.")
-
-    if lookup_btn:
-        lookup_ticker = _clean_ticker(lookup_ticker_raw)
-        if not lookup_ticker:
-            st.error("⚠️ Escribe un ticker válido.")
-        else:
-            with st.spinner(f"Consultando {lookup_ticker}..."):
-                st.session_state["lookup_result"] = quick_lookup(
-                    lookup_ticker, lookup_entry_date, lookup_target_date, params
-                )
-
-    lr = st.session_state.get("lookup_result")
-    if lr:
-        st.markdown(f"#### 📄 {lr['ticker']}")
-
-        if lr.get("current_price") is not None:
-            trend = lr.get("trend") or {}
-            cal_info = lr.get("cal_info") or {}
-            ed = cal_info.get("earnings_date")
-            ed_txt = ed.strftime("%d %b %Y") if ed else "sin dato"
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("💲 Precio", f"${lr['current_price']:.2f}")
-            m2.metric("📐 SMA30", f"{trend.get('sma30', 'N/D')}")
-            m3.metric("📈 RV10 anualizada", f"{lr.get('rv', 'N/D')}%")
-            m4.metric(
-                "📅 Earnings en el periodo",
-                f"⚠️ Sí ({ed_txt})" if lr.get("earnings_soon") else f"No ({ed_txt})",
-                help="La fecha entre paréntesis es la que devuelve yfinance para este "
-                     "ticker ('sin dato' si yfinance no la reporta). 'Sí' significa que "
-                     "cae entre la fecha de entrada y la de vencimiento elegidas arriba."
-            )
-
-        if lr.get("error"):
-            st.warning(f"⚠️ {lr['error']}")
-
-        candidate = lr.get("candidate")
-        if candidate:
-            st.markdown(f"**Vencimiento usado:** {lr['exp_str']} (DTE: {lr['dte']}d)")
-            colr1, colr2 = st.columns(2)
-            with colr1:
-                st.markdown(f"""
-| Concepto | Valor |
-|---|---|
-| 🎯 Strike (deep ITM) | **${candidate['strike']}** |
-| 💵 Prima Mid | ${candidate['mid']} |
-| 📊 Bid / Ask | ${candidate['bid']} / ${candidate['ask']} |
-| 🔺 Intrínseco | ${candidate['intrinsic']} |
-| 🔹 Extrínseco | ${candidate['extrinsic']} ({candidate['extrinsic_pct']}%) |
-| ✅ Cumple extrínseco mínimo | {"Sí" if lr.get('meets_extrinsic_min') else "No"} |
-""")
-            with colr2:
-                st.markdown(f"""
-| Concepto | Valor |
-|---|---|
-| 🛡️ Downside protection (prima total) | **{candidate['downside_prot']}%** |
-| 🧱 · solo intrínseco | {candidate['downside_prot_intrinsic']}% |
-| 📐 Delta | {candidate.get('delta', 'N/D')} |
-| 📈 IV | {candidate.get('iv_pct', 'N/D')}% |
-| 〰️ Spread | {candidate['spread_pct']}% |
-| 💧 OI / Volumen | {candidate['oi']:,} / {candidate['volume']:,} |
-| 🗳️ PCR | {lr.get('pcr', 'N/D')} |
-| 💵 Riesgo dividendo | {"⚠️ Sí" if lr.get('dividend_risk') else "No"} |
-""")
-
-        st.divider()
-
-    # ── Calculadora de combo buy-write ──────────────────────────────────
-    st.markdown("### 🧮 Calculadora de Combo Buy-Write")
-    st.caption(
-        "Combo = comprar la acción + vender la call, a débito neto. "
-        "Fórmula: combo = strike − extrínseco = strike − (extrínseco% × "
-        "precio). Metes ticker + strike + tu extrínseco objetivo (mín, y "
-        "máx opcional) y te da el precio de combo MÁXIMO que deberías "
-        "pagar para cumplir el mínimo (y el mínimo, si fijas un techo). "
-        "El precio del subyacente se pide en vivo cada vez que pulsas "
-        "Calcular; si el strike existe en la cadena real de Alpaca para "
-        "esa fecha, también te da el combo REAL para comparar."
-    )
-
-    cc1, cc2 = st.columns([2, 1])
-    with cc1:
-        calc_ticker_raw = st.text_input("Ticker", value="", placeholder="AAPL", key="calc_ticker_input")
-    with cc2:
-        calc_strike = st.number_input(
-            "Strike", min_value=0.01, max_value=100000.0, value=25.0, step=0.5,
-            key="calc_strike_input",
-        )
-
-    cc3, cc4 = st.columns(2)
-    with cc3:
-        calc_entry_date = st.date_input(
-            "Fecha de entrada", value=date.today(),
-            min_value=date.today(), max_value=date.today() + timedelta(days=179),
-            format="DD/MM/YYYY", key="calc_entry_date",
-        )
-    with cc4:
-        calc_target_date = st.date_input(
-            "Fecha de vencimiento (exacta)",
-            value=max(calc_entry_date + timedelta(days=7), date.today() + timedelta(days=1)),
-            min_value=calc_entry_date + timedelta(days=1),
-            max_value=calc_entry_date + timedelta(days=180),
-            format="DD/MM/YYYY", key="calc_target_date_input",
-        )
-
-    cc5, cc6, cc7 = st.columns([1.5, 1.5, 1])
-    with cc5:
-        calc_extrinsic_min = st.number_input(
-            "Extrínseco mínimo objetivo (%)", min_value=0.10, max_value=5.00,
-            value=0.95, step=0.05, key="calc_extrinsic_min",
-        )
-    with cc6:
-        calc_extrinsic_max = st.number_input(
-            "Extrínseco máximo objetivo (%) — 0 = sin techo", min_value=0.0,
-            max_value=10.0, value=0.0, step=0.05, key="calc_extrinsic_max",
-        )
-    with cc7:
-        st.markdown("&nbsp;")
-        calc_btn = st.button("🔄 Calcular", use_container_width=True, key="calc_btn")
-
-    if calc_btn:
-        calc_ticker = _clean_ticker(calc_ticker_raw)
-        if not calc_ticker:
-            st.error("⚠️ Escribe un ticker válido.")
-        else:
-            with st.spinner(f"Calculando {calc_ticker}..."):
-                st.session_state["calc_result"] = build_buywrite_combo_calculator(
-                    calc_ticker, calc_target_date, calc_strike, calc_extrinsic_min,
-                    calc_extrinsic_max if calc_extrinsic_max > 0 else None,
-                )
-
-    cr = st.session_state.get("calc_result")
-    if cr:
-        st.markdown(f"#### 📄 {cr['ticker']} — Strike ${calc_strike}")
-        if cr.get("error"):
-            st.warning(f"⚠️ {cr['error']}")
-        if cr.get("current_price") is not None:
-            m1, m2, m3 = st.columns(3)
-            m1.metric("💲 Precio en vivo", f"${cr['current_price']:.2f}")
-            m2.metric("🔺 Intrínseco", f"${cr['intrinsic']:.2f}")
-            m3.metric("📦 Combo MÁXIMO objetivo", f"${cr['combo_max']:.2f}")
-
-            rows = [
-                {"Concepto": "Prima call objetivo mínima", "Valor": f"${cr['premium_min']:.2f}"},
-                {"Concepto": "Combo (débito) MÁXIMO a pagar", "Valor": f"${cr['combo_max']:.2f}"},
-            ]
-            if cr.get("combo_min") is not None:
-                rows.append({"Concepto": "Prima call objetivo máxima", "Valor": f"${cr['premium_max']:.2f}"})
-                rows.append({"Concepto": "Combo (débito) MÍNIMO a pagar", "Valor": f"${cr['combo_min']:.2f}"})
-            if cr.get("real_mid") is not None:
-                rows += [
-                    {"Concepto": "Bid / Ask real", "Valor": f"${cr['real_bid']:.2f} / ${cr['real_ask']:.2f}"},
-                    {"Concepto": "Mid real", "Valor": f"${cr['real_mid']:.2f}"},
-                    {"Concepto": "Combo REAL (precio − mid real)", "Valor": f"${cr['real_combo']:.2f}"},
-                    {"Concepto": "¿Cumple el objetivo con precios reales?", "Valor": "✅ Sí" if cr["cumple_real"] else "❌ No"},
-                ]
-            else:
-                rows.append({"Concepto": "Datos reales de mercado",
-                              "Valor": "No encontrados para ese strike/vencimiento exactos en Alpaca"})
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-    st.divider()
-
     # ── Escaneo ────────────────────────────────────────────────────────
     st.markdown("### 🚀 Ejecutar Escaneo")
 
@@ -1681,6 +1296,137 @@ def main():
                         st.dataframe(df_prices.sort_values("Precio", ascending=False).head(15), hide_index=True, use_container_width=True)
         st.divider()
 
+    render_results()
+
+    st.divider()
+
+    # ── Calculadora de combo buy-write ──────────────────────────────────
+    st.markdown("### 🧮 Calculadora de Combo Buy-Write")
+    st.caption(
+        "Combo = comprar la acción + vender la call, a débito neto. "
+        "Fórmula: combo = strike − extrínseco = strike − (extrínseco% × "
+        "precio). Metes ticker + strike + tu extrínseco objetivo (mín, y "
+        "máx opcional) y te da el precio de combo MÁXIMO que deberías "
+        "pagar para cumplir el mínimo (y el mínimo, si fijas un techo). "
+        "El precio del subyacente se pide en vivo cada vez que pulsas "
+        "Calcular; si el strike existe en la cadena real de Alpaca para "
+        "esa fecha, también te da el combo REAL para comparar."
+    )
+
+    cc1, cc2 = st.columns([2, 1])
+    with cc1:
+        calc_ticker_raw = st.text_input("Ticker", value="", placeholder="AAPL", key="calc_ticker_input")
+    with cc2:
+        st.markdown(
+            "<span style='color:#e8af34; font-weight:700;'>✍️ Strike (manual)</span>",
+            unsafe_allow_html=True,
+        )
+        calc_strike = st.number_input(
+            "Strike", min_value=0.01, max_value=100000.0, value=25.0, step=0.5,
+            key="calc_strike_input", label_visibility="collapsed",
+        )
+
+    cc3, cc4 = st.columns(2)
+    with cc3:
+        calc_entry_date = st.date_input(
+            "Fecha de entrada", value=date.today(),
+            min_value=date.today(), max_value=date.today() + timedelta(days=179),
+            format="DD/MM/YYYY", key="calc_entry_date",
+        )
+    with cc4:
+        calc_target_date = st.date_input(
+            "Fecha de vencimiento (exacta)",
+            value=max(calc_entry_date + timedelta(days=7), date.today() + timedelta(days=1)),
+            min_value=calc_entry_date + timedelta(days=1),
+            max_value=calc_entry_date + timedelta(days=180),
+            format="DD/MM/YYYY", key="calc_target_date_input",
+        )
+
+    cc5, cc6, cc7 = st.columns([1.5, 1.5, 1])
+    with cc5:
+        calc_extrinsic_min = st.number_input(
+            "Extrínseco mínimo objetivo (%)", min_value=0.10, max_value=5.00,
+            value=0.95, step=0.05, key="calc_extrinsic_min",
+        )
+    with cc6:
+        calc_extrinsic_max = st.number_input(
+            "Extrínseco máximo objetivo (%) — 0 = sin techo", min_value=0.0,
+            max_value=10.0, value=0.0, step=0.05, key="calc_extrinsic_max",
+        )
+    with cc7:
+        st.markdown("&nbsp;")
+        calc_btn = st.button("🔄 Calcular", use_container_width=True, key="calc_btn")
+
+    if calc_btn:
+        calc_ticker = _clean_ticker(calc_ticker_raw)
+        if not calc_ticker:
+            st.error("⚠️ Escribe un ticker válido.")
+        else:
+            with st.spinner(f"Calculando {calc_ticker}..."):
+                st.session_state["calc_result"] = build_buywrite_combo_calculator(
+                    calc_ticker, calc_target_date, calc_strike, calc_extrinsic_min,
+                    calc_extrinsic_max if calc_extrinsic_max > 0 else None,
+                )
+
+    cr = st.session_state.get("calc_result")
+    if cr:
+        st.markdown(f"#### 📄 {cr['ticker']} — Strike ${calc_strike}")
+        if cr.get("error"):
+            st.warning(f"⚠️ {cr['error']}")
+        if cr.get("current_price") is not None:
+            m1, m2 = st.columns(2)
+            m1.metric("💲 Precio en vivo", f"${cr['current_price']:.2f}")
+            m2.metric("🔺 Intrínseco", f"${cr['intrinsic']:.2f}")
+
+            st.markdown("##### 📦 Combo (débito neto): real vs. objetivo")
+            cm1, cm2 = st.columns(2)
+            cm1.metric("Combo MÁXIMO objetivo", f"${cr['combo_max']:.2f}")
+            if cr.get("real_mid") is not None:
+                cm2.metric(
+                    "Combo REAL (mid bid/ask)", f"${cr['real_combo']:.2f}",
+                    delta=f"{cr['real_combo'] - cr['combo_max']:.2f} vs objetivo",
+                    delta_color="inverse",
+                )
+                if cr["cumple_real"]:
+                    st.success(
+                        f"✅ El combo real (${cr['real_combo']:.2f}) es igual o mejor "
+                        f"(más barato) que tu objetivo (${cr['combo_max']:.2f}) — "
+                        f"cumple tu extrínseco mínimo con precios reales."
+                    )
+                else:
+                    st.warning(
+                        f"⚠️ El combo real (${cr['real_combo']:.2f}) es más caro que tu "
+                        f"objetivo (${cr['combo_max']:.2f}) — con los precios actuales no "
+                        f"llega a tu extrínseco mínimo."
+                    )
+            else:
+                cm2.metric("Combo REAL (mid bid/ask)", "N/D")
+                st.caption(
+                    "No se encontraron datos reales de mercado para ese strike/"
+                    "vencimiento exactos en Alpaca — solo se muestra el objetivo teórico."
+                )
+
+            rows = [
+                {"Concepto": "Prima call objetivo mínima", "Valor": f"${cr['premium_min']:.2f}"},
+                {"Concepto": "Combo (débito) MÁXIMO a pagar", "Valor": f"${cr['combo_max']:.2f}"},
+            ]
+            if cr.get("combo_min") is not None:
+                rows.append({"Concepto": "Prima call objetivo máxima", "Valor": f"${cr['premium_max']:.2f}"})
+                rows.append({"Concepto": "Combo (débito) MÍNIMO a pagar", "Valor": f"${cr['combo_min']:.2f}"})
+            if cr.get("real_mid") is not None:
+                rows += [
+                    {"Concepto": "Bid / Ask real", "Valor": f"${cr['real_bid']:.2f} / ${cr['real_ask']:.2f}"},
+                    {"Concepto": "Mid real", "Valor": f"${cr['real_mid']:.2f}"},
+                    {"Concepto": "Combo REAL (precio − mid real)", "Valor": f"${cr['real_combo']:.2f}"},
+                ]
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+
+def render_results():
+    """Renderiza los resultados guardados en session_state (filtros
+    post-escaneo, metricas, tabs de ranking/detalle/graficos). Si aun
+    no hay escaneo, muestra un aviso y no hace nada mas."""
     # ── Resultados ─────────────────────────────────────────────────────
     st.markdown("### 📊 Resultados")
 
