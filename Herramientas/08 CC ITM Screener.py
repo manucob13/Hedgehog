@@ -1386,7 +1386,7 @@ def main():
             cm1, cm2, cm3 = st.columns(3)
             cm1.metric("Combo MÁXIMO objetivo", f"${cr['combo_max']:.2f}",
                        help=f"Para un extrínseco mínimo del {calc_extrinsic_min:.2f}%.")
-            if cr.get("real_mid") is not None:
+            if cr.get("real_mid") is not None and cr.get("real_extrinsic_pct") is not None:
                 cm2.metric(
                     "Combo REAL (mid bid/ask)", f"${cr['real_combo']:.2f}",
                     delta=f"{cr['real_combo'] - cr['combo_max']:.2f} vs objetivo",
@@ -1426,7 +1426,7 @@ def main():
             if cr.get("combo_min") is not None:
                 rows.append({"Concepto": "Prima call objetivo máxima", "Valor": f"${cr['premium_max']:.2f}"})
                 rows.append({"Concepto": "Combo (débito) MÍNIMO a pagar", "Valor": f"${cr['combo_min']:.2f}"})
-            if cr.get("real_mid") is not None:
+            if cr.get("real_mid") is not None and cr.get("real_extrinsic_pct") is not None:
                 rows += [
                     {"Concepto": "Bid / Ask real", "Valor": f"${cr['real_bid']:.2f} / ${cr['real_ask']:.2f}"},
                     {"Concepto": "Mid real", "Valor": f"${cr['real_mid']:.2f}"},
