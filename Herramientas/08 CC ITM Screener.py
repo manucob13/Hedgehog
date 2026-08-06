@@ -840,6 +840,7 @@ def build_buywrite_combo_calculator(ticker, target_date, strike, extrinsic_min_p
     # Comparación opcional con datos reales de mercado, si el vencimiento
     # y el strike existen tal cual en la cadena de Alpaca.
     out["real_bid"] = out["real_ask"] = out["real_mid"] = out["real_combo"] = None
+    out["real_extrinsic_pct"] = None
     out["cumple_real"] = None
     expirations = get_option_expirations(ticker)
     if expirations and target_date in expirations:
@@ -854,6 +855,9 @@ def build_buywrite_combo_calculator(ticker, target_date, strike, extrinsic_min_p
                     mid = (bid + ask) / 2
                     out["real_bid"], out["real_ask"], out["real_mid"] = bid, ask, mid
                     out["real_combo"] = current_price - mid
+                    # Extrínseco real % = lo que de verdad se captura con el
+                    # mid actual, para comparar cara a cara con el objetivo.
+                    out["real_extrinsic_pct"] = (mid - intrinsic) / current_price * 100
                     out["cumple_real"] = out["real_combo"] <= out["combo_max"]
     return out
 
@@ -1379,28 +1383,37 @@ def main():
             m2.metric("🔺 Intrínseco", f"${cr['intrinsic']:.2f}")
 
             st.markdown("##### 📦 Combo (débito neto): real vs. objetivo")
-            cm1, cm2 = st.columns(2)
-            cm1.metric("Combo MÁXIMO objetivo", f"${cr['combo_max']:.2f}")
+            cm1, cm2, cm3 = st.columns(3)
+            cm1.metric("Combo MÁXIMO objetivo", f"${cr['combo_max']:.2f}",
+                       help=f"Para un extrínseco mínimo del {calc_extrinsic_min:.2f}%.")
             if cr.get("real_mid") is not None:
                 cm2.metric(
                     "Combo REAL (mid bid/ask)", f"${cr['real_combo']:.2f}",
                     delta=f"{cr['real_combo'] - cr['combo_max']:.2f} vs objetivo",
                     delta_color="inverse",
                 )
+                cm3.metric(
+                    "Extrínseco REAL", f"{cr['real_extrinsic_pct']:.2f}%",
+                    delta=f"{cr['real_extrinsic_pct'] - calc_extrinsic_min:.2f} pp vs {calc_extrinsic_min:.2f}% objetivo",
+                    delta_color="normal",
+                )
                 if cr["cumple_real"]:
                     st.success(
                         f"✅ El combo real (${cr['real_combo']:.2f}) es igual o mejor "
-                        f"(más barato) que tu objetivo (${cr['combo_max']:.2f}) — "
-                        f"cumple tu extrínseco mínimo con precios reales."
+                        f"(más barato) que tu objetivo (${cr['combo_max']:.2f}) — con "
+                        f"los precios actuales capturas un {cr['real_extrinsic_pct']:.2f}% "
+                        f"de extrínseco frente al {calc_extrinsic_min:.2f}% objetivo."
                     )
                 else:
                     st.warning(
                         f"⚠️ El combo real (${cr['real_combo']:.2f}) es más caro que tu "
-                        f"objetivo (${cr['combo_max']:.2f}) — con los precios actuales no "
-                        f"llega a tu extrínseco mínimo."
+                        f"objetivo (${cr['combo_max']:.2f}) — con los precios actuales solo "
+                        f"capturas un {cr['real_extrinsic_pct']:.2f}% de extrínseco frente "
+                        f"al {calc_extrinsic_min:.2f}% objetivo."
                     )
             else:
                 cm2.metric("Combo REAL (mid bid/ask)", "N/D")
+                cm3.metric("Extrínseco REAL", "N/D")
                 st.caption(
                     "No se encontraron datos reales de mercado para ese strike/"
                     "vencimiento exactos en Alpaca — solo se muestra el objetivo teórico."
@@ -1418,6 +1431,7 @@ def main():
                     {"Concepto": "Bid / Ask real", "Valor": f"${cr['real_bid']:.2f} / ${cr['real_ask']:.2f}"},
                     {"Concepto": "Mid real", "Valor": f"${cr['real_mid']:.2f}"},
                     {"Concepto": "Combo REAL (precio − mid real)", "Valor": f"${cr['real_combo']:.2f}"},
+                    {"Concepto": "Extrínseco REAL (%)", "Valor": f"{cr['real_extrinsic_pct']:.2f}%"},
                 ]
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
