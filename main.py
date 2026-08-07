@@ -153,6 +153,12 @@ screener_ITM = st.Page(
     icon="📐",
     url_path="screener-itm"
 )
+screener_CSP = st.Page(
+    "Herramientas/09 CSP Screener.py",
+    title="Screener CSP",
+    icon="🛡️",
+    url_path="screener-csp"
+)
 # 3. CREACIÓN DE LA NAVEGACIÓN JERÁRQUICA
 pg = st.navigation({
     "Time Edge": [te_signals, te_op_21dte,te_op_60dte],
@@ -177,7 +183,8 @@ pg = st.navigation({
         screener_trend,
         regime_hmm,
         screener_CC,
-        screener_ITM
+        screener_ITM,
+        screener_CSP
     ]
 })
 # 4. EJECUCIÓN
