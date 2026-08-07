@@ -510,6 +510,7 @@ def run_screener(tickers, params, progress_bar, status_text):
 def reset_everything():
     get_daily_data.clear()
     get_option_expirations.clear()
+    get_market_trend.clear()
     for key in ("results", "funnel", "debug_snapshot", "price_snapshot",
                 "scan_ts", "scanned_total"):
         st.session_state.pop(key, None)
@@ -545,6 +546,171 @@ def plot_price(ticker):
         return None
 
 # ======================================================================
+# 7b. FILTRO DE MERCADO: Indicador Trend SP500-NASDAQ
+# ======================================================================
+# Portado del notebook "Amplitud de mercado" (AM v1.10, celda 4). Misma
+# lógica exacta, pero con yf.Ticker().history() en vez de yf.download()
+# (aquí yf.download() da columnas mal aplanadas, igual razón que el resto
+# del pipeline). Gate previo a cualquier escaneo: si el mercado no está
+# alcista, el escáner queda bloqueado por defecto (con opción de anular).
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def get_market_trend():
+    """SPX y NASDAQ por encima de la MENOR de sus medias de 100/200
+    sesiones, con esa media subiendo, cuentan como alcistas (+1) cada uno;
+    si no, bajistas (-1). Suma de ambos: +2 Alcista, -2 Bajista, 0 mixto
+    (se rellena con el último valor no-mixto vía ffill, igual que el
+    notebook original — en la práctica el indicador es casi siempre
+    binario). Devuelve None si falla la descarga de cualquiera de los tres
+    tickers."""
+    tickers = {"^GSPC": "SPX", "^IXIC": "NAS", "VTI": "VTI"}
+    end = datetime.now() + timedelta(days=1)
+    start = datetime(2015, 1, 1)
+    closes = {}
+    try:
+        for tk, name in tickers.items():
+            h = yf.Ticker(tk).history(start=start, end=end, interval="1d", auto_adjust=False)
+            if h is None or h.empty:
+                logger.warning(f"[market_trend] {tk}: descarga vacía")
+                return None
+            closes[name] = h["Close"]
+
+        df = pd.concat(closes, axis=1).dropna(how="any")
+        df.index = pd.to_datetime(df.index).tz_localize(None)
+        if len(df) < 205:
+            return None
+
+        df["SPX_MA100"] = df["SPX"].rolling(100).mean()
+        df["SPX_MA200"] = df["SPX"].rolling(200).mean()
+        df["NAS_MA100"] = df["NAS"].rolling(100).mean()
+        df["NAS_MA200"] = df["NAS"].rolling(200).mean()
+        df["VTI_MA100"] = df["VTI"].rolling(100).mean()
+        df["VTI_MA200"] = df["VTI"].rolling(200).mean()
+
+        df["SPX_Med"] = np.minimum(df["SPX_MA100"], df["SPX_MA200"])
+        df["NAS_Med"] = np.minimum(df["NAS_MA100"], df["NAS_MA200"])
+
+        df["SPX_Tendencia"] = np.where(
+            (df["SPX"] > df["SPX_Med"]) & (df["SPX_Med"] > df["SPX_Med"].shift(1)), 1, -1)
+        df["NAS_Tendencia"] = np.where(
+            (df["NAS"] > df["NAS_Med"]) & (df["NAS_Med"] > df["NAS_Med"].shift(1)), 1, -1)
+
+        df["Tendencia"] = df["SPX_Tendencia"] + df["NAS_Tendencia"]
+        df["Tendencia"] = df["Tendencia"].replace(0, np.nan).ffill()
+        df["Tendencia"] = df["Tendencia"].apply(
+            lambda x: 2 if x == 2 else (0 if x == 0 else (-2 if x == -2 else np.nan)))
+        df = df.dropna(subset=["Tendencia"])
+        if df.empty:
+            return None
+
+        start_year = datetime(datetime.now().year, 1, 1)
+        df_plot = df[df.index >= start_year]
+        if len(df_plot) < 20:
+            df_plot = df.tail(150)
+
+        last_trend = df["Tendencia"].iloc[-1]
+        trend_label = "Alcista" if last_trend == 2 else ("Bajista" if last_trend == -2 else "Neutral")
+
+        cambios = df[df["Tendencia"] != df["Tendencia"].shift(1)]
+        trend_since = cambios.index[-1] if not cambios.empty else df.index[0]
+
+        return {
+            "trend_label": trend_label,
+            "trend_value": float(last_trend),
+            "trend_since": trend_since,
+            "df_plot": df_plot,
+        }
+    except Exception as e:
+        logger.warning(f"[market_trend] error: {e}")
+        return None
+
+def plot_market_trend(mt):
+    """VTI coloreado verde/rojo/ámbar según Tendencia, con MA100/MA200 de
+    referencia — versión plotly del gráfico matplotlib del notebook
+    original, para encajar con el resto de la app."""
+    df_plot = mt["df_plot"].copy()
+    color_map = {2: "#6daa45", -2: "#dd6974", 0: "#e8af34"}
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["VTI_MA100"], mode="lines",
+                              name="MA 100", line=dict(color="#999999", dash="dash", width=1)))
+    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["VTI_MA200"], mode="lines",
+                              name="MA 200", line=dict(color="#5b9bd5", dash="dash", width=1)))
+
+    df_plot["block"] = (df_plot["Tendencia"] != df_plot["Tendencia"].shift()).cumsum()
+    first_block = True
+    for _, seg in df_plot.groupby("block"):
+        color = color_map.get(seg["Tendencia"].iloc[0], "#999999")
+        fig.add_trace(go.Scatter(
+            x=seg.index, y=seg["VTI"], mode="lines",
+            line=dict(color=color, width=2),
+            name="Tendencia", showlegend=first_block,
+            legendgroup="tendencia",
+        ))
+        first_block = False
+
+    fig.update_layout(
+        title="VTI — Indicador Trend SP500-NASDAQ",
+        template="plotly_dark", height=420,
+        hovermode="x unified",
+        xaxis_rangeslider_visible=False,
+    )
+    return fig
+
+def render_market_filter():
+    """Apartado inicial 'Filtro de Mercado': calcula y grafica el
+    indicador, y guarda en session_state si el mercado está alcista (o si
+    el usuario ha decidido anular el bloqueo) para que el botón de
+    escaneo lo respete más abajo."""
+    st.markdown("### 📈 Filtro de Mercado")
+    st.caption(
+        "Indicador Trend SP500-NASDAQ: alcista cuando el S&P 500 y el Nasdaq "
+        "Composite cotizan por encima de la menor de sus medias de 100/200 "
+        "sesiones, y esa media está subiendo. Si el mercado no está alcista, "
+        "el escáner queda bloqueado por defecto."
+    )
+
+    mt = get_market_trend()
+    if mt is None:
+        st.warning(
+            "⚠️ No se pudo calcular el indicador de mercado (fallo de datos de "
+            "SPX/NASDAQ/VTI). El escáner queda desbloqueado por no poder "
+            "confirmar el estado del mercado — revísalo manualmente."
+        )
+        st.session_state["market_bullish"] = True
+        st.session_state["market_override"] = False
+        st.divider()
+        return
+
+    trend_label = mt["trend_label"]
+    since_txt = mt["trend_since"].strftime("%d %b %Y")
+
+    if trend_label == "Alcista":
+        st.success(f"🟢 **Mercado ALCISTA** desde {since_txt}")
+        st.session_state["market_bullish"] = True
+    elif trend_label == "Bajista":
+        st.error(
+            f"🔴 **Mercado BAJISTA** desde {since_txt} — el indicador no "
+            f"recomienda abrir posiciones nuevas ahora mismo."
+        )
+        st.session_state["market_bullish"] = False
+    else:
+        st.warning(f"🟡 **Mercado NEUTRAL** desde {since_txt}")
+        st.session_state["market_bullish"] = False
+
+    st.plotly_chart(plot_market_trend(mt), use_container_width=True)
+
+    if not st.session_state["market_bullish"]:
+        st.session_state["market_override"] = st.checkbox(
+            "⚠️ Anular el filtro de mercado y escanear igualmente (bajo tu responsabilidad)",
+            value=st.session_state.get("market_override", False),
+        )
+    else:
+        st.session_state["market_override"] = False
+
+    st.divider()
+
+# ======================================================================
 # 8. INTERFAZ STREAMLIT
 # ======================================================================
 
@@ -576,6 +742,8 @@ def main():
             st.rerun()
 
     st.divider()
+
+    render_market_filter()
 
     # ── Universo ───────────────────────────────────────────────────────
     st.markdown("### 📂 Universo de Tickers")
@@ -727,6 +895,10 @@ def main():
     # ── Escaneo ────────────────────────────────────────────────────────
     st.markdown("### 🚀 Ejecutar Escaneo")
 
+    market_ok = st.session_state.get("market_bullish", True) or st.session_state.get("market_override", False)
+    if not market_ok:
+        st.error("🔴 Escaneo bloqueado: el Filtro de Mercado no está alcista. Anúlalo arriba si quieres escanear igualmente.")
+
     with st.expander("🧪 Prueba rápida con universo reducido (opcional)"):
         test_tickers_raw = st.text_input(
             "Tickers de prueba (separados por coma o espacio)", value="",
@@ -740,7 +912,7 @@ def main():
     scan_universe = test_tickers if test_tickers else tickers_all
 
     scan_btn = st.button("🎯 INICIAR ESCANEO", type="primary", use_container_width=True,
-                          disabled=len(scan_universe) == 0)
+                          disabled=(len(scan_universe) == 0) or not market_ok)
 
     if test_tickers:
         st.caption(f"🧪 Modo prueba activo: se escanearán solo **{len(scan_universe)}** tickers.")
