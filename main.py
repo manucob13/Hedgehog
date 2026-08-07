@@ -154,7 +154,7 @@ screener_ITM = st.Page(
     url_path="screener-itm"
 )
 screener_CSP = st.Page(
-    "Herramientas/09 CSP Screener.py",
+    "Herramientas/09 CSP ITM Screneer.py",
     title="Screener CSP",
     icon="🛡️",
     url_path="screener-csp"
