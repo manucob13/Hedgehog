@@ -14,6 +14,12 @@ FILTROS (activables/desactivables desde la UI salvo los marcados [fijo]):
 - Precio > SMA30 [toggle, OFF por defecto]
 - Precio > SMA200 [toggle, OFF por defecto]
 - PCR < 1.0 (sesgo alcista/neutral) [toggle]
+- Sin earnings entre la fecha de ENTRADA y el vencimiento [toggle, ON por
+  defecto]
+- Sin riesgo de hueco por dividendo (ex-div entre entrada y vencimiento
+  con dividendo >= colchón OTM) [toggle, ON por defecto — ver docstring
+  de has_dividend_gap_risk() para por qué está adaptado y no es igual
+  que en el screener de covered calls]
 - OI mínimo del strike [toggle, OFF por defecto — el OI de Alpaca no
   siempre es fiable para nombres poco líquidos]
 - Spread bid-ask <= X% de la prima [toggle, OFF por defecto — revisa
@@ -80,9 +86,10 @@ RISK_FREE_RATE = 0.045
 
 REASON_ORDER = [
     "ok", "no_daily_data", "price_out_of_range", "sma_unavailable",
-    "below_sma30", "below_sma200", "no_expirations", "no_weekly_options",
+    "below_sma30", "below_sma200", "earnings_in_period",
+    "no_expirations", "no_weekly_options",
     "no_expiration_exact_dte", "no_puts_chain", "pcr_bearish",
-    "no_put_candidate", "error",
+    "no_put_candidate", "dividend_risk", "error",
 ]
 
 REASON_LABELS = {
@@ -92,12 +99,14 @@ REASON_LABELS = {
     "sma_unavailable": "No hay suficiente histórico para SMA30/SMA200 (Fase 1)",
     "below_sma30": "Precio <= SMA30 (Fase 1)",
     "below_sma200": "Precio <= SMA200 (Fase 1)",
+    "earnings_in_period": "Earnings entre la fecha de entrada y el vencimiento (Fase 2)",
     "no_expirations": "Sin vencimientos de opciones listados en Alpaca (Fase 2)",
     "no_weekly_options": "Sin cadencia de opciones semanales (Fase 2) [fijo]",
     "no_expiration_exact_dte": "Sin vencimiento EXACTO en la fecha objetivo (Fase 2) [fijo]",
     "no_puts_chain": "Cadena de puts vacía/no disponible en Alpaca (Fase 2)",
     "pcr_bearish": "PCR >= 1.0 — sesgo bajista (Fase 2)",
     "no_put_candidate": "Sin strike OTM que cumpla prima/OI/bid/ask/spread (Fase 2)",
+    "dividend_risk": "Riesgo de hueco por dividendo antes del vencimiento (Fase 2)",
     "error": "Excepción no controlada",
 }
 
@@ -230,6 +239,71 @@ def bs_put_delta(S, K, T_years, sigma, r=RISK_FREE_RATE):
         return None
 
 # ======================================================================
+# 2b. EARNINGS Y RIESGO DE HUECO POR DIVIDENDO
+# ======================================================================
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def get_earnings_and_dividend_info(ticker):
+    """Fecha de earnings y datos de dividendo (ex-date + último importe
+    pagado, como estimación del próximo). Cacheado 6h — no cambian
+    intradía. Mismo patrón que el screener de covered calls."""
+    info = {"earnings_date": None, "ex_div_date": None, "div_amount": None}
+    try:
+        stock = yf.Ticker(ticker)
+        cal = stock.calendar
+        if cal:
+            ed = cal.get("Earnings Date")
+            if isinstance(ed, list):
+                ed = ed[0] if ed else None
+            if ed is not None:
+                try:
+                    info["earnings_date"] = pd.to_datetime(ed).date()
+                except Exception:
+                    pass
+            exd = cal.get("Ex-Dividend Date")
+            if isinstance(exd, list):
+                exd = exd[0] if exd else None
+            if exd is not None:
+                try:
+                    info["ex_div_date"] = pd.to_datetime(exd).date()
+                except Exception:
+                    pass
+        divs = stock.dividends
+        if divs is not None and not divs.empty:
+            info["div_amount"] = float(divs.iloc[-1])
+    except Exception as e:
+        _record_debug("error", f"{ticker}: calendario/dividendos: {e}")
+    return info
+
+def has_earnings_in_period(earnings_date, entry_date, target_date):
+    """True si hay earnings conocidos entre la fecha de ENTRADA y el
+    vencimiento, ambas inclusive. Los earnings son un riesgo genuino para
+    un CSP: un gap por sorpresa puede llevarse el precio muy por debajo
+    del strike de golpe, sin margen de reacción."""
+    if earnings_date is None:
+        return False
+    return entry_date <= earnings_date <= target_date
+
+def has_dividend_gap_risk(ex_div_date, div_amount, entry_date, exp_date_obj, otm_distance_dollar):
+    """Riesgo de hueco por dividendo — ADAPTADO para puts, no es lo mismo
+    que en covered calls. En una call, el riesgo es que el HOLDER ejerza
+    anticipadamente para cobrar el dividendo. En un put vendido, ese
+    incentivo de ejercicio anticipado no aplica igual (un dividendo
+    pendiente en realidad DESANIMA el ejercicio anticipado del holder,
+    porque le conviene esperar a la caída mecánica del precio en el
+    ex-date). El riesgo real aquí es otro: en el ex-date el precio cae
+    mecánicamente por el importe del dividendo — si ese importe por sí
+    solo es mayor o igual que tu colchón OTM (precio actual - strike),
+    la caída del propio dividendo podría meter el put en el dinero sin
+    que se mueva nada más. Por eso se compara el dividendo contra
+    otm_distance_dollar, no contra el extrínseco."""
+    if ex_div_date is None or div_amount is None or div_amount <= 0:
+        return False
+    if entry_date <= ex_div_date <= exp_date_obj:
+        return div_amount >= otm_distance_dollar
+    return False
+
+# ======================================================================
 # 3. PUT/CALL RATIO (sobre una cadena ya descargada, sin red)
 # ======================================================================
 
@@ -336,6 +410,88 @@ def find_safest_put_candidate(puts_df, current_price, dte_calendar,
         return None
 
 # ======================================================================
+# 4b. CALCULADORA: prima mínima necesaria para un % objetivo, por ticker
+# ======================================================================
+
+def _find_put_for_calculator(puts_df, current_price, premium_min_pct, premium_max_pct):
+    """Variante de selección para la calculadora: si hay strikes OTM/ATM
+    que cumplen la prima objetivo, coge el MÁS SEGURO de esos (igual que
+    el escáner). Si NINGUNO la cumple, en vez de devolver nada, coge el
+    de MAYOR prima disponible (el más cercano al dinero) para poder
+    mostrar "esto es lo mejor que hay ahora mismo, y así de lejos está de
+    tu objetivo" en vez de un simple "no hay candidato"."""
+    otm = puts_df[puts_df["strike"] <= current_price].copy()
+    if otm.empty:
+        return None, False
+
+    otm["bid"] = pd.to_numeric(otm["bid"], errors="coerce").fillna(0)
+    otm["ask"] = pd.to_numeric(otm["ask"], errors="coerce").fillna(0)
+    otm["mid"] = (otm["bid"] + otm["ask"]) / 2
+    otm = otm[(otm["bid"] > 0) & (otm["ask"] > 0) & (otm["mid"] > 0)]
+    if otm.empty:
+        return None, False
+
+    otm["premium_pct"] = otm["mid"] / current_price * 100
+    otm["otm_pct"] = (current_price - otm["strike"]) / current_price * 100
+
+    if premium_max_pct is not None:
+        qualifying = otm[(otm["premium_pct"] >= premium_min_pct) & (otm["premium_pct"] <= premium_max_pct)]
+    else:
+        qualifying = otm[otm["premium_pct"] >= premium_min_pct]
+
+    if not qualifying.empty:
+        return qualifying.sort_values("otm_pct", ascending=False).iloc[0], True
+    return otm.sort_values("premium_pct", ascending=False).iloc[0], False
+
+def build_csp_calculator(ticker, target_date, premium_min_pct, premium_max_pct):
+    """Para un ticker y vencimiento EXACTO: calcula la prima mínima en $
+    que hace falta para tu % objetivo, y la compara con el strike/mid
+    real que mejor se ajusta (o se acerca) a ese objetivo ahora mismo.
+    No aplica OI/spread/SMA/earnings/dividendo — es una calculadora
+    informativa puntual, no el escáner completo."""
+    out = {"ticker": ticker, "error": None, "current_price": None}
+
+    data = get_daily_data(ticker)
+    if data is None:
+        out["error"] = "Sin datos diarios suficientes para este ticker."
+        return out
+    fallback_price = float(data["Close"].iloc[-1])
+    current_price = get_live_price(ticker, fallback_price)
+    out["current_price"] = current_price
+
+    out["premium_min_dollar"] = (premium_min_pct / 100) * current_price
+    out["premium_max_dollar"] = (premium_max_pct / 100) * current_price if premium_max_pct is not None else None
+
+    expirations = get_option_expirations(ticker)
+    if not expirations:
+        out["error"] = "Este ticker no tiene vencimientos de opciones listados en Alpaca."
+        return out
+    if target_date not in expirations:
+        out["error"] = f"No hay vencimiento EXACTO el {target_date.strftime('%d %b %Y')} para este ticker."
+        return out
+
+    _, puts = get_option_chain(ticker, target_date)
+    if puts is None or puts.empty:
+        out["error"] = "Cadena de puts vacía en Alpaca para ese vencimiento."
+        return out
+
+    best, meets_target = _find_put_for_calculator(puts, current_price, premium_min_pct, premium_max_pct)
+    if best is None:
+        out["error"] = "No hay ningún strike OTM/ATM con bid/ask válido para ese vencimiento."
+        return out
+
+    out["strike"] = float(best["strike"])
+    out["mid"] = round(float(best["mid"]), 2)
+    out["bid"] = round(float(best["bid"]), 2)
+    out["ask"] = round(float(best["ask"]), 2)
+    out["premium_pct_real"] = round(float(best["premium_pct"]), 3)
+    out["otm_pct"] = round(float(best["otm_pct"]), 2)
+    out["meets_target"] = meets_target
+    out["premium_cash_100"] = out["mid"] * 100
+    out["capital_requerido"] = out["strike"] * 100
+    return out
+
+# ======================================================================
 # 5a. FASE 1 — precio diario + SMA30/SMA200 (paralela)
 # ======================================================================
 
@@ -387,7 +543,16 @@ def phase2_options_filter(survivor, params):
     ticker = survivor["Ticker"]
     fallback_price = survivor["current_price"]
     target_date = params["target_expiration_date"]
+    entry_date = params["entry_date"]
     try:
+        if params["use_earnings_filter"] or params["use_dividend_filter"]:
+            cal_info = get_earnings_and_dividend_info(ticker)
+        else:
+            cal_info = {"earnings_date": None, "ex_div_date": None, "div_amount": None}
+
+        if params["use_earnings_filter"] and has_earnings_in_period(cal_info["earnings_date"], entry_date, target_date):
+            return None, "earnings_in_period"
+
         expirations = get_option_expirations(ticker)
         if not expirations:
             return None, "no_expirations"
@@ -420,6 +585,12 @@ def phase2_options_filter(survivor, params):
         )
         if candidate is None:
             return None, "no_put_candidate"
+
+        otm_distance_dollar = current_price - candidate["strike"]
+        if params["use_dividend_filter"] and has_dividend_gap_risk(
+            cal_info["ex_div_date"], cal_info["div_amount"], entry_date, target_date, otm_distance_dollar
+        ):
+            return None, "dividend_risk"
 
         iv_rv_ratio = (
             round(candidate["iv_pct"] / survivor["rv"], 3)
@@ -511,6 +682,7 @@ def reset_everything():
     get_daily_data.clear()
     get_option_expirations.clear()
     get_market_trend.clear()
+    get_earnings_and_dividend_info.clear()
     for key in ("results", "funnel", "debug_snapshot", "price_snapshot",
                 "scan_ts", "scanned_total"):
         st.session_state.pop(key, None)
@@ -845,16 +1017,31 @@ def main():
         if not use_spread_filter:
             st.caption("ℹ️ Spread máximo NO se está aplicando — revisa Spread_% antes de operar.")
 
-        st.markdown("**🎯 Vencimiento objetivo (EXACTO)**")
+        st.markdown("**📆 Periodo de la posición**")
+        entry_date = st.date_input(
+            "Fecha de entrada", value=date.today(),
+            min_value=date.today(), max_value=date.today() + timedelta(days=179),
+            format="DD/MM/YYYY",
+            help="Día en el que abrirías la posición. Earnings y dividendos se "
+                 "comprueban SOLO entre esta fecha y el vencimiento.",
+        )
         target_date = st.date_input(
-            "Fecha de vencimiento objetivo", value=date.today() + timedelta(days=7),
-            min_value=date.today() + timedelta(days=1), max_value=date.today() + timedelta(days=180),
+            "Fecha de vencimiento objetivo",
+            value=max(entry_date + timedelta(days=7), date.today() + timedelta(days=1)),
+            min_value=entry_date + timedelta(days=1), max_value=entry_date + timedelta(days=180),
             format="DD/MM/YYYY",
             help="El ticker debe tener un vencimiento que caiga EXACTAMENTE en este día "
-                 "— sin tolerancia ni búsqueda del más cercano.",
+                 "— sin tolerancia ni búsqueda del más cercano. Debe ser posterior a la "
+                 "fecha de entrada.",
         )
+        if target_date <= entry_date:
+            st.error(
+                f"⚠️ El vencimiento ({target_date.strftime('%d %b %Y')}) debe ser "
+                f"posterior a la entrada ({entry_date.strftime('%d %b %Y')})."
+            )
         dte_target = (target_date - date.today()).days
-        st.caption(f"📅 Objetivo: **{target_date.strftime('%d %b %Y')}** (DTE={dte_target} días, exacto).")
+        st.caption(f"📅 Entrada: **{entry_date.strftime('%d %b %Y')}** → Vencimiento: "
+                   f"**{target_date.strftime('%d %b %Y')}** (DTE={dte_target} días, exacto).")
 
     with c3:
         st.markdown("**🎚️ Filtros activables**")
@@ -864,6 +1051,20 @@ def main():
                                          help="Exige que el precio esté por encima de la media móvil de 200 sesiones "
                                               "(tendencia de fondo alcista).")
         use_pcr_filter = st.checkbox("PCR < 1.0 (sesgo alcista/neutral)", value=True)
+        use_earnings_filter = st.checkbox(
+            "Excluir earnings entre entrada y vencimiento", value=True,
+            help="Descarta el ticker si tiene earnings conocidos entre la 'Fecha de "
+                 "entrada' y el vencimiento — un gap por sorpresa puede llevarse el "
+                 "precio muy por debajo del strike de golpe.",
+        )
+        use_dividend_filter = st.checkbox(
+            "Excluir riesgo de asignación por dividendo", value=True,
+            help="Descarta el candidato si hay una fecha ex-dividendo entre entrada y "
+                 "vencimiento cuyo importe, por sí solo, sea mayor o igual que tu "
+                 "colchón OTM (precio - strike) — la caída mecánica del propio "
+                 "dividendo en el ex-date podría meter el put en el dinero sin que se "
+                 "mueva nada más.",
+        )
         diagnostic_mode = st.checkbox(
             "🔬 Modo diagnóstico (ignora el umbral de prima)", value=False,
             help="Devuelve el mejor candidato OTM aunque su prima no alcance el mínimo "
@@ -884,9 +1085,12 @@ def main():
         "use_spread_filter": use_spread_filter,
         "spread_max_pct": spread_max_pct,
         "target_expiration_date": target_date,
+        "entry_date": entry_date,
         "use_sma30_filter": use_sma30_filter,
         "use_sma200_filter": use_sma200_filter,
         "use_pcr_filter": use_pcr_filter,
+        "use_earnings_filter": use_earnings_filter,
+        "use_dividend_filter": use_dividend_filter,
         "diagnostic_mode": diagnostic_mode,
     }
 
@@ -974,11 +1178,114 @@ def main():
 
     render_results()
 
-# ======================================================================
-# 9. RESULTADOS
-# ======================================================================
+    st.divider()
 
-def render_results():
+    # ── Calculadora de prima CSP ────────────────────────────────────────
+    st.markdown("### 🧮 Calculadora de Prima CSP")
+    st.caption(
+        "Para un ticker y vencimiento, calcula la prima mínima ($) que necesitas "
+        "para tu % objetivo, y te da el strike más seguro que ya lo cumple (o, si "
+        "ninguno lo cumple, el de mayor prima disponible para que veas cuánto te "
+        "falta). El precio del subyacente se pide en vivo cada vez que pulsas "
+        "Calcular."
+    )
+
+    cc1, cc2 = st.columns([2, 1.5])
+    with cc1:
+        calc_ticker_raw = st.text_input("Ticker", value="", placeholder="AAPL", key="calc_ticker_input")
+    with cc2:
+        calc_target_date = st.date_input(
+            "Fecha de vencimiento (exacta)", value=date.today() + timedelta(days=7),
+            min_value=date.today() + timedelta(days=1), max_value=date.today() + timedelta(days=180),
+            format="DD/MM/YYYY", key="calc_target_date_input",
+        )
+
+    cc3, cc4, cc5 = st.columns([1.5, 1.5, 1])
+    with cc3:
+        calc_premium_min = st.number_input(
+            "Prima mínima objetivo (%)", min_value=0.10, max_value=5.00,
+            value=1.00, step=0.05, key="calc_premium_min",
+        )
+    with cc4:
+        calc_premium_max = st.number_input(
+            "Prima máxima objetivo (%) — 0 = sin techo", min_value=0.0,
+            max_value=10.0, value=0.0, step=0.05, key="calc_premium_max",
+        )
+    with cc5:
+        st.markdown("&nbsp;")
+        calc_btn = st.button("🔄 Calcular", use_container_width=True, key="calc_btn")
+
+    if calc_btn:
+        calc_ticker = _clean_ticker(calc_ticker_raw)
+        if not calc_ticker:
+            st.error("⚠️ Escribe un ticker válido.")
+        else:
+            with st.spinner(f"Calculando {calc_ticker}..."):
+                st.session_state["csp_calc_result"] = build_csp_calculator(
+                    calc_ticker, calc_target_date, calc_premium_min,
+                    calc_premium_max if calc_premium_max > 0 else None,
+                )
+
+    cr = st.session_state.get("csp_calc_result")
+    if cr:
+        st.markdown(f"#### 📄 {cr['ticker']}")
+        if cr.get("error"):
+            st.warning(f"⚠️ {cr['error']}")
+        if cr.get("current_price") is not None and cr.get("strike") is not None:
+            m1, m2, m3 = st.columns(3)
+            m1.metric("💲 Precio en vivo", f"${cr['current_price']:.2f}")
+            m2.metric("🎯 Strike encontrado", f"${cr['strike']:.2f}")
+            m3.metric("🛡️ Distancia OTM", f"{cr['otm_pct']:.2f}%")
+
+            st.markdown("##### 💰 Prima: objetivo vs. real")
+            pm1, pm2 = st.columns(2)
+            pm1.metric(
+                "Prima mínima objetivo",
+                f"${cr['premium_min_dollar']:.2f}",
+                help=f"= {calc_premium_min:.2f}% del precio actual.",
+            )
+            pm2.metric(
+                "Prima REAL (mid, ese strike)",
+                f"${cr['mid']:.2f} ({cr['premium_pct_real']:.2f}%)",
+                delta=f"{cr['mid'] - cr['premium_min_dollar']:.2f} vs objetivo",
+                delta_color="normal",
+            )
+
+            if cr["meets_target"]:
+                st.success(
+                    f"✅ El strike ${cr['strike']:.2f} cumple tu objetivo: cobras "
+                    f"${cr['mid']:.2f} ({cr['premium_pct_real']:.2f}%) frente a un "
+                    f"mínimo de ${cr['premium_min_dollar']:.2f} ({calc_premium_min:.2f}%) "
+                    f"— con {cr['otm_pct']:.2f}% de margen antes del strike."
+                )
+            else:
+                st.warning(
+                    f"⚠️ Ningún strike llega a tu objetivo ahora mismo. El de mayor "
+                    f"prima disponible es ${cr['strike']:.2f}, con ${cr['mid']:.2f} "
+                    f"({cr['premium_pct_real']:.2f}%) — por debajo del mínimo de "
+                    f"${cr['premium_min_dollar']:.2f} ({calc_premium_min:.2f}%)."
+                )
+
+            st.markdown("##### 💵 Cash para 1 contrato (100 acciones)")
+            ch1, ch2 = st.columns(2)
+            ch1.metric("Prima real (cash)", f"${cr['premium_cash_100']:.2f}")
+            ch2.metric("Capital requerido", f"${cr['capital_requerido']:,.2f}")
+
+            rows = [
+                {"Concepto": "Prima mínima objetivo ($)", "Valor": f"${cr['premium_min_dollar']:.2f}"},
+                {"Concepto": "Strike encontrado", "Valor": f"${cr['strike']:.2f}"},
+                {"Concepto": "Bid / Ask real", "Valor": f"${cr['bid']:.2f} / ${cr['ask']:.2f}"},
+                {"Concepto": "Mid real", "Valor": f"${cr['mid']:.2f}"},
+                {"Concepto": "Prima real (%)", "Valor": f"{cr['premium_pct_real']:.2f}%"},
+                {"Concepto": "Distancia OTM", "Valor": f"{cr['otm_pct']:.2f}%"},
+                {"Concepto": "Prima real — cash 1 contrato (100 acc.)", "Valor": f"${cr['premium_cash_100']:.2f}"},
+                {"Concepto": "Capital requerido (1 contrato)", "Valor": f"${cr['capital_requerido']:,.2f}"},
+            ]
+            if cr.get("premium_max_dollar") is not None:
+                rows.insert(1, {"Concepto": "Prima máxima objetivo ($)", "Valor": f"${cr['premium_max_dollar']:.2f}"})
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
     st.markdown("### 📊 Resultados")
 
     if "results" not in st.session_state or st.session_state["results"].empty:
