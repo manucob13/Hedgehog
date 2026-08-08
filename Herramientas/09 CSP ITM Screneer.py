@@ -1,13 +1,16 @@
 """
 Cash Secured Put Screener
 ============================
-Objetivo: vender puts OTM/ATM con prima >= umbral mínimo (% del precio de
-hoy), eligiendo el strike MÁS ALEJADO del precio (más seguro, menor
-probabilidad de asignación) que todavía cumpla ese mínimo.
+Objetivo: vender puts OTM/ATM con prima >= umbral mínimo, expresado como
+% del STRIKE (retorno sobre el capital realmente comprometido, no sobre
+el precio actual), eligiendo el strike MÁS ALEJADO del precio (más
+seguro, menor probabilidad de asignación) que todavía cumpla ese mínimo.
 
 Como el strike está siempre <= precio actual (OTM/ATM), el intrínseco del
-put es 0 y la prima entera es "extrínseco" — por eso el objetivo se pide
-directamente como % del precio del subyacente hoy.
+put es 0 y la prima entera es "extrínseco". El % se calcula sobre el
+strike (= capital que reservas, strike x 100) porque es el capital que
+de verdad arriesgas en un cash secured put — no el precio actual, que ni
+siquiera es el precio al que comprarías si te asignan.
 
 FILTROS (activables/desactivables desde la UI salvo los marcados [fijo]):
 - Precio del subyacente: rango configurable
@@ -24,8 +27,8 @@ FILTROS (activables/desactivables desde la UI salvo los marcados [fijo]):
   siempre es fiable para nombres poco líquidos]
 - Spread bid-ask <= X% de la prima [toggle, OFF por defecto — revisa
   Spread_% en la tabla en vez de confiar ciegamente en el filtro]
-- Prima mínima objetivo (% del precio), o banda mín-máx opcional [toggle;
-  modo diagnóstico ignora ambos]
+- Prima mínima objetivo (% del STRIKE, retorno sobre capital), o banda
+  mín-máx opcional [toggle; modo diagnóstico ignora ambos]
 - Bid > 0 y Ask > 0 (opción realmente cotizada) [fijo]
 - Ticker con opciones semanales listadas [fijo]
 - Vencimiento = EXACTAMENTE la fecha objetivo, sin tolerancia [fijo]
@@ -331,7 +334,7 @@ def find_safest_put_candidate(puts_df, current_price, dte_calendar,
                                apply_spread_filter, spread_max_pct,
                                diagnostic_mode=False):
     """Entre los puts OTM/ATM (strike <= precio, así que intrínseco=0 y
-    prima=extrínseco entero), filtra por prima mínima (% del precio) y
+    prima=extrínseco entero), filtra por prima mínima (% del STRIKE) y
     elige el strike MÁS ALEJADO del precio (mayor OTM_%) — el más seguro
     que aún así cumple la prima mínima pedida. Mismo patrón que
     find_deep_itm_candidate() del screener de covered calls, pero
@@ -358,8 +361,10 @@ def find_safest_put_candidate(puts_df, current_price, dte_calendar,
                 return None
 
         # Intrínseco de un put OTM/ATM (strike <= precio) es siempre 0 —
-        # la prima entera es "extrínseco" / tiempo.
-        otm["premium_pct"] = otm["mid"] / current_price * 100
+        # la prima entera es "extrínseco" / tiempo. premium_pct = retorno
+        # sobre el capital realmente comprometido (strike x 100), NO sobre
+        # el precio actual — es lo que de verdad arriesgas en un CSP.
+        otm["premium_pct"] = otm["mid"] / otm["strike"] * 100
         otm["otm_pct"] = (current_price - otm["strike"]) / current_price * 100
         otm["spread_dollar"] = otm["ask"] - otm["bid"]
         otm["spread_pct"] = otm["spread_dollar"] / otm["mid"] * 100
@@ -431,7 +436,7 @@ def _find_put_for_calculator(puts_df, current_price, premium_min_pct, premium_ma
     if otm.empty:
         return None, False
 
-    otm["premium_pct"] = otm["mid"] / current_price * 100
+    otm["premium_pct"] = otm["mid"] / otm["strike"] * 100  # % del strike (retorno sobre capital)
     otm["otm_pct"] = (current_price - otm["strike"]) / current_price * 100
 
     if premium_max_pct is not None:
@@ -445,10 +450,11 @@ def _find_put_for_calculator(puts_df, current_price, premium_min_pct, premium_ma
 
 def build_csp_calculator(ticker, target_date, premium_min_pct, premium_max_pct):
     """Para un ticker y vencimiento EXACTO: calcula la prima mínima en $
-    que hace falta para tu % objetivo, y la compara con el strike/mid
-    real que mejor se ajusta (o se acerca) a ese objetivo ahora mismo.
-    No aplica OI/spread/SMA/earnings/dividendo — es una calculadora
-    informativa puntual, no el escáner completo."""
+    que hace falta para tu % objetivo (% del STRIKE, retorno sobre el
+    capital comprometido — no % del precio actual), y la compara con el
+    strike/mid real que mejor se ajusta (o se acerca) a ese objetivo ahora
+    mismo. No aplica OI/spread/SMA/earnings/dividendo — es una
+    calculadora informativa puntual, no el escáner completo."""
     out = {"ticker": ticker, "error": None, "current_price": None}
 
     data = get_daily_data(ticker)
@@ -458,9 +464,6 @@ def build_csp_calculator(ticker, target_date, premium_min_pct, premium_max_pct):
     fallback_price = float(data["Close"].iloc[-1])
     current_price = get_live_price(ticker, fallback_price)
     out["current_price"] = current_price
-
-    out["premium_min_dollar"] = (premium_min_pct / 100) * current_price
-    out["premium_max_dollar"] = (premium_max_pct / 100) * current_price if premium_max_pct is not None else None
 
     expirations = get_option_expirations(ticker)
     if not expirations:
@@ -489,6 +492,10 @@ def build_csp_calculator(ticker, target_date, premium_min_pct, premium_max_pct):
     out["meets_target"] = meets_target
     out["premium_cash_100"] = out["mid"] * 100
     out["capital_requerido"] = out["strike"] * 100
+    # % objetivo aplicado sobre EL STRIKE encontrado (no sobre el precio) —
+    # mismo capital que de verdad se compromete en el CSP.
+    out["premium_min_dollar"] = (premium_min_pct / 100) * out["strike"]
+    out["premium_max_dollar"] = (premium_max_pct / 100) * out["strike"] if premium_max_pct is not None else None
     return out
 
 # ======================================================================
@@ -604,12 +611,11 @@ def phase2_options_filter(survivor, params):
             "DTE": dte,
             "Strike": candidate["strike"],
             "OTM_%": candidate["otm_pct"],
-            "Extrínseco_%": candidate["premium_pct"],
+            "Retorno_Capital_%": candidate["premium_pct"],
             "Prima_Mid": candidate["mid"],
             "Bid": candidate["bid"],
             "Ask": candidate["ask"],
             "Capital_Requerido": round(candidate["strike"] * 100, 2),
-            "Retorno_Capital_%": round(candidate["mid"] / candidate["strike"] * 100, 3) if candidate["strike"] > 0 else None,
             "Delta": candidate["delta"],
             "IV_%": candidate["iv_pct"],
             "RV_%": survivor["rv"],
@@ -894,7 +900,7 @@ def main():
 
     st.title("🛡️ Cash Secured Put Screener")
     st.markdown(
-        "**Objetivo: prima mínima semanal (% del precio de hoy) · "
+        "**Objetivo: prima mínima semanal (% del strike, retorno sobre capital) · "
         "Vencimiento EXACTO (sin tolerancia) · "
         "Ranking por strike más seguro (mayor OTM%)**"
     )
@@ -953,7 +959,7 @@ def main():
     c1, c2, c3 = st.columns(3)
 
     with c1:
-        st.markdown("**💰 Prima objetivo (% del precio de hoy)**")
+        st.markdown("**💰 Prima objetivo (% del strike — retorno sobre capital)**")
         use_premium_band = st.checkbox(
             "Usar banda (mín–máx) en vez de solo mínimo", value=False,
             help="Desactivado (por defecto): umbral mínimo, sin techo — pasan todos "
@@ -972,11 +978,11 @@ def main():
             st.caption(f"✅ Banda activa: **{premium_min}% — {premium_max}%**")
         else:
             premium_min = st.number_input(
-                "Prima mínima (% del precio, semanal)", min_value=0.10, max_value=5.00,
+                "Prima mínima (% del strike, semanal)", min_value=0.10, max_value=5.00,
                 value=1.00, step=0.05,
-                help="Umbral mínimo: pasan todos los strikes con prima/precio >= este "
-                     "valor. Como los puts son OTM/ATM (intrínseco=0), la prima entera "
-                     "es 'extrínseco'.",
+                help="Umbral mínimo: pasan todos los strikes con prima/strike >= este "
+                     "valor (retorno sobre el capital comprometido). Como los puts son "
+                     "OTM/ATM (intrínseco=0), la prima entera es 'extrínseco'.",
             )
             premium_max = None
             st.caption(f"✅ Umbral activo: **≥ {premium_min}%** (sin techo)")
@@ -1242,7 +1248,7 @@ def main():
             pm1.metric(
                 "Prima mínima objetivo",
                 f"${cr['premium_min_dollar']:.2f}",
-                help=f"= {calc_premium_min:.2f}% del precio actual.",
+                help=f"= {calc_premium_min:.2f}% del strike encontrado (no del precio actual).",
             )
             pm2.metric(
                 "Prima REAL (mid, ese strike)",
@@ -1342,7 +1348,7 @@ def render_results():
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("📊 Candidatos totales", len(df))
     k2.metric("🛡️ OTM máx.", f"{df['OTM_%'].max():.2f}%")
-    k3.metric("💰 Prima media", f"{df['Extrínseco_%'].mean():.3f}%")
+    k3.metric("💰 Retorno capital medio", f"{df['Retorno_Capital_%'].mean():.3f}%")
     k4.metric("🕐 Escaneo", ts.strftime("%H:%M:%S"))
 
     st.divider()
@@ -1351,8 +1357,8 @@ def render_results():
 
     with tab1:
         cols_show = [
-            "Rank", "Ticker", "Precio", "Strike", "OTM_%", "Extrínseco_%",
-            "Prima_Mid", "Bid", "Ask", "Capital_Requerido", "Retorno_Capital_%",
+            "Rank", "Ticker", "Precio", "Strike", "OTM_%", "Retorno_Capital_%",
+            "Prima_Mid", "Bid", "Ask", "Capital_Requerido",
             "Delta", "DTE", "Vencimiento", "IV_%", "RV_%", "IV_RV",
             "OI", "Volumen", "Spread_%", "SMA30", "Dist_SMA30_%",
             "SMA200", "Dist_SMA200_%", "PCR",
@@ -1404,7 +1410,7 @@ def render_results():
 | 💵 Prima Mid | **${row['Prima_Mid']}** |
 | 📊 Bid / Ask | ${row['Bid']} / ${row['Ask']} |
 | 🛡️ Distancia OTM | **{row['OTM_%']}%** |
-| 💰 Prima (% del precio) | {row['Extrínseco_%']}% |
+| 💰 Retorno sobre capital | {row['Retorno_Capital_%']}% |
 | 📐 Delta | {row['Delta']} |
 """)
             with col_b:
@@ -1413,7 +1419,6 @@ def render_results():
 | Concepto | Valor |
 |---|---|
 | 💵 Capital requerido (1 contrato) | **${row['Capital_Requerido']:,.2f}** |
-| 🔄 Retorno sobre capital | {row['Retorno_Capital_%']}% |
 | 📈 IV / RV | {row['IV_%']}% / {row['RV_%']}% (ratio: {row['IV_RV']}) |
 | 💧 OI / Volumen | {row['OI']:,} / {row['Volumen']:,} |
 | 〰️ Spread bid-ask | {row['Spread_%']}% |
@@ -1450,10 +1455,10 @@ def render_results():
                     st.warning("No se pudo cargar el gráfico.")
         with col_g2:
             fig_scatter = px.scatter(
-                df, x="Extrínseco_%", y="OTM_%", text="Ticker", color="OTM_%",
+                df, x="Retorno_Capital_%", y="OTM_%", text="Ticker", color="OTM_%",
                 color_continuous_scale=["#dd6974", "#e8af34", "#6daa45"],
                 title="Distancia OTM vs Prima%", template="plotly_dark", height=420,
-                labels={"Extrínseco_%": "Prima (%)", "OTM_%": "Distancia OTM (%)"},
+                labels={"Retorno_Capital_%": "Retorno capital (%)", "OTM_%": "Distancia OTM (%)"},
             )
             fig_scatter.update_traces(textposition="top center", marker_size=10)
             st.plotly_chart(fig_scatter, use_container_width=True)
