@@ -178,10 +178,18 @@ def main():
         return
 
     today = date.today()
-    year = today.year
 
-    # --- Resumen de cuenta ---
+    # --- Selector de año (afecta a P&L/crecimiento/dividendos; el gráfico
+    #     de NLV es siempre histórico completo) ---
+    available_years = sorted(equity["reportDate"].dt.year.unique(), reverse=True)
+    default_index = available_years.index(today.year) if today.year in available_years else 0
+    selected_year = st.selectbox("Año", options=available_years, index=default_index, key="panel_year")
+
+    # --- Resumen de cuenta (siempre el estado ACTUAL, no depende del selector) ---
     acc = account_summary(equity)
+
+    st.caption(f"Resumen de cuenta a fecha de hoy · Detalle del año {selected_year}")
+    st.markdown("---")
 
     st.subheader("Resumen de cuenta")
     col1, col2, col3, col4 = st.columns(4)
@@ -194,20 +202,20 @@ def main():
 
     st.markdown("---")
 
-    # --- Gráfico lineal: evolución del valor de cartera (NLV) ---
+    # --- Gráfico lineal: evolución del valor de cartera (NLV, histórico completo) ---
     st.subheader("Evolución del valor de la cartera (NLV)")
     st.plotly_chart(render_nlv_line_chart(equity), use_container_width=True)
 
     st.markdown("---")
 
-    # --- P&L (trading, si lo hay) ---
-    closed_ytd = filter_closed_trades(
-        trades, date_from=date(year, 1, 1), date_to=today
+    # --- P&L (trading, del año seleccionado) ---
+    closed_selected = filter_closed_trades(
+        trades, date_from=date(selected_year, 1, 1), date_to=date(selected_year, 12, 31)
     ) if not trades.empty else trades
-    pnl = pnl_summary(closed_ytd)
-    wr = win_rate(closed_ytd)
+    pnl = pnl_summary(closed_selected)
+    wr = win_rate(closed_selected)
 
-    st.subheader("P&L de trading (año en curso)")
+    st.subheader(f"P&L de trading ({selected_year})")
     p1, p2, p3, p4 = st.columns(4)
     net = pnl["net_pnl"]
     color = "green" if net >= 0 else "red"
@@ -224,9 +232,9 @@ def main():
 
     st.markdown("---")
 
-    # --- Crecimiento mensual de la cuenta (gráfico de barras) ---
-    st.subheader(f"Crecimiento mensual de la cuenta {year}")
-    growth = account_growth_by_month(equity, year)
+    # --- Crecimiento mensual de la cuenta (gráfico de barras, año seleccionado) ---
+    st.subheader(f"Crecimiento mensual de la cuenta {selected_year}")
+    growth = account_growth_by_month(equity, selected_year)
     growth_chart = render_growth_chart(growth)
 
     if growth_chart is None:
@@ -236,10 +244,10 @@ def main():
 
     st.markdown("---")
 
-    # --- Dividendos mensuales + media ---
-    st.subheader(f"Dividendos mensuales {year}")
-    div_monthly = dividends_by_month(cash_tx, year)
-    div_total = dividends_total(cash_tx, year)
+    # --- Dividendos mensuales + media (año seleccionado) ---
+    st.subheader(f"Dividendos mensuales {selected_year}")
+    div_monthly = dividends_by_month(cash_tx, selected_year)
+    div_total = dividends_total(cash_tx, selected_year)
 
     d1, d2, d3 = st.columns(3)
     d1.metric("Dividendo bruto (año)", f"${div_total['gross']:,.2f}")
@@ -250,7 +258,7 @@ def main():
 
     st.markdown("---")
 
-    # --- Instrumentos / holdings, con desviación vs. objetivo ---
+    # --- Instrumentos / holdings, con desviación vs. objetivo (siempre estado actual) ---
     st.subheader("Instrumentos y acciones que tienes")
     positions = read_open_positions(DB_PATH)
     target = read_target_allocation(DB_PATH)
@@ -294,7 +302,6 @@ def main():
             "Detalle completo en la página **Asignación**."
         )
     else:
-        # Sin tabla de asignación guardada: tabla simple, sin comparación
         cols_to_show = [
             c for c in [
                 "symbol", "assetCategory", "position", "markPrice",
