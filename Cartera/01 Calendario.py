@@ -27,6 +27,7 @@ def _sync_down():
     except Exception:
         pass  # si falla, seguimos con lo que haya en local sin romper la página
 
+
 MESES_LARGO = [
     "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
     "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
@@ -195,20 +196,8 @@ def main():
     if "cal_month" not in st.session_state:
         st.session_state.cal_month = today.month
 
-    # --- Resumen anual: gráfico de barras ENE..DIC ---
-    ys = yearly_summary(daily, st.session_state.cal_year)
-    total_year = yearly_total(daily, st.session_state.cal_year)
-
-    color_total = "green" if total_year > 0 else ("red" if total_year < 0 else "gray")
-    sign_total = "+" if total_year > 0 else ""
-    st.subheader(f"Resumen anual {st.session_state.cal_year}")
-    st.markdown(f"**Total del año:** :{color_total}[{sign_total}${total_year:,.2f}]")
-    st.plotly_chart(render_monthly_bar_chart(ys), use_container_width=True)
-
-    st.markdown("---")
-
-    # --- Navegación de mes ---
-    nav1, nav2, nav3, nav4 = st.columns([1, 3, 1, 1])
+    # --- Navegación de mes + desplegable de año ---
+    nav1, nav2, nav3, nav4, nav5 = st.columns([1, 3, 1, 1, 1.3])
     with nav1:
         if st.button("◀", use_container_width=True):
             m, y = st.session_state.cal_month - 1, st.session_state.cal_year
@@ -231,9 +220,30 @@ def main():
             st.session_state.cal_month = today.month
             st.session_state.cal_year = today.year
             st.rerun()
+    with nav5:
+        available_years = sorted(daily["reportDate"].dt.year.unique(), reverse=True) if not daily.empty else [today.year]
+        if st.session_state.cal_year not in available_years:
+            available_years = sorted(set(available_years + [st.session_state.cal_year]), reverse=True)
+        year_index = available_years.index(st.session_state.cal_year)
+        picked_year = st.selectbox("Ir a año", options=available_years, index=year_index, key="cal_year_picker")
+        if picked_year != st.session_state.cal_year:
+            st.session_state.cal_year = picked_year
+            st.rerun()
 
     year = st.session_state.cal_year
     month = st.session_state.cal_month
+
+    # --- Resumen anual: gráfico de barras ENE..DIC (del año seleccionado) ---
+    ys = yearly_summary(daily, year)
+    total_year = yearly_total(daily, year)
+
+    color_total = "green" if total_year > 0 else ("red" if total_year < 0 else "gray")
+    sign_total = "+" if total_year > 0 else ""
+    st.subheader(f"Resumen anual {year}")
+    st.markdown(f"**Total del año:** :{color_total}[{sign_total}${total_year:,.2f}]")
+    st.plotly_chart(render_monthly_bar_chart(ys), use_container_width=True)
+
+    st.markdown("---")
 
     mc = monthly_calendar(daily, year, month)
     month_total = mc["month_total"]
