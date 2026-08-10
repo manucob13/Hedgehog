@@ -147,21 +147,25 @@ def main():
         return
 
     today = date.today()
-    year = today.year
 
-    # --- Resumen de cuenta (NLV / Caja / Invertido / Rentab. YTD) ---
+    # --- Selector de año (afecta a P&L; el gráfico de NLV es siempre histórico completo) ---
+    available_years = sorted(equity["reportDate"].dt.year.unique(), reverse=True) if not equity.empty else [today.year]
+    default_index = available_years.index(today.year) if today.year in available_years else 0
+    selected_year = st.selectbox("Año", options=available_years, index=default_index, key="panel_year")
+
+    # --- Resumen de cuenta (siempre el estado ACTUAL, no depende del selector) ---
     acc = account_summary(equity) if not equity.empty else None
 
-    # --- Operaciones cerradas del año en curso (YTD) ---
-    closed_ytd = filter_closed_trades(
-        trades, date_from=date(year, 1, 1), date_to=today
+    # --- Operaciones cerradas del año seleccionado ---
+    closed_selected = filter_closed_trades(
+        trades, date_from=date(selected_year, 1, 1), date_to=date(selected_year, 12, 31)
     ) if not trades.empty else trades
 
-    pf = profit_factor(closed_ytd)
-    wr = win_rate(closed_ytd)
-    pnl = pnl_summary(closed_ytd)
+    pf = profit_factor(closed_selected)
+    wr = win_rate(closed_selected)
+    pnl = pnl_summary(closed_selected)
 
-    st.caption(f"Período: 01/01/{year} → {today.strftime('%d/%m/%Y')} (año en curso)")
+    st.caption(f"Resumen de cuenta a fecha de hoy · P&L del año {selected_year}")
     st.markdown("---")
 
     # --- Fila de tarjetas: Resumen de cuenta ---
@@ -179,7 +183,7 @@ def main():
 
     st.markdown("---")
 
-    # --- Gráfico lineal: evolución del valor de cartera (NLV) ---
+    # --- Gráfico lineal: evolución del valor de cartera (NLV, histórico completo) ---
     st.subheader("Evolución del valor de la cartera (NLV)")
     if equity.empty:
         st.caption("Sin datos suficientes para el gráfico")
@@ -188,7 +192,7 @@ def main():
 
     st.markdown("---")
 
-    # --- Fila: Gauges + P&L acumulado ---
+    # --- Fila: Gauges + P&L acumulado (del año seleccionado) ---
     gcol1, gcol2, gcol3 = st.columns(3)
 
     with gcol1:
@@ -206,19 +210,19 @@ def main():
         sub2.markdown(f":red[**{wr['losses']}L**]")
 
     with gcol3:
-        st.subheader("P&L acumulado")
+        st.subheader(f"P&L acumulado {selected_year}")
         net = pnl["net_pnl"]
         color = "green" if net >= 0 else "red"
         sign = "+" if net >= 0 else ""
         st.markdown(f"### :{color}[{sign}${net:,.2f}]")
-        if closed_ytd.empty:
+        if closed_selected.empty:
             st.caption("Sin datos para este período")
         else:
             st.caption(f"{wr['total_closed']} operaciones cerradas")
 
     st.markdown("---")
 
-    # --- Crédito abierto ---
+    # --- Crédito abierto (siempre estado actual) ---
     st.subheader("Crédito abierto")
     positions = read_open_positions(DB_PATH)
     if positions.empty:
