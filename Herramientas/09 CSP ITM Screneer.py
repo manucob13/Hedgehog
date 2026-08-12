@@ -911,7 +911,32 @@ def get_three_signal_regime():
         return {"ok": False, "error": msg}
 
     try:
-        df = pd.concat(closes, axis=1).dropna(how="any")
+        df = pd.concat(closes, axis=1).sort_index()
+
+        # ── Diagnóstico de huecos por ticker (respecto al calendario de SPX) ──
+        # Si a un ticker le faltan días donde SPX sí cotizó, esos días se
+        # perderían en un inner-join estricto (dropna(how="any")). Cuando se
+        # pierden VARIOS días seguidos, el gráfico dibuja una línea recta
+        # uniendo el último punto antes del hueco con el primero después —
+        # eso es lo que parecía "mal calculado": no es el precio real día a
+        # día, es una interpolación visual sobre datos que faltan.
+        ref_dates = df["SPX"].dropna().index
+        gap_report = []
+        for name in ["VIX", "VIX3M", "HYG", "IEF"]:
+            missing = ref_dates.difference(df[name].dropna().index)
+            if len(missing) > 0:
+                gap_report.append(
+                    f"{name}: faltan {len(missing)}/{len(ref_dates)} días de SPX "
+                    f"(ej. {missing.min().date()}..{missing.max().date()})"
+                )
+
+        # Rellenar huecos puntuales (festivos específicos de un ticker, datos
+        # sueltos sin publicar) hasta 3 sesiones seguidas — NO rellena huecos
+        # largos genuinos (p.ej. antes de que un ETF empezara a cotizar), esos
+        # se siguen cayendo en el dropna de abajo.
+        df = df.ffill(limit=3)
+        df = df.dropna(how="any")
+
         if len(df) < REGIME_TREND_LOOKBACK + 5:
             ranges = " · ".join(
                 f"{name}: {s.index.min().date()}→{s.index.max().date()} ({len(s)} filas)"
@@ -922,8 +947,24 @@ def get_three_signal_regime():
                 "error": (
                     f"Histórico insuficiente tras alinear fechas: solo {len(df)} filas "
                     f"(se necesitan >= {REGIME_TREND_LOOKBACK + 5}). Rango por ticker: {ranges}"
+                    + (f" · Huecos detectados: {' · '.join(gap_report)}" if gap_report else "")
                 ),
             }
+
+        # Huecos residuales que el ffill(limit=3) NO pudo cerrar (>3 sesiones
+        # seguidas de un ticker sin dato) — si aparece alguno reciente, avisamos
+        # en vez de dejar que el gráfico dibuje una línea recta silenciosamente.
+        day_gaps = df.index.to_series().diff().dt.days
+        big_gaps = day_gaps[day_gaps > 5]  # >5 días naturales entre sesiones consecutivas
+        residual_gap_note = None
+        if not big_gaps.empty:
+            last_gap_end = big_gaps.index[-1]
+            last_gap_start = df.index[df.index.get_loc(last_gap_end) - 1]
+            residual_gap_note = (
+                f"Hueco de {int(big_gaps.iloc[-1])} días sin datos completos entre "
+                f"{last_gap_start.date()} y {last_gap_end.date()} — el tramo del "
+                f"gráfico entre esas fechas es una interpolación recta, no precio real."
+            )
 
         # Señal 1 — tendencia (SPX vs SMA)
         df["SPX_SMA"] = df["SPX"].rolling(REGIME_TREND_LOOKBACK).mean()
@@ -971,6 +1012,7 @@ def get_three_signal_regime():
             "credit_z": round(float(last["CREDIT_Z"]), 2),
             "dist_sma_pct": round(float((last["SPX"] - last["SPX_SMA"]) / last["SPX_SMA"] * 100), 2),
             "df_plot": df_plot,
+            "gap_warning": residual_gap_note,
         }
     except Exception as e:
         logger.warning(f"[three_signal_regime] error de cómputo: {e}")
@@ -993,8 +1035,9 @@ def plot_three_signal_regime(rg):
         regime_val = int(seg["Regime"].iloc[0])
         color = REGIME_COLORS.get(regime_val, "#999999")
         fig.add_trace(go.Scatter(
-            x=seg.index, y=seg["SPX"], mode="lines",
+            x=seg.index, y=seg["SPX"], mode="lines+markers",
             line=dict(color=color, width=2),
+            marker=dict(color=color, size=3),
             name=REGIME_LABELS.get(regime_val, "?"),
             showlegend=first_blocks.get(regime_val, False),
             legendgroup=f"regime_{regime_val}",
@@ -1111,6 +1154,9 @@ def render_market_filter():
             "💳 Señal 3 — Crédito HYG/IEF", "ON" if rg["signal_3"] else "OFF",
             f"Z={rg['credit_z']}",
         )
+
+        if rg.get("gap_warning"):
+            st.warning(f"⚠️ {rg['gap_warning']}")
 
         st.plotly_chart(plot_three_signal_regime(rg), use_container_width=True)
 
