@@ -892,7 +892,18 @@ def get_three_signal_regime():
         if h is None or h.empty:
             failed.append(f"{tk} ({name}): descarga vacía (0 filas)")
             continue
-        closes[name] = h["Close"]
+        # Normalizar el índice ANTES de concatenar: ^VIX/^VIX3M (CBOE) pueden
+        # venir en una zona horaria distinta a ^GSPC/HYG/IEF (NYSE). Si se
+        # quita la tz DESPUÉS del concat, pandas ya comparó timestamps
+        # tz-aware de zonas distintas como instantes distintos aunque fuera
+        # el mismo día de trading — cero solapamiento y 0 filas resultantes.
+        idx = h.index
+        if getattr(idx, "tz", None) is not None:
+            idx = idx.tz_localize(None)
+        idx = idx.normalize()
+        s = h["Close"].copy()
+        s.index = idx
+        closes[name] = s[~s.index.duplicated(keep="last")]
 
     if failed:
         msg = " · ".join(failed)
@@ -901,9 +912,18 @@ def get_three_signal_regime():
 
     try:
         df = pd.concat(closes, axis=1).dropna(how="any")
-        df.index = pd.to_datetime(df.index).tz_localize(None)
         if len(df) < REGIME_TREND_LOOKBACK + 5:
-            return {"ok": False, "error": f"Histórico insuficiente tras alinear fechas: solo {len(df)} filas (se necesitan >= {REGIME_TREND_LOOKBACK + 5})."}
+            ranges = " · ".join(
+                f"{name}: {s.index.min().date()}→{s.index.max().date()} ({len(s)} filas)"
+                for name, s in closes.items()
+            )
+            return {
+                "ok": False,
+                "error": (
+                    f"Histórico insuficiente tras alinear fechas: solo {len(df)} filas "
+                    f"(se necesitan >= {REGIME_TREND_LOOKBACK + 5}). Rango por ticker: {ranges}"
+                ),
+            }
 
         # Señal 1 — tendencia (SPX vs SMA)
         df["SPX_SMA"] = df["SPX"].rolling(REGIME_TREND_LOOKBACK).mean()
