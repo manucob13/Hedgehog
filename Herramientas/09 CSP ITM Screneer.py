@@ -835,11 +835,153 @@ def plot_market_trend(mt):
     )
     return fig
 
+# ======================================================================
+# 7c. FILTRO DE MERCADO: Régimen multi-señal (Trend + Vol Term Structure
+#     + Crédito) — adaptado de fbaru-dev/regime-framework
+# ======================================================================
+# Puerto de la lógica de regimes.py del repo
+# https://github.com/fbaru-dev/regime-framework/tree/main/regime_framework
+# (misma clasificación exacta: 3 señales independientes combinadas en un
+# régimen 0/1/2), pero descargando cada ticker por separado con
+# yf.Ticker().history() en vez de yf.download() multi-ticker — misma
+# razón que get_market_trend(): yf.download() da columnas mal aplanadas
+# en esta instalación. Es puramente INFORMATIVO: a diferencia del
+# Indicador Trend SP500-NASDAQ de arriba, este panel NO bloquea el
+# escaneo ni toca st.session_state["market_bullish"].
+#
+# Señal 1 (Tendencia)   : SPX > SMA(REGIME_TREND_LOOKBACK)
+# Señal 2 (Vol. term structure) : VIX/VIX3M < REGIME_VIX_THRESHOLD (contango)
+# Señal 3 (Crédito)     : Z-score(HYG/IEF, ventana REGIME_CREDIT_LOOKBACK) > -REGIME_CREDIT_Z
+# Regime 1 = Risk ON (3/3 señales ON) · Regime 2 = Cautious (2/3 ON) ·
+# Regime 0 = Risk OFF (<=1/3 ON)
+
+REGIME_TREND_LOOKBACK = 200     # SMA de SPX — señal 1
+REGIME_VIX_THRESHOLD = 1.0      # VIX/VIX3M — señal 2 (contango si < umbral)
+REGIME_CREDIT_LOOKBACK = 100    # ventana rolling del Z-score de crédito
+REGIME_CREDIT_Z = 2.0           # |Z| umbral — señal 3 (riesgo si Z <= -umbral)
+
+REGIME_LABELS = {0: "Risk OFF", 1: "Risk ON", 2: "Cautious"}
+REGIME_COLORS = {0: "#dd6974", 1: "#6daa45", 2: "#e8af34"}
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def get_three_signal_regime():
+    """Descarga VIX, VIX3M, SPX, HYG, IEF y calcula el régimen de 3
+    señales siguiendo la metodología de regime-framework/regimes.py:
+        Señal 1 (tendencia)  : SPX > SMA200
+        Señal 2 (vol. term structure) : VIX/VIX3M < 1 (contango)
+        Señal 3 (crédito)    : Z-score(HYG/IEF, ventana 100) > -2
+    Regime 1 = Risk ON (3/3 señales alcistas), Regime 2 = Cautious
+    (2/3 alcistas), Regime 0 = Risk OFF (<=1/3 alcistas). Devuelve None
+    si falla la descarga de cualquier ticker o no hay histórico
+    suficiente para inicializar SMA200/Z-score."""
+    tickers = {"^VIX": "VIX", "^VIX3M": "VIX3M", "^GSPC": "SPX", "HYG": "HYG", "IEF": "IEF"}
+    end = datetime.now() + timedelta(days=1)
+    start = datetime(2015, 1, 1)
+    closes = {}
+    try:
+        for tk, name in tickers.items():
+            h = yf.Ticker(tk).history(start=start, end=end, interval="1d", auto_adjust=False)
+            if h is None or h.empty:
+                logger.warning(f"[three_signal_regime] {tk}: descarga vacía")
+                return None
+            closes[name] = h["Close"]
+
+        df = pd.concat(closes, axis=1).dropna(how="any")
+        df.index = pd.to_datetime(df.index).tz_localize(None)
+        if len(df) < REGIME_TREND_LOOKBACK + 5:
+            return None
+
+        # Señal 1 — tendencia (SPX vs SMA)
+        df["SPX_SMA"] = df["SPX"].rolling(REGIME_TREND_LOOKBACK).mean()
+        df["Signal_1"] = np.where(df["SPX"] > df["SPX_SMA"], 1, 0)
+
+        # Señal 2 — estructura temporal de volatilidad (VIX/VIX3M)
+        df["TS"] = df["VIX"] / df["VIX3M"]
+        df["Signal_2"] = np.where(df["TS"] < REGIME_VIX_THRESHOLD, 1, 0)
+
+        # Señal 3 — proxy de spread de crédito (Z-score de HYG/IEF)
+        df["CREDIT_RATIO"] = df["HYG"] / df["IEF"]
+        roll_m = df["CREDIT_RATIO"].rolling(REGIME_CREDIT_LOOKBACK).mean()
+        roll_std = df["CREDIT_RATIO"].rolling(REGIME_CREDIT_LOOKBACK).std()
+        df["CREDIT_Z"] = (df["CREDIT_RATIO"] - roll_m) / roll_std
+        df["Signal_3"] = np.where(df["CREDIT_Z"] > -REGIME_CREDIT_Z, 1, 0)
+
+        # Clasificación del régimen — mismo árbol que calculate_regimes()
+        n_on = df["Signal_1"] + df["Signal_2"] + df["Signal_3"]
+        df["Regime"] = 0
+        df["Regime"] = np.where(n_on == 3, 1, df["Regime"])  # Risk ON
+        df["Regime"] = np.where(n_on == 2, 2, df["Regime"])  # Cautious
+
+        df = df.dropna(subset=["SPX_SMA", "CREDIT_Z"])
+        if df.empty:
+            return None
+
+        start_year = datetime(datetime.now().year, 1, 1)
+        df_plot = df[df.index >= start_year]
+        if len(df_plot) < 20:
+            df_plot = df.tail(150)
+
+        last = df.iloc[-1]
+        cambios = df[df["Regime"] != df["Regime"].shift(1)]
+        regime_since = cambios.index[-1] if not cambios.empty else df.index[0]
+
+        return {
+            "regime_label": REGIME_LABELS[int(last["Regime"])],
+            "regime_value": int(last["Regime"]),
+            "regime_since": regime_since,
+            "signal_1": int(last["Signal_1"]),
+            "signal_2": int(last["Signal_2"]),
+            "signal_3": int(last["Signal_3"]),
+            "ts_ratio": round(float(last["TS"]), 3),
+            "credit_z": round(float(last["CREDIT_Z"]), 2),
+            "dist_sma_pct": round(float((last["SPX"] - last["SPX_SMA"]) / last["SPX_SMA"] * 100), 2),
+            "df_plot": df_plot,
+        }
+    except Exception as e:
+        logger.warning(f"[three_signal_regime] error: {e}")
+        return None
+
+def plot_three_signal_regime(rg):
+    """SPX coloreado por régimen (verde=Risk ON, ámbar=Cautious,
+    rojo=Risk OFF) con la SMA de referencia — mismo estilo/paleta que
+    plot_market_trend(), para que ambos gráficos convivan visualmente."""
+    df_plot = rg["df_plot"].copy()
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["SPX_SMA"], mode="lines",
+                              name=f"SMA {REGIME_TREND_LOOKBACK}",
+                              line=dict(color="#5b9bd5", dash="dash", width=1)))
+
+    df_plot["block"] = (df_plot["Regime"] != df_plot["Regime"].shift()).cumsum()
+    first_blocks = {0: True, 1: True, 2: True}
+    for _, seg in df_plot.groupby("block"):
+        regime_val = int(seg["Regime"].iloc[0])
+        color = REGIME_COLORS.get(regime_val, "#999999")
+        fig.add_trace(go.Scatter(
+            x=seg.index, y=seg["SPX"], mode="lines",
+            line=dict(color=color, width=2),
+            name=REGIME_LABELS.get(regime_val, "?"),
+            showlegend=first_blocks.get(regime_val, False),
+            legendgroup=f"regime_{regime_val}",
+        ))
+        first_blocks[regime_val] = False
+
+    fig.update_layout(
+        title="SPX — Régimen multi-señal (Trend + Vol Term Structure + Crédito)",
+        template="plotly_dark", height=420,
+        hovermode="x unified",
+        xaxis_rangeslider_visible=False,
+    )
+    return fig
+
 def render_market_filter():
     """Apartado inicial 'Filtro de Mercado': calcula y grafica el
-    indicador, y guarda en session_state si el mercado está alcista (o si
-    el usuario ha decidido anular el bloqueo) para que el botón de
-    escaneo lo respete más abajo."""
+    indicador Trend SP500-NASDAQ (bloqueante), y a continuación un panel
+    adicional puramente informativo con el régimen multi-señal
+    (Trend + Vol Term Structure + Crédito, adaptado de
+    fbaru-dev/regime-framework). Guarda en session_state si el mercado
+    está alcista (o si el usuario ha decidido anular el bloqueo) para que
+    el botón de escaneo lo respete más abajo."""
     st.markdown("### 📈 Filtro de Mercado")
     st.caption(
         "Indicador Trend SP500-NASDAQ: alcista cuando el S&P 500 y el Nasdaq "
@@ -885,6 +1027,51 @@ def render_market_filter():
         )
     else:
         st.session_state["market_override"] = False
+
+    st.markdown("---")
+
+    st.markdown("### 🧭 Régimen Multi-Señal (Trend + Vol + Crédito)")
+    st.caption(
+        "Panel adicional e INFORMATIVO — no bloquea el escaneo. Adaptado de "
+        "[fbaru-dev/regime-framework](https://github.com/fbaru-dev/regime-framework/tree/main/regime_framework): "
+        "combina tres señales independientes de distintas partes del mercado — tendencia "
+        "(SPX vs SMA200), estructura temporal de volatilidad (VIX/VIX3M) y spread de "
+        "crédito (Z-score de HYG/IEF) — en un régimen Risk ON / Cautious / Risk OFF. "
+        "Cuando las tres coinciden en 'ON' la señal tiene alta convicción; con solo dos "
+        "de tres, el régimen queda en Cautious en vez de ir a un extremo."
+    )
+
+    rg = get_three_signal_regime()
+    if rg is None:
+        st.warning(
+            "⚠️ No se pudo calcular el régimen multi-señal (fallo de datos de "
+            "VIX/VIX3M/SPX/HYG/IEF)."
+        )
+    else:
+        since_txt2 = rg["regime_since"].strftime("%d %b %Y")
+        label = rg["regime_label"]
+        if label == "Risk ON":
+            st.success(f"🟢 **{label}** desde {since_txt2} · 3/3 señales alcistas")
+        elif label == "Cautious":
+            st.warning(f"🟡 **{label}** desde {since_txt2} · 2/3 señales alcistas")
+        else:
+            st.error(f"🔴 **{label}** desde {since_txt2} · ≤1/3 señales alcistas")
+
+        rc1, rc2, rc3 = st.columns(3)
+        rc1.metric(
+            "📈 Señal 1 — Tendencia", "ON" if rg["signal_1"] else "OFF",
+            f"{rg['dist_sma_pct']:+.2f}% vs SMA{REGIME_TREND_LOOKBACK}",
+        )
+        rc2.metric(
+            "🌊 Señal 2 — VIX/VIX3M", "ON" if rg["signal_2"] else "OFF",
+            f"ratio {rg['ts_ratio']}",
+        )
+        rc3.metric(
+            "💳 Señal 3 — Crédito HYG/IEF", "ON" if rg["signal_3"] else "OFF",
+            f"Z={rg['credit_z']}",
+        )
+
+        st.plotly_chart(plot_three_signal_regime(rg), use_container_width=True)
 
     st.divider()
 
