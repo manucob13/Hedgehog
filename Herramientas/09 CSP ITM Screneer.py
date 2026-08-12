@@ -871,25 +871,39 @@ def get_three_signal_regime():
         Señal 2 (vol. term structure) : VIX/VIX3M < 1 (contango)
         Señal 3 (crédito)    : Z-score(HYG/IEF, ventana 100) > -2
     Regime 1 = Risk ON (3/3 señales alcistas), Regime 2 = Cautious
-    (2/3 alcistas), Regime 0 = Risk OFF (<=1/3 alcistas). Devuelve None
-    si falla la descarga de cualquier ticker o no hay histórico
-    suficiente para inicializar SMA200/Z-score."""
+    (2/3 alcistas), Regime 0 = Risk OFF (<=1/3 alcistas).
+
+    SIEMPRE devuelve un dict con "ok" (bool). Si "ok" es False, "error"
+    trae el detalle EXACTO del fallo (qué ticker, descarga vacía o
+    excepción, o histórico insuficiente) — a diferencia de un None
+    ciego, esto permite diagnosticar sin adivinar."""
     tickers = {"^VIX": "VIX", "^VIX3M": "VIX3M", "^GSPC": "SPX", "HYG": "HYG", "IEF": "IEF"}
     end = datetime.now() + timedelta(days=1)
     start = datetime(2015, 1, 1)
     closes = {}
-    try:
-        for tk, name in tickers.items():
-            h = yf.Ticker(tk).history(start=start, end=end, interval="1d", auto_adjust=False)
-            if h is None or h.empty:
-                logger.warning(f"[three_signal_regime] {tk}: descarga vacía")
-                return None
-            closes[name] = h["Close"]
+    failed = []
 
+    for tk, name in tickers.items():
+        try:
+            h = yf.Ticker(tk).history(start=start, end=end, interval="1d", auto_adjust=False)
+        except Exception as e:
+            failed.append(f"{tk} ({name}): excepción al descargar — {e}")
+            continue
+        if h is None or h.empty:
+            failed.append(f"{tk} ({name}): descarga vacía (0 filas)")
+            continue
+        closes[name] = h["Close"]
+
+    if failed:
+        msg = " · ".join(failed)
+        logger.warning(f"[three_signal_regime] {msg}")
+        return {"ok": False, "error": msg}
+
+    try:
         df = pd.concat(closes, axis=1).dropna(how="any")
         df.index = pd.to_datetime(df.index).tz_localize(None)
         if len(df) < REGIME_TREND_LOOKBACK + 5:
-            return None
+            return {"ok": False, "error": f"Histórico insuficiente tras alinear fechas: solo {len(df)} filas (se necesitan >= {REGIME_TREND_LOOKBACK + 5})."}
 
         # Señal 1 — tendencia (SPX vs SMA)
         df["SPX_SMA"] = df["SPX"].rolling(REGIME_TREND_LOOKBACK).mean()
@@ -914,7 +928,7 @@ def get_three_signal_regime():
 
         df = df.dropna(subset=["SPX_SMA", "CREDIT_Z"])
         if df.empty:
-            return None
+            return {"ok": False, "error": "Tras calcular SMA200 y Z-score de crédito no queda ninguna fila válida (todo NaN)."}
 
         start_year = datetime(datetime.now().year, 1, 1)
         df_plot = df[df.index >= start_year]
@@ -926,6 +940,7 @@ def get_three_signal_regime():
         regime_since = cambios.index[-1] if not cambios.empty else df.index[0]
 
         return {
+            "ok": True,
             "regime_label": REGIME_LABELS[int(last["Regime"])],
             "regime_value": int(last["Regime"]),
             "regime_since": regime_since,
@@ -938,8 +953,8 @@ def get_three_signal_regime():
             "df_plot": df_plot,
         }
     except Exception as e:
-        logger.warning(f"[three_signal_regime] error: {e}")
-        return None
+        logger.warning(f"[three_signal_regime] error de cómputo: {e}")
+        return {"ok": False, "error": f"Excepción durante el cálculo: {e}"}
 
 def plot_three_signal_regime(rg):
     """SPX coloreado por régimen (verde=Risk ON, ámbar=Cautious,
@@ -1042,11 +1057,17 @@ def render_market_filter():
     )
 
     rg = get_three_signal_regime()
-    if rg is None:
+    if rg is None or not rg.get("ok"):
+        detail = rg.get("error") if rg else "respuesta vacía de get_three_signal_regime()"
         st.warning(
             "⚠️ No se pudo calcular el régimen multi-señal (fallo de datos de "
             "VIX/VIX3M/SPX/HYG/IEF)."
         )
+        with st.expander("🐛 Ver detalle exacto del fallo"):
+            st.code(detail, language=None)
+            if st.button("🔄 Reintentar descarga", key="retry_regime_btn"):
+                get_three_signal_regime.clear()
+                st.rerun()
     else:
         since_txt2 = rg["regime_since"].strftime("%d %b %Y")
         label = rg["regime_label"]
