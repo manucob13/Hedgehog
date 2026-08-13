@@ -175,11 +175,16 @@ def refresh_universe():
 def get_daily_data(ticker):
     """Descarga precio diario AJUSTADO vía yf.Ticker().history() — igual
     razón que en el screener de covered calls: yf.download() devuelve
-    columnas mal aplanadas en esta instalación. Ventana de 300 días para
-    tener margen de sobra para SMA200 (200 sesiones de trading)."""
+    columnas mal aplanadas en esta instalación. Ventana de 420 días
+    calendario (~285-295 sesiones de trading) para tener margen de sobra
+    por encima del mínimo de 205 filas que exige SMA200 — con una ventana
+    más corta (300 días), el número real de sesiones de trading queda
+    demasiado cerca del umbral y cualquier distribución de festivos/fines
+    de semana puede tirarlo por debajo, descartando el ticker entero como
+    'sin datos' aunque yfinance sí esté respondiendo correctamente."""
     try:
         end = datetime.now() + timedelta(days=1)
-        start = end - timedelta(days=300)
+        start = end - timedelta(days=420)
         data = yf.Ticker(ticker).history(start=start, end=end, interval="1d", auto_adjust=True)
         if data is None or data.empty or len(data) < 205:
             _record_debug("no_daily_data", f"{ticker}: descarga vacía o insuficiente ({0 if data is None else len(data)} filas)")
