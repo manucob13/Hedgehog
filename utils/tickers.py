@@ -288,101 +288,193 @@ def get_top_stocks():
     print(f"✅ Acciones: {len(stocks)} símbolos agregados")
     return stocks
 
-
 # ============================================================
-# 5. RUSSELL 1000 (DESCARGA DINÁMICA DESDE WIKIPEDIA + CACHE)
+# 5. RUSSELL 1000 (IWB HOLDINGS CSV + WIKIPEDIA FALLBACK + CACHE)
 # ============================================================
+#
+# CAMBIO respecto a la versión anterior: Wikipedia cambió el formato de
+# la tabla de componentes de la página del Russell 1000 (ya no expone
+# una columna con el texto literal "Symbol"), lo que rompía el parser
+# de pd.read_html y hacía caer el universo a 0 tickers de Russell 1000
+# en cuanto expiraba (o desaparecía) el cache local.
+#
+# Nueva estrategia, en orden:
+#   1. CSV oficial de holdings del ETF iShares Russell 1000 (IWB) —
+#      fuente primaria del propio índice, mucho más estable que
+#      scrapear HTML de Wikipedia.
+#   2. Wikipedia como fallback, con detección de columnas tolerante
+#      (Symbol/Ticker, case-insensitive) en vez de un match exacto.
+#   3. Cache local en CSV como último recurso si ambas fuentes fallan
+#      (por ejemplo, sin conexión).
+#
+# NOTA IMPORTANTE si despliegas en Streamlit Cloud (o cualquier entorno
+# con filesystem efímero): el cache local se borra en cada redeploy o
+# reinicio del contenedor, así que NUNCA debe ser tu única red de
+# seguridad — de ahí que ahora haya dos fuentes en vivo antes de caer
+# al cache.
 
 _RUSSELL1000_CACHE_FILE = "russell1000_cache.csv"
+
+_IWB_HOLDINGS_URL = (
+    "https://www.ishares.com/us/products/239707/ishares-russell-1000-etf/"
+    "1467271812596.ajax?fileType=csv&fileName=IWB_holdings&dataType=fund"
+)
+
+_REQUEST_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/124.0.0.0 Safari/537.36"
+}
+
+
+def _clean_russell_ticker(raw):
+    """Normaliza un ticker crudo (de iShares o Wikipedia) al formato que
+    usa Yahoo Finance: mayúsculas, sin espacios, '.' -> '-' para clases
+    de acciones (ej. BRK.B -> BRK-B). Devuelve None si no parece un
+    ticker válido (filas de cash, totales, texto de disclaimer, etc.)."""
+    if raw is None:
+        return None
+    t = str(raw).strip().upper().replace(".", "-")
+    if not t or t in ("-", "NAN", "N/A", "CASH", "USD", "NET", "OTHER"):
+        return None
+    # las filas de cash/derivados en el CSV de iShares suelen venir sin
+    # letras (ej. '-', '--') o con caracteres no alfabéticos
+    if not any(c.isalpha() for c in t):
+        return None
+    return t
+
+
+def _read_russell1000_from_ishares():
+    """Descarga y parsea el CSV de holdings de IWB. El archivo trae ~9
+    líneas de metadata antes de la cabecera real y unas líneas de
+    disclaimer al final, así que se detecta la fila de cabecera
+    buscando la palabra 'Ticker' en vez de asumir un skiprows fijo
+    (el número exacto de filas de metadata varía con el tiempo)."""
+    resp = requests.get(_IWB_HOLDINGS_URL, headers=_REQUEST_HEADERS, timeout=20)
+    resp.raise_for_status()
+    raw_lines = resp.text.splitlines()
+
+    header_idx = None
+    for i, line in enumerate(raw_lines[:40]):
+        if line.strip().lower().startswith("ticker,") or ",ticker," in line.lower() or line.strip().lower().startswith('"ticker"'):
+            header_idx = i
+            break
+    if header_idx is None:
+        raise ValueError("No se encontró la fila de cabecera con 'Ticker' en el CSV de IWB")
+
+    csv_body = "\n".join(raw_lines[header_idx:])
+    df = pd.read_csv(StringIO(csv_body), on_bad_lines="skip")
+
+    ticker_col = None
+    for c in df.columns:
+        if str(c).strip().lower() == "ticker":
+            ticker_col = c
+            break
+    if ticker_col is None:
+        raise ValueError("El CSV de IWB no tiene columna 'Ticker' tras parsear")
+
+    tickers = [_clean_russell_ticker(t) for t in df[ticker_col].tolist()]
+    tickers = sorted(set(t for t in tickers if t))
+    if len(tickers) < 500:  # sanity check — el Russell 1000 real ronda ~1000
+        raise ValueError(f"Solo {len(tickers)} tickers válidos extraídos del CSV de IWB — probablemente mal parseado")
+    return tickers
+
+
+def _read_russell1000_from_wikipedia():
+    """Fallback: scrape de Wikipedia con detección de columnas tolerante
+    (Symbol o Ticker, sin importar mayúsculas/minúsculas), ya que el
+    nombre exacto de la columna ha cambiado antes sin aviso."""
+    url = "https://en.wikipedia.org/wiki/Russell_1000_Index"
+    resp = requests.get(url, headers=_REQUEST_HEADERS, timeout=15)
+    resp.raise_for_status()
+    tables = pd.read_html(StringIO(resp.text))
+
+    df = None
+    ticker_col = None
+    for t in tables:
+        cols_lower = {str(c).strip().lower(): c for c in t.columns}
+        for candidate in ("symbol", "ticker"):
+            if candidate in cols_lower and len(t) > 500:
+                df = t
+                ticker_col = cols_lower[candidate]
+                break
+        if df is not None:
+            break
+
+    if df is None:
+        raise ValueError("No se encontró en Wikipedia ninguna tabla >500 filas con columna Symbol/Ticker")
+
+    tickers = [_clean_russell_ticker(t) for t in df[ticker_col].tolist()]
+    tickers = sorted(set(t for t in tickers if t))
+    if len(tickers) < 500:
+        raise ValueError(f"Solo {len(tickers)} tickers válidos extraídos de Wikipedia — probablemente mal parseado")
+    return tickers
 
 
 def get_russell1000_tickers(use_cache=True, cache_days=7):
     """
-    Descarga la lista de tickers del Russell 1000 desde Wikipedia.
-    Usa un cache local en CSV para no golpear Wikipedia en cada ejecución
-    (importante porque este módulo se usa dentro de una app Streamlit
-    con recargas frecuentes).
+    Obtiene la lista de tickers del Russell 1000. Orden de fuentes:
+    1) CSV oficial de holdings de IWB (iShares Russell 1000 ETF)
+    2) Wikipedia (fallback si iShares falla)
+    3) Cache local en CSV (último recurso, solo si ambas fuentes en
+       vivo fallan)
 
     Args:
-        use_cache (bool): Si True, intenta usar el cache local antes de descargar
-        cache_days (int): Días de validez del cache antes de refrescar
+        use_cache (bool): si True, intenta servir desde cache reciente
+            ANTES de golpear la red (ahorra llamadas en recargas
+            frecuentes de Streamlit)
+        cache_days (int): días de validez del cache antes de refrescar
 
     Returns:
-        list: Lista de tickers del Russell 1000 (formato compatible Yahoo Finance,
-              ej. 'BRK.B' -> 'BRK-B'). Lista vacía si falla la descarga y no hay cache.
+        list: tickers del Russell 1000 en formato Yahoo Finance
+              (ej. 'BRK.B' -> 'BRK-B'). Lista vacía solo si TODO falla
+              y tampoco hay cache utilizable.
     """
     current_dir = os.path.dirname(os.path.abspath(__file__))
     cache_path = os.path.join(current_dir, _RUSSELL1000_CACHE_FILE)
 
-    # 1. Intentar usar cache si es reciente
     if use_cache and os.path.exists(cache_path):
         try:
             mtime = datetime.fromtimestamp(os.path.getmtime(cache_path))
             if (datetime.now() - mtime).days < cache_days:
                 cached = pd.read_csv(cache_path)
                 tickers = cached["Ticker"].dropna().tolist()
-                print(f"✅ Russell 1000: {len(tickers)} tickers cargados desde cache")
-                return tickers
+                if len(tickers) >= 500:
+                    print(f"✅ Russell 1000: {len(tickers)} tickers cargados desde cache")
+                    return tickers
         except Exception:
             pass
 
-    # 2. Descargar desde Wikipedia
-    url = "https://en.wikipedia.org/wiki/Russell_1000_Index"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/124.0.0.0 Safari/537.36"
-    }
-
-    try:
-        resp = requests.get(url, headers=headers, timeout=15)
-        resp.raise_for_status()
-        tables = pd.read_html(StringIO(resp.text))
-
-        # Buscamos la tabla de componentes por sus columnas, no por índice fijo,
-        # ya que Wikipedia puede reordenar las tablas de la página.
-        df = None
-        for t in tables:
-            if "Symbol" in t.columns and "Company" in t.columns:
-                df = t
-                break
-
-        if df is None:
-            raise ValueError(
-                "No se encontró la tabla de componentes con columnas 'Company'/'Symbol'"
-            )
-
-        # Yahoo Finance usa '-' en vez de '.' para clases de acciones (ej: BRK.B -> BRK-B)
-        tickers = (
-            df["Symbol"]
-            .dropna()
-            .astype(str)
-            .str.strip()
-            .str.replace(".", "-", regex=False)
-            .tolist()
-        )
-        tickers = sorted(set(tickers))
-
-        # 3. Guardar en cache
+    last_error = None
+    for source_name, source_fn in (
+        ("iShares (IWB)", _read_russell1000_from_ishares),
+        ("Wikipedia", _read_russell1000_from_wikipedia),
+    ):
         try:
-            pd.DataFrame({"Ticker": tickers}).to_csv(cache_path, index=False)
-        except Exception as e:
-            print(f"⚠️ No se pudo guardar cache de Russell 1000 ({e})")
-
-        print(f"✅ Russell 1000: {len(tickers)} tickers descargados de Wikipedia")
-        return tickers
-
-    except Exception as e:
-        print(f"⚠️ Error descargando Russell 1000 ({e}), usando cache si existe...")
-        if os.path.exists(cache_path):
+            tickers = source_fn()
             try:
-                cached = pd.read_csv(cache_path)
-                tickers = cached["Ticker"].dropna().tolist()
-                print(f"✅ Russell 1000: {len(tickers)} tickers cargados desde cache (fallback)")
-                return tickers
-            except Exception:
-                pass
-        return []
+                pd.DataFrame({"Ticker": tickers}).to_csv(cache_path, index=False)
+            except Exception as e:
+                print(f"⚠️ No se pudo guardar cache de Russell 1000 ({e})")
+            print(f"✅ Russell 1000: {len(tickers)} tickers descargados desde {source_name}")
+            return tickers
+        except Exception as e:
+            last_error = e
+            print(f"⚠️ Fuente '{source_name}' falló para Russell 1000: {e}")
+            continue
+
+    print(f"⚠️ Todas las fuentes en vivo fallaron ({last_error}), usando cache si existe...")
+    if os.path.exists(cache_path):
+        try:
+            cached = pd.read_csv(cache_path)
+            tickers = cached["Ticker"].dropna().tolist()
+            print(f"✅ Russell 1000: {len(tickers)} tickers cargados desde cache (fallback final)")
+            return tickers
+        except Exception:
+            pass
+
+    print("❌ Russell 1000: no se pudo obtener de ninguna fuente ni del cache")
+    return []
 
 
 def get_top_russell1000():
