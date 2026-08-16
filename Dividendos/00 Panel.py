@@ -1,7 +1,9 @@
 import streamlit as st
 import plotly.graph_objects as go
+import pandas as pd
 from pathlib import Path
 from datetime import date
+import calendar as _calendar_module
 
 from utils.utils import check_password
 from Dividendos.core.storage.db import (
@@ -25,6 +27,42 @@ from Dividendos.core.storage.github_sync import download_db
 
 DB_PATH = Path(__file__).parent / "data" / "processed" / "dividendos.db"
 REMOTE_DB_PATH = "dividendos.db"
+
+RANGE_OPTIONS = [
+    "Todo", "Año en curso", "Último año", "Últimos 6 meses",
+    "Últimos 3 meses", "Último mes", "Mes en curso",
+]
+
+
+def _months_ago(d: date, months: int) -> date:
+    """Resta 'months' meses a una fecha, ajustando el día si el mes
+    destino tiene menos días (sin depender de librerías externas)."""
+    m = d.month - months
+    y = d.year
+    while m <= 0:
+        m += 12
+        y -= 1
+    day = min(d.day, _calendar_module.monthrange(y, m)[1])
+    return date(y, m, day)
+
+
+def _range_start_date(range_label: str, today: date):
+    """Devuelve la fecha de inicio del rango elegido, o None si es 'Todo'."""
+    if range_label == "Todo":
+        return None
+    if range_label == "Año en curso":
+        return date(today.year, 1, 1)
+    if range_label == "Último año":
+        return _months_ago(today, 12)
+    if range_label == "Últimos 6 meses":
+        return _months_ago(today, 6)
+    if range_label == "Últimos 3 meses":
+        return _months_ago(today, 3)
+    if range_label == "Último mes":
+        return _months_ago(today, 1)
+    if range_label == "Mes en curso":
+        return date(today.year, today.month, 1)
+    return None
 
 
 def _sync_down():
@@ -202,9 +240,20 @@ def main():
 
     st.markdown("---")
 
-    # --- Gráfico lineal: evolución del valor de cartera (NLV, histórico completo) ---
+    # --- Gráfico lineal: evolución del valor de cartera (NLV) ---
     st.subheader("Evolución del valor de la cartera (NLV)")
-    st.plotly_chart(render_nlv_line_chart(equity), use_container_width=True)
+    range_label = st.selectbox(
+        "Rango", options=RANGE_OPTIONS, index=0, key="nlv_range", label_visibility="collapsed"
+    )
+    range_start = _range_start_date(range_label, today)
+    equity_chart = (
+        equity if range_start is None
+        else equity[equity["reportDate"] >= pd.Timestamp(range_start)]
+    )
+    if equity_chart.empty:
+        st.caption("Sin datos en el rango seleccionado")
+    else:
+        st.plotly_chart(render_nlv_line_chart(equity_chart), use_container_width=True)
 
     st.markdown("---")
 
