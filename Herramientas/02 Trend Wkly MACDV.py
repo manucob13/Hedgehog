@@ -403,11 +403,6 @@ def main():
             line=dict(color="white", width=2), showlegend=False,
         ), row=2, col=1)
 
-        # IMPORTANTE: todas las shapes (líneas + rectángulo) del panel 2 se
-        # extienden hasta x_max_padded, EXACTAMENTE el mismo borde derecho
-        # que usa el eje X (igual que en el panel 1). Antes usaban x1=x_max
-        # (sin el padding), dejando un hueco vacío a la derecha que hacía
-        # ver el panel 2 más "angosto" que el panel 1.
         for y_val, color, dash, width in [(0, "gray", "solid", 1), (50, "#3DD65C", "dot", 1.3),
                                            (-50, "#FF4C4C", "dot", 1.3), (151, "red", "dash", 1.5),
                                            (-151, "red", "dash", 1.5)]:
@@ -416,9 +411,6 @@ def main():
                 line=dict(color=color, width=width, dash=dash),
                 row=2, col=1,
             )
-        # Zona ±50 (Rango) en amarillo reforzado: opacidad más alta y color
-        # más saturado que antes para que se distinga con claridad, cubriendo
-        # todo el ancho útil del panel (igual que el panel 1).
         fig.add_shape(
             type="rect", x0=x_min, x1=x_max_padded, y0=-50, y1=50,
             fillcolor="#FFD700", opacity=0.16, line_width=0,
@@ -443,6 +435,13 @@ def main():
         fig.update_yaxes(title_text="Precio ($)", row=1, col=1, side="right")
         fig.update_xaxes(title_text="Fecha", row=2, col=1)
 
+        # Título del panel 1 pegado a la izquierda; la leyenda se ancla
+        # DESDE la izquierda (x=0) en la misma fila, inmediatamente después
+        # del título (justify horizontal en una sola línea). Al anclar la
+        # leyenda con x=0/xanchor="left" en vez de x=1/xanchor="right",
+        # Plotly la despliega en fila usando todo el ancho disponible de la
+        # figura en vez de intentar "encajarla" contra el borde derecho,
+        # que es lo que forzaba el salto a columna.
         fig.add_annotation(
             xref="x domain", yref="y domain", x=0, y=1.16,
             xanchor="left", yanchor="bottom",
@@ -463,10 +462,10 @@ def main():
             legend=dict(
                 orientation="h",
                 yanchor="bottom", y=1.16,
-                xanchor="right", x=1.0,
-                font=dict(size=9),
-                tracegroupgap=4,
-                itemwidth=30,
+                xanchor="left", x=0.30,
+                font=dict(size=10),
+                tracegroupgap=10,
+                bgcolor="rgba(0,0,0,0)",
             ),
             hovermode=False,
             dragmode=False,
