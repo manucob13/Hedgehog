@@ -190,11 +190,15 @@ def download_weekly_data(ticker, years_back):
     df.columns = [str(c) for c in df.columns]
 
     df["SMA_50"]  = df["Close"].rolling(50).mean()
-    df["SMA_200"] = df["Close"].rolling(200).mean()
+    df["SMA_200"] = df["Close"].rolling(200, min_periods=1).mean()  # min_periods=1: nunca queda vacía/ausente
     df["EMA_8"]   = df["Close"].ewm(span=8,  adjust=False).mean()
     df["EMA_21"]  = df["Close"].ewm(span=21, adjust=False).mean()
 
     df = calculate_indicators(df)
+
+    # Solo se exige que MACD_V y SMA_50 sean válidos para conservar la fila;
+    # SMA_200 puede legítimamente no tener 200 datos aún (ticker joven o
+    # 'Histórico (años)' bajo) y no debe tirar filas por eso.
     df.dropna(subset=["MACD_V", "SMA_50"], inplace=True)
 
     return df
@@ -230,7 +234,13 @@ def main():
 
     if st.session_state.analyzed and st.session_state.df is not None:
 
-        df = st.session_state.df
+        df = st.session_state.df.copy()
+
+        # Salvaguarda: si por cualquier motivo (p.ej. caché antigua de una
+        # versión anterior de este script) el DataFrame no trae SMA_200,
+        # se calcula aquí mismo en vez de fallar con KeyError.
+        if "SMA_200" not in df.columns:
+            df["SMA_200"] = df["Close"].rolling(200, min_periods=1).mean()
 
         df["Regime_MACDV"] = classify_by_macdv(df)
         df["Risk_Level"]   = analyze_risk(df)
@@ -244,7 +254,8 @@ def main():
 
         precio  = float(current["Close"])
         sma50   = float(current["SMA_50"])
-        sma200  = float(current["SMA_200"]) if pd.notna(current["SMA_200"]) else np.nan
+        sma200_val = current.get("SMA_200", np.nan)
+        sma200  = float(sma200_val) if pd.notna(sma200_val) else np.nan
         macd_v  = float(current["MACD_V"])
 
         precio_above_sma = "✅ SÍ" if precio > sma50 else "❌ NO"
@@ -334,7 +345,8 @@ def main():
         # ── Gráfico 1: Precio + Régimen MACD-V ──────────────────────────────
         axs[0].plot(df_plot.index, df_plot["Close"],   color="white",   alpha=0.5,  linewidth=1.3,  label="Precio")
         axs[0].plot(df_plot.index, df_plot["SMA_50"],  color="cyan",    linewidth=1.8, alpha=0.7,   label="SMA 50")
-        axs[0].plot(df_plot.index, df_plot["SMA_200"], color="orange",  linewidth=1.8, alpha=0.75,  label="SMA 200")
+        if "SMA_200" in df_plot.columns and df_plot["SMA_200"].notna().any():
+            axs[0].plot(df_plot.index, df_plot["SMA_200"], color="orange", linewidth=1.8, alpha=0.75, label="SMA 200")
         axs[0].plot(df_plot.index, df_plot["EMA_8"],   color="#FFFFFF", linewidth=1.4, alpha=0.85,  linestyle="--", label="EMA 8")
         axs[0].plot(df_plot.index, df_plot["EMA_21"],  color="#00BFFF", linewidth=1.4, alpha=0.85,  linestyle="--", label="EMA 21")
 
@@ -410,7 +422,9 @@ def main():
 
             La **SMA 200** en el gráfico es solo de referencia visual (tendencia de
             largo plazo) — no participa en la lógica de clasificación, que usa
-            exclusivamente SMA 50 + MACD-V.
+            exclusivamente SMA 50 + MACD-V. Con menos de 200 semanas de historial
+            (ticker joven o "Histórico (años)" bajo) puede no mostrarse completa
+            al inicio del gráfico.
 
             #### ⚠️ Análisis de Riesgo
 
