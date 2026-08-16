@@ -334,9 +334,6 @@ def main():
         macdv_abs_max = float(df["MACD_V"].abs().max())
         y_limit_macdv = max(200.0, macdv_abs_max * 1.10)
 
-        # Sin subplot_titles nativos: se quitan para poder poner el título de
-        # cada panel como anotación manual, en la MISMA fila que su leyenda
-        # (una sola línea), en vez de dos filas separadas.
         fig = make_subplots(
             rows=2, cols=1,
             shared_xaxes=True,
@@ -417,9 +414,14 @@ def main():
 
         # Títulos de cada panel como anotaciones manuales, alineados a la
         # MISMA coordenada 'y' que su leyenda respectiva, y ubicados a la
-        # derecha de ella (todo en una sola línea horizontal).
+        # izquierda de ella (todo en una sola línea horizontal).
+        # NOTA: la sintaxis correcta de Plotly para "dominio del eje" es
+        # "x domain"/"y domain" para el primer subplot (sin número) y
+        # "x2 domain"/"y2 domain" para el segundo (número pegado, sin
+        # espacio) -- "x1 domain" NO es un valor válido y causaba el
+        # ValueError.
         fig.add_annotation(
-            xref="x1 domain", yref="y1 domain", x=0, y=1.14,
+            xref="x domain", yref="y domain", x=0, y=1.14,
             xanchor="left", yanchor="bottom",
             text=f"<b>{ticker} — Régimen (MACD-V)</b>",
             showarrow=False, font=dict(size=13, color="white"),
