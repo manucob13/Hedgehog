@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import numpy as np
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import warnings
 
@@ -63,8 +64,7 @@ RISK_COLORS = {
 }
 
 # ============================================================================
-# INDICADORES (solo lo necesario para MACD-V; Z-Score de precio y la
-# corrección por kurtosis del Z-Score de MACD fueron removidos)
+# INDICADORES (solo lo necesario para MACD-V)
 # ============================================================================
 
 def calculate_indicators(df, fast=12, slow=26, signal=9):
@@ -178,10 +178,8 @@ def download_weekly_data(ticker, years_back):
     if df.empty:
         return None
 
-    # ── APLANAR MultiIndex de columnas (yfinance versiones recientes) ──────────
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    # ──────────────────────────────────────────────────────────────────────────
 
     df = df.reset_index()
     df = df[["Date", "Open", "High", "Low", "Close"]].copy()
@@ -190,15 +188,11 @@ def download_weekly_data(ticker, years_back):
     df.columns = [str(c) for c in df.columns]
 
     df["SMA_50"]  = df["Close"].rolling(50).mean()
-    df["SMA_200"] = df["Close"].rolling(200, min_periods=1).mean()  # min_periods=1: nunca queda vacía/ausente
+    df["SMA_200"] = df["Close"].rolling(200, min_periods=1).mean()
     df["EMA_8"]   = df["Close"].ewm(span=8,  adjust=False).mean()
     df["EMA_21"]  = df["Close"].ewm(span=21, adjust=False).mean()
 
     df = calculate_indicators(df)
-
-    # Solo se exige que MACD_V y SMA_50 sean válidos para conservar la fila;
-    # SMA_200 puede legítimamente no tener 200 datos aún (ticker joven o
-    # 'Histórico (años)' bajo) y no debe tirar filas por eso.
     df.dropna(subset=["MACD_V", "SMA_50"], inplace=True)
 
     return df
@@ -236,9 +230,6 @@ def main():
 
         df = st.session_state.df.copy()
 
-        # Salvaguarda: si por cualquier motivo (p.ej. caché antigua de una
-        # versión anterior de este script) el DataFrame no trae SMA_200,
-        # se calcula aquí mismo en vez de fallar con KeyError.
         if "SMA_200" not in df.columns:
             df["SMA_200"] = df["Close"].rolling(200, min_periods=1).mean()
 
@@ -326,8 +317,9 @@ def main():
             </table>
             """, unsafe_allow_html=True)
 
-        # ================= LEYENDA =================
-        st.markdown("### 🎨 Leyenda")
+        # ================= LEYENDA (leyenda estática de colores; la leyenda
+        # interactiva de series/trazas ya vive dentro del propio gráfico Plotly) =
+        st.markdown("### 🎨 Leyenda de Régimen")
         cols = st.columns(4)
         for idx, (regime, color) in enumerate(REGIME_COLORS.items()):
             with cols[idx]:
@@ -337,89 +329,96 @@ def main():
                     unsafe_allow_html=True
                 )
 
-        # ================= GRÁFICOS =================
+        # ================= GRÁFICOS INTERACTIVOS (Plotly) ==================
         st.markdown("---")
-        plt.style.use("dark_background")
 
-        # constrained_layout en vez de tight_layout(): recalcula márgenes de
-        # forma determinista en cada render (evita que el título/ejes de un
-        # panel se superpongan con el otro, que es lo que se veía en las
-        # capturas). Los límites del eje MACD-V se fijan explícitamente para
-        # que la escala no cambie entre renders al mover el slider de meses.
-        fig, axs = plt.subplots(
-            2, 1, figsize=(13, 10), sharex=True,
-            gridspec_kw={"height_ratios": [2, 1]},
-            constrained_layout=True,
+        macdv_abs_max = float(df["MACD_V"].abs().max())
+        y_limit_macdv = max(200.0, macdv_abs_max * 1.10)
+
+        fig = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            row_heights=[0.68, 0.32],
+            vertical_spacing=0.08,
+            subplot_titles=(f"{ticker} — Régimen (MACD-V)", "MACD-V (momentum normalizado por ATR)"),
         )
-        fig.set_constrained_layout_pads(h_pad=0.12, hspace=0.06)
 
-        # ── Gráfico 1: Precio + Régimen MACD-V ──────────────────────────────
-        axs[0].plot(df_plot.index, df_plot["Close"],   color="white",   alpha=0.5,  linewidth=1.3,  label="Precio")
-        axs[0].plot(df_plot.index, df_plot["SMA_50"],  color="cyan",    linewidth=1.8, alpha=0.7,   label="SMA 50")
-        if "SMA_200" in df_plot.columns and df_plot["SMA_200"].notna().any():
-            axs[0].plot(df_plot.index, df_plot["SMA_200"], color="orange", linewidth=1.8, alpha=0.75, label="SMA 200")
-        axs[0].plot(df_plot.index, df_plot["EMA_8"],   color="#FFFFFF", linewidth=1.4, alpha=0.85,  linestyle="--", label="EMA 8")
-        axs[0].plot(df_plot.index, df_plot["EMA_21"],  color="#00BFFF", linewidth=1.4, alpha=0.85,  linestyle="--", label="EMA 21")
+        # ── Panel 1: Precio + medias + puntos de régimen ────────────────────
+        fig.add_trace(go.Scatter(
+            x=df_plot.index, y=df_plot["Close"], mode="lines", name="Precio",
+            line=dict(color="white", width=1.3), opacity=0.6,
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=df_plot.index, y=df_plot["SMA_50"], mode="lines", name="SMA 50",
+            line=dict(color="cyan", width=1.8),
+        ), row=1, col=1)
+        if df_plot["SMA_200"].notna().any():
+            fig.add_trace(go.Scatter(
+                x=df_plot.index, y=df_plot["SMA_200"], mode="lines", name="SMA 200",
+                line=dict(color="orange", width=1.8),
+            ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=df_plot.index, y=df_plot["EMA_8"], mode="lines", name="EMA 8",
+            line=dict(color="white", width=1.3, dash="dash"), opacity=0.85,
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=df_plot.index, y=df_plot["EMA_21"], mode="lines", name="EMA 21",
+            line=dict(color="#00BFFF", width=1.3, dash="dash"), opacity=0.85,
+        ), row=1, col=1)
 
         for r, c in REGIME_COLORS.items():
             m = df_plot["Regime_MACDV"] == r
             if m.any():
-                axs[0].scatter(df_plot[m].index, df_plot[m]["Close"], c=c, s=80, alpha=0.95,
-                               edgecolors='black', linewidths=1.2, zorder=5, label=f"{r}")
+                fig.add_trace(go.Scatter(
+                    x=df_plot.index[m], y=df_plot["Close"][m], mode="markers", name=r,
+                    marker=dict(color=c, size=9, line=dict(color="black", width=1)),
+                ), row=1, col=1)
 
-        last_price = float(df_plot["Close"].iloc[-1])
-        axs[0].text(1.01, last_price, f'${last_price:.2f}',
-                    transform=axs[0].get_yaxis_transform(),
-                    fontsize=9, color='white', va='center', fontweight='bold')
+        # ── Panel 2: MACD-V con zonas de rango/riesgo (sin leyenda propia) ──
+        macd_line_colors = ["#FF0000" if abs(v) >= 151 else "#FFFFFF" for v in df_plot["MACD_V"]]
+        fig.add_trace(go.Scatter(
+            x=df_plot.index, y=df_plot["MACD_V"], mode="lines", name="MACD-V",
+            line=dict(color="white", width=2), showlegend=False,
+            marker=dict(color=macd_line_colors),
+        ), row=2, col=1)
 
-        axs[0].set_title(f"{ticker} — Régimen (MACD-V)", fontsize=12, fontweight='bold', pad=8)
-        axs[0].grid(alpha=0.25, linestyle='--')
-        axs[0].set_ylabel("Precio ($)", fontsize=9)
-        # Leyenda fuera del área de trazado (a la derecha) para que nunca
-        # tape los puntos de régimen, sin importar dónde caigan.
-        axs[0].legend(loc='upper left', bbox_to_anchor=(1.05, 1.0), fontsize=8, ncol=1, framealpha=0.9)
-        axs[0].yaxis.tick_right()
-        axs[0].yaxis.set_label_position("right")
-        axs[0].tick_params(axis='both', labelsize=8)
+        fig.add_hline(y=0, line=dict(color="gray", width=1), row=2, col=1)
+        fig.add_hline(y=50, line=dict(color="green", width=1, dash="dot"), row=2, col=1)
+        fig.add_hline(y=-50, line=dict(color="red", width=1, dash="dot"), row=2, col=1)
+        fig.add_hline(y=151, line=dict(color="red", width=1.5, dash="dash"), row=2, col=1)
+        fig.add_hline(y=-151, line=dict(color="red", width=1.5, dash="dash"), row=2, col=1)
+        fig.add_hrect(y0=-50, y1=50, fillcolor="gold", opacity=0.08, line_width=0, row=2, col=1)
 
-        # ── Gráfico 2: MACD-V con zonas y umbral de riesgo ──────────────────
-        macd_colors = ['#FF0000' if abs(m) >= 151 else '#FFFFFF' for m in df_plot["MACD_V"]]
-        for i in range(len(df_plot) - 1):
-            axs[1].plot(df_plot.index[i:i+2], df_plot["MACD_V"].iloc[i:i+2],
-                        color=macd_colors[i], linewidth=2.0)
+        fig.update_yaxes(range=[-y_limit_macdv, y_limit_macdv], title_text="MACD-V", row=2, col=1, side="right")
+        fig.update_yaxes(title_text="Precio ($)", row=1, col=1, side="right")
+        fig.update_xaxes(title_text="Fecha", row=2, col=1)
 
-        axs[1].axhline(  0, color="gray",  linestyle="-",  alpha=0.4)
-        axs[1].axhline( 50, color="green", linestyle=":",  alpha=0.5, linewidth=1.2, label="Zona ±50 (Rango)")
-        axs[1].axhline(-50, color="red",   linestyle=":",  alpha=0.5, linewidth=1.2)
-        axs[1].axhline( 151, color="red",  linestyle="--", alpha=0.7, linewidth=1.5, label="Umbral ±151 (Riesgo)")
-        axs[1].axhline(-151, color="red",  linestyle="--", alpha=0.7, linewidth=1.5)
-        axs[1].fill_between(df_plot.index, -50, 50, color="gold", alpha=0.08)
+        # Layout general: leyenda horizontal en una sola línea junto al
+        # título, fuera del área de trazado (nunca tapa el gráfico); solo
+        # el panel de precio tiene entradas de leyenda, el panel MACD-V no
+        # muestra leyenda propia. Zoom/pan interactivo viene de fábrica con
+        # Plotly (rueda del mouse, arrastrar para desplazar, doble click
+        # para restaurar la vista).
+        fig.update_layout(
+            template="plotly_dark",
+            height=750,
+            margin=dict(l=10, r=10, t=90, b=10),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom", y=1.02,
+                xanchor="left", x=0,
+                font=dict(size=10),
+            ),
+            hovermode="x unified",
+            dragmode="zoom",
+        )
+        fig.update_xaxes(rangeslider_visible=False)
 
-        # Límite de eje FIJO: evita que la escala del panel MACD-V "salte"
-        # entre 100/-100 y 150/0/etc. según cuántos datos entren en la
-        # ventana de meses seleccionada. Se calcula sobre TODO el histórico
-        # cargado (no solo df_plot), con margen, para que sea estable al
-        # mover el slider de "Meses a visualizar".
-        macdv_abs_max = float(df["MACD_V"].abs().max())
-        y_limit = max(200.0, macdv_abs_max * 1.10)
-        axs[1].set_ylim(-y_limit, y_limit)
-
-        last_macd = float(df_plot["MACD_V"].iloc[-1])
-        macd_color_final = '#FF0000' if abs(last_macd) >= 151 else '#FFFFFF'
-        axs[1].text(1.01, last_macd, f'{last_macd:.2f}',
-                    transform=axs[1].get_yaxis_transform(),
-                    fontsize=9, color=macd_color_final, va='center', fontweight='bold')
-
-        axs[1].set_title("MACD-V (momentum normalizado por ATR)", fontsize=11, fontweight='bold', pad=6)
-        axs[1].grid(alpha=0.25, linestyle='--')
-        axs[1].set_ylabel("MACD-V", fontsize=9)
-        axs[1].set_xlabel("Fecha", fontsize=9)
-        axs[1].yaxis.tick_right()
-        axs[1].yaxis.set_label_position("right")
-        axs[1].tick_params(axis='both', labelsize=8)
-        axs[1].legend(loc='upper left', bbox_to_anchor=(1.05, 1.0), fontsize=8, framealpha=0.9)
-
-        st.pyplot(fig, use_container_width=True, clear_figure=True)
+        st.plotly_chart(fig, use_container_width=True, config={
+            "scrollZoom": True,
+            "displaylogo": False,
+            "modeBarButtonsToAdd": ["drawline", "eraseshape"],
+        })
 
         # ================= DOCUMENTACIÓN =================
         st.markdown("---")
@@ -443,13 +442,16 @@ def main():
 
             La **SMA 200** en el gráfico es solo de referencia visual (tendencia de
             largo plazo) — no participa en la lógica de clasificación, que usa
-            exclusivamente SMA 50 + MACD-V. Con menos de 200 semanas de historial
-            (ticker joven o "Histórico (años)" bajo) puede no mostrarse completa
-            al inicio del gráfico.
+            exclusivamente SMA 50 + MACD-V.
 
             El eje del panel MACD-V se fija con el máximo histórico del ticker (no
             solo la ventana visible), para que la escala se mantenga estable al
             cambiar "Meses a visualizar".
+
+            **Interacción con el gráfico:** rueda del mouse o pellizco para hacer
+            zoom, clic y arrastrar para desplazarte, doble clic para restaurar la
+            vista original. El panel de precio y el de MACD-V están sincronizados
+            en el eje de fechas.
 
             #### ⚠️ Análisis de Riesgo
 
@@ -469,4 +471,4 @@ if __name__ == "__main__":
         main()
     else:
         st.title("🔒 Acceso Restringido")
-        st.info("Por favor, introdude tus credenciales en el menú lateral (sidebar) para acceder.")
+        st.info("Por favor, introduce tus credenciales en el menú lateral (sidebar) para acceder.")
