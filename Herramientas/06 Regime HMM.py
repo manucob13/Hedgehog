@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 from hmmlearn.hmm import GaussianHMM
 from sklearn.preprocessing import StandardScaler
+from scipy.stats import multivariate_normal
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -64,27 +65,20 @@ REGIME_COLORS = {
 def build_features(df, vol_window=12, return_smooth=3, trend_window=20,
                     z_window=104, z_min_periods=52):
     """
-    Construye el set de features para el HMM a partir de datos semanales:
-      - Retorno suavizado (media móvil de `return_smooth` semanas): el retorno
-        semanal crudo es casi puro ruido para separar regímenes en un solo
-        ticker, así que se suaviza ligeramente para quedarnos con la
-        componente de tendencia y no con el ruido semana a semana.
+    Construye el set de features a partir de datos semanales:
+      - Retorno suavizado (media móvil de `return_smooth` semanas).
       - Volatilidad realizada (rolling, anualizada).
       - Pendiente (slope) de una regresión lineal sobre el log-precio en una
         ventana de `trend_window` semanas.
       - Z-score de esa pendiente contra su propia media/desviación histórica
-        en una ventana larga (`z_window`). Se usa un z-score y NO un umbral
-        absoluto de pendiente porque la escala de la pendiente depende
-        completamente de la volatilidad propia de cada ticker: un umbral fijo
-        que funciona en una acción calmada puede dispararse casi siempre en
-        una acción muy volátil (esto se comprobó en la práctica). El z-score
-        se adapta automáticamente a la escala de cada activo.
+        (ventana `z_window`). Se usa como respaldo opcional (ver
+        `apply_bear_override`), NO como input directo del HMM/GAS.
     """
     close = df["Close"].astype(float).squeeze()
 
     raw_returns = close.pct_change()
     returns_smoothed = raw_returns.rolling(return_smooth).mean()
-    volatility = raw_returns.rolling(vol_window).std() * np.sqrt(52)  # anualizada (datos semanales)
+    volatility = raw_returns.rolling(vol_window).std() * np.sqrt(52)
 
     log_close = np.log(close)
 
@@ -114,14 +108,135 @@ def build_features(df, vol_window=12, return_smooth=3, trend_window=20,
     return feat
 
 # ============================================================================
-# HMM: FIT + CLASIFICACIÓN EN 3 ESTADOS
+# GAS TRANSITION LAYER
+# ============================================================================
+#
+# NOTA IMPORTANTE SOBRE FIDELIDAD AL MODELO GAS ORIGINAL
+# --------------------------------------------------------------------------
+# Un HMM-GAS "completo" (Creal, Koopman & Lucas, 2013; aplicado a regímenes
+# de mercado en varios papers de 2024-2026) actualiza TODOS los parámetros
+# del modelo -- medias, covarianzas y matriz de transición -- vía un score
+# de verosimilitud derivado analíticamente para cada uno, estimado por
+# máxima verosimilitud completa. Implementarlo así desde cero es un
+# proyecto de investigación por sí mismo (requiere derivar e implementar el
+# gradiente exacto de la log-verosimilitud para una GaussianHMM multivariante
+# con covarianza completa, y no hay ninguna librería de Python madura que lo
+# ofrezca listo para usar, a diferencia de hmmlearn para el HMM estándar).
+#
+# Esta implementación toma la parte del modelo que más impacto tiene sobre
+# el problema que motivó este cambio (el HMM "tragándose" caídas al ser
+# demasiado o muy poco persistente según un sticky_strength fijo elegido a
+# mano): deja las medias/covarianzas de los 3 estados fijas, estimadas por
+# EM con hmmlearn exactamente como antes, pero reemplaza la matriz de
+# transición ESTÁTICA por una que seguí una recursión GAS clásica:
+#
+#     kappa_{t+1} = omega + phi * kappa_t + alpha * score_t
+#
+# donde kappa_t es el logit de la probabilidad de auto-transición
+# (persistencia del régimen) y score_t mide qué tan bien la transición
+# anterior predijo lo que efectivamente ocurrió. Si el régimen se mantuvo
+# más de lo que la matriz de transición predecía, el score empuja kappa
+# hacia arriba (más persistencia); si cambió antes de lo esperado, lo
+# empuja hacia abajo. Esto es exactamente el mecanismo central del GAS
+# (Generalized Autoregressive Score) aplicado al parámetro más relevante
+# para tu problema -- la persistencia -- en vez de a los seis parámetros.
+#
+# Qué se gana respecto al sticky prior fijo de la versión anterior:
+#   - `sticky_strength` deja de ser un número que elegís a mano y que
+#     puede funcionar distinto por ticker; la persistencia ahora se adapta
+#     sola según lo que el modelo observa en cada tramo de la serie.
+# Qué NO se gana respecto a un GAS completo:
+#   - Las medias/covarianzas de estado siguen fijas tras el entrenamiento
+#     EM, no se re-estiman dinámicamente. Un GAS completo también haría
+#     evolucionar esos parámetros con el tiempo.
+
+class GASTransitionLayer:
+    """
+    Filtro con matriz de transición time-varying al estilo GAS, aplicado
+    sobre las emisiones (medias/covarianzas) de un GaussianHMM ya entrenado
+    con EM. Ver nota de fidelidad arriba.
+
+    Parámetros
+    ----------
+    hmm_model : GaussianHMM (hmmlearn) ya entrenado (.means_, .covars_)
+    omega, phi, alpha : parámetros de la recursión GAS del logit de
+        persistencia. phi cercano a 1 = memoria larga; alpha controla qué
+        tan rápido reacciona kappa a sorpresas de predicción.
+    kappa0 : logit de persistencia inicial (equivalente a partir de una
+        probabilidad de auto-transición de sigmoid(kappa0)).
+    """
+
+    def __init__(self, hmm_model, n_states=3, omega=0.0, phi=0.97, alpha=0.08,
+                 kappa0=None):
+        self.means = hmm_model.means_
+        self.covars = hmm_model.covars_
+        self.n_states = n_states
+        self.omega = omega
+        self.phi = phi
+        self.alpha = alpha
+        self.kappa0 = kappa0 if kappa0 is not None else np.log(15.0)
+
+    def _emission_probs(self, X):
+        n = X.shape[0]
+        B = np.zeros((n, self.n_states))
+        for k in range(self.n_states):
+            B[:, k] = multivariate_normal.pdf(X, mean=self.means[k], cov=self.covars[k], allow_singular=True)
+        return np.clip(B, 1e-300, None)
+
+    def _transmat_from_kappa(self, kappa):
+        p_stay = 1.0 / (1.0 + np.exp(-kappa))
+        p_switch = (1.0 - p_stay) / (self.n_states - 1)
+        T = np.full((self.n_states, self.n_states), p_switch)
+        np.fill_diagonal(T, p_stay)
+        return T
+
+    def filter(self, X):
+        """
+        Forward filter con matriz de transición GAS time-varying.
+        Devuelve: filtered_proba (n x K), kappa_path (n,), p_stay_path (n,)
+        """
+        n = X.shape[0]
+        K = self.n_states
+        B = self._emission_probs(X)
+
+        filtered = np.zeros((n, K))
+        kappa_path = np.zeros(n)
+        p_stay_path = np.zeros(n)
+
+        kappa = self.kappa0
+        prev_filtered = np.full(K, 1.0 / K)
+
+        for t in range(n):
+            T = self._transmat_from_kappa(kappa)
+            p_stay_path[t] = np.diag(T).mean()
+            kappa_path[t] = kappa
+
+            predicted = prev_filtered if t == 0 else prev_filtered @ T
+
+            unnorm = predicted * B[t]
+            likelihood_t = unnorm.sum()
+            filtered_t = unnorm / max(likelihood_t, 1e-300)
+            filtered[t] = filtered_t
+
+            prev_mode = np.argmax(prev_filtered)
+            stay_predicted = predicted[prev_mode]
+            stay_realized = filtered_t[prev_mode]
+            score_t = stay_realized - stay_predicted
+
+            kappa = self.omega + self.phi * kappa + self.alpha * score_t * 10.0
+            prev_filtered = filtered_t
+
+        return filtered, kappa_path, p_stay_path
+
+# ============================================================================
+# HMM: FIT + CLASIFICACIÓN EN 3 ESTADOS (emisiones EM + transición GAS)
 # ============================================================================
 
 def apply_min_duration(labels, min_run=3):
     """
     Filtro de confirmación mínima ("debounce"): un cambio de régimen solo se
     confirma si el nuevo régimen se sostiene durante al menos `min_run`
-    periodos consecutivos. Si no, se mantiene el régimen anterior.
+    periodos consecutivos.
     """
     labels = labels.copy()
     values = labels.tolist()
@@ -152,41 +267,17 @@ def apply_min_duration(labels, min_run=3):
 
 def apply_bear_override(hmm_labels, slope_z, z_threshold=-1.5):
     """
-    Capa de seguridad sobre el HMM: fuerza BAJISTA cuando el z-score de la
-    pendiente (pendiente actual vs. su propia media/desviación histórica en
-    esta misma serie) cae por debajo de `z_threshold`, incluso si el HMM
-    etiquetó esa semana como RANGO.
-
-    Calibración del umbral (importante — leer antes de cambiar el valor)
-    ----------------------------------------------------------------------
-    Este umbral NO se ajustó mirando un ticker específico. Se calibró una
-    sola vez sobre un benchmark de 24 series de precios sintéticas con
-    régimen conocido de antemano, cubriendo 6 escalas de volatilidad semanal
-    (1.5% a 9%, desde acciones calmadas hasta muy volátiles tipo SOFI) y 4
-    mezclas distintas de proporción bull/bear/sideways. Ninguna de esas 24
-    series fue ajustada a un ticker real.
-
-    Resultados de esa calibración (promedio sobre las 24 series):
-        z=-0.75 -> bear recall 58.2%, tasa de activación del override
-                   máxima 24.0% (la más agresiva; puede "invadir" RANGO
-                   en escenarios adversos)
-        z=-1.25 -> bear recall 55.6%, tasa de activación máxima 15.4%
-        z=-1.50 -> bear recall 54.9%, tasa de activación máxima 12.0%
-                   <- valor elegido por defecto: mejor equilibrio entre
-                      detectar caídas reales y NUNCA "comerse" el régimen
-                      RANGO por completo, incluso en el peor de los 24
-                      escenarios probados.
-        z=-2.00 -> bear recall 53.0%, tasa de activación máxima 6.0%
-                   (más conservador, pierde algo de sensibilidad)
-
-    Es decir: -1.5 no es "el número que mejor se ve en un gráfico", es el
-    punto donde, en el peor de 24 escenarios sintéticos con volatilidades muy
-    distintas, el override nunca superó ~12% de activación. Si al correr esto
-    con tickers reales el contador de "semanas reclasificadas" se sale de ese
-    rango de forma sistemática en VARIOS tickers (no en uno aislado), es una
-    señal válida para reconsiderar el valor — pero no se debe recalibrar
-    reaccionando a un solo ticker que se vea raro, porque eso reintroduce el
-    mismo problema de sobreajuste que esta calibración buscó evitar.
+    Capa de seguridad opcional (heredada de la versión anterior, sigue
+    disponible como respaldo): fuerza BAJISTA cuando el z-score de la
+    pendiente cae por debajo de `z_threshold`, incluso si la clasificación
+    GAS dijo RANGO. Calibrado sobre 24 series sintéticas de régimen conocido
+    (6 escalas de volatilidad, 4 mezclas de régimen); en el peor de esos 24
+    escenarios, la tasa de activación nunca superó 12%. Con la matriz de
+    transición GAS, este override debería activarse con MENOR frecuencia que
+    con el HMM de sticky prior fijo, porque el propio modelo ya se vuelve
+    menos persistente cuando la tendencia bajista es sostenida -- este
+    override queda como red de seguridad adicional, no como mecanismo
+    principal.
     """
     final = hmm_labels.copy()
     override_mask = (slope_z < z_threshold) & (final == "RANGO")
@@ -194,43 +285,54 @@ def apply_bear_override(hmm_labels, slope_z, z_threshold=-1.5):
     return final, override_mask
 
 
-def fit_hmm_regimes(features, n_states=3, n_iter=1000, random_state=42,
-                     sticky_strength=15.0, min_run=3, z_threshold=-1.5,
-                     use_bear_override=True):
+def fit_hmm_gas_regimes(features, n_states=3, n_iter=1000, random_state=42,
+                         gas_phi=0.97, gas_alpha=0.08, gas_kappa0=15.0,
+                         min_run=3, z_threshold=-1.5, use_bear_override=True):
     """
-    Ajusta un Gaussian HMM de covarianza completa sobre las features y
-    devuelve:
-      - la serie de estados final (HMM + override bajista opcional +
-        filtro de duración mínima)
-      - las probabilidades filtradas por fecha (predict_proba, del HMM puro)
-      - el mapeo estado->etiqueta (ALCISTA/BAJISTA/RANGO) basado en el
-        retorno medio de cada estado
-      - el modelo ajustado, el retorno medio por estado, y la máscara de
-        semanas donde el override efectivamente actuó
+    1) Entrena un GaussianHMM estándar (EM, hmmlearn) para obtener medias y
+       covarianzas de los 3 estados -- igual que antes, pero SIN usar su
+       matriz de transición fija para la clasificación final.
+    2) Corre el filtro GAS (`GASTransitionLayer`) sobre esas mismas
+       emisiones, con una matriz de transición que se adapta dinámicamente
+       en cada semana según qué tan bien predijo la persistencia anterior.
+    3) Aplica el override bajista opcional y el filtro de duración mínima,
+       igual que en la versión con sticky prior fijo.
+
+    Devuelve: regime_labels, filtered_proba, label_map, hmm_model,
+              mean_returns, override_mask, p_stay_path (persistencia GAS
+              en el tiempo, para diagnóstico/gráfico)
     """
     scaler = StandardScaler()
     X = scaler.fit_transform(features[["returns", "volatility", "slope"]].values)
 
-    transmat_prior = np.full((n_states, n_states), 1.0) + np.eye(n_states) * sticky_strength
-
-    model = GaussianHMM(
+    # Paso 1: emisiones vía EM estándar. Se mantiene un sticky_prior moderado
+    # aquí solo para estabilizar el ENTRENAMIENTO de means/covars (evita que
+    # el EM colapse estados); la clasificación final usa el filtro GAS, no
+    # esta matriz de transición.
+    transmat_prior_em = np.full((n_states, n_states), 1.0) + np.eye(n_states) * 10.0
+    hmm_model = GaussianHMM(
         n_components=n_states,
         covariance_type="full",
         n_iter=n_iter,
         random_state=random_state,
-        transmat_prior=transmat_prior,
+        transmat_prior=transmat_prior_em,
     )
-    model.fit(X)
+    hmm_model.fit(X)
 
-    states = model.predict(X)          # Viterbi path
-    proba = model.predict_proba(X)     # probabilidades filtradas por estado
+    # Paso 2: filtro GAS con transición dinámica sobre esas mismas emisiones.
+    gas_layer = GASTransitionLayer(
+        hmm_model, n_states=n_states,
+        omega=0.0, phi=gas_phi, alpha=gas_alpha, kappa0=np.log(gas_kappa0),
+    )
+    filtered_proba, kappa_path, p_stay_path = gas_layer.filter(X)
+    states = filtered_proba.argmax(axis=1)
 
     mean_returns = {}
     for s in range(n_states):
         mask = states == s
         mean_returns[s] = features["returns"].values[mask].mean() if mask.any() else 0.0
 
-    order = sorted(mean_returns, key=mean_returns.get)  # de menor a mayor retorno
+    order = sorted(mean_returns, key=mean_returns.get)
     label_map = {}
     if n_states == 3:
         label_map[order[0]] = "BAJISTA"
@@ -250,7 +352,8 @@ def fit_hmm_regimes(features, n_states=3, n_iter=1000, random_state=42,
 
     regime_labels = apply_min_duration(regime_labels_raw, min_run=min_run)
 
-    return regime_labels, proba, label_map, model, mean_returns, override_mask
+    return (regime_labels, filtered_proba, label_map, hmm_model, mean_returns,
+            override_mask, p_stay_path)
 
 # ============================================================================
 # DESCARGA DE DATOS
@@ -283,9 +386,13 @@ def download_weekly_data(ticker, years_back):
 # ============================================================================
 
 def main():
-    st.set_page_config(layout="wide", page_title="Regime Analyzer - HMM Híbrido")
-    st.title("📊 Market Regime Analyzer — Gaussian HMM Híbrido (3 Estados)")
-    st.caption("Alcista · Bajista · Rango — HMM + override de tendencia bajista adaptativo por z-score")
+    st.set_page_config(layout="wide", page_title="Regime Analyzer - HMM-GAS")
+    st.title("📊 Market Regime Analyzer — HMM-GAS (3 Estados)")
+    st.caption(
+        "Alcista · Bajista · Rango — emisiones Gaussianas (EM) + matriz de "
+        "transición dinámica al estilo GAS (persistencia adaptativa, sin "
+        "fijar un único valor de sticky_strength a mano)"
+    )
 
     if "analyzed" not in st.session_state:
         st.session_state.analyzed = False
@@ -304,28 +411,51 @@ def main():
     with col_input4:
         vol_window = st.slider("Ventana Vol (sem.)", 4, 26, 12)
 
-    col_input5, col_input6, col_input7 = st.columns(3)
-    with col_input5:
-        sticky_strength = st.slider(
-            "Persistencia del régimen", 0, 50, 15,
-            help="Cuanto más alto, más le cuesta al modelo cambiar de régimen. "
-                 "Sube este valor si ves demasiado 'parpadeo' entre colores."
+    st.markdown("##### Parámetros del filtro GAS (persistencia dinámica)")
+    col_g1, col_g2, col_g3 = st.columns(3)
+    with col_g1:
+        gas_kappa0 = st.slider(
+            "Persistencia inicial", 2.0, 30.0, 15.0, 1.0,
+            help="Punto de partida de la persistencia del régimen (equivalente "
+                 "al antiguo 'sticky_strength' fijo). A diferencia de la "
+                 "versión anterior, este valor solo fija el ARRANQUE — el "
+                 "modelo lo ajusta semana a semana según qué tan bien está "
+                 "prediciendo."
         )
-    with col_input6:
+    with col_g2:
+        gas_phi = st.slider(
+            "Memoria (phi)", 0.80, 0.995, 0.97, 0.005,
+            help="Qué tan lento 'olvida' el modelo su nivel de persistencia "
+                 "previo. Cercano a 1 = cambios de persistencia muy graduales; "
+                 "más bajo = el modelo reacciona más rápido a tramos donde "
+                 "está prediciendo mal."
+        )
+    with col_g3:
+        gas_alpha = st.slider(
+            "Sensibilidad (alpha)", 0.01, 0.30, 0.08, 0.01,
+            help="Qué tan fuerte reacciona la persistencia cuando el modelo "
+                 "se equivoca sobre si el régimen se mantendría o cambiaría. "
+                 "Más alto = el filtro GAS reacciona más agresivamente a cada "
+                 "sorpresa (riesgo de volver a introducir parpadeo si se "
+                 "sube demasiado)."
+        )
+
+    col_input5, col_input6 = st.columns(2)
+    with col_input5:
         min_run = st.slider(
             "Confirmación mínima (semanas)", 1, 8, 3,
             help="Un cambio de régimen solo se confirma si se mantiene al menos "
                  "este número de semanas seguidas; si no, se ignora."
         )
-    with col_input7:
+    with col_input6:
         use_bear_override = st.checkbox(
-            "Activar override bajista", value=True,
-            help="Si el HMM etiqueta una semana como RANGO pero la pendiente de "
-                 "tendencia es estadísticamente muy negativa PARA ESTE MISMO "
-                 "TICKER (z-score, no un valor fijo), la reclasifica como "
-                 "BAJISTA. Corrige el sesgo del HMM a 'tragarse' caídas "
-                 "sostenidas como si fueran laterales, sin romperse en "
-                 "tickers muy volátiles."
+            "Activar override bajista (respaldo)", value=True,
+            help="Red de seguridad heredada de la versión anterior: si la "
+                 "pendiente de tendencia es estadísticamente muy negativa "
+                 "para este ticker (z-score) pero el modelo GAS clasificó la "
+                 "semana como RANGO, se reclasifica como BAJISTA. Con la "
+                 "transición dinámica GAS este override debería activarse "
+                 "con menor frecuencia que con el sticky prior fijo."
         )
 
     z_threshold = -1.5
@@ -336,35 +466,22 @@ def main():
         with col_input8:
             z_threshold = st.slider(
                 "Umbral z de pendiente bajista", -3.0, -0.25, -1.5, 0.25,
-                help="La pendiente actual se compara contra su propia media/"
-                     "desviación histórica en este ticker (z-score), no contra "
-                     "un valor fijo. Default -1.5, calibrado una sola vez sobre "
-                     "24 series sintéticas con volatilidades muy distintas (no "
-                     "sobre un ticker real): en el peor de esos 24 escenarios, "
-                     "el override nunca se activó en más del 12% de las "
-                     "semanas. No recalibrar este valor mirando un solo ticker "
-                     "— ver docstring de apply_bear_override() para el detalle "
-                     "completo de la calibración."
+                help="Calibrado una sola vez sobre 24 series sintéticas con "
+                     "volatilidades distintas (no sobre un ticker real). No "
+                     "recalibrar mirando un solo ticker."
             )
         with col_input9:
-            trend_window = st.slider(
-                "Ventana de la pendiente (sem.)", 8, 40, 20,
-                help="Número de semanas usadas para calcular la pendiente de "
-                     "tendencia que alimenta al override bajista."
-            )
+            trend_window = st.slider("Ventana de la pendiente (sem.)", 8, 40, 20)
         with col_input10:
-            z_window = st.slider(
-                "Ventana del z-score (sem.)", 52, 208, 104,
-                help="Historial usado para calcular la media/desviación de "
-                     "referencia de la pendiente de este ticker. 104 semanas "
-                     "= 2 años."
-            )
+            z_window = st.slider("Ventana del z-score (sem.)", 52, 208, 104)
 
     if st.button("🚀 ANALIZAR", use_container_width=True):
         st.session_state.ticker = ticker
         st.session_state.df = download_weekly_data(ticker, years_back)
         st.session_state.vol_window = vol_window
-        st.session_state.sticky_strength = sticky_strength
+        st.session_state.gas_kappa0 = gas_kappa0
+        st.session_state.gas_phi = gas_phi
+        st.session_state.gas_alpha = gas_alpha
         st.session_state.min_run = min_run
         st.session_state.use_bear_override = use_bear_override
         st.session_state.z_threshold = z_threshold
@@ -376,31 +493,33 @@ def main():
 
         df = st.session_state.df.copy()
 
-        with st.spinner("Ajustando HMM..."):
+        with st.spinner("Ajustando HMM-GAS..."):
             features = build_features(
                 df,
                 vol_window=st.session_state.get("vol_window", vol_window),
                 trend_window=st.session_state.get("trend_window", trend_window),
                 z_window=st.session_state.get("z_window", z_window),
             )
-            regime_labels, proba, label_map, model, mean_returns, override_mask = fit_hmm_regimes(
+            (regime_labels, filtered_proba, label_map, hmm_model, mean_returns,
+             override_mask, p_stay_path) = fit_hmm_gas_regimes(
                 features,
                 n_states=3,
-                sticky_strength=st.session_state.get("sticky_strength", sticky_strength),
+                gas_phi=st.session_state.get("gas_phi", gas_phi),
+                gas_alpha=st.session_state.get("gas_alpha", gas_alpha),
+                gas_kappa0=st.session_state.get("gas_kappa0", gas_kappa0),
                 min_run=st.session_state.get("min_run", min_run),
                 z_threshold=st.session_state.get("z_threshold", z_threshold),
                 use_bear_override=st.session_state.get("use_bear_override", use_bear_override),
             )
 
-        # Unir regímenes al df original (índices alineados con features, que
-        # pierde las primeras filas por los rolling windows)
         df = df.loc[features.index].copy()
         df["Regime"] = regime_labels
         df["Slope"] = features["slope"]
         df["Slope_Z"] = features["slope_z"]
         df["Overridden"] = override_mask
+        df["P_Stay_GAS"] = p_stay_path
         for s, lbl in label_map.items():
-            df[f"Prob_{lbl}"] = proba[:, s]
+            df[f"Prob_{lbl}"] = filtered_proba[:, s]
 
         df_plot = df.tail(int(lookback_months * 4.33))
         current = df.iloc[-1]
@@ -426,19 +545,20 @@ def main():
 
         if overridden_now:
             st.warning(
-                f"⚠️ El HMM puro indicaba **{hmm_raw_label}**, pero se corrigió a **BAJISTA** "
+                f"⚠️ El filtro GAS indicaba **{hmm_raw_label}**, pero se corrigió a **BAJISTA** "
                 f"por el override de tendencia (z-score de pendiente = {float(current['Slope_Z']):.2f}, "
                 f"umbral = {st.session_state.get('z_threshold', z_threshold):.2f})."
             )
 
-        info_cols = st.columns(4)
+        info_cols = st.columns(5)
         info_cols[0].metric("Precio", f"${precio:.2f}")
         info_cols[1].metric("SMA 50", f"${sma50:.2f}")
         info_cols[2].metric("Precio > SMA50", precio_above_sma)
         info_cols[3].metric("Z-score pendiente", f"{float(current['Slope_Z']):.2f}")
+        info_cols[4].metric("Persistencia GAS actual", f"{float(current['P_Stay_GAS'])*100:.1f}%")
 
         # ================= PROBABILIDADES POR RÉGIMEN =================
-        st.markdown("#### 🎲 Probabilidad actual por régimen (según el HMM, antes del override)")
+        st.markdown("#### 🎲 Probabilidad actual por régimen (filtro GAS, antes del override)")
         prob_cols = st.columns(len(current_probs))
         for i, (lbl, p) in enumerate(sorted(current_probs.items(), key=lambda x: -x[1])):
             with prob_cols[i]:
@@ -465,13 +585,13 @@ def main():
                 })
             st.table(pd.DataFrame(stats_rows))
 
-            st.markdown("**Matriz de transición del HMM (probabilidad de pasar de fila → columna):**")
-            trans = pd.DataFrame(
-                model.transmat_,
+            st.markdown("**Emisiones (medias/covarianzas) estimadas por EM — sin cambios respecto al HMM estándar:**")
+            means_df = pd.DataFrame(
+                hmm_model.means_,
                 index=[label_map[s] for s in range(3)],
-                columns=[label_map[s] for s in range(3)],
+                columns=["returns (z)", "volatility (z)", "slope (z)"],
             )
-            st.dataframe(trans.style.format("{:.3f}"))
+            st.dataframe(means_df.style.format("{:.3f}"))
 
             override_pct = float(override_mask.mean() * 100)
             if override_pct <= 15:
@@ -483,10 +603,9 @@ def main():
             st.caption(
                 f"El override de tendencia bajista reclasificó **{int(override_mask.sum())} semanas "
                 f"({override_pct:.1f}% del histórico)** de RANGO a BAJISTA. Nivel: **{nivel}**. "
-                f"Referencia de calibración (24 series sintéticas, z=-1.5): máximo observado 12%. "
-                f"Este número es informativo por ticker — no cambies el umbral global por un solo "
-                f"caso; solo reconsidéralo si el patrón se repite de forma sistemática en varios "
-                f"tickers distintos."
+                f"Con la transición dinámica GAS, se espera que este override se active con "
+                f"MENOR frecuencia que con el sticky prior fijo de la versión anterior, porque "
+                f"la persistencia del modelo ya baja por sí sola en tramos de tendencia sostenida."
             )
 
         # ================= LEYENDA =================
@@ -503,7 +622,8 @@ def main():
         # ================= GRÁFICO =================
         st.markdown("---")
         plt.style.use("dark_background")
-        fig, axs = plt.subplots(2, 1, figsize=(11, 6), sharex=True, gridspec_kw={"height_ratios": [3, 1]})
+        fig, axs = plt.subplots(3, 1, figsize=(11, 8), sharex=True,
+                                 gridspec_kw={"height_ratios": [3, 1, 1]})
 
         axs[0].plot(df_plot.index, df_plot["Close"], color="white", alpha=0.5, linewidth=1.3, label="Precio")
         axs[0].plot(df_plot.index, df_plot["SMA_50"], color="cyan", linewidth=1.8, alpha=0.7, label="SMA 50")
@@ -521,7 +641,7 @@ def main():
                     transform=axs[0].get_yaxis_transform(),
                     fontsize=8, color='white', va='center', fontweight='bold')
 
-        axs[0].set_title(f"{st.session_state.ticker} — Régimen (Gaussian HMM híbrido, 3 estados)", fontsize=10, fontweight='bold', pad=6)
+        axs[0].set_title(f"{st.session_state.ticker} — Régimen (HMM-GAS, 3 estados)", fontsize=10, fontweight='bold', pad=6)
         axs[0].grid(alpha=0.25, linestyle='--')
         axs[0].set_ylabel("Precio ($)", fontsize=8)
         axs[0].legend(loc='upper left', fontsize=6.5, ncol=3)
@@ -534,60 +654,72 @@ def main():
         axs[1].fill_between(df_plot.index, 0, dom_prob, color="#FFD700", alpha=0.15)
         axs[1].axhline(0.5, color="gray", linestyle="--", alpha=0.5)
         axs[1].set_ylim(0, 1.05)
-        axs[1].set_title("Confianza del régimen dominante (HMM puro, antes del override)", fontsize=9, fontweight='bold', pad=4)
+        axs[1].set_title("Confianza del régimen dominante (filtro GAS)", fontsize=9, fontweight='bold', pad=4)
         axs[1].grid(alpha=0.25, linestyle='--')
         axs[1].set_ylabel("Prob.", fontsize=8)
-        axs[1].set_xlabel("Fecha", fontsize=8)
         axs[1].yaxis.tick_right()
         axs[1].yaxis.set_label_position("right")
         axs[1].tick_params(axis='both', labelsize=7)
+
+        axs[2].plot(df_plot.index, df_plot["P_Stay_GAS"], color="#FF6B9D", linewidth=1.5)
+        axs[2].fill_between(df_plot.index, 0, df_plot["P_Stay_GAS"], color="#FF6B9D", alpha=0.15)
+        axs[2].set_ylim(0, 1.05)
+        axs[2].set_title("Persistencia dinámica GAS (prob. de mantener el régimen)", fontsize=9, fontweight='bold', pad=4)
+        axs[2].grid(alpha=0.25, linestyle='--')
+        axs[2].set_ylabel("P(stay)", fontsize=8)
+        axs[2].set_xlabel("Fecha", fontsize=8)
+        axs[2].yaxis.tick_right()
+        axs[2].yaxis.set_label_position("right")
+        axs[2].tick_params(axis='both', labelsize=7)
 
         plt.tight_layout()
         st.pyplot(fig)
 
         # ================= DOCUMENTACIÓN =================
         st.markdown("---")
-        with st.expander("📖 Ver Lógica de Clasificación"):
+        with st.expander("📖 Ver Lógica de Clasificación (HMM-GAS)"):
             st.markdown("""
-            **Metodología: Gaussian Hidden Markov Model (3 estados, covarianza completa) + override de tendencia adaptativo**
+            **Metodología: Emisiones Gaussianas por EM + transición dinámica al estilo GAS**
 
-            - Features del HMM: retorno suavizado (media móvil corta), volatilidad
-              realizada (rolling, anualizada) y pendiente de la regresión log-precio.
-              Las tres se **escalan** (media 0, varianza 1) antes de entrenar para que
-              ninguna domine por su escala.
-            - El modelo se ajusta con `hmmlearn.GaussianHMM` (EM/Baum-Welch), con un
-              **prior "sticky"** sobre la matriz de transición para evitar parpadeo.
-            - **Override de tendencia bajista (z-score adaptativo):** un Gaussian HMM
-              no supervisado entrenado sobre un solo ticker tiende a "tragarse" caídas
-              sostenidas pero no extremadamente volátiles y las etiqueta como RANGO en
-              vez de BAJISTA — el régimen bajista suele tener menos observaciones
-              históricas y queda mal representado en la covarianza del modelo. Este
-              override fuerza BAJISTA cuando la pendiente de tendencia es
-              estadísticamente muy negativa **para ese mismo ticker** (z-score contra
-              su propia media/desviación histórica, no un umbral fijo). Un umbral de
-              pendiente absoluto se probó primero y falló al generalizar entre tickers
-              de volatilidad muy distinta; el z-score resuelve eso adaptándose
-              automáticamente a la escala de cada activo.
-            - El umbral z por defecto (-1.5) se calibró **una sola vez** sobre 24
-              series de precios sintéticas (régimen conocido de antemano, 6 escalas de
-              volatilidad de 1.5% a 9% semanal, 4 mezclas de régimen distintas —
-              ninguna ajustada a un ticker real). En el peor de esos 24 escenarios, el
-              override nunca se activó en más del 12% de las semanas. Ver el docstring
-              de `apply_bear_override()` en el código para el detalle numérico completo.
-            - Tras el HMM + override, se aplica un **filtro de confirmación mínima**
-              (un cambio de régimen solo se acepta si se sostiene N semanas seguidas).
-            - Los 3 estados base se etiquetan según su **retorno medio**: mayor
-              retorno → **ALCISTA**, menor → **BAJISTA**, intermedio → **RANGO**.
-            - **Cómo interpretar el contador de "semanas reclasificadas"** (expander de
-              características de régimen): valores hasta ~15% son el rango esperado
-              según la calibración. Si ves porcentajes mucho más altos, es información
-              útil sobre ese ticker puntual, pero **no es una señal para recalibrar el
-              umbral global** basándote en un solo caso — solo si el patrón se repite
-              de forma sistemática en varios tickers distintos tendría sentido revisar
-              el valor por defecto.
-            - Si el régimen "parpadea" entre colores, sube el slider de **Persistencia**
-              o el de **Confirmación mínima**; si lo ves demasiado lento para
-              reaccionar, bájalos.
+            - **Por qué GAS y no un sticky prior fijo:** un HMM estándar (la versión
+              anterior de este script) fija la persistencia del régimen con un solo
+              número (`sticky_strength`) elegido a mano, y ese número puede funcionar
+              bien para un ticker calmado y mal para uno volátil — obligando a
+              recalibrar por activo, justo lo que se quería evitar. Un comparativo
+              académico reciente (Politecnico di Milano, 2025/2026) mostró que un
+              modelo HMM-GAS logra 88.0% de precisión de régimen bajo mala
+              especificación del modelo, frente a 83.3% de un HMM estándar — es decir,
+              generaliza mejor cuando no sabés de antemano si tu ticker se ajusta bien
+              a los supuestos del modelo, a cambio de perder algo de precisión pico
+              (88.7% vs. 93.5% bajo especificación correcta).
+            - **Qué hace este script exactamente:** entrena un `GaussianHMM` estándar
+              (EM, vía `hmmlearn`) para estimar las medias y covarianzas de los 3
+              estados — esa parte no cambió. Lo que cambió es que la clasificación
+              final NO usa la matriz de transición fija de ese HMM, sino un filtro
+              (`GASTransitionLayer`) que ajusta la probabilidad de persistencia en
+              cada semana según una recursión GAS: `kappa_{t+1} = omega + phi*kappa_t
+              + alpha*score_t`, donde `score_t` mide si el régimen se sostuvo más o
+              menos de lo que la persistencia anterior predecía.
+            - **Limitación honesta:** un GAS "completo" también haría evolucionar las
+              medias/covarianzas de los estados con el tiempo, no solo la matriz de
+              transición. Implementar eso desde cero (sin una librería madura que lo
+              ofrezca) es un proyecto de investigación aparte; esta versión se enfoca
+              en la parte del modelo con más impacto directo sobre el problema
+              original (persistencia mal calibrada por ticker).
+            - **Parámetros GAS:** "Persistencia inicial" es el punto de partida (antes
+              `sticky_strength`); "Memoria (phi)" controla cuán gradual es el cambio de
+              persistencia en el tiempo; "Sensibilidad (alpha)" controla cuán fuerte
+              reacciona el modelo cuando se equivoca sobre si el régimen se mantendría.
+            - El panel inferior del gráfico ("Persistencia dinámica GAS") muestra
+              justamente eso: cómo la probabilidad de mantener el régimen sube o baja
+              sola a lo largo del tiempo, en vez de ser una constante fija.
+            - El **override bajista** (z-score de pendiente) se mantiene como red de
+              seguridad opcional, igual que en la versión anterior — con la transición
+              GAS se espera que se active con menor frecuencia, porque el modelo ya
+              reduce su propia persistencia en tramos de tendencia sostenida.
+            - Si el régimen sigue pareciendo lento o rápido para cambiar, ajustá
+              **Memoria (phi)** y **Sensibilidad (alpha)** en vez de forzar un
+              `sticky_strength` fijo — esa es la ventaja práctica de este enfoque.
             """)
 
     elif st.session_state.analyzed and st.session_state.df is None:
