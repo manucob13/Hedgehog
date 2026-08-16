@@ -340,7 +340,14 @@ def main():
         # ================= GRÁFICOS =================
         st.markdown("---")
         plt.style.use("dark_background")
-        fig, axs = plt.subplots(2, 1, figsize=(11, 6), sharex=True, gridspec_kw={"height_ratios": [3, 1]})
+
+        # Figura mas alta en total (13x11) y proporcion 2:1 entre panel de
+        # precio y panel de MACD-V, en vez de 3:1 -- el panel de MACD-V
+        # queda notablemente mas alto y legible que antes.
+        fig, axs = plt.subplots(
+            2, 1, figsize=(13, 11), sharex=True,
+            gridspec_kw={"height_ratios": [2, 1], "hspace": 0.08},
+        )
 
         # ── Gráfico 1: Precio + Régimen MACD-V ──────────────────────────────
         axs[0].plot(df_plot.index, df_plot["Close"],   color="white",   alpha=0.5,  linewidth=1.3,  label="Precio")
@@ -353,52 +360,51 @@ def main():
         for r, c in REGIME_COLORS.items():
             m = df_plot["Regime_MACDV"] == r
             if m.any():
-                axs[0].scatter(df_plot[m].index, df_plot[m]["Close"], c=c, s=70, alpha=0.95,
+                axs[0].scatter(df_plot[m].index, df_plot[m]["Close"], c=c, s=80, alpha=0.95,
                                edgecolors='black', linewidths=1.2, zorder=5, label=f"{r}")
 
         last_price = float(df_plot["Close"].iloc[-1])
         axs[0].text(1.01, last_price, f'${last_price:.2f}',
                     transform=axs[0].get_yaxis_transform(),
-                    fontsize=8, color='white', va='center', fontweight='bold')
+                    fontsize=9, color='white', va='center', fontweight='bold')
 
-        axs[0].set_title(f"{ticker} — Régimen (MACD-V)", fontsize=10, fontweight='bold', pad=6)
+        axs[0].set_title(f"{ticker} — Régimen (MACD-V)", fontsize=12, fontweight='bold', pad=8)
         axs[0].grid(alpha=0.25, linestyle='--')
-        axs[0].set_ylabel("Precio ($)", fontsize=8)
-        axs[0].legend(loc='upper left', fontsize=6.5, ncol=3)
+        axs[0].set_ylabel("Precio ($)", fontsize=9)
+        axs[0].legend(loc='upper left', fontsize=7.5, ncol=3)
         axs[0].yaxis.tick_right()
         axs[0].yaxis.set_label_position("right")
-        axs[0].tick_params(axis='both', labelsize=7)
+        axs[0].tick_params(axis='both', labelsize=8)
 
         # ── Gráfico 2: MACD-V con zonas y umbral de riesgo ──────────────────
         macd_colors = ['#FF0000' if abs(m) >= 151 else '#FFFFFF' for m in df_plot["MACD_V"]]
         for i in range(len(df_plot) - 1):
             axs[1].plot(df_plot.index[i:i+2], df_plot["MACD_V"].iloc[i:i+2],
-                        color=macd_colors[i], linewidth=1.8)
+                        color=macd_colors[i], linewidth=2.0)
 
         axs[1].axhline(  0, color="gray",  linestyle="-",  alpha=0.4)
-        axs[1].axhline( 50, color="green", linestyle=":",  alpha=0.4, linewidth=1, label="Zona ±50 (Rango)")
-        axs[1].axhline(-50, color="red",   linestyle=":",  alpha=0.4, linewidth=1)
-        axs[1].axhline( 151, color="red",  linestyle="--", alpha=0.6, linewidth=1.3, label="Umbral ±151 (Riesgo)")
-        axs[1].axhline(-151, color="red",  linestyle="--", alpha=0.6, linewidth=1.3)
+        axs[1].axhline( 50, color="green", linestyle=":",  alpha=0.5, linewidth=1.2, label="Zona ±50 (Rango)")
+        axs[1].axhline(-50, color="red",   linestyle=":",  alpha=0.5, linewidth=1.2)
+        axs[1].axhline( 151, color="red",  linestyle="--", alpha=0.7, linewidth=1.5, label="Umbral ±151 (Riesgo)")
+        axs[1].axhline(-151, color="red",  linestyle="--", alpha=0.7, linewidth=1.5)
         axs[1].fill_between(df_plot.index, -50, 50, color="gold", alpha=0.08)
 
         last_macd = float(df_plot["MACD_V"].iloc[-1])
         macd_color_final = '#FF0000' if abs(last_macd) >= 151 else '#FFFFFF'
         axs[1].text(1.01, last_macd, f'{last_macd:.2f}',
                     transform=axs[1].get_yaxis_transform(),
-                    fontsize=8, color=macd_color_final, va='center', fontweight='bold')
+                    fontsize=9, color=macd_color_final, va='center', fontweight='bold')
 
-        axs[1].set_title("MACD-V (momentum normalizado por ATR)", fontsize=9, fontweight='bold', pad=4)
+        axs[1].set_title("MACD-V (momentum normalizado por ATR)", fontsize=11, fontweight='bold', pad=6)
         axs[1].grid(alpha=0.25, linestyle='--')
-        axs[1].set_ylabel("MACD-V", fontsize=8)
-        axs[1].set_xlabel("Fecha", fontsize=8)
+        axs[1].set_ylabel("MACD-V", fontsize=9)
+        axs[1].set_xlabel("Fecha", fontsize=9)
         axs[1].yaxis.tick_right()
         axs[1].yaxis.set_label_position("right")
-        axs[1].tick_params(axis='both', labelsize=7)
-        axs[1].legend(loc='upper left', fontsize=6.5)
+        axs[1].tick_params(axis='both', labelsize=8)
+        axs[1].legend(loc='upper left', fontsize=7.5)
 
-        plt.tight_layout()
-        st.pyplot(fig)
+        st.pyplot(fig, use_container_width=True)
 
         # ================= DOCUMENTACIÓN =================
         st.markdown("---")
