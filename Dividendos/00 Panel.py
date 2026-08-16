@@ -84,8 +84,17 @@ def _sync_down():
 # Gráfico lineal de evolución del NLV
 # ---------------------------------------------------------------------------
 
+import plotly.graph_objects as go
+import numpy as np
+import pandas as pd
+
 def render_nlv_line_chart(equity_df, scale="linear", display_mode="dollar"):
-    df = equity_df.sort_values("reportDate")
+    """
+    Gráfico de evolución del NLV con línea/relleno verde cuando el valor es
+    positivo y rojo cuando es negativo, cambiando de color exactamente en
+    el cruce por cero (sin huecos ni cortes artificiales).
+    """
+    df = equity_df.sort_values("reportDate").reset_index(drop=True)
 
     if display_mode == "percent":
         base = df["total"].iloc[0]
@@ -95,27 +104,63 @@ def render_nlv_line_chart(equity_df, scale="linear", display_mode="dollar"):
         y_values = df["total"]
         hover_fmt = "$%{y:,.2f}"
 
+    x_raw = df["reportDate"].to_numpy()
+    y_raw = y_values.to_numpy(dtype=float)
+
+    # Fechas -> número (ns) para poder interpolar el punto exacto de cruce por cero
+    x_num = x_raw.astype("datetime64[ns]").astype("int64").astype(float)
+
+    x_full = [x_num[0]]
+    y_full = [y_raw[0]]
+    for i in range(1, len(y_raw)):
+        y0, y1 = y_raw[i - 1], y_raw[i]
+        x0, x1 = x_num[i - 1], x_num[i]
+
+        # Cambio de signo estricto entre dos puntos consecutivos: insertamos
+        # el punto real donde la recta que los une cruza y=0. Esto es lo que
+        # antes faltaba y provocaba el efecto "a trozos": el filtro where()
+        # cortaba la serie en el último punto antes del cambio de signo, en
+        # vez de llegar hasta cero.
+        if (
+            not np.isnan(y0)
+            and not np.isnan(y1)
+            and y0 != 0
+            and y1 != 0
+            and np.sign(y0) != np.sign(y1)
+        ):
+            t = y0 / (y0 - y1)  # fracción del segmento donde y = 0
+            x_zero = x0 + t * (x1 - x0)
+            x_full.append(x_zero)
+            y_full.append(0.0)
+
+        x_full.append(x1)
+        y_full.append(y1)
+
+    x_full = pd.to_datetime(np.array(x_full).astype("int64"))
+    y_full = np.array(y_full)
+
     # El relleno "hasta cero" no es válido en escala logarítmica (cero = -infinito en log).
     use_fill = scale == "linear"
 
-    # Coloreamos por TRAMOS según el signo de cada punto (no según el
-    # primer/último valor global), separando en dos series con NaN donde
-    # no aplica: así Plotly corta la línea en el cambio de signo.
-    pos_y = y_values.where(y_values >= 0)
-    neg_y = y_values.where(y_values < 0)
+    # Con los cruces por cero ya insertados como puntos reales, el filtro por
+    # signo ahora sí empieza/termina cada tramo exactamente en 0, sin huecos.
+    pos_y = np.where(y_full >= 0, y_full, np.nan)
+    neg_y = np.where(y_full <= 0, y_full, np.nan)
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=df["reportDate"], y=pos_y, mode="lines",
+        x=x_full, y=pos_y, mode="lines",
         line=dict(color="#2ECC71", width=2),
+        connectgaps=False,
         fill="tozeroy" if use_fill else None,
         fillcolor="rgba(46,204,113,0.10)" if use_fill else None,
         hovertemplate=f"%{{x|%d/%m/%Y}}<br>{hover_fmt}<extra></extra>",
         showlegend=False,
     ))
     fig.add_trace(go.Scatter(
-        x=df["reportDate"], y=neg_y, mode="lines",
+        x=x_full, y=neg_y, mode="lines",
         line=dict(color="#E74C3C", width=2),
+        connectgaps=False,
         fill="tozeroy" if use_fill else None,
         fillcolor="rgba(231,76,60,0.10)" if use_fill else None,
         hovertemplate=f"%{{x|%d/%m/%Y}}<br>{hover_fmt}<extra></extra>",
@@ -143,6 +188,7 @@ def render_nlv_line_chart(equity_df, scale="linear", display_mode="dollar"):
         yaxis=yaxis_config,
     )
     return fig
+
 
 
 # ---------------------------------------------------------------------------
