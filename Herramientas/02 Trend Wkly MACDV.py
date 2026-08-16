@@ -183,7 +183,15 @@ def download_weekly_data(ticker, years_back):
 
     df = df.reset_index()
     df = df[["Date", "Open", "High", "Low", "Close"]].copy()
+
+    # Forzar tipo datetime explícito en la columna Date ANTES de indexarla:
+    # si por cualquier motivo (versión de yfinance, caché antigua, etc.) la
+    # columna llega como texto u otro formato, Plotly puede autoescalar el
+    # eje X con un rango absurdo (años sin datos reales) al mezclar tipos.
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df = df.dropna(subset=["Date"])
     df.set_index("Date", inplace=True)
+    df.sort_index(inplace=True)
 
     df.columns = [str(c) for c in df.columns]
 
@@ -233,15 +241,17 @@ def main():
         if "SMA_200" not in df.columns:
             df["SMA_200"] = df["Close"].rolling(200, min_periods=1).mean()
 
+        # Salvaguarda adicional: asegurar índice datetime ordenado incluso si
+        # el DataFrame vino de una caché de una versión anterior del script.
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index, errors="coerce")
+            df = df[df.index.notna()].sort_index()
+
         df["Regime_MACDV"] = classify_by_macdv(df)
         df["Risk_Level"]   = analyze_risk(df)
         st.session_state.df = df
 
-        # Nota: "Meses a visualizar" queda arriba (con el resto de los
-        # controles de entrada), antes del botón ANALIZAR, tal como pediste
-        # -- cambiarlo re-ejecuta el script y recorta df_plot sin necesitar
-        # volver a descargar datos (df ya está en session_state).
-        df_plot = df.tail(int(lookback_months * 4.33))
+        df_plot = df.tail(int(lookback_months * 4.33)).copy()
         current = df.iloc[-1]
 
         regime_macdv = df["Regime_MACDV"].iloc[-1]
@@ -338,6 +348,14 @@ def main():
         macdv_abs_max = float(df["MACD_V"].abs().max())
         y_limit_macdv = max(200.0, macdv_abs_max * 1.10)
 
+        # Rango de fechas EXPLÍCITO tomado de df_plot: se fuerza a Plotly a
+        # usar exactamente este rango en el eje X compartido, en vez de
+        # dejar que lo autoescale a partir de todas las trazas (incluidas
+        # las líneas horizontales de referencia), que es lo que producía
+        # un eje comprimido con décadas vacías sin datos reales.
+        x_min = df_plot.index.min()
+        x_max = df_plot.index.max()
+
         fig = make_subplots(
             rows=2, cols=1,
             shared_xaxes=True,
@@ -378,7 +396,6 @@ def main():
                     legendgroup="panel1",
                 ), row=1, col=1)
 
-        # Etiqueta del último precio, a la derecha del eje.
         last_price = float(df_plot["Close"].iloc[-1])
         fig.add_annotation(
             xref="paper", yref="y1", x=1.005, y=last_price,
@@ -394,14 +411,23 @@ def main():
             line=dict(color="white", width=2), showlegend=False,
         ), row=2, col=1)
 
-        fig.add_hline(y=0, line=dict(color="gray", width=1), row=2, col=1)
-        fig.add_hline(y=50, line=dict(color="green", width=1, dash="dot"), row=2, col=1)
-        fig.add_hline(y=-50, line=dict(color="red", width=1, dash="dot"), row=2, col=1)
-        fig.add_hline(y=151, line=dict(color="red", width=1.5, dash="dash"), row=2, col=1)
-        fig.add_hline(y=-151, line=dict(color="red", width=1.5, dash="dash"), row=2, col=1)
-        fig.add_hrect(y0=-50, y1=50, fillcolor="gold", opacity=0.08, line_width=0, row=2, col=1)
+        # add_hline/add_hrect con x0/x1 anclados EXPLÍCITAMENTE al rango real
+        # de fechas (en vez de usar el atajo automático de Plotly, que puede
+        # expandir el dominio del eje si no lo referencia bien).
+        for y_val, color, dash, width in [(0, "gray", "solid", 1), (50, "green", "dot", 1),
+                                           (-50, "red", "dot", 1), (151, "red", "dash", 1.5),
+                                           (-151, "red", "dash", 1.5)]:
+            fig.add_shape(
+                type="line", x0=x_min, x1=x_max, y0=y_val, y1=y_val,
+                line=dict(color=color, width=width, dash=dash),
+                row=2, col=1,
+            )
+        fig.add_shape(
+            type="rect", x0=x_min, x1=x_max, y0=-50, y1=50,
+            fillcolor="gold", opacity=0.08, line_width=0,
+            row=2, col=1,
+        )
 
-        # Etiqueta del último valor de MACD-V, a la derecha del eje.
         last_macd = float(df_plot["MACD_V"].iloc[-1])
         macd_label_color = "#FF3B3B" if abs(last_macd) >= 151 else "white"
         fig.add_annotation(
@@ -412,14 +438,16 @@ def main():
             row=2, col=1,
         )
 
+        # Rango de eje X fijado EXPLÍCITAMENTE a las fechas reales de df_plot,
+        # en ambas filas (aunque compartan eje, se fija por seguridad en las
+        # dos). Esto es lo que corrige el eje comprimido con décadas vacías.
+        fig.update_xaxes(range=[x_min, x_max], row=1, col=1)
+        fig.update_xaxes(range=[x_min, x_max], row=2, col=1)
+
         fig.update_yaxes(range=[-y_limit_macdv, y_limit_macdv], title_text="MACD-V", row=2, col=1, side="right")
         fig.update_yaxes(title_text="Precio ($)", row=1, col=1, side="right")
         fig.update_xaxes(title_text="Fecha", row=2, col=1)
 
-        # Títulos de cada panel como anotaciones manuales, en la MISMA
-        # coordenada 'y' que su leyenda respectiva -- una sola línea.
-        # (Sintaxis correcta de Plotly: "x domain"/"y domain" para el primer
-        # eje sin número, "x2 domain"/"y2 domain" para el segundo.)
         fig.add_annotation(
             xref="x domain", yref="y domain", x=0, y=1.14,
             xanchor="left", yanchor="bottom",
@@ -443,16 +471,15 @@ def main():
                 xanchor="right", x=1.0,
                 font=dict(size=10),
             ),
-            hovermode=False,   # sin tooltip al pasar el mouse
-            dragmode=False,    # sin arrastrar/desplazar
+            hovermode=False,
+            dragmode=False,
         )
-        # Ejes fijos: sin zoom, sin pan, sin rueda del mouse, sin rangeslider.
         fig.update_xaxes(fixedrange=True, rangeslider_visible=False)
         fig.update_yaxes(fixedrange=True)
 
         st.plotly_chart(fig, use_container_width=True, config={
-            "staticPlot": True,       # convierte el gráfico en no interactivo (como una imagen)
-            "displayModeBar": False,  # oculta la barra de herramientas de Plotly
+            "staticPlot": True,
+            "displayModeBar": False,
             "displaylogo": False,
         })
 
@@ -482,7 +509,8 @@ def main():
 
             El eje del panel MACD-V se fija con el máximo histórico del ticker (no
             solo la ventana visible), para que la escala se mantenga estable al
-            cambiar "Meses a visualizar".
+            cambiar "Meses a visualizar". El eje de fechas también se fija
+            explícitamente al rango real de datos visibles.
 
             #### ⚠️ Análisis de Riesgo
 
