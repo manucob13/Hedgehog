@@ -63,6 +63,16 @@ RISK_COLORS = {
     "Sin Riesgo": "#00FF00",
 }
 
+# Colores de las series del panel de precio (se reutilizan en la leyenda HTML
+# para que quede perfectamente coherente con lo que se ve en el gráfico).
+SERIES_COLORS = {
+    "Precio":  "#FFFFFF",
+    "SMA 50":  "#00FFFF",
+    "SMA 200": "#FFA500",
+    "EMA 8":   "#AAAAAA",
+    "EMA 21":  "#00BFFF",
+}
+
 # ============================================================================
 # INDICADORES (solo lo necesario para MACD-V)
 # ============================================================================
@@ -325,7 +335,7 @@ def main():
             </table>
             """, unsafe_allow_html=True)
 
-        # ================= LEYENDA DE COLORES (estática) ===================
+        # ================= LEYENDA DE COLORES (estática, badges por régimen) =
         st.markdown("### 🎨 Leyenda de Régimen")
         cols = st.columns(4)
         for idx, (regime, color) in enumerate(REGIME_COLORS.items()):
@@ -336,9 +346,41 @@ def main():
                     unsafe_allow_html=True
                 )
 
-        # ================= GRÁFICOS (Plotly, sin interactividad) ===========
-        st.markdown("---")
+        # ================= LEYENDA HTML DEL GRÁFICO (una sola línea) =======
+        # Construida completamente fuera de Plotly, en HTML/CSS puro con
+        # flexbox -- así se garantiza que quede en una única fila horizontal
+        # sin depender del motor de layout de leyendas de Plotly (que era
+        # lo que forzaba el salto a columna).
+        legend_items_html = ""
+        for name, color in SERIES_COLORS.items():
+            dash = "border-top:2px dashed" if name in ("EMA 8", "EMA 21") else "border-top:3px solid"
+            legend_items_html += f"""
+            <div style="display:flex;align-items:center;gap:6px;margin-right:18px;">
+                <div style="width:18px;{dash} {color};"></div>
+                <span style="color:#DDD;font-size:12px;">{name}</span>
+            </div>
+            """
+        for regime, color in REGIME_COLORS.items():
+            if regime == "RIESGO":
+                continue  # RIESGO no se marca como punto en el precio de este gráfico
+            legend_items_html += f"""
+            <div style="display:flex;align-items:center;gap:6px;margin-right:18px;">
+                <div style="width:10px;height:10px;border-radius:50%;background-color:{color};border:1px solid black;"></div>
+                <span style="color:#DDD;font-size:12px;">{regime}</span>
+            </div>
+            """
 
+        st.markdown(
+            f"""
+            <div style="display:flex;flex-wrap:nowrap;align-items:center;
+                        overflow-x:auto;padding:6px 4px 10px 4px;">
+                {legend_items_html}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # ================= GRÁFICOS (Plotly, sin interactividad, sin leyenda) =
         macdv_abs_max = float(df["MACD_V"].abs().max())
         y_limit_macdv = max(200.0, macdv_abs_max * 1.10)
 
@@ -347,35 +389,43 @@ def main():
         x_pad = (x_max - x_min) * 0.06
         x_max_padded = x_max + x_pad
 
+        # Panel 2 (MACD-V) con más altura relativa que antes (de 0.32 a 0.42
+        # del total) para que se vea notablemente más grande verticalmente.
         fig = make_subplots(
             rows=2, cols=1,
             shared_xaxes=True,
-            row_heights=[0.68, 0.32],
-            vertical_spacing=0.1,
+            row_heights=[0.58, 0.42],
+            vertical_spacing=0.09,
         )
 
-        # ── Panel 1: Precio + medias + puntos de régimen ────────────────────
+        # ── Panel 1: Precio + medias + puntos de régimen (sin leyenda propia,
+        # showlegend=False en todas las trazas porque la leyenda ahora vive
+        # como bloque HTML aparte, arriba del gráfico) ──────────────────────
         fig.add_trace(go.Scatter(
             x=df_plot.index, y=df_plot["Close"], mode="lines", name="Precio",
-            line=dict(color="#FFFFFF", width=2.6), opacity=1.0,
-            legendgroup="panel1",
+            line=dict(color=SERIES_COLORS["Precio"], width=2.6), opacity=1.0,
+            showlegend=False,
         ), row=1, col=1)
         fig.add_trace(go.Scatter(
             x=df_plot.index, y=df_plot["SMA_50"], mode="lines", name="SMA 50",
-            line=dict(color="cyan", width=1.3), opacity=0.75, legendgroup="panel1",
+            line=dict(color=SERIES_COLORS["SMA 50"], width=1.3), opacity=0.75,
+            showlegend=False,
         ), row=1, col=1)
         if df_plot["SMA_200"].notna().any():
             fig.add_trace(go.Scatter(
                 x=df_plot.index, y=df_plot["SMA_200"], mode="lines", name="SMA 200",
-                line=dict(color="orange", width=1.3), opacity=0.75, legendgroup="panel1",
+                line=dict(color=SERIES_COLORS["SMA 200"], width=1.3), opacity=0.75,
+                showlegend=False,
             ), row=1, col=1)
         fig.add_trace(go.Scatter(
             x=df_plot.index, y=df_plot["EMA_8"], mode="lines", name="EMA 8",
-            line=dict(color="#AAAAAA", width=1.1, dash="dash"), opacity=0.7, legendgroup="panel1",
+            line=dict(color=SERIES_COLORS["EMA 8"], width=1.1, dash="dash"), opacity=0.7,
+            showlegend=False,
         ), row=1, col=1)
         fig.add_trace(go.Scatter(
             x=df_plot.index, y=df_plot["EMA_21"], mode="lines", name="EMA 21",
-            line=dict(color="#00BFFF", width=1.1, dash="dash"), opacity=0.7, legendgroup="panel1",
+            line=dict(color=SERIES_COLORS["EMA 21"], width=1.1, dash="dash"), opacity=0.7,
+            showlegend=False,
         ), row=1, col=1)
 
         for r, c in REGIME_COLORS.items():
@@ -384,7 +434,7 @@ def main():
                 fig.add_trace(go.Scatter(
                     x=df_plot.index[m], y=df_plot["Close"][m], mode="markers", name=r,
                     marker=dict(color=c, size=9, line=dict(color="black", width=1)),
-                    legendgroup="panel1",
+                    showlegend=False,
                 ), row=1, col=1)
 
         last_price = float(df_plot["Close"].iloc[-1])
@@ -397,9 +447,7 @@ def main():
             row=1, col=1,
         )
 
-        # ── Panel 2: MACD-V con zonas de rango/riesgo (sin leyenda propia) ──
-        # Línea de MACD-V en AMARILLO (antes había quedado en blanco por
-        # error), coherente con el color de la zona de Rango.
+        # ── Panel 2: MACD-V con zonas de rango/riesgo ───────────────────────
         fig.add_trace(go.Scatter(
             x=df_plot.index, y=df_plot["MACD_V"], mode="lines", name="MACD-V",
             line=dict(color="#FFD700", width=2.2), showlegend=False,
@@ -430,11 +478,6 @@ def main():
             row=2, col=1,
         )
 
-        # Rango de X idéntico en ambas filas, y DOMINIO (posición/ancho
-        # físico del área de trazado dentro de la figura) también forzado
-        # a ser exactamente igual en las dos filas -- esto es lo que
-        # garantiza que el panel 2 tenga el MISMO ancho visual que el
-        # panel 1, sin depender del autoajuste de Plotly.
         fig.update_xaxes(range=[x_min, x_max_padded], domain=[0.0, 0.94], row=1, col=1)
         fig.update_xaxes(range=[x_min, x_max_padded], domain=[0.0, 0.94], row=2, col=1)
 
@@ -442,14 +485,16 @@ def main():
         fig.update_yaxes(title_text="Precio ($)", row=1, col=1, side="right")
         fig.update_xaxes(title_text="Fecha", row=2, col=1)
 
+        # Títulos de panel simples (ya no hay que compartir línea con la
+        # leyenda de Plotly, porque la leyenda es HTML aparte).
         fig.add_annotation(
-            xref="x domain", yref="y domain", x=0, y=1.16,
+            xref="x domain", yref="y domain", x=0, y=1.06,
             xanchor="left", yanchor="bottom",
             text=f"<b>{ticker} — Régimen (MACD-V)</b>",
             showarrow=False, font=dict(size=13, color="white"),
         )
         fig.add_annotation(
-            xref="x2 domain", yref="y2 domain", x=0, y=1.22,
+            xref="x2 domain", yref="y2 domain", x=0, y=1.06,
             xanchor="left", yanchor="bottom",
             text="<b>MACD-V (momentum normalizado por ATR)</b>",
             showarrow=False, font=dict(size=12, color="white"),
@@ -457,16 +502,10 @@ def main():
 
         fig.update_layout(
             template="plotly_dark",
-            height=780,
-            margin=dict(l=10, r=70, t=50, b=10),
-            legend=dict(
-                orientation="h",
-                yanchor="bottom", y=1.16,
-                xanchor="left", x=0.30,
-                font=dict(size=10),
-                tracegroupgap=10,
-                bgcolor="rgba(0,0,0,0)",
-            ),
+            height=880,  # figura más alta en total para que el panel MACD-V,
+                         # con su nueva proporción de 0.42, gane altura real
+            margin=dict(l=10, r=70, t=30, b=10),
+            showlegend=False,  # leyenda de Plotly completamente desactivada
             hovermode=False,
             dragmode=False,
         )
