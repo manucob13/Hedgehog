@@ -344,9 +344,6 @@ def main():
 
         x_min = df_plot.index.min()
         x_max = df_plot.index.max()
-        # Margen a la derecha del eje X, en el propio dominio de fechas, para
-        # que las etiquetas de precio/MACD-V (ancladas fuera del área de
-        # trazado) tengan espacio visual y no queden pegadas al último punto.
         x_pad = (x_max - x_min) * 0.06
         x_max_padded = x_max + x_pad
 
@@ -358,10 +355,6 @@ def main():
         )
 
         # ── Panel 1: Precio + medias + puntos de régimen ────────────────────
-        # El PRECIO es el dato principal: línea más gruesa, color blanco puro
-        # y opacidad total. Los indicadores (SMA/EMA) pasan a un rol de
-        # contexto secundario: más finos y algo más translúcidos, para que
-        # nunca "ganen" visualmente al precio.
         fig.add_trace(go.Scatter(
             x=df_plot.index, y=df_plot["Close"], mode="lines", name="Precio",
             line=dict(color="#FFFFFF", width=2.6), opacity=1.0,
@@ -410,17 +403,25 @@ def main():
             line=dict(color="white", width=2), showlegend=False,
         ), row=2, col=1)
 
-        for y_val, color, dash, width in [(0, "gray", "solid", 1), (50, "green", "dot", 1),
-                                           (-50, "red", "dot", 1), (151, "red", "dash", 1.5),
+        # IMPORTANTE: todas las shapes (líneas + rectángulo) del panel 2 se
+        # extienden hasta x_max_padded, EXACTAMENTE el mismo borde derecho
+        # que usa el eje X (igual que en el panel 1). Antes usaban x1=x_max
+        # (sin el padding), dejando un hueco vacío a la derecha que hacía
+        # ver el panel 2 más "angosto" que el panel 1.
+        for y_val, color, dash, width in [(0, "gray", "solid", 1), (50, "#3DD65C", "dot", 1.3),
+                                           (-50, "#FF4C4C", "dot", 1.3), (151, "red", "dash", 1.5),
                                            (-151, "red", "dash", 1.5)]:
             fig.add_shape(
-                type="line", x0=x_min, x1=x_max, y0=y_val, y1=y_val,
+                type="line", x0=x_min, x1=x_max_padded, y0=y_val, y1=y_val,
                 line=dict(color=color, width=width, dash=dash),
                 row=2, col=1,
             )
+        # Zona ±50 (Rango) en amarillo reforzado: opacidad más alta y color
+        # más saturado que antes para que se distinga con claridad, cubriendo
+        # todo el ancho útil del panel (igual que el panel 1).
         fig.add_shape(
-            type="rect", x0=x_min, x1=x_max, y0=-50, y1=50,
-            fillcolor="gold", opacity=0.08, line_width=0,
+            type="rect", x0=x_min, x1=x_max_padded, y0=-50, y1=50,
+            fillcolor="#FFD700", opacity=0.16, line_width=0,
             row=2, col=1,
         )
 
@@ -435,8 +436,6 @@ def main():
             row=2, col=1,
         )
 
-        # El rango de X se extiende un poco a la derecha (x_max_padded) para
-        # dejar hueco a las etiquetas ancladas en coordenadas de datos.
         fig.update_xaxes(range=[x_min, x_max_padded], row=1, col=1)
         fig.update_xaxes(range=[x_min, x_max_padded], row=2, col=1)
 
