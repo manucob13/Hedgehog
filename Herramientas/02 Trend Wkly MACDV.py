@@ -398,9 +398,11 @@ def main():
         )
 
         # ── Panel 2: MACD-V con zonas de rango/riesgo (sin leyenda propia) ──
+        # Línea de MACD-V en AMARILLO (antes había quedado en blanco por
+        # error), coherente con el color de la zona de Rango.
         fig.add_trace(go.Scatter(
             x=df_plot.index, y=df_plot["MACD_V"], mode="lines", name="MACD-V",
-            line=dict(color="white", width=2), showlegend=False,
+            line=dict(color="#FFD700", width=2.2), showlegend=False,
         ), row=2, col=1)
 
         for y_val, color, dash, width in [(0, "gray", "solid", 1), (50, "#3DD65C", "dot", 1.3),
@@ -413,12 +415,12 @@ def main():
             )
         fig.add_shape(
             type="rect", x0=x_min, x1=x_max_padded, y0=-50, y1=50,
-            fillcolor="#FFD700", opacity=0.16, line_width=0,
+            fillcolor="#FFD700", opacity=0.14, line_width=0,
             row=2, col=1,
         )
 
         last_macd = float(df_plot["MACD_V"].iloc[-1])
-        macd_bg = "#FF3B3B" if abs(last_macd) >= 151 else "#FFFFFF"
+        macd_bg = "#FF3B3B" if abs(last_macd) >= 151 else "#FFD700"
         fig.add_annotation(
             xref="x2", yref="y2", x=x_max_padded, y=last_macd,
             text=f" {last_macd:,.1f} ", showarrow=False,
@@ -428,20 +430,18 @@ def main():
             row=2, col=1,
         )
 
-        fig.update_xaxes(range=[x_min, x_max_padded], row=1, col=1)
-        fig.update_xaxes(range=[x_min, x_max_padded], row=2, col=1)
+        # Rango de X idéntico en ambas filas, y DOMINIO (posición/ancho
+        # físico del área de trazado dentro de la figura) también forzado
+        # a ser exactamente igual en las dos filas -- esto es lo que
+        # garantiza que el panel 2 tenga el MISMO ancho visual que el
+        # panel 1, sin depender del autoajuste de Plotly.
+        fig.update_xaxes(range=[x_min, x_max_padded], domain=[0.0, 0.94], row=1, col=1)
+        fig.update_xaxes(range=[x_min, x_max_padded], domain=[0.0, 0.94], row=2, col=1)
 
         fig.update_yaxes(range=[-y_limit_macdv, y_limit_macdv], title_text="MACD-V", row=2, col=1, side="right")
         fig.update_yaxes(title_text="Precio ($)", row=1, col=1, side="right")
         fig.update_xaxes(title_text="Fecha", row=2, col=1)
 
-        # Título del panel 1 pegado a la izquierda; la leyenda se ancla
-        # DESDE la izquierda (x=0) en la misma fila, inmediatamente después
-        # del título (justify horizontal en una sola línea). Al anclar la
-        # leyenda con x=0/xanchor="left" en vez de x=1/xanchor="right",
-        # Plotly la despliega en fila usando todo el ancho disponible de la
-        # figura en vez de intentar "encajarla" contra el borde derecho,
-        # que es lo que forzaba el salto a columna.
         fig.add_annotation(
             xref="x domain", yref="y domain", x=0, y=1.16,
             xanchor="left", yanchor="bottom",
