@@ -113,7 +113,7 @@ vix_term = st.Page(
 )
 trend_MACDV = st.Page(
     "Herramientas/02 Trend Wkly MACDV.py", 
-    title="Trend Wkly MACDV", 
+    title="Trend Wkly MACD-V", 
     icon="📉",
     url_path="trend-zscore"
 )
