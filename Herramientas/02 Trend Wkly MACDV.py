@@ -63,8 +63,6 @@ RISK_COLORS = {
     "Sin Riesgo": "#00FF00",
 }
 
-# Colores de las series del panel de precio (se reutilizan en la leyenda HTML
-# para que quede perfectamente coherente con lo que se ve en el gráfico).
 SERIES_COLORS = {
     "Precio":  "#FFFFFF",
     "SMA 50":  "#00FFFF",
@@ -346,11 +344,14 @@ def main():
                     unsafe_allow_html=True
                 )
 
+        # ================= TÍTULO DEL GRÁFICO 1 (HTML, fuera de Plotly) ====
+        st.markdown(
+            f'<div style="margin-top:14px;margin-bottom:2px;font-size:15px;'
+            f'font-weight:bold;color:#FFFFFF;">{ticker} — Régimen (MACD-V)</div>',
+            unsafe_allow_html=True,
+        )
+
         # ================= LEYENDA HTML DEL GRÁFICO (una sola línea) =======
-        # Construida completamente fuera de Plotly, en HTML/CSS puro con
-        # flexbox -- así se garantiza que quede en una única fila horizontal
-        # sin depender del motor de layout de leyendas de Plotly (que era
-        # lo que forzaba el salto a columna).
         legend_items_html = ""
         for name, color in SERIES_COLORS.items():
             dash = "border-top:2px dashed" if name in ("EMA 8", "EMA 21") else "border-top:3px solid"
@@ -362,7 +363,7 @@ def main():
             """
         for regime, color in REGIME_COLORS.items():
             if regime == "RIESGO":
-                continue  # RIESGO no se marca como punto en el precio de este gráfico
+                continue
             legend_items_html += f"""
             <div style="display:flex;align-items:center;gap:6px;margin-right:18px;">
                 <div style="width:10px;height:10px;border-radius:50%;background-color:{color};border:1px solid black;"></div>
@@ -373,14 +374,15 @@ def main():
         st.markdown(
             f"""
             <div style="display:flex;flex-wrap:nowrap;align-items:center;
-                        overflow-x:auto;padding:6px 4px 10px 4px;">
+                        overflow-x:auto;padding:4px 4px 8px 4px;">
                 {legend_items_html}
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        # ================= GRÁFICOS (Plotly, sin interactividad, sin leyenda) =
+        # ================= GRÁFICOS (Plotly, sin interactividad, sin leyenda,
+        # sin títulos propios -- ambos ya se muestran en HTML aparte) =======
         macdv_abs_max = float(df["MACD_V"].abs().max())
         y_limit_macdv = max(200.0, macdv_abs_max * 1.10)
 
@@ -389,18 +391,14 @@ def main():
         x_pad = (x_max - x_min) * 0.06
         x_max_padded = x_max + x_pad
 
-        # Panel 2 (MACD-V) con más altura relativa que antes (de 0.32 a 0.42
-        # del total) para que se vea notablemente más grande verticalmente.
         fig = make_subplots(
             rows=2, cols=1,
             shared_xaxes=True,
             row_heights=[0.58, 0.42],
-            vertical_spacing=0.09,
+            vertical_spacing=0.1,
         )
 
-        # ── Panel 1: Precio + medias + puntos de régimen (sin leyenda propia,
-        # showlegend=False en todas las trazas porque la leyenda ahora vive
-        # como bloque HTML aparte, arriba del gráfico) ──────────────────────
+        # ── Panel 1: Precio + medias + puntos de régimen ────────────────────
         fig.add_trace(go.Scatter(
             x=df_plot.index, y=df_plot["Close"], mode="lines", name="Precio",
             line=dict(color=SERIES_COLORS["Precio"], width=2.6), opacity=1.0,
@@ -485,16 +483,13 @@ def main():
         fig.update_yaxes(title_text="Precio ($)", row=1, col=1, side="right")
         fig.update_xaxes(title_text="Fecha", row=2, col=1)
 
-        # Títulos de panel simples (ya no hay que compartir línea con la
-        # leyenda de Plotly, porque la leyenda es HTML aparte).
+        # Único título restante DENTRO del gráfico: el del panel 2 (MACD-V),
+        # ubicado como anotación con margen suficiente arriba para que no
+        # quede recortado por el borde superior de la figura. El título del
+        # panel 1 y la leyenda ya se muestran en los bloques HTML de arriba,
+        # por eso aquí NO se repite ninguna anotación de título para el panel 1.
         fig.add_annotation(
-            xref="x domain", yref="y domain", x=0, y=1.06,
-            xanchor="left", yanchor="bottom",
-            text=f"<b>{ticker} — Régimen (MACD-V)</b>",
-            showarrow=False, font=dict(size=13, color="white"),
-        )
-        fig.add_annotation(
-            xref="x2 domain", yref="y2 domain", x=0, y=1.06,
+            xref="x2 domain", yref="y2 domain", x=0, y=1.08,
             xanchor="left", yanchor="bottom",
             text="<b>MACD-V (momentum normalizado por ATR)</b>",
             showarrow=False, font=dict(size=12, color="white"),
@@ -502,10 +497,11 @@ def main():
 
         fig.update_layout(
             template="plotly_dark",
-            height=880,  # figura más alta en total para que el panel MACD-V,
-                         # con su nueva proporción de 0.42, gane altura real
-            margin=dict(l=10, r=70, t=30, b=10),
-            showlegend=False,  # leyenda de Plotly completamente desactivada
+            height=860,
+            margin=dict(l=10, r=70, t=20, b=10),  # margen superior mínimo:
+            # ya no hace falta reservar espacio para el título del panel 1
+            # (ahora es HTML externo), solo para el título del panel 2.
+            showlegend=False,
             hovermode=False,
             dragmode=False,
         )
