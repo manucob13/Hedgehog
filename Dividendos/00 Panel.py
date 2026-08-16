@@ -84,22 +84,44 @@ def _sync_down():
 # Gráfico lineal de evolución del NLV
 # ---------------------------------------------------------------------------
 
-def render_nlv_line_chart(equity_df):
+def render_nlv_line_chart(equity_df, scale="linear", display_mode="dollar"):
     df = equity_df.sort_values("reportDate")
 
-    is_up = df["total"].iloc[-1] >= df["total"].iloc[0]
+    if display_mode == "percent":
+        base = df["total"].iloc[0]
+        y_values = (df["total"] / base - 1) * 100 if base else df["total"] * 0
+        hover_fmt = "%{y:+.2f}%"
+    else:
+        y_values = df["total"]
+        hover_fmt = "$%{y:,.2f}"
+
+    is_up = y_values.iloc[-1] >= y_values.iloc[0]
     line_color = "#2ECC71" if is_up else "#E74C3C"
     fill_color = "rgba(46,204,113,0.10)" if is_up else "rgba(231,76,60,0.10)"
 
+    # El relleno "hasta cero" no es válido en escala logarítmica (cero = -infinito en log).
+    use_fill = scale == "linear"
+
     fig = go.Figure(go.Scatter(
         x=df["reportDate"],
-        y=df["total"],
+        y=y_values,
         mode="lines",
         line=dict(color=line_color, width=2),
-        fill="tozeroy",
-        fillcolor=fill_color,
-        hovertemplate="%{x|%d/%m/%Y}<br>NLV: $%{y:,.2f}<extra></extra>",
+        fill="tozeroy" if use_fill else None,
+        fillcolor=fill_color if use_fill else None,
+        hovertemplate=f"%{{x|%d/%m/%Y}}<br>{hover_fmt}<extra></extra>",
     ))
+
+    yaxis_config = dict(
+        showgrid=True, gridcolor="rgba(255,255,255,0.08)", type=scale,
+    )
+    if display_mode == "percent":
+        yaxis_config["ticksuffix"] = "%"
+    else:
+        yaxis_config["tickprefix"] = "$"
+        yaxis_config["tickformat"] = ",.0f"
+        yaxis_config["exponentformat"] = "none"  # evita notación científica en log
+
     fig.update_layout(
         height=320,
         margin=dict(l=10, r=10, t=10, b=10),
@@ -107,7 +129,7 @@ def render_nlv_line_chart(equity_df):
         plot_bgcolor="rgba(0,0,0,0)",
         font={"color": "white"},
         xaxis=dict(showgrid=False),
-        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.08)", tickprefix="$"),
+        yaxis=yaxis_config,
     )
     return fig
 
@@ -242,9 +264,22 @@ def main():
 
     # --- Gráfico lineal: evolución del valor de cartera (NLV) ---
     st.subheader("Evolución del valor de la cartera (NLV)")
-    range_label = st.selectbox(
-        "Rango", options=RANGE_OPTIONS, index=0, key="nlv_range", label_visibility="collapsed"
-    )
+    rcol1, rcol2, rcol3 = st.columns([2, 1, 1])
+    with rcol1:
+        range_label = st.selectbox("Rango", options=RANGE_OPTIONS, index=0, key="nlv_range")
+    with rcol2:
+        display_label = st.radio("Vista", options=["$", "%"], horizontal=True, key="nlv_display")
+    with rcol3:
+        scale_label = st.radio(
+            "Escala", options=["Lineal", "Log"], horizontal=True,
+            disabled=(display_label == "%"), key="nlv_scale",
+        )
+
+    display_mode = "percent" if display_label == "%" else "dollar"
+    scale = "linear" if display_mode == "percent" else ("log" if scale_label == "Log" else "linear")
+    if display_mode == "percent":
+        st.caption("La escala logarítmica no está disponible en vista %, ya que el % puede ser negativo.")
+
     range_start = _range_start_date(range_label, today)
     equity_chart = (
         equity if range_start is None
@@ -253,7 +288,10 @@ def main():
     if equity_chart.empty:
         st.caption("Sin datos en el rango seleccionado")
     else:
-        st.plotly_chart(render_nlv_line_chart(equity_chart), use_container_width=True)
+        st.plotly_chart(
+            render_nlv_line_chart(equity_chart, scale=scale, display_mode=display_mode),
+            use_container_width=True,
+        )
 
     st.markdown("---")
 
