@@ -63,8 +63,8 @@ RISK_COLORS = {
 }
 
 # ============================================================================
-# INDICADORES (solo lo necesario para MACD-V; se quitó Z-Score de precio y
-# la corrección por kurtosis del Z-Score de MACD, que ya no se usan)
+# INDICADORES (solo lo necesario para MACD-V; Z-Score de precio y la
+# corrección por kurtosis del Z-Score de MACD fueron removidos)
 # ============================================================================
 
 def calculate_indicators(df, fast=12, slow=26, signal=9):
@@ -144,17 +144,10 @@ def classify_by_macdv(df):
     return regimes
 
 # ============================================================================
-# ANÁLISIS DE RIESGO (ahora solo depende de MACD-V, sin Z-Score)
+# ANÁLISIS DE RIESGO (depende únicamente de MACD-V)
 # ============================================================================
 
 def analyze_risk(df, macd_extreme_threshold=151):
-    """
-    Antes el semáforo de riesgo exigía consenso entre MACD-V extremo Y
-    Z-Score de MACD extremo. Al quitar el Z-Score, el riesgo se marca
-    directamente cuando |MACD-V| alcanza la zona de sobre-extensión
-    (>= 151), que es la misma zona que ya usa `classify_by_macdv` para
-    etiquetar el régimen como "RIESGO".
-    """
     risk_levels = []
 
     for i in range(len(df)):
@@ -196,12 +189,13 @@ def download_weekly_data(ticker, years_back):
 
     df.columns = [str(c) for c in df.columns]
 
-    df["SMA_50"] = df["Close"].rolling(50).mean()
-    df["EMA_8"]  = df["Close"].ewm(span=8,  adjust=False).mean()
-    df["EMA_21"] = df["Close"].ewm(span=21, adjust=False).mean()
+    df["SMA_50"]  = df["Close"].rolling(50).mean()
+    df["SMA_200"] = df["Close"].rolling(200).mean()
+    df["EMA_8"]   = df["Close"].ewm(span=8,  adjust=False).mean()
+    df["EMA_21"]  = df["Close"].ewm(span=21, adjust=False).mean()
 
     df = calculate_indicators(df)
-    df.dropna(inplace=True)
+    df.dropna(subset=["MACD_V", "SMA_50"], inplace=True)
 
     return df
 
@@ -248,9 +242,10 @@ def main():
         regime_macdv = df["Regime_MACDV"].iloc[-1]
         risk_level   = df["Risk_Level"].iloc[-1]
 
-        precio = float(current["Close"])
-        sma50  = float(current["SMA_50"])
-        macd_v = float(current["MACD_V"])
+        precio  = float(current["Close"])
+        sma50   = float(current["SMA_50"])
+        sma200  = float(current["SMA_200"]) if pd.notna(current["SMA_200"]) else np.nan
+        macd_v  = float(current["MACD_V"])
 
         precio_above_sma = "✅ SÍ" if precio > sma50 else "❌ NO"
 
@@ -263,11 +258,12 @@ def main():
             unsafe_allow_html=True,
         )
 
-        info_cols = st.columns(4)
+        info_cols = st.columns(5)
         info_cols[0].metric("Precio", f"${precio:.2f}")
         info_cols[1].metric("SMA 50", f"${sma50:.2f}")
-        info_cols[2].metric("Precio > SMA50", precio_above_sma)
-        info_cols[3].metric("MACD-V", f"{macd_v:.2f}")
+        info_cols[2].metric("SMA 200", f"${sma200:.2f}" if pd.notna(sma200) else "N/A")
+        info_cols[3].metric("Precio > SMA50", precio_above_sma)
+        info_cols[4].metric("MACD-V", f"{macd_v:.2f}")
 
         # ================= ANÁLISIS DE RIESGO =================
         macd_extreme = abs(macd_v) >= 151
@@ -336,10 +332,11 @@ def main():
         fig, axs = plt.subplots(2, 1, figsize=(11, 6), sharex=True, gridspec_kw={"height_ratios": [3, 1]})
 
         # ── Gráfico 1: Precio + Régimen MACD-V ──────────────────────────────
-        axs[0].plot(df_plot.index, df_plot["Close"],  color="white",   alpha=0.5,  linewidth=1.3,  label="Precio")
-        axs[0].plot(df_plot.index, df_plot["SMA_50"], color="cyan",    linewidth=1.8, alpha=0.7,   label="SMA 50")
-        axs[0].plot(df_plot.index, df_plot["EMA_8"],  color="#FFFFFF", linewidth=1.4, alpha=0.85,  linestyle="--", label="EMA 8")
-        axs[0].plot(df_plot.index, df_plot["EMA_21"], color="#00BFFF", linewidth=1.4, alpha=0.85,  linestyle="--", label="EMA 21")
+        axs[0].plot(df_plot.index, df_plot["Close"],   color="white",   alpha=0.5,  linewidth=1.3,  label="Precio")
+        axs[0].plot(df_plot.index, df_plot["SMA_50"],  color="cyan",    linewidth=1.8, alpha=0.7,   label="SMA 50")
+        axs[0].plot(df_plot.index, df_plot["SMA_200"], color="orange",  linewidth=1.8, alpha=0.75,  label="SMA 200")
+        axs[0].plot(df_plot.index, df_plot["EMA_8"],   color="#FFFFFF", linewidth=1.4, alpha=0.85,  linestyle="--", label="EMA 8")
+        axs[0].plot(df_plot.index, df_plot["EMA_21"],  color="#00BFFF", linewidth=1.4, alpha=0.85,  linestyle="--", label="EMA 21")
 
         for r, c in REGIME_COLORS.items():
             m = df_plot["Regime_MACDV"] == r
@@ -410,6 +407,10 @@ def main():
             - |MACD-V| > 150 → **RIESGO** (momentum sobre-extendido; el impulso es
               tan fuerte en relación a la volatilidad reciente que estadísticamente
               es más probable un descanso/reversión que una continuación limpia)
+
+            La **SMA 200** en el gráfico es solo de referencia visual (tendencia de
+            largo plazo) — no participa en la lógica de clasificación, que usa
+            exclusivamente SMA 50 + MACD-V.
 
             #### ⚠️ Análisis de Riesgo
 
