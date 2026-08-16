@@ -111,9 +111,9 @@ vix_term = st.Page(
     icon="🐣",
     url_path="vix-term"
 )
-trend_Zscore = st.Page(
-    "Herramientas/02 Trend Wkly Z-score.py", 
-    title="Trend Wkly Zscore", 
+trend_MACDV = st.Page(
+    "Herramientas/02 Trend Wkly MACDV.py", 
+    title="Trend Wkly MACDV", 
     icon="📉",
     url_path="trend-zscore"
 )
@@ -177,7 +177,7 @@ pg = st.navigation({
     ],
     "HERRAMIENTAS": [
         vix_term, 
-        trend_Zscore,
+        trend_MACDV,
         gex_analyzer,
         screener_risk,
         screener_trend,
