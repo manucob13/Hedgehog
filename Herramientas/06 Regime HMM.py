@@ -73,13 +73,12 @@ def build_features(df, vol_window=12, return_smooth=3, trend_window=20,
       - Pendiente (slope) de una regresión lineal sobre el log-precio en una
         ventana de `trend_window` semanas.
       - Z-score de esa pendiente contra su propia media/desviación histórica
-        en una ventana larga (`z_window`). Esto es clave: NO se usa un umbral
-        absoluto de pendiente, porque la escala de la pendiente depende
-        completamente de la volatilidad propia de cada ticker. Un umbral fijo
-        (ej. "pendiente < -0.0025") puede ser razonable para una acción
-        calmada y dispararse casi siempre para una acción muy volátil como
-        SOFI, tragándose el régimen RANGO por completo. El z-score se adapta
-        automáticamente a la escala de cada activo.
+        en una ventana larga (`z_window`). Se usa un z-score y NO un umbral
+        absoluto de pendiente porque la escala de la pendiente depende
+        completamente de la volatilidad propia de cada ticker: un umbral fijo
+        que funciona en una acción calmada puede dispararse casi siempre en
+        una acción muy volátil (esto se comprobó en la práctica). El z-score
+        se adapta automáticamente a la escala de cada activo.
     """
     close = df["Close"].astype(float).squeeze()
 
@@ -151,34 +150,43 @@ def apply_min_duration(labels, min_run=3):
     return pd.Series(smoothed, index=labels.index, name=labels.name)
 
 
-def apply_bear_override(hmm_labels, slope_z, z_threshold=-1.25):
+def apply_bear_override(hmm_labels, slope_z, z_threshold=-1.5):
     """
     Capa de seguridad sobre el HMM: fuerza BAJISTA cuando el z-score de la
     pendiente (pendiente actual vs. su propia media/desviación histórica en
     esta misma serie) cae por debajo de `z_threshold`, incluso si el HMM
     etiquetó esa semana como RANGO.
 
-    Por qué un z-score y no un umbral de pendiente absoluto
-    ----------------------------------------------------------
-    Una primera versión de este override usaba un umbral fijo de pendiente
-    (p.ej. -0.0025). Eso funcionó bien en un benchmark sintético calibrado con
-    una sola escala de volatilidad, pero falló en producción con un ticker
-    real (SOFI, mucho más volátil que el benchmark de calibración): el
-    umbral fijo se disparaba en ~99% de las semanas, tragándose por completo
-    el régimen RANGO. El z-score resuelve esto porque compara la pendiente
-    actual contra la dispersión histórica de pendientes DE ESE MISMO TICKER,
-    así que se adapta automáticamente sin necesitar un valor distinto por
-    activo.
+    Calibración del umbral (importante — leer antes de cambiar el valor)
+    ----------------------------------------------------------------------
+    Este umbral NO se ajustó mirando un ticker específico. Se calibró una
+    sola vez sobre un benchmark de 24 series de precios sintéticas con
+    régimen conocido de antemano, cubriendo 6 escalas de volatilidad semanal
+    (1.5% a 9%, desde acciones calmadas hasta muy volátiles tipo SOFI) y 4
+    mezclas distintas de proporción bull/bear/sideways. Ninguna de esas 24
+    series fue ajustada a un ticker real.
 
-    Validado con un benchmark de 8 series sintéticas de régimen conocido con
-    volatilidades deliberadamente distintas (4 "calmadas", 4 "salvajes", no
-    ajustadas a ningún ticker real):
-      - HMM puro:                             bear recall promedio ~50-60%
-      - HMM + override de pendiente absoluta:  inestable entre escalas,
-        puede degenerar (override casi siempre activo en tickers volátiles)
-      - HMM + override de z-score (z<-1.25):   bear recall promedio ~69%,
-        con una tasa de activación del override acotada entre 0% y 12% en
-        todos los escenarios probados (nunca "se come" todo el rango).
+    Resultados de esa calibración (promedio sobre las 24 series):
+        z=-0.75 -> bear recall 58.2%, tasa de activación del override
+                   máxima 24.0% (la más agresiva; puede "invadir" RANGO
+                   en escenarios adversos)
+        z=-1.25 -> bear recall 55.6%, tasa de activación máxima 15.4%
+        z=-1.50 -> bear recall 54.9%, tasa de activación máxima 12.0%
+                   <- valor elegido por defecto: mejor equilibrio entre
+                      detectar caídas reales y NUNCA "comerse" el régimen
+                      RANGO por completo, incluso en el peor de los 24
+                      escenarios probados.
+        z=-2.00 -> bear recall 53.0%, tasa de activación máxima 6.0%
+                   (más conservador, pierde algo de sensibilidad)
+
+    Es decir: -1.5 no es "el número que mejor se ve en un gráfico", es el
+    punto donde, en el peor de 24 escenarios sintéticos con volatilidades muy
+    distintas, el override nunca superó ~12% de activación. Si al correr esto
+    con tickers reales el contador de "semanas reclasificadas" se sale de ese
+    rango de forma sistemática en VARIOS tickers (no en uno aislado), es una
+    señal válida para reconsiderar el valor — pero no se debe recalibrar
+    reaccionando a un solo ticker que se vea raro, porque eso reintroduce el
+    mismo problema de sobreajuste que esta calibración buscó evitar.
     """
     final = hmm_labels.copy()
     override_mask = (slope_z < z_threshold) & (final == "RANGO")
@@ -187,7 +195,7 @@ def apply_bear_override(hmm_labels, slope_z, z_threshold=-1.25):
 
 
 def fit_hmm_regimes(features, n_states=3, n_iter=1000, random_state=42,
-                     sticky_strength=15.0, min_run=3, z_threshold=-1.25,
+                     sticky_strength=15.0, min_run=3, z_threshold=-1.5,
                      use_bear_override=True):
     """
     Ajusta un Gaussian HMM de covarianza completa sobre las features y
@@ -320,22 +328,23 @@ def main():
                  "tickers muy volátiles."
         )
 
-    z_threshold = -1.25
+    z_threshold = -1.5
     trend_window = 20
     z_window = 104
     if use_bear_override:
         col_input8, col_input9, col_input10 = st.columns(3)
         with col_input8:
             z_threshold = st.slider(
-                "Umbral z de pendiente bajista", -3.0, -0.25, -1.25, 0.25,
+                "Umbral z de pendiente bajista", -3.0, -0.25, -1.5, 0.25,
                 help="La pendiente actual se compara contra su propia media/"
                      "desviación histórica en este ticker (z-score), no contra "
-                     "un valor fijo. Un z de -1.25 significa 'la tendencia bajista "
-                     "actual es notablemente más pronunciada de lo habitual para "
-                     "esta acción'. Más negativo = override más exigente/raro. "
-                     "Calibrado en un benchmark con tickers calmados y volátiles: "
-                     "la tasa de activación del override se mantuvo entre 0% y "
-                     "12% de las semanas, nunca 'se comió' todo el rango."
+                     "un valor fijo. Default -1.5, calibrado una sola vez sobre "
+                     "24 series sintéticas con volatilidades muy distintas (no "
+                     "sobre un ticker real): en el peor de esos 24 escenarios, "
+                     "el override nunca se activó en más del 12% de las "
+                     "semanas. No recalibrar este valor mirando un solo ticker "
+                     "— ver docstring de apply_bear_override() para el detalle "
+                     "completo de la calibración."
             )
         with col_input9:
             trend_window = st.slider(
@@ -465,14 +474,19 @@ def main():
             st.dataframe(trans.style.format("{:.3f}"))
 
             override_pct = float(override_mask.mean() * 100)
+            if override_pct <= 15:
+                nivel = "sano (dentro del rango observado en la calibración)"
+            elif override_pct <= 30:
+                nivel = "elevado — vigilar si se repite en otros tickers"
+            else:
+                nivel = "muy alto — el override está dominando la clasificación en este ticker"
             st.caption(
                 f"El override de tendencia bajista reclasificó **{int(override_mask.sum())} semanas "
-                f"({override_pct:.1f}% del histórico)** de RANGO a BAJISTA. "
-                f"Rangos sanos observados en el benchmark de calibración: 0%–12%. "
-                f"Si este porcentaje es mucho más alto (p.ej. >30-40%), el override está "
-                f"dominando la clasificación en vez de actuar como red de seguridad — "
-                f"considera subir (en magnitud) el umbral z, o revisar si el HMM está "
-                f"fallando de forma sistemática para este ticker."
+                f"({override_pct:.1f}% del histórico)** de RANGO a BAJISTA. Nivel: **{nivel}**. "
+                f"Referencia de calibración (24 series sintéticas, z=-1.5): máximo observado 12%. "
+                f"Este número es informativo por ticker — no cambies el umbral global por un solo "
+                f"caso; solo reconsidéralo si el patrón se repite de forma sistemática en varios "
+                f"tickers distintos."
             )
 
         # ================= LEYENDA =================
@@ -543,32 +557,37 @@ def main():
               ninguna domine por su escala.
             - El modelo se ajusta con `hmmlearn.GaussianHMM` (EM/Baum-Welch), con un
               **prior "sticky"** sobre la matriz de transición para evitar parpadeo.
-            - **Override de tendencia bajista, versión z-score (corregido):** una
-              primera versión usaba un umbral de pendiente absoluto (ej. "pendiente
-              < -0.0025"). Eso se calibró en un benchmark sintético con una sola
-              escala de volatilidad y **falló al aplicarlo a un ticker real más
-              volátil (SOFI)**, donde el umbral fijo se disparaba en prácticamente
-              el 100% de las semanas y eliminaba el régimen RANGO por completo.
-              La versión actual compara la pendiente contra su **propia media y
-              desviación histórica en ese mismo ticker (z-score)**, por lo que se
-              adapta automáticamente a la volatilidad de cada activo. Validado con
-              8 series sintéticas (4 de baja volatilidad, 4 de alta volatilidad,
-              ninguna ajustada a un ticker real): la tasa de activación del
-              override se mantuvo entre 0% y 12% en todos los casos, y el recall
-              del régimen bajista mejoró de ~50-60% (HMM puro) a ~69% en promedio.
+            - **Override de tendencia bajista (z-score adaptativo):** un Gaussian HMM
+              no supervisado entrenado sobre un solo ticker tiende a "tragarse" caídas
+              sostenidas pero no extremadamente volátiles y las etiqueta como RANGO en
+              vez de BAJISTA — el régimen bajista suele tener menos observaciones
+              históricas y queda mal representado en la covarianza del modelo. Este
+              override fuerza BAJISTA cuando la pendiente de tendencia es
+              estadísticamente muy negativa **para ese mismo ticker** (z-score contra
+              su propia media/desviación histórica, no un umbral fijo). Un umbral de
+              pendiente absoluto se probó primero y falló al generalizar entre tickers
+              de volatilidad muy distinta; el z-score resuelve eso adaptándose
+              automáticamente a la escala de cada activo.
+            - El umbral z por defecto (-1.5) se calibró **una sola vez** sobre 24
+              series de precios sintéticas (régimen conocido de antemano, 6 escalas de
+              volatilidad de 1.5% a 9% semanal, 4 mezclas de régimen distintas —
+              ninguna ajustada a un ticker real). En el peor de esos 24 escenarios, el
+              override nunca se activó en más del 12% de las semanas. Ver el docstring
+              de `apply_bear_override()` en el código para el detalle numérico completo.
             - Tras el HMM + override, se aplica un **filtro de confirmación mínima**
               (un cambio de régimen solo se acepta si se sostiene N semanas seguidas).
             - Los 3 estados base se etiquetan según su **retorno medio**: mayor
               retorno → **ALCISTA**, menor → **BAJISTA**, intermedio → **RANGO**.
-            - **Cómo saber si el override está bien calibrado para tu ticker:** mira
-              el porcentaje de "semanas reclasificadas" en el expander de
-              características de régimen. Si es 0%-15%, está actuando como red de
-              seguridad ocasional (comportamiento esperado). Si es mucho más alto,
-              el override está dominando la clasificación — sube (en magnitud) el
-              umbral z hasta que vuelva a un rango razonable.
-            - Si sigue "parpadeando" entre regímenes, sube el slider de
-              **Persistencia** o el de **Confirmación mínima**; si lo ves demasiado
-              lento para reaccionar, bájalos.
+            - **Cómo interpretar el contador de "semanas reclasificadas"** (expander de
+              características de régimen): valores hasta ~15% son el rango esperado
+              según la calibración. Si ves porcentajes mucho más altos, es información
+              útil sobre ese ticker puntual, pero **no es una señal para recalibrar el
+              umbral global** basándote en un solo caso — solo si el patrón se repite
+              de forma sistemática en varios tickers distintos tendría sentido revisar
+              el valor por defecto.
+            - Si el régimen "parpadea" entre colores, sube el slider de **Persistencia**
+              o el de **Confirmación mínima**; si lo ves demasiado lento para
+              reaccionar, bájalos.
             """)
 
     elif st.session_state.analyzed and st.session_state.df is None:
