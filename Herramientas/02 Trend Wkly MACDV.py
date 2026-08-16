@@ -237,6 +237,10 @@ def main():
         df["Risk_Level"]   = analyze_risk(df)
         st.session_state.df = df
 
+        # Nota: "Meses a visualizar" queda arriba (con el resto de los
+        # controles de entrada), antes del botón ANALIZAR, tal como pediste
+        # -- cambiarlo re-ejecuta el script y recorta df_plot sin necesitar
+        # volver a descargar datos (df ya está en session_state).
         df_plot = df.tail(int(lookback_months * 4.33))
         current = df.iloc[-1]
 
@@ -328,7 +332,7 @@ def main():
                     unsafe_allow_html=True
                 )
 
-        # ================= GRÁFICOS INTERACTIVOS (Plotly) ==================
+        # ================= GRÁFICOS (Plotly, sin interactividad) ===========
         st.markdown("---")
 
         macdv_abs_max = float(df["MACD_V"].abs().max())
@@ -412,14 +416,10 @@ def main():
         fig.update_yaxes(title_text="Precio ($)", row=1, col=1, side="right")
         fig.update_xaxes(title_text="Fecha", row=2, col=1)
 
-        # Títulos de cada panel como anotaciones manuales, alineados a la
-        # MISMA coordenada 'y' que su leyenda respectiva, y ubicados a la
-        # izquierda de ella (todo en una sola línea horizontal).
-        # NOTA: la sintaxis correcta de Plotly para "dominio del eje" es
-        # "x domain"/"y domain" para el primer subplot (sin número) y
-        # "x2 domain"/"y2 domain" para el segundo (número pegado, sin
-        # espacio) -- "x1 domain" NO es un valor válido y causaba el
-        # ValueError.
+        # Títulos de cada panel como anotaciones manuales, en la MISMA
+        # coordenada 'y' que su leyenda respectiva -- una sola línea.
+        # (Sintaxis correcta de Plotly: "x domain"/"y domain" para el primer
+        # eje sin número, "x2 domain"/"y2 domain" para el segundo.)
         fig.add_annotation(
             xref="x domain", yref="y domain", x=0, y=1.14,
             xanchor="left", yanchor="bottom",
@@ -443,15 +443,17 @@ def main():
                 xanchor="right", x=1.0,
                 font=dict(size=10),
             ),
-            hovermode="x unified",
-            dragmode="zoom",
+            hovermode=False,   # sin tooltip al pasar el mouse
+            dragmode=False,    # sin arrastrar/desplazar
         )
-        fig.update_xaxes(rangeslider_visible=False)
+        # Ejes fijos: sin zoom, sin pan, sin rueda del mouse, sin rangeslider.
+        fig.update_xaxes(fixedrange=True, rangeslider_visible=False)
+        fig.update_yaxes(fixedrange=True)
 
         st.plotly_chart(fig, use_container_width=True, config={
-            "scrollZoom": True,
+            "staticPlot": True,       # convierte el gráfico en no interactivo (como una imagen)
+            "displayModeBar": False,  # oculta la barra de herramientas de Plotly
             "displaylogo": False,
-            "modeBarButtonsToAdd": ["drawline", "eraseshape"],
         })
 
         # ================= DOCUMENTACIÓN =================
@@ -481,11 +483,6 @@ def main():
             El eje del panel MACD-V se fija con el máximo histórico del ticker (no
             solo la ventana visible), para que la escala se mantenga estable al
             cambiar "Meses a visualizar".
-
-            **Interacción con el gráfico:** rueda del mouse o pellizco para hacer
-            zoom, clic y arrastrar para desplazarte, doble clic para restaurar la
-            vista original. El panel de precio y el de MACD-V están sincronizados
-            en el eje de fechas.
 
             #### ⚠️ Análisis de Riesgo
 
