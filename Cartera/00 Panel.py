@@ -86,25 +86,36 @@ def render_nlv_line_chart(equity_df, scale="linear", display_mode="dollar"):
         y_values = df["total"]
         hover_fmt = "$%{y:,.2f}"
 
-    is_up = y_values.iloc[-1] >= y_values.iloc[0]
-    line_color = "#2ECC71" if is_up else "#E74C3C"
-    fill_color = "rgba(46,204,113,0.10)" if is_up else "rgba(231,76,60,0.10)"
-
     # El relleno "hasta cero" no es válido en escala logarítmica (cero = -infinito en log).
     use_fill = scale == "linear"
 
-    fig = go.Figure(go.Scatter(
-        x=df["reportDate"],
-        y=y_values,
-        mode="lines",
-        line=dict(color=line_color, width=2),
+    # Coloreamos por TRAMOS según el signo de cada punto (no según el
+    # primer/último valor global), separando en dos series con NaN donde
+    # no aplica: así Plotly corta la línea en el cambio de signo.
+    pos_y = y_values.where(y_values >= 0)
+    neg_y = y_values.where(y_values < 0)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df["reportDate"], y=pos_y, mode="lines",
+        line=dict(color="#2ECC71", width=2),
         fill="tozeroy" if use_fill else None,
-        fillcolor=fill_color if use_fill else None,
+        fillcolor="rgba(46,204,113,0.10)" if use_fill else None,
         hovertemplate=f"%{{x|%d/%m/%Y}}<br>{hover_fmt}<extra></extra>",
+        showlegend=False,
+    ))
+    fig.add_trace(go.Scatter(
+        x=df["reportDate"], y=neg_y, mode="lines",
+        line=dict(color="#E74C3C", width=2),
+        fill="tozeroy" if use_fill else None,
+        fillcolor="rgba(231,76,60,0.10)" if use_fill else None,
+        hovertemplate=f"%{{x|%d/%m/%Y}}<br>{hover_fmt}<extra></extra>",
+        showlegend=False,
     ))
 
     yaxis_config = dict(
         showgrid=True, gridcolor="rgba(255,255,255,0.08)", type=scale,
+        zeroline=True, zerolinecolor="rgba(255,255,255,0.3)",
     )
     if display_mode == "percent":
         yaxis_config["ticksuffix"] = "%"
@@ -123,7 +134,6 @@ def render_nlv_line_chart(equity_df, scale="linear", display_mode="dollar"):
         yaxis=yaxis_config,
     )
     return fig
-
 
 # ---------------------------------------------------------------------------
 # Gauges (Plotly)
