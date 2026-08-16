@@ -341,13 +341,17 @@ def main():
         st.markdown("---")
         plt.style.use("dark_background")
 
-        # Figura mas alta en total (13x11) y proporcion 2:1 entre panel de
-        # precio y panel de MACD-V, en vez de 3:1 -- el panel de MACD-V
-        # queda notablemente mas alto y legible que antes.
+        # constrained_layout en vez de tight_layout(): recalcula márgenes de
+        # forma determinista en cada render (evita que el título/ejes de un
+        # panel se superpongan con el otro, que es lo que se veía en las
+        # capturas). Los límites del eje MACD-V se fijan explícitamente para
+        # que la escala no cambie entre renders al mover el slider de meses.
         fig, axs = plt.subplots(
-            2, 1, figsize=(13, 11), sharex=True,
-            gridspec_kw={"height_ratios": [2, 1], "hspace": 0.08},
+            2, 1, figsize=(13, 10), sharex=True,
+            gridspec_kw={"height_ratios": [2, 1]},
+            constrained_layout=True,
         )
+        fig.set_constrained_layout_pads(h_pad=0.12, hspace=0.06)
 
         # ── Gráfico 1: Precio + Régimen MACD-V ──────────────────────────────
         axs[0].plot(df_plot.index, df_plot["Close"],   color="white",   alpha=0.5,  linewidth=1.3,  label="Precio")
@@ -371,7 +375,9 @@ def main():
         axs[0].set_title(f"{ticker} — Régimen (MACD-V)", fontsize=12, fontweight='bold', pad=8)
         axs[0].grid(alpha=0.25, linestyle='--')
         axs[0].set_ylabel("Precio ($)", fontsize=9)
-        axs[0].legend(loc='upper left', fontsize=7.5, ncol=3)
+        # Leyenda fuera del área de trazado (a la derecha) para que nunca
+        # tape los puntos de régimen, sin importar dónde caigan.
+        axs[0].legend(loc='upper left', bbox_to_anchor=(1.05, 1.0), fontsize=8, ncol=1, framealpha=0.9)
         axs[0].yaxis.tick_right()
         axs[0].yaxis.set_label_position("right")
         axs[0].tick_params(axis='both', labelsize=8)
@@ -389,6 +395,15 @@ def main():
         axs[1].axhline(-151, color="red",  linestyle="--", alpha=0.7, linewidth=1.5)
         axs[1].fill_between(df_plot.index, -50, 50, color="gold", alpha=0.08)
 
+        # Límite de eje FIJO: evita que la escala del panel MACD-V "salte"
+        # entre 100/-100 y 150/0/etc. según cuántos datos entren en la
+        # ventana de meses seleccionada. Se calcula sobre TODO el histórico
+        # cargado (no solo df_plot), con margen, para que sea estable al
+        # mover el slider de "Meses a visualizar".
+        macdv_abs_max = float(df["MACD_V"].abs().max())
+        y_limit = max(200.0, macdv_abs_max * 1.10)
+        axs[1].set_ylim(-y_limit, y_limit)
+
         last_macd = float(df_plot["MACD_V"].iloc[-1])
         macd_color_final = '#FF0000' if abs(last_macd) >= 151 else '#FFFFFF'
         axs[1].text(1.01, last_macd, f'{last_macd:.2f}',
@@ -402,9 +417,9 @@ def main():
         axs[1].yaxis.tick_right()
         axs[1].yaxis.set_label_position("right")
         axs[1].tick_params(axis='both', labelsize=8)
-        axs[1].legend(loc='upper left', fontsize=7.5)
+        axs[1].legend(loc='upper left', bbox_to_anchor=(1.05, 1.0), fontsize=8, framealpha=0.9)
 
-        st.pyplot(fig, use_container_width=True)
+        st.pyplot(fig, use_container_width=True, clear_figure=True)
 
         # ================= DOCUMENTACIÓN =================
         st.markdown("---")
@@ -432,6 +447,10 @@ def main():
             (ticker joven o "Histórico (años)" bajo) puede no mostrarse completa
             al inicio del gráfico.
 
+            El eje del panel MACD-V se fija con el máximo histórico del ticker (no
+            solo la ventana visible), para que la escala se mantenga estable al
+            cambiar "Meses a visualizar".
+
             #### ⚠️ Análisis de Riesgo
 
             El semáforo de riesgo usa directamente el mismo umbral de sobre-extensión
@@ -450,4 +469,4 @@ if __name__ == "__main__":
         main()
     else:
         st.title("🔒 Acceso Restringido")
-        st.info("Por favor, introduce tus credenciales en el menú lateral (sidebar) para acceder.")
+        st.info("Por favor, introdude tus credenciales en el menú lateral (sidebar) para acceder.")
