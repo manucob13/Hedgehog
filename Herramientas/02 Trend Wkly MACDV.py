@@ -184,10 +184,6 @@ def download_weekly_data(ticker, years_back):
     df = df.reset_index()
     df = df[["Date", "Open", "High", "Low", "Close"]].copy()
 
-    # Forzar tipo datetime explícito en la columna Date ANTES de indexarla:
-    # si por cualquier motivo (versión de yfinance, caché antigua, etc.) la
-    # columna llega como texto u otro formato, Plotly puede autoescalar el
-    # eje X con un rango absurdo (años sin datos reales) al mezclar tipos.
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     df = df.dropna(subset=["Date"])
     df.set_index("Date", inplace=True)
@@ -241,8 +237,6 @@ def main():
         if "SMA_200" not in df.columns:
             df["SMA_200"] = df["Close"].rolling(200, min_periods=1).mean()
 
-        # Salvaguarda adicional: asegurar índice datetime ordenado incluso si
-        # el DataFrame vino de una caché de una versión anterior del script.
         if not isinstance(df.index, pd.DatetimeIndex):
             df.index = pd.to_datetime(df.index, errors="coerce")
             df = df[df.index.notna()].sort_index()
@@ -348,13 +342,13 @@ def main():
         macdv_abs_max = float(df["MACD_V"].abs().max())
         y_limit_macdv = max(200.0, macdv_abs_max * 1.10)
 
-        # Rango de fechas EXPLÍCITO tomado de df_plot: se fuerza a Plotly a
-        # usar exactamente este rango en el eje X compartido, en vez de
-        # dejar que lo autoescale a partir de todas las trazas (incluidas
-        # las líneas horizontales de referencia), que es lo que producía
-        # un eje comprimido con décadas vacías sin datos reales.
         x_min = df_plot.index.min()
         x_max = df_plot.index.max()
+        # Margen a la derecha del eje X, en el propio dominio de fechas, para
+        # que las etiquetas de precio/MACD-V (ancladas fuera del área de
+        # trazado) tengan espacio visual y no queden pegadas al último punto.
+        x_pad = (x_max - x_min) * 0.06
+        x_max_padded = x_max + x_pad
 
         fig = make_subplots(
             rows=2, cols=1,
@@ -364,27 +358,31 @@ def main():
         )
 
         # ── Panel 1: Precio + medias + puntos de régimen ────────────────────
+        # El PRECIO es el dato principal: línea más gruesa, color blanco puro
+        # y opacidad total. Los indicadores (SMA/EMA) pasan a un rol de
+        # contexto secundario: más finos y algo más translúcidos, para que
+        # nunca "ganen" visualmente al precio.
         fig.add_trace(go.Scatter(
             x=df_plot.index, y=df_plot["Close"], mode="lines", name="Precio",
-            line=dict(color="white", width=1.3), opacity=0.6,
+            line=dict(color="#FFFFFF", width=2.6), opacity=1.0,
             legendgroup="panel1",
         ), row=1, col=1)
         fig.add_trace(go.Scatter(
             x=df_plot.index, y=df_plot["SMA_50"], mode="lines", name="SMA 50",
-            line=dict(color="cyan", width=1.8), legendgroup="panel1",
+            line=dict(color="cyan", width=1.3), opacity=0.75, legendgroup="panel1",
         ), row=1, col=1)
         if df_plot["SMA_200"].notna().any():
             fig.add_trace(go.Scatter(
                 x=df_plot.index, y=df_plot["SMA_200"], mode="lines", name="SMA 200",
-                line=dict(color="orange", width=1.8), legendgroup="panel1",
+                line=dict(color="orange", width=1.3), opacity=0.75, legendgroup="panel1",
             ), row=1, col=1)
         fig.add_trace(go.Scatter(
             x=df_plot.index, y=df_plot["EMA_8"], mode="lines", name="EMA 8",
-            line=dict(color="white", width=1.3, dash="dash"), opacity=0.85, legendgroup="panel1",
+            line=dict(color="#AAAAAA", width=1.1, dash="dash"), opacity=0.7, legendgroup="panel1",
         ), row=1, col=1)
         fig.add_trace(go.Scatter(
             x=df_plot.index, y=df_plot["EMA_21"], mode="lines", name="EMA 21",
-            line=dict(color="#00BFFF", width=1.3, dash="dash"), opacity=0.85, legendgroup="panel1",
+            line=dict(color="#00BFFF", width=1.1, dash="dash"), opacity=0.7, legendgroup="panel1",
         ), row=1, col=1)
 
         for r, c in REGIME_COLORS.items():
@@ -398,10 +396,11 @@ def main():
 
         last_price = float(df_plot["Close"].iloc[-1])
         fig.add_annotation(
-            xref="paper", yref="y1", x=1.005, y=last_price,
-            text=f"${last_price:,.2f}", showarrow=False,
-            font=dict(color="white", size=12, family="Arial Black"),
-            align="left", xanchor="left", bgcolor="rgba(0,0,0,0.55)",
+            xref="x", yref="y1", x=x_max_padded, y=last_price,
+            text=f" ${last_price:,.2f} ", showarrow=False,
+            font=dict(color="black", size=13, family="Arial Black"),
+            align="left", xanchor="left",
+            bgcolor="#FFFFFF", bordercolor="white", borderwidth=1,
             row=1, col=1,
         )
 
@@ -411,9 +410,6 @@ def main():
             line=dict(color="white", width=2), showlegend=False,
         ), row=2, col=1)
 
-        # add_hline/add_hrect con x0/x1 anclados EXPLÍCITAMENTE al rango real
-        # de fechas (en vez de usar el atajo automático de Plotly, que puede
-        # expandir el dominio del eje si no lo referencia bien).
         for y_val, color, dash, width in [(0, "gray", "solid", 1), (50, "green", "dot", 1),
                                            (-50, "red", "dot", 1), (151, "red", "dash", 1.5),
                                            (-151, "red", "dash", 1.5)]:
@@ -429,33 +425,33 @@ def main():
         )
 
         last_macd = float(df_plot["MACD_V"].iloc[-1])
-        macd_label_color = "#FF3B3B" if abs(last_macd) >= 151 else "white"
+        macd_bg = "#FF3B3B" if abs(last_macd) >= 151 else "#FFFFFF"
         fig.add_annotation(
-            xref="paper", yref="y2", x=1.005, y=last_macd,
-            text=f"{last_macd:,.1f}", showarrow=False,
-            font=dict(color=macd_label_color, size=12, family="Arial Black"),
-            align="left", xanchor="left", bgcolor="rgba(0,0,0,0.55)",
+            xref="x2", yref="y2", x=x_max_padded, y=last_macd,
+            text=f" {last_macd:,.1f} ", showarrow=False,
+            font=dict(color="black", size=13, family="Arial Black"),
+            align="left", xanchor="left",
+            bgcolor=macd_bg, bordercolor="white", borderwidth=1,
             row=2, col=1,
         )
 
-        # Rango de eje X fijado EXPLÍCITAMENTE a las fechas reales de df_plot,
-        # en ambas filas (aunque compartan eje, se fija por seguridad en las
-        # dos). Esto es lo que corrige el eje comprimido con décadas vacías.
-        fig.update_xaxes(range=[x_min, x_max], row=1, col=1)
-        fig.update_xaxes(range=[x_min, x_max], row=2, col=1)
+        # El rango de X se extiende un poco a la derecha (x_max_padded) para
+        # dejar hueco a las etiquetas ancladas en coordenadas de datos.
+        fig.update_xaxes(range=[x_min, x_max_padded], row=1, col=1)
+        fig.update_xaxes(range=[x_min, x_max_padded], row=2, col=1)
 
         fig.update_yaxes(range=[-y_limit_macdv, y_limit_macdv], title_text="MACD-V", row=2, col=1, side="right")
         fig.update_yaxes(title_text="Precio ($)", row=1, col=1, side="right")
         fig.update_xaxes(title_text="Fecha", row=2, col=1)
 
         fig.add_annotation(
-            xref="x domain", yref="y domain", x=0, y=1.14,
+            xref="x domain", yref="y domain", x=0, y=1.16,
             xanchor="left", yanchor="bottom",
             text=f"<b>{ticker} — Régimen (MACD-V)</b>",
             showarrow=False, font=dict(size=13, color="white"),
         )
         fig.add_annotation(
-            xref="x2 domain", yref="y2 domain", x=0, y=1.18,
+            xref="x2 domain", yref="y2 domain", x=0, y=1.22,
             xanchor="left", yanchor="bottom",
             text="<b>MACD-V (momentum normalizado por ATR)</b>",
             showarrow=False, font=dict(size=12, color="white"),
@@ -463,13 +459,15 @@ def main():
 
         fig.update_layout(
             template="plotly_dark",
-            height=750,
-            margin=dict(l=10, r=60, t=40, b=10),
+            height=780,
+            margin=dict(l=10, r=70, t=50, b=10),
             legend=dict(
                 orientation="h",
-                yanchor="bottom", y=1.14,
+                yanchor="bottom", y=1.16,
                 xanchor="right", x=1.0,
-                font=dict(size=10),
+                font=dict(size=9),
+                tracegroupgap=4,
+                itemwidth=30,
             ),
             hovermode=False,
             dragmode=False,
@@ -509,8 +507,7 @@ def main():
 
             El eje del panel MACD-V se fija con el máximo histórico del ticker (no
             solo la ventana visible), para que la escala se mantenga estable al
-            cambiar "Meses a visualizar". El eje de fechas también se fija
-            explícitamente al rango real de datos visibles.
+            cambiar "Meses a visualizar".
 
             #### ⚠️ Análisis de Riesgo
 
