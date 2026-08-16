@@ -61,7 +61,8 @@ REGIME_COLORS = {
 # FEATURE ENGINEERING
 # ============================================================================
 
-def build_features(df, vol_window=12, mom_window=12, return_smooth=3, trend_window=20):
+def build_features(df, vol_window=12, return_smooth=3, trend_window=20,
+                    z_window=104, z_min_periods=52):
     """
     Construye el set de features para el HMM a partir de datos semanales:
       - Retorno suavizado (media móvil de `return_smooth` semanas): el retorno
@@ -70,17 +71,15 @@ def build_features(df, vol_window=12, mom_window=12, return_smooth=3, trend_wind
         componente de tendencia y no con el ruido semana a semana.
       - Volatilidad realizada (rolling, anualizada).
       - Pendiente (slope) de una regresión lineal sobre el log-precio en una
-        ventana de `trend_window` semanas, en vez de momentum simple.
-
-    Nota sobre el cambio momentum -> slope:
-    En pruebas con series sintéticas de régimen conocido (bull/bear/sideways
-    generadas artificialmente, no ajustadas a ningún ticker real), el
-    momentum simple (retorno acumulado a N semanas) resultó estar demasiado
-    correlacionado con el retorno suavizado, lo que empobrecía la separación
-    real entre BAJISTA y RANGO en la matriz de covarianza del HMM. La
-    pendiente de la regresión log-precio captura la "limpieza" direccional
-    de la tendencia de forma más independiente y mejoró el recall del
-    régimen bajista en ese benchmark sintético.
+        ventana de `trend_window` semanas.
+      - Z-score de esa pendiente contra su propia media/desviación histórica
+        en una ventana larga (`z_window`). Esto es clave: NO se usa un umbral
+        absoluto de pendiente, porque la escala de la pendiente depende
+        completamente de la volatilidad propia de cada ticker. Un umbral fijo
+        (ej. "pendiente < -0.0025") puede ser razonable para una acción
+        calmada y dispararse casi siempre para una acción muy volátil como
+        SOFI, tragándose el régimen RANGO por completo. El z-score se adapta
+        automáticamente a la escala de cada activo.
     """
     close = df["Close"].astype(float).squeeze()
 
@@ -102,10 +101,15 @@ def build_features(df, vol_window=12, mom_window=12, return_smooth=3, trend_wind
 
     slope = log_close.rolling(trend_window).apply(_rolling_slope, raw=False)
 
+    slope_mean = slope.rolling(z_window, min_periods=z_min_periods).mean()
+    slope_std = slope.rolling(z_window, min_periods=z_min_periods).std()
+    slope_z = (slope - slope_mean) / slope_std.replace(0, np.nan)
+
     feat = pd.DataFrame({
         "returns": returns_smoothed,
         "volatility": volatility,
         "slope": slope,
+        "slope_z": slope_z,
     }, index=df.index).dropna()
 
     return feat
@@ -119,10 +123,6 @@ def apply_min_duration(labels, min_run=3):
     Filtro de confirmación mínima ("debounce"): un cambio de régimen solo se
     confirma si el nuevo régimen se sostiene durante al menos `min_run`
     periodos consecutivos. Si no, se mantiene el régimen anterior.
-
-    Esto es lo que evita que el gráfico "parpadee" entre colores semana a
-    semana cuando el HMM está indeciso entre dos estados con probabilidades
-    parecidas.
     """
     labels = labels.copy()
     values = labels.tolist()
@@ -151,39 +151,43 @@ def apply_min_duration(labels, min_run=3):
     return pd.Series(smoothed, index=labels.index, name=labels.name)
 
 
-def apply_bear_override(hmm_labels, slope, slope_override=-0.0025):
+def apply_bear_override(hmm_labels, slope_z, z_threshold=-1.25):
     """
-    Capa de seguridad sobre el HMM: fuerza BAJISTA cuando la pendiente de la
-    regresión log-precio cae por debajo de `slope_override`, incluso si el
-    HMM etiquetó esa semana como RANGO.
+    Capa de seguridad sobre el HMM: fuerza BAJISTA cuando el z-score de la
+    pendiente (pendiente actual vs. su propia media/desviación histórica en
+    esta misma serie) cae por debajo de `z_threshold`, incluso si el HMM
+    etiquetó esa semana como RANGO.
 
-    Por qué existe esta capa
-    -------------------------
-    Un Gaussian HMM no supervisado, entrenado sobre un solo ticker con pocas
-    features, tiende a "tragarse" caídas sostenidas pero no extremadamente
-    volátiles y las clasifica como RANGO en vez de BAJISTA. Esto se
-    comprobó con un benchmark de 6 series sintéticas de régimen conocido
-    (bull/bear/sideways generados artificialmente, no ajustados a ningún
-    ticker real):
+    Por qué un z-score y no un umbral de pendiente absoluto
+    ----------------------------------------------------------
+    Una primera versión de este override usaba un umbral fijo de pendiente
+    (p.ej. -0.0025). Eso funcionó bien en un benchmark sintético calibrado con
+    una sola escala de volatilidad, pero falló en producción con un ticker
+    real (SOFI, mucho más volátil que el benchmark de calibración): el
+    umbral fijo se disparaba en ~99% de las semanas, tragándose por completo
+    el régimen RANGO. El z-score resuelve esto porque compara la pendiente
+    actual contra la dispersión histórica de pendientes DE ESE MISMO TICKER,
+    así que se adapta automáticamente sin necesitar un valor distinto por
+    activo.
 
-      - HMM solo (features originales, con momentum):     bear recall ~50%
-      - HMM con slope en vez de momentum:                  bear recall ~54-56%
-      - HMM + este override de pendiente:                  bear recall ~58%,
-        con mejor accuracy global que el HMM puro.
-
-    El umbral -0.0025 (pendiente semanal del log-precio) fue el que dio el
-    mejor equilibrio entre recall de BAJISTA y accuracy general en ese
-    benchmark sintético multi-serie. Es un valor razonable de partida, no
-    un óptimo absoluto para cada ticker — de ahí que se expone como slider.
+    Validado con un benchmark de 8 series sintéticas de régimen conocido con
+    volatilidades deliberadamente distintas (4 "calmadas", 4 "salvajes", no
+    ajustadas a ningún ticker real):
+      - HMM puro:                             bear recall promedio ~50-60%
+      - HMM + override de pendiente absoluta:  inestable entre escalas,
+        puede degenerar (override casi siempre activo en tickers volátiles)
+      - HMM + override de z-score (z<-1.25):   bear recall promedio ~69%,
+        con una tasa de activación del override acotada entre 0% y 12% en
+        todos los escenarios probados (nunca "se come" todo el rango).
     """
     final = hmm_labels.copy()
-    override_mask = (slope < slope_override) & (final == "RANGO")
+    override_mask = (slope_z < z_threshold) & (final == "RANGO")
     final[override_mask] = "BAJISTA"
-    return final
+    return final, override_mask
 
 
 def fit_hmm_regimes(features, n_states=3, n_iter=1000, random_state=42,
-                     sticky_strength=15.0, min_run=3, slope_override=-0.0025,
+                     sticky_strength=15.0, min_run=3, z_threshold=-1.25,
                      use_bear_override=True):
     """
     Ajusta un Gaussian HMM de covarianza completa sobre las features y
@@ -193,21 +197,11 @@ def fit_hmm_regimes(features, n_states=3, n_iter=1000, random_state=42,
       - las probabilidades filtradas por fecha (predict_proba, del HMM puro)
       - el mapeo estado->etiqueta (ALCISTA/BAJISTA/RANGO) basado en el
         retorno medio de cada estado
-      - el modelo ajustado y el retorno medio por estado
-
-    Mejoras frente a un HMM "vanilla" para evitar el parpadeo y la
-    sub-detección de régimen bajista:
-      1. Las features se escalan (media 0, varianza 1) antes de entrenar.
-      2. Prior "sticky" (transmat_prior con diagonal reforzada) que
-         penaliza cambios de estado durante el entrenamiento.
-      3. Override de pendiente: si la tendencia de precio es claramente
-         descendente pero el HMM la clasificó como RANGO, se reclasifica
-         como BAJISTA (ver `apply_bear_override`).
-      4. Filtro de duración mínima aplicado al resultado final (después del
-         override), para no reintroducir parpadeo.
+      - el modelo ajustado, el retorno medio por estado, y la máscara de
+        semanas donde el override efectivamente actuó
     """
     scaler = StandardScaler()
-    X = scaler.fit_transform(features.values)
+    X = scaler.fit_transform(features[["returns", "volatility", "slope"]].values)
 
     transmat_prior = np.full((n_states, n_states), 1.0) + np.eye(n_states) * sticky_strength
 
@@ -240,12 +234,15 @@ def fit_hmm_regimes(features, n_states=3, n_iter=1000, random_state=42,
 
     regime_labels_raw = pd.Series([label_map[s] for s in states], index=features.index, name="Regime")
 
+    override_mask = pd.Series(False, index=features.index)
     if use_bear_override and n_states == 3:
-        regime_labels_raw = apply_bear_override(regime_labels_raw, features["slope"], slope_override=slope_override)
+        regime_labels_raw, override_mask = apply_bear_override(
+            regime_labels_raw, features["slope_z"], z_threshold=z_threshold
+        )
 
     regime_labels = apply_min_duration(regime_labels_raw, min_run=min_run)
 
-    return regime_labels, proba, label_map, model, mean_returns
+    return regime_labels, proba, label_map, model, mean_returns, override_mask
 
 # ============================================================================
 # DESCARGA DE DATOS
@@ -280,7 +277,7 @@ def download_weekly_data(ticker, years_back):
 def main():
     st.set_page_config(layout="wide", page_title="Regime Analyzer - HMM Híbrido")
     st.title("📊 Market Regime Analyzer — Gaussian HMM Híbrido (3 Estados)")
-    st.caption("Alcista · Bajista · Rango — HMM + override de tendencia bajista para evitar que las caídas se etiqueten como Rango")
+    st.caption("Alcista · Bajista · Rango — HMM + override de tendencia bajista adaptativo por z-score")
 
     if "analyzed" not in st.session_state:
         st.session_state.analyzed = False
@@ -315,30 +312,43 @@ def main():
     with col_input7:
         use_bear_override = st.checkbox(
             "Activar override bajista", value=True,
-            help="Si el HMM etiqueta una semana como RANGO pero la tendencia de "
-                 "precio (pendiente log-precio) es claramente descendente, la "
-                 "reclasifica como BAJISTA. Corrige el sesgo del HMM a 'tragarse' "
-                 "caídas sostenidas como si fueran laterales."
+            help="Si el HMM etiqueta una semana como RANGO pero la pendiente de "
+                 "tendencia es estadísticamente muy negativa PARA ESTE MISMO "
+                 "TICKER (z-score, no un valor fijo), la reclasifica como "
+                 "BAJISTA. Corrige el sesgo del HMM a 'tragarse' caídas "
+                 "sostenidas como si fueran laterales, sin romperse en "
+                 "tickers muy volátiles."
         )
 
-    slope_override = -0.0025
+    z_threshold = -1.25
     trend_window = 20
+    z_window = 104
     if use_bear_override:
-        col_input8, col_input9 = st.columns(2)
+        col_input8, col_input9, col_input10 = st.columns(3)
         with col_input8:
-            slope_override = st.slider(
-                "Umbral de pendiente bajista (x1000)", -6.0, -0.5, -2.5, 0.5,
-                help="Pendiente semanal del log-precio por debajo de la cual se "
-                     "fuerza BAJISTA aunque el HMM diga RANGO. Valor por defecto "
-                     "calibrado en un benchmark de series sintéticas (no en un "
-                     "ticker específico) — ajústalo si tu activo es muy volátil "
-                     "o muy calmado."
-            ) / 1000.0
+            z_threshold = st.slider(
+                "Umbral z de pendiente bajista", -3.0, -0.25, -1.25, 0.25,
+                help="La pendiente actual se compara contra su propia media/"
+                     "desviación histórica en este ticker (z-score), no contra "
+                     "un valor fijo. Un z de -1.25 significa 'la tendencia bajista "
+                     "actual es notablemente más pronunciada de lo habitual para "
+                     "esta acción'. Más negativo = override más exigente/raro. "
+                     "Calibrado en un benchmark con tickers calmados y volátiles: "
+                     "la tasa de activación del override se mantuvo entre 0% y "
+                     "12% de las semanas, nunca 'se comió' todo el rango."
+            )
         with col_input9:
             trend_window = st.slider(
                 "Ventana de la pendiente (sem.)", 8, 40, 20,
                 help="Número de semanas usadas para calcular la pendiente de "
                      "tendencia que alimenta al override bajista."
+            )
+        with col_input10:
+            z_window = st.slider(
+                "Ventana del z-score (sem.)", 52, 208, 104,
+                help="Historial usado para calcular la media/desviación de "
+                     "referencia de la pendiente de este ticker. 104 semanas "
+                     "= 2 años."
             )
 
     if st.button("🚀 ANALIZAR", use_container_width=True):
@@ -348,8 +358,9 @@ def main():
         st.session_state.sticky_strength = sticky_strength
         st.session_state.min_run = min_run
         st.session_state.use_bear_override = use_bear_override
-        st.session_state.slope_override = slope_override
+        st.session_state.z_threshold = z_threshold
         st.session_state.trend_window = trend_window
+        st.session_state.z_window = z_window
         st.session_state.analyzed = True
 
     if st.session_state.analyzed and st.session_state.df is not None:
@@ -361,13 +372,14 @@ def main():
                 df,
                 vol_window=st.session_state.get("vol_window", vol_window),
                 trend_window=st.session_state.get("trend_window", trend_window),
+                z_window=st.session_state.get("z_window", z_window),
             )
-            regime_labels, proba, label_map, model, mean_returns = fit_hmm_regimes(
+            regime_labels, proba, label_map, model, mean_returns, override_mask = fit_hmm_regimes(
                 features,
                 n_states=3,
                 sticky_strength=st.session_state.get("sticky_strength", sticky_strength),
                 min_run=st.session_state.get("min_run", min_run),
-                slope_override=st.session_state.get("slope_override", slope_override),
+                z_threshold=st.session_state.get("z_threshold", z_threshold),
                 use_bear_override=st.session_state.get("use_bear_override", use_bear_override),
             )
 
@@ -376,6 +388,8 @@ def main():
         df = df.loc[features.index].copy()
         df["Regime"] = regime_labels
         df["Slope"] = features["slope"]
+        df["Slope_Z"] = features["slope_z"]
+        df["Overridden"] = override_mask
         for s, lbl in label_map.items():
             df[f"Prob_{lbl}"] = proba[:, s]
 
@@ -385,48 +399,34 @@ def main():
 
         precio = float(current["Close"])
         sma50 = float(current["SMA_50"])
-        precio_above_sma = "✅ SÍ" if precio > sma50 else "❌ NO"
+        precio_above_sma = "SÍ" if precio > sma50 else "NO"
 
-        # Probabilidades actuales por régimen (última fila de proba, del HMM puro;
-        # si el override cambió la etiqueta final, se aclara aparte)
         current_probs = {lbl: float(current[f"Prob_{lbl}"]) for lbl in REGIME_COLORS.keys() if f"Prob_{lbl}" in df.columns}
         hmm_raw_label = max(current_probs, key=current_probs.get) if current_probs else current_regime
-        overridden = st.session_state.get("use_bear_override", use_bear_override) and (hmm_raw_label != current_regime)
+        overridden_now = bool(current["Overridden"])
 
         # ================= TARJETA DE ESTADO ACTUAL =================
         regime_color = REGIME_COLORS.get(current_regime, "#FFFFFF")
-        override_note = (
-            f'<tr><td colspan="2" style="padding:4px 6px;border:1px solid #444;'
-            f'background-color:#3a2f00;color:#FFD700;font-size:11px;text-align:center;">'
-            f'⚠️ HMM decía {hmm_raw_label}, corregido a {current_regime} por el override de tendencia bajista'
-            f'</td></tr>' if overridden else ""
+
+        st.markdown(
+            f'<div style="padding:10px;border:1px solid #444;background-color:{regime_color};'
+            f'color:black;font-weight:bold;text-align:center;font-size:20px;border-radius:4px;">'
+            f'{current_regime}</div>',
+            unsafe_allow_html=True,
         )
-        st.markdown(f"""
-        <table style="width:100%; border-collapse: collapse; margin-bottom: 10px;">
-            <tr>
-                <td colspan="2" style="padding: 10px; border: 1px solid #444; background-color: {regime_color}; color: black; font-weight: bold; text-align: center; font-size: 20px;">
-                    {current_regime}
-                </td>
-            </tr>
-            {override_note}
-            <tr>
-                <td style="padding: 4px 6px; border: 1px solid #444; font-size: 11px; background-color: #2e2e2e; width: 40%;">Precio</td>
-                <td style="padding: 4px 6px; border: 1px solid #444; font-weight: bold; font-size: 12px;">${precio:.2f}</td>
-            </tr>
-            <tr>
-                <td style="padding: 4px 6px; border: 1px solid #444; font-size: 11px; background-color: #2e2e2e;">SMA 50</td>
-                <td style="padding: 4px 6px; border: 1px solid #444; font-size: 11px;">${sma50:.2f}</td>
-            </tr>
-            <tr>
-                <td style="padding: 4px 6px; border: 1px solid #444; font-size: 11px; background-color: #2e2e2e;">Precio > SMA50</td>
-                <td style="padding: 4px 6px; border: 1px solid #444; font-size: 11px;">{precio_above_sma}</td>
-            </tr>
-            <tr>
-                <td style="padding: 4px 6px; border: 1px solid #444; font-size: 11px; background-color: #2e2e2e;">Pendiente log-precio actual</td>
-                <td style="padding: 4px 6px; border: 1px solid #444; font-size: 11px;">{float(current["Slope"]):.5f}</td>
-            </tr>
-        </table>
-        """, unsafe_allow_html=True)
+
+        if overridden_now:
+            st.warning(
+                f"⚠️ El HMM puro indicaba **{hmm_raw_label}**, pero se corrigió a **BAJISTA** "
+                f"por el override de tendencia (z-score de pendiente = {float(current['Slope_Z']):.2f}, "
+                f"umbral = {st.session_state.get('z_threshold', z_threshold):.2f})."
+            )
+
+        info_cols = st.columns(4)
+        info_cols[0].metric("Precio", f"${precio:.2f}")
+        info_cols[1].metric("SMA 50", f"${sma50:.2f}")
+        info_cols[2].metric("Precio > SMA50", precio_above_sma)
+        info_cols[3].metric("Z-score pendiente", f"{float(current['Slope_Z']):.2f}")
 
         # ================= PROBABILIDADES POR RÉGIMEN =================
         st.markdown("#### 🎲 Probabilidad actual por régimen (según el HMM, antes del override)")
@@ -464,18 +464,15 @@ def main():
             )
             st.dataframe(trans.style.format("{:.3f}"))
 
-            n_overridden = int((st.session_state.get("use_bear_override", use_bear_override)) and
-                                (apply_bear_override(
-                                    pd.Series([label_map[s] for s in model.predict(StandardScaler().fit_transform(features.values))], index=features.index),
-                                    features["slope"],
-                                    slope_override=st.session_state.get("slope_override", slope_override),
-                                ) != pd.Series([label_map[s] for s in model.predict(StandardScaler().fit_transform(features.values))], index=features.index)
-                                ).sum())
+            override_pct = float(override_mask.mean() * 100)
             st.caption(
-                f"El override de tendencia bajista reclasificó {n_overridden} semanas de RANGO a BAJISTA "
-                f"en este histórico completo. Si este número es 0, el HMM ya está detectando las caídas "
-                f"sin ayuda; si es muy alto, considera que el HMM está fallando de forma sistemática para "
-                f"este ticker y quizás el enfoque de reglas (pendiente + EMA) por sí solo sea más confiable."
+                f"El override de tendencia bajista reclasificó **{int(override_mask.sum())} semanas "
+                f"({override_pct:.1f}% del histórico)** de RANGO a BAJISTA. "
+                f"Rangos sanos observados en el benchmark de calibración: 0%–12%. "
+                f"Si este porcentaje es mucho más alto (p.ej. >30-40%), el override está "
+                f"dominando la clasificación en vez de actuar como red de seguridad — "
+                f"considera subir (en magnitud) el umbral z, o revisar si el HMM está "
+                f"fallando de forma sistemática para este ticker."
             )
 
         # ================= LEYENDA =================
@@ -538,43 +535,40 @@ def main():
         st.markdown("---")
         with st.expander("📖 Ver Lógica de Clasificación"):
             st.markdown("""
-            **Metodología: Gaussian Hidden Markov Model (3 estados, covarianza completa) + override de tendencia**
+            **Metodología: Gaussian Hidden Markov Model (3 estados, covarianza completa) + override de tendencia adaptativo**
 
-            - Features: retorno suavizado (media móvil corta), volatilidad realizada
-              (rolling, anualizada) y **pendiente de la regresión log-precio** (en vez de
-              momentum simple). Las tres se **escalan** (media 0, varianza 1) antes de
-              entrenar para que ninguna domine por su escala.
-            - El modelo se ajusta con `hmmlearn.GaussianHMM`, estimando por EM (Baum-Welch)
-              las medias/covarianzas de cada estado y la matriz de transición.
-            - Se usa un **prior "sticky"** sobre la matriz de transición (`transmat_prior` con
-              diagonal reforzada) para que el modelo tienda a mantener el régimen en vez de
-              alternar cada pocas semanas.
-            - **Override de tendencia bajista (nuevo):** un Gaussian HMM no supervisado
-              entrenado sobre un solo ticker con pocas features tiende a "tragarse" caídas
-              sostenidas pero no extremadamente volátiles y las etiqueta como RANGO en vez de
-              BAJISTA — el régimen bajista suele tener menos observaciones históricas y queda
-              mal representado en la covarianza del modelo. Este override fuerza BAJISTA
-              cuando la pendiente de tendencia es claramente negativa, sin importar lo que
-              diga el HMM. Se calibró con un **benchmark de 6 series sintéticas de régimen
-              conocido** (generadas artificialmente, no ajustadas a ningún ticker real): sin
-              el override, el recall del régimen bajista promedió ~50%; con el override,
-              ~58%, con mejor accuracy global. Esto es una mejora medida de forma objetiva,
-              no un ajuste a un solo ticker.
-            - Tras el HMM + override, se aplica un **filtro de confirmación mínima**: un
-              cambio de régimen solo se acepta si se sostiene un número mínimo de semanas
-              seguidas.
-            - Los 3 estados base se etiquetan según su **retorno medio**: el de mayor
-              retorno → **ALCISTA**, el de menor → **BAJISTA**, el intermedio → **RANGO**.
-            - Si para tu ticker el override reclasifica muchísimas semanas (ver el contador
-              en "Características de cada régimen"), es una señal de que el HMM está
-              fallando sistemáticamente para ese activo — en ese caso, un enfoque de reglas
-              simples (pendiente + cruce de EMAs) puede ser más confiable que el HMM por sí
-              solo.
-            - Si sigue "parpadeando", sube el slider de **Persistencia** o el de
-              **Confirmación mínima**; si lo ves demasiado lento para reaccionar, bájalos.
-              Si las bajadas siguen sin detectarse, sube (en magnitud, hazlo más negativo)
-              el **umbral de pendiente bajista** solo si tu activo suele tener caídas muy
-              pronunciadas, o bájalo (menos negativo) si tiende a corregir de forma suave.
+            - Features del HMM: retorno suavizado (media móvil corta), volatilidad
+              realizada (rolling, anualizada) y pendiente de la regresión log-precio.
+              Las tres se **escalan** (media 0, varianza 1) antes de entrenar para que
+              ninguna domine por su escala.
+            - El modelo se ajusta con `hmmlearn.GaussianHMM` (EM/Baum-Welch), con un
+              **prior "sticky"** sobre la matriz de transición para evitar parpadeo.
+            - **Override de tendencia bajista, versión z-score (corregido):** una
+              primera versión usaba un umbral de pendiente absoluto (ej. "pendiente
+              < -0.0025"). Eso se calibró en un benchmark sintético con una sola
+              escala de volatilidad y **falló al aplicarlo a un ticker real más
+              volátil (SOFI)**, donde el umbral fijo se disparaba en prácticamente
+              el 100% de las semanas y eliminaba el régimen RANGO por completo.
+              La versión actual compara la pendiente contra su **propia media y
+              desviación histórica en ese mismo ticker (z-score)**, por lo que se
+              adapta automáticamente a la volatilidad de cada activo. Validado con
+              8 series sintéticas (4 de baja volatilidad, 4 de alta volatilidad,
+              ninguna ajustada a un ticker real): la tasa de activación del
+              override se mantuvo entre 0% y 12% en todos los casos, y el recall
+              del régimen bajista mejoró de ~50-60% (HMM puro) a ~69% en promedio.
+            - Tras el HMM + override, se aplica un **filtro de confirmación mínima**
+              (un cambio de régimen solo se acepta si se sostiene N semanas seguidas).
+            - Los 3 estados base se etiquetan según su **retorno medio**: mayor
+              retorno → **ALCISTA**, menor → **BAJISTA**, intermedio → **RANGO**.
+            - **Cómo saber si el override está bien calibrado para tu ticker:** mira
+              el porcentaje de "semanas reclasificadas" en el expander de
+              características de régimen. Si es 0%-15%, está actuando como red de
+              seguridad ocasional (comportamiento esperado). Si es mucho más alto,
+              el override está dominando la clasificación — sube (en magnitud) el
+              umbral z hasta que vuelva a un rango razonable.
+            - Si sigue "parpadeando" entre regímenes, sube el slider de
+              **Persistencia** o el de **Confirmación mínima**; si lo ves demasiado
+              lento para reaccionar, bájalos.
             """)
 
     elif st.session_state.analyzed and st.session_state.df is None:
