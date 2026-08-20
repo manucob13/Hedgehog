@@ -231,7 +231,7 @@ def get_rv10(close):
         return None
 
 # ======================================================================
-# 2. BLACK-SCHOLES DELTA (put)
+# 2. BLACK-SCHOLES DELTA (put / call)
 # ======================================================================
 
 def bs_put_delta(S, K, T_years, sigma, r=RISK_FREE_RATE):
@@ -243,6 +243,18 @@ def bs_put_delta(S, K, T_years, sigma, r=RISK_FREE_RATE):
             return None
         d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T_years) / (sigma * np.sqrt(T_years))
         return round(float(_N.cdf(d1) - 1), 3)
+    except Exception:
+        return None
+
+def bs_call_delta(S, K, T_years, sigma, r=RISK_FREE_RATE):
+    """Delta de un call europeo (Black-Scholes): N(d1), siempre entre 0 y
+    1. Usado en la Calculadora Recovery para mostrar el delta de los
+    candidatos ITM (cuanto más profundo el ITM, más cerca de 1)."""
+    try:
+        if T_years <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+            return None
+        d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T_years) / (sigma * np.sqrt(T_years))
+        return round(float(_N.cdf(d1)), 3)
     except Exception:
         return None
 
@@ -504,7 +516,8 @@ def build_csp_calculator(ticker, target_date, premium_min_pct, premium_max_pct):
     return out
 
 # ======================================================================
-# 4c. CALCULADORA RECOVERY: covered call ATM para recuperar una asignación
+# 4c. CALCULADORA RECOVERY: covered call ATM / ITM para recuperar una
+#     asignación
 # ======================================================================
 
 RECOVERY_MAX_DTE = 60
@@ -539,25 +552,86 @@ def find_atm_call_candidate(calls_df, current_price):
     except Exception:
         return None
 
-def build_recovery_calculator(ticker, assignment_price, max_dte=RECOVERY_MAX_DTE):
-    """Tras una asignación de CSP, busca la covered call ATM (mayor
-    extrínseco) que recupera la pérdida no realizada frente al precio de
-    asignación, con vencimiento <= max_dte días. 'Recuperar' se define
-    como Opción B: (strike_call - precio_asignación)*100 + prima*100 >= 0
-    — es decir, si te ejercen la call, el resultado neto de la operación
-    completa (desde la asignación del put hasta la ejecución de la call)
-    es >= 0.
+def find_itm_covering_candidates(calls_df, current_price, assignment_price, dte_calendar):
+    """De la cadena de calls de UN vencimiento, busca TODOS los strikes
+    ITM (strike < precio actual) cuya venta ya cubre la pérdida de la
+    asignación: (strike - precio_asignación)*100 + prima*100 >= 0.
 
-    Recorre TODOS los vencimientos disponibles hasta max_dte días, de más
-    cercano a más lejano, y devuelve:
-    - first_covering: el vencimiento MÁS CERCANO cuyo ATM ya cubre la
-      pérdida (recovery_dollar >= 0) — salir cuanto antes.
-    - next_after_first: el vencimiento inmediatamente posterior a ese,
-      para comparar si esperar una semana más compensa (más prima o
-      incluso beneficio neto).
-    - Si NINGÚN vencimiento dentro de max_dte cubre la pérdida, devuelve
-      best_effort: el de mayor recovery_dollar disponible (el que menos
-      pérdida deja), igual patrón que la calculadora de CSP normal.
+    A diferencia de find_atm_call_candidate() (que devuelve un único
+    strike, el más cercano al precio), aquí se devuelve la lista
+    COMPLETA de strikes ITM que cubren, cada uno con su delta
+    (Black-Scholes) — porque luego, en build_recovery_calculator(), se
+    comparan entre TODOS los vencimientos para elegir dos candidatos
+    distintos: el de mejor DTE y el de mayor delta (más profundo ITM).
+    Devuelve [] si no hay ningún strike ITM que cubra en este vencimiento."""
+    try:
+        c = calls_df.copy()
+        c["bid"] = pd.to_numeric(c["bid"], errors="coerce").fillna(0)
+        c["ask"] = pd.to_numeric(c["ask"], errors="coerce").fillna(0)
+        c["mid"] = (c["bid"] + c["ask"]) / 2
+        c = c[(c["bid"] > 0) & (c["ask"] > 0) & (c["mid"] > 0)]
+        c = c[c["strike"] < current_price]
+        if c.empty:
+            return []
+
+        c["recovery_dollar"] = (c["strike"] - assignment_price) * 100 + c["mid"] * 100
+        c = c[c["recovery_dollar"] >= 0]
+        if c.empty:
+            return []
+
+        T_years = dte_calendar / 365.0
+        out = []
+        for _, row in c.iterrows():
+            iv = float(row.get("impliedVolatility") or 0)
+            delta = bs_call_delta(current_price, float(row["strike"]), T_years, iv) if iv > 0 else None
+            out.append({
+                "strike": float(row["strike"]),
+                "mid": round(float(row["mid"]), 2),
+                "bid": round(float(row["bid"]), 2),
+                "ask": round(float(row["ask"]), 2),
+                "oi": int(pd.to_numeric(row.get("openInterest", 0), errors="coerce") or 0),
+                "volume": int(pd.to_numeric(row.get("volume", 0), errors="coerce") or 0),
+                "iv_pct": round(iv * 100, 2) if iv > 0 else None,
+                "delta": delta,
+                "recovery_dollar": round(float(row["recovery_dollar"]), 2),
+            })
+        return out
+    except Exception:
+        return []
+
+def build_recovery_calculator(ticker, assignment_price, max_dte=RECOVERY_MAX_DTE):
+    """Tras una asignación de CSP, busca:
+
+    1) ATM (comportamiento original): la covered call ATM (mayor
+       extrínseco) que recupera la pérdida no realizada frente al precio
+       de asignación, con vencimiento <= max_dte días. 'Recuperar' se
+       define como Opción B: (strike_call - precio_asignación)*100 +
+       prima*100 >= 0 — es decir, si te ejercen la call, el resultado
+       neto de la operación completa (desde la asignación del put hasta
+       la ejecución de la call) es >= 0.
+
+       Recorre TODOS los vencimientos disponibles hasta max_dte días, de
+       más cercano a más lejano, y devuelve:
+       - first_covering: el vencimiento MÁS CERCANO cuyo ATM ya cubre la
+         pérdida (recovery_dollar >= 0) — salir cuanto antes.
+       - next_after_first: el vencimiento inmediatamente posterior a
+         ese, para comparar si esperar una semana más compensa (más
+         prima o incluso beneficio neto).
+       - Si NINGÚN vencimiento dentro de max_dte cubre la pérdida,
+         devuelve best_effort: el de mayor recovery_dollar disponible
+         (el que menos pérdida deja), igual patrón que la calculadora de
+         CSP normal.
+
+    2) ITM (nuevo): dos candidatos ADICIONALES que conviven con el ATM,
+       usando strikes ITM (más profundos, mayor delta) que TAMBIÉN
+       cubren la pérdida, buscando en TODOS los vencimientos <= max_dte
+       días:
+       - itm_best_dte: entre todos los strikes ITM que cubren (en
+         cualquier vencimiento <= max_dte), el de DTE más cercano;
+         empate en DTE se rompe por el strike más alto (el ITM menos
+         profundo de los que empatan).
+       - itm_max_delta: entre ese mismo conjunto (todos los ITM que
+         cubren, <= max_dte), el de MAYOR delta (el más profundo ITM).
     """
     out = {"ticker": ticker, "error": None, "current_price": None,
            "assignment_price": assignment_price}
@@ -591,28 +665,35 @@ def build_recovery_calculator(ticker, assignment_price, max_dte=RECOVERY_MAX_DTE
         return out
 
     candidates = []
+    itm_all = []
     for exp in valid_exps:
         calls, _ = get_option_chain(ticker, exp)
         if calls is None or calls.empty:
             continue
-        atm = find_atm_call_candidate(calls, current_price)
-        if atm is None:
-            continue
         dte = (exp - today).days
-        recovery_dollar = round((atm["strike"] - assignment_price) * 100 + atm["mid"] * 100, 2)
-        candidates.append({
-            "expiration": exp,
-            "dte": dte,
-            "strike": atm["strike"],
-            "mid": atm["mid"],
-            "bid": atm["bid"],
-            "ask": atm["ask"],
-            "oi": atm["oi"],
-            "volume": atm["volume"],
-            "iv_pct": atm["iv_pct"],
-            "recovery_dollar": recovery_dollar,
-            "covers_loss": recovery_dollar >= 0,
-        })
+
+        atm = find_atm_call_candidate(calls, current_price)
+        if atm is not None:
+            recovery_dollar = round((atm["strike"] - assignment_price) * 100 + atm["mid"] * 100, 2)
+            candidates.append({
+                "expiration": exp,
+                "dte": dte,
+                "strike": atm["strike"],
+                "mid": atm["mid"],
+                "bid": atm["bid"],
+                "ask": atm["ask"],
+                "oi": atm["oi"],
+                "volume": atm["volume"],
+                "iv_pct": atm["iv_pct"],
+                "recovery_dollar": recovery_dollar,
+                "covers_loss": recovery_dollar >= 0,
+            })
+
+        itm_candidates = find_itm_covering_candidates(calls, current_price, assignment_price, dte)
+        for itm in itm_candidates:
+            itm["expiration"] = exp
+            itm["dte"] = dte
+        itm_all.extend(itm_candidates)
 
     if not candidates:
         out["error"] = "No se encontraron cadenas de calls válidas en ningún vencimiento disponible."
@@ -630,6 +711,21 @@ def build_recovery_calculator(ticker, assignment_price, max_dte=RECOVERY_MAX_DTE
     else:
         out["best_effort"] = max(candidates, key=lambda c: c["recovery_dollar"])
         out["meets_target"] = False
+
+    # ── Candidatos ITM adicionales (conviven con el ATM de arriba) ──
+    out["itm_all_candidates"] = itm_all
+    if itm_all:
+        # Candidato 1: mejor DTE (vencimiento más cercano que cubre);
+        # empate en DTE -> strike más alto (el ITM menos profundo).
+        out["itm_best_dte"] = sorted(itm_all, key=lambda c: (c["dte"], -c["strike"]))[0]
+
+        # Candidato 2: mayor delta (el más profundo ITM), dentro del
+        # mismo conjunto <= max_dte días.
+        itm_with_delta = [c for c in itm_all if c["delta"] is not None]
+        out["itm_max_delta"] = max(itm_with_delta, key=lambda c: c["delta"]) if itm_with_delta else None
+    else:
+        out["itm_best_dte"] = None
+        out["itm_max_delta"] = None
 
     return out
 
@@ -1435,7 +1531,9 @@ def main():
         f"ATM (mayor extrínseco) que recupera la pérdida frente al precio de "
         f"asignación, con vencimiento a un máximo de {RECOVERY_MAX_DTE} días. Te da "
         f"el primer vencimiento que ya cubre la pérdida y el siguiente, por si "
-        f"esperar una semana más te conviene."
+        f"esperar una semana más te conviene. Además muestra dos alternativas ITM "
+        f"(strikes por debajo del precio actual, con más delta) que también cubren "
+        f"la pérdida: la de vencimiento más cercano y la de mayor delta."
     )
 
     rc1, rc2, rc3 = st.columns([2, 1.5, 1])
@@ -1481,7 +1579,7 @@ def main():
                     f"(DTE={first['dte']}) ya recuperas la pérdida completa."
                 )
 
-                st.markdown("##### 🥇 Vencimiento más cercano que cubre la pérdida")
+                st.markdown("##### 🥇 Vencimiento más cercano que cubre la pérdida (ATM)")
                 f1, f2, f3, f4 = st.columns(4)
                 f1.metric("Vencimiento", first["expiration"].strftime("%d %b %Y"), f"DTE {first['dte']}")
                 f2.metric("Strike ATM (call)", f"${first['strike']:.2f}")
@@ -1508,14 +1606,59 @@ def main():
                 best = rr["best_effort"]
                 st.error(
                     f"🔴 Ningún vencimiento dentro de {RECOVERY_MAX_DTE} días cubre la "
-                    f"pérdida completa. El mejor disponible es "
+                    f"pérdida completa con el ATM. El mejor disponible es "
                     f"**{best['expiration'].strftime('%d %b %Y')}** (DTE={best['dte']}), "
                     f"strike ATM ${best['strike']:.2f}, prima ${best['mid']:.2f} — "
                     f"resultado neto **${best['recovery_dollar']:.2f}** "
                     f"(sigues perdiendo ${-best['recovery_dollar']:.2f})."
                 )
 
-            with st.expander("📋 Ver todos los vencimientos analizados"):
+            # ── Candidatos ITM adicionales (conviven con el ATM) ──────
+            st.markdown("---")
+            st.markdown("##### 🎯 Alternativas ITM (más profundas, cubren la pérdida)")
+            st.caption(
+                "Strikes por debajo del precio actual (más delta, menos extrínseco) "
+                "que también cubren la pérdida, buscando en TODOS los vencimientos "
+                f"hasta {RECOVERY_MAX_DTE} días."
+            )
+            itm_best_dte = rr.get("itm_best_dte")
+            itm_max_delta = rr.get("itm_max_delta")
+
+            if itm_best_dte or itm_max_delta:
+                itm_col1, itm_col2 = st.columns(2)
+                with itm_col1:
+                    st.markdown("**🥇 Mejor DTE (vencimiento más cercano que cubre)**")
+                    if itm_best_dte:
+                        ib1, ib2 = st.columns(2)
+                        ib1.metric("Vencimiento", itm_best_dte["expiration"].strftime("%d %b %Y"),
+                                   f"DTE {itm_best_dte['dte']}")
+                        ib2.metric("Strike ITM", f"${itm_best_dte['strike']:.2f}")
+                        ib3, ib4 = st.columns(2)
+                        ib3.metric("Delta", f"{itm_best_dte['delta']:.3f}" if itm_best_dte["delta"] is not None else "—")
+                        ib4.metric("Prima Mid", f"${itm_best_dte['mid']:.2f}")
+                        st.metric("Resultado neto", f"${itm_best_dte['recovery_dollar']:.2f}")
+                    else:
+                        st.info("Sin candidato ITM que cubra la pérdida.")
+                with itm_col2:
+                    st.markdown(f"**🥈 Mayor delta (más ITM), dentro de {RECOVERY_MAX_DTE} días**")
+                    if itm_max_delta:
+                        im1, im2 = st.columns(2)
+                        im1.metric("Vencimiento", itm_max_delta["expiration"].strftime("%d %b %Y"),
+                                   f"DTE {itm_max_delta['dte']}")
+                        im2.metric("Strike ITM", f"${itm_max_delta['strike']:.2f}")
+                        im3, im4 = st.columns(2)
+                        im3.metric("Delta", f"{itm_max_delta['delta']:.3f}" if itm_max_delta["delta"] is not None else "—")
+                        im4.metric("Prima Mid", f"${itm_max_delta['mid']:.2f}")
+                        st.metric("Resultado neto", f"${itm_max_delta['recovery_dollar']:.2f}")
+                    else:
+                        st.info("Sin candidato ITM con delta calculable (IV no disponible).")
+            else:
+                st.info(
+                    "Ningún strike ITM cubre la pérdida en ningún vencimiento analizado "
+                    f"dentro de {RECOVERY_MAX_DTE} días."
+                )
+
+            with st.expander("📋 Ver todos los vencimientos analizados (ATM)"):
                 rows = [{
                     "Vencimiento": c["expiration"].strftime("%d %b %Y"),
                     "DTE": c["dte"],
@@ -1528,6 +1671,22 @@ def main():
                     "¿Cubre?": "✅" if c["covers_loss"] else "❌",
                 } for c in rr["all_candidates"]]
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+            itm_all = rr.get("itm_all_candidates") or []
+            if itm_all:
+                with st.expander("📋 Ver todos los candidatos ITM que cubren la pérdida"):
+                    itm_rows = [{
+                        "Vencimiento": c["expiration"].strftime("%d %b %Y"),
+                        "DTE": c["dte"],
+                        "Strike ITM": f"${c['strike']:.2f}",
+                        "Mid": f"${c['mid']:.2f}",
+                        "Delta": f"{c['delta']:.3f}" if c["delta"] is not None else "—",
+                        "IV %": f"{c['iv_pct']:.2f}%" if c["iv_pct"] else "—",
+                        "OI": c["oi"],
+                        "Volumen": c["volume"],
+                        "Resultado neto": f"${c['recovery_dollar']:.2f}",
+                    } for c in sorted(itm_all, key=lambda x: (x["dte"], -x["strike"]))]
+                    st.dataframe(pd.DataFrame(itm_rows), use_container_width=True, hide_index=True)
 
 def render_results():
     """Renderiza los resultados guardados en session_state (filtros
