@@ -1200,7 +1200,7 @@ def main():
         if use_premium_band:
             pcol1, pcol2 = st.columns(2)
             with pcol1:
-                premium_min = st.number_input("Prima mínima (%)", min_value=0.10, max_value=5.00, value=0.95, step=0.05)
+                premium_min = st.number_input("Prima mínima (%)", min_value=0.10, max_value=5.00, value=0.75, step=0.05)
             with pcol2:
                 premium_max = st.number_input("Prima máxima (%)", min_value=0.10, max_value=10.00, value=1.10, step=0.05)
             if premium_max < premium_min:
@@ -1210,7 +1210,7 @@ def main():
         else:
             premium_min = st.number_input(
                 "Prima mínima (% del strike, semanal)", min_value=0.10, max_value=5.00,
-                value=1.00, step=0.05,
+                value=0.75, step=0.05,
                 help="Umbral mínimo: pasan todos los strikes con prima/strike >= este "
                      "valor (retorno sobre el capital comprometido). Como los puts son "
                      "OTM/ATM (intrínseco=0), la prima entera es 'extrínseco'.",
@@ -1232,12 +1232,13 @@ def main():
     with c2:
         st.markdown("**💧 Liquidez mínima**")
         use_oi_filter = st.checkbox(
-            "Exigir OI mínimo del strike", value=False,
-            help="Desactivado por defecto: el open interest que reporta Alpaca viene "
-                 "con frecuencia en 0 o muy bajo para nombres fuera de los índices más "
-                 "líquidos, incluso con bid/ask real cotizado.",
+            "Exigir OI mínimo del strike", value=True,
+            help="Activado por defecto con un mínimo de 50. Ten en cuenta que el open "
+                 "interest que reporta Alpaca viene a veces en 0 o muy bajo para "
+                 "nombres fuera de los índices más líquidos, incluso con bid/ask real "
+                 "cotizado — desactívalo si notas que te descarta candidatos válidos.",
         )
-        min_oi = st.number_input("OI mínimo del strike", min_value=10, max_value=10000, value=100, step=50,
+        min_oi = st.number_input("OI mínimo del strike", min_value=10, max_value=10000, value=50, step=50,
                                   disabled=not use_oi_filter)
         if not use_oi_filter:
             st.caption("ℹ️ OI mínimo NO se está aplicando — solo informativo en la tabla.")
@@ -1284,7 +1285,7 @@ def main():
         st.markdown("**🎚️ Filtros activables**")
         use_sma30_filter = st.checkbox("Precio > SMA30", value=False,
                                         help="Exige que el precio esté por encima de la media móvil de 30 sesiones.")
-        use_sma200_filter = st.checkbox("Precio > SMA200", value=False,
+        use_sma200_filter = st.checkbox("Precio > SMA200", value=True,
                                          help="Exige que el precio esté por encima de la media móvil de 200 sesiones "
                                               "(tendencia de fondo alcista).")
         use_pcr_filter = st.checkbox("PCR < 1.0 (sesgo alcista/neutral)", value=True)
