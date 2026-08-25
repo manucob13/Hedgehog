@@ -350,6 +350,24 @@ def main():
             use_container_width=True,
         )
 
+        # --- Variación del periodo seleccionado (no del año, del RANGO del gráfico) ---
+        period_df = equity_chart.sort_values("reportDate")
+        start_val = float(period_df["total"].iloc[0])
+        end_val = float(period_df["total"].iloc[-1])
+        change_abs = end_val - start_val
+        change_pct = (change_abs / start_val * 100) if start_val else None
+
+        color = "green" if change_abs >= 0 else "red"
+        sign = "+" if change_abs >= 0 else ""
+        pct_str = f" ({sign}{change_pct:.2f}%)" if change_pct is not None else ""
+        start_date_str = period_df["reportDate"].iloc[0].strftime("%d/%m/%Y")
+        end_date_str = period_df["reportDate"].iloc[-1].strftime("%d/%m/%Y")
+
+        st.markdown(
+                f"**Variación del periodo** ({start_date_str} → {end_date_str}): "
+                f":{color}[{sign}${change_abs:,.2f}{pct_str}]"
+        )
+    
     st.markdown("---")
 
     # --- P&L (trading, del año seleccionado) ---
