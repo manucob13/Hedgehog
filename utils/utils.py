@@ -48,12 +48,15 @@ def check_password():
                 st.session_state["password_correct"] = True
                 
                 # Opcional: Limpiamos los campos para seguridad
+                # Nota: Las keys de los inputs deben coincidir: "login_username_input" y "login_password_input"
                 del st.session_state["login_username_input"]
                 del st.session_state["login_password_input"]
                 
+                # CORRECCIÓN DE ERROR: Usamos st.rerun()
                 st.rerun() 
             else:
                 st.session_state["password_correct"] = False
+                # Mostramos el error solo después del intento fallido
                 error_placeholder.error("😕 Usuario o Contraseña incorrecta")
         
     # 4. Si el login no es correcto o no se ha intentado, el acceso es False
@@ -62,38 +65,24 @@ def check_password():
 
 @st.cache_data(ttl=86400)
 def fetch_data():
-    """Descarga datos históricos del ^GSPC (SPX), ^VIX y ^VIX3M.
-    
-    VIX3M se trata como OPCIONAL: si falla su descarga (ticker caído,
-    Yahoo sin datos recientes, etc.) la app sigue funcionando sin la
-    regla de Term Structure, en vez de perder todo el histórico.
-    """
+    """Descarga datos históricos del ^GSPC (SPX), ^VIX y ^VIX3M."""
     start = "2010-01-01" 
     end = datetime.now() + timedelta(days=1) 
 
     spx = yf.download("^GSPC", start=start, end=end, auto_adjust=False, multi_level_index=False, progress=False)
     vix = yf.download("^VIX", start=start, end=end, auto_adjust=False, multi_level_index=False, progress=False)
+    vix3m = yf.download("^VIX3M", start=start, end=end, auto_adjust=False, multi_level_index=False, progress=False)
 
     spx.index = pd.to_datetime(spx.index)
-
+    
     vix_series = vix['Close'].rename('VIX')
     vix_series.index = pd.to_datetime(vix_series.index)
+    
+    vix3m_series = vix3m['Close'].rename('VIX3M')
+    vix3m_series.index = pd.to_datetime(vix3m_series.index)
 
     df_merged = spx.merge(vix_series, how='left', left_index=True, right_index=True)
-
-    # --- VIX3M: opcional, nunca debe tumbar el pipeline principal ---
-    try:
-        vix3m = yf.download("^VIX3M", start=start, end=end, auto_adjust=False, multi_level_index=False, progress=False)
-        if vix3m is not None and not vix3m.empty and 'Close' in vix3m.columns:
-            vix3m_series = vix3m['Close'].rename('VIX3M')
-            vix3m_series.index = pd.to_datetime(vix3m_series.index)
-            df_merged = df_merged.merge(vix3m_series, how='left', left_index=True, right_index=True)
-        else:
-            df_merged['VIX3M'] = np.nan
-    except Exception:
-        df_merged['VIX3M'] = np.nan
-
-    # Solo exigimos que exista VIX (lo esencial). VIX3M puede venir con NaNs.
+    df_merged = df_merged.merge(vix3m_series, how='left', left_index=True, right_index=True)
     df_merged.dropna(subset=['VIX'], inplace=True)
     
     return df_merged
@@ -130,22 +119,9 @@ def calculate_indicators(df_raw: pd.DataFrame):
     if 'VIX3M' in spx.columns:
         spx['VIX_VIX3M'] = spx['VIX'] / spx['VIX3M']
     else:
-        spx['VIX3M'] = np.nan
         spx['VIX_VIX3M'] = np.nan
-
-    # --- FIX PRINCIPAL ---
-    # Antes: `return spx.dropna()` borraba TODAS las filas si VIX3M
-    # venía incompleto o vacío, dejando <50 filas y rompiendo el
-    # modelo Markov con "Datos insuficientes".
-    #
-    # Ahora: solo exigimos NaN-free en las columnas que realmente
-    # necesita el modelo (RV_5d, ATR_14, NR14, VIX_pct_change, VIX).
-    # VIX3M / VIX_VIX3M pueden quedar en NaN sin afectar al resto;
-    # home.py ya contempla ese caso (tiene_vix3m == False).
-    core_cols = ['Close', 'High', 'Low', 'VIX', 'log_ret', 'RV_5d', 'ATR_14', 'NR14', 'VIX_pct_change']
-    spx = spx.dropna(subset=core_cols)
-
-    return spx
+    
+    return spx.dropna()
 
 
 def preparar_datos_markov(spx: pd.DataFrame):
@@ -304,6 +280,7 @@ def markov_calculation_k2(endog_final, exog_tvtp_final):
     
     prob_baja = ultima_probabilidad.get(regimen_baja_vol_index, 0)
     
+    # Para gráficos, devolvemos también la serie completa
     prob_baja_serie = probabilidades_filtradas[regimen_baja_vol_index].rename('Prob_Baja_K2')
     
     return {
@@ -365,6 +342,7 @@ def markov_calculation_k3(endog_final, exog_tvtp_final):
     prob_baja = ultima_probabilidad.get(indices_regimen['Baja'], 0)
     prob_media = ultima_probabilidad.get(indices_regimen['Media'], 0)
     
+    # Para gráficos, devolvemos también las series completas
     prob_baja_serie = probabilidades_filtradas[indices_regimen['Baja']].rename('Prob_Baja_K3')
     prob_media_serie = probabilidades_filtradas[indices_regimen['Media']].rename('Prob_Media_K3')
     
@@ -392,27 +370,33 @@ def fetch_data_with_ticker(ticker):
     Returns:
         DataFrame con datos históricos del ticker y VIX
     """
+    # Mapeo de tickers a símbolos de Yahoo Finance
     ticker_map = {
         'SPX': '^GSPC',
         'SPY': 'SPY',
         'QQQ': 'QQQ'
     }
     
+    # Obtener el símbolo correcto
     yahoo_symbol = ticker_map.get(ticker, ticker)
     
     start = "2010-01-01"
     end = datetime.now() + timedelta(days=1)
     
+    # Descargar datos del ticker seleccionado
     df_ticker = yf.download(yahoo_symbol, start=start, end=end, 
                            auto_adjust=False, multi_level_index=False, progress=False)
     
+    # Descargar VIX
     vix = yf.download("^VIX", start=start, end=end, 
                      auto_adjust=False, multi_level_index=False, progress=False)
     
+    # Procesar índices
     df_ticker.index = pd.to_datetime(df_ticker.index)
     vix_series = vix['Close'].rename('VIX')
     vix_series.index = pd.to_datetime(vix_series.index)
     
+    # Merge
     df_merged = df_ticker.merge(vix_series, how='left', left_index=True, right_index=True)
     df_merged.dropna(subset=['VIX'], inplace=True)
     
