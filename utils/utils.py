@@ -1,12 +1,11 @@
-import datetime
-from datetime import datetime, timedelta
-import numpy as np
-import pandas as pd
-from sklearn.preprocessing import StandardScaler
-from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
 import streamlit as st
-import warnings
 import yfinance as yf
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
+from sklearn.preprocessing import StandardScaler
+import warnings
 
 warnings.filterwarnings('ignore')
 
@@ -49,9 +48,11 @@ def check_password():
                 st.session_state["password_correct"] = True
                 
                 # Opcional: Limpiamos los campos para seguridad
+                # Nota: Las keys de los inputs deben coincidir: "login_username_input" y "login_password_input"
                 del st.session_state["login_username_input"]
                 del st.session_state["login_password_input"]
                 
+                # CORRECCIÓN DE ERROR: Usamos st.rerun()
                 st.rerun() 
             else:
                 st.session_state["password_correct"] = False
@@ -64,38 +65,27 @@ def check_password():
 
 @st.cache_data(ttl=86400)
 def fetch_data():
-    """Descarga datos históricos del ^GSPC (SPX), ^VIX y ^VIX3M de forma segura."""
+    """Descarga datos históricos del ^GSPC (SPX), ^VIX y ^VIX3M."""
     start = "2010-01-01" 
     end = datetime.now() + timedelta(days=1) 
 
-    spx = yf.download("^GSPC", start=start, end=end, auto_adjust=False, progress=False)
-    vix = yf.download("^VIX", start=start, end=end, auto_adjust=False, progress=False)
-    vix3m = yf.download("^VIX3M", start=start, end=end, auto_adjust=False, progress=False)
-
-    # Aplanar MultiIndex de columnas si la versión de yfinance lo devuelve
-    for df in [spx, vix, vix3m]:
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+    spx = yf.download("^GSPC", start=start, end=end, auto_adjust=False, multi_level_index=False, progress=False)
+    vix = yf.download("^VIX", start=start, end=end, auto_adjust=False, multi_level_index=False, progress=False)
+    vix3m = yf.download("^VIX3M", start=start, end=end, auto_adjust=False, multi_level_index=False, progress=False)
 
     spx.index = pd.to_datetime(spx.index)
     
-    vix_series = vix['Close'].rename('VIX') if 'Close' in vix.columns else vix.iloc[:, 0].rename('VIX')
+    vix_series = vix['Close'].rename('VIX')
     vix_series.index = pd.to_datetime(vix_series.index)
     
+    vix3m_series = vix3m['Close'].rename('VIX3M')
+    vix3m_series.index = pd.to_datetime(vix3m_series.index)
+
     df_merged = spx.merge(vix_series, how='left', left_index=True, right_index=True)
-
-    # Merge seguro de VIX3M para evitar vaciar el DataFrame si falla la descarga
-    if not vix3m.empty and ('Close' in vix3m.columns or len(vix3m.columns) > 0):
-        vix3m_series = vix3m['Close'].rename('VIX3M') if 'Close' in vix3m.columns else vix3m.iloc[:, 0].rename('VIX3M')
-        vix3m_series.index = pd.to_datetime(vix3m_series.index)
-        df_merged = df_merged.merge(vix3m_series, how='left', left_index=True, right_index=True)
-    else:
-        df_merged['VIX3M'] = np.nan
-
+    df_merged = df_merged.merge(vix3m_series, how='left', left_index=True, right_index=True)
     df_merged.dropna(subset=['VIX'], inplace=True)
     
     return df_merged
-
 
 @st.cache_data(ttl=3600)
 def calculate_indicators(df_raw: pd.DataFrame):
@@ -126,48 +116,41 @@ def calculate_indicators(df_raw: pd.DataFrame):
     # 5. VIX Term Structure Ratio (VIX/VIX3M)
     #    < 1.0 = contango (estructura normal, favorable para calendars)
     #    > 1.0 = backwardation (stress, evitar entrada)
-    if 'VIX3M' in spx.columns and not spx['VIX3M'].isna().all():
+    if 'VIX3M' in spx.columns:
         spx['VIX_VIX3M'] = spx['VIX'] / spx['VIX3M']
     else:
         spx['VIX_VIX3M'] = np.nan
     
-    # CORRECCIÓN: Filtrar solo las columnas esenciales para que nulos en VIX3M no eliminen filas
-    required_cols = ['Close', 'VIX', 'RV_5d', 'ATR_14', 'VIX_pct_change', 'NR14']
-    return spx.dropna(subset=required_cols)
+    return spx.dropna()
 
 
 def preparar_datos_markov(spx: pd.DataFrame):
     """Estandariza los datos y alinea las series de tiempo."""
-    if spx is None or spx.empty:
-        return None, None
-
     endog_variable = 'RV_5d'
     variables_tvtp = ['VIX', 'ATR_14', 'VIX_pct_change', 'NR14']
     
-    for col in [endog_variable] + variables_tvtp:
-        if col not in spx.columns:
-            return None, None
-
-    data_markov = spx.dropna(subset=[endog_variable] + variables_tvtp).copy()
-    
-    if len(data_markov) < 50:
-        return None, None
-
-    endog = data_markov[endog_variable]
-    exog_tvtp_original = data_markov[variables_tvtp]
+    data_markov = spx.copy()
+    endog = data_markov[endog_variable].dropna()
     
     # Estandarizar exógenas
+    exog_tvtp_original = data_markov[variables_tvtp].copy()
     scaler_tvtp = StandardScaler()
-    exog_tvtp_scaled_data = scaler_tvtp.fit_transform(exog_tvtp_original)
+    exog_tvtp_scaled_data = scaler_tvtp.fit_transform(exog_tvtp_original.dropna())
     
     exog_tvtp_scaled = pd.DataFrame(
         exog_tvtp_scaled_data,
-        index=exog_tvtp_original.index,
+        index=exog_tvtp_original.dropna().index,
         columns=variables_tvtp
     )
 
-    endog_final = endog.loc[exog_tvtp_scaled.index]
-    exog_tvtp_final = exog_tvtp_scaled
+    # Alinear y eliminar NaNs finales
+    data_final = pd.concat([endog, exog_tvtp_scaled], axis=1).dropna()
+    endog_final = data_final[endog_variable]
+    exog_tvtp_final = data_final[variables_tvtp]
+    endog_final = endog_final.loc[exog_tvtp_final.index]
+    
+    if len(endog_final) < 50:
+        return None, None
     
     return endog_final, exog_tvtp_final
 
@@ -402,20 +385,15 @@ def fetch_data_with_ticker(ticker):
     
     # Descargar datos del ticker seleccionado
     df_ticker = yf.download(yahoo_symbol, start=start, end=end, 
-                            auto_adjust=False, progress=False)
+                           auto_adjust=False, multi_level_index=False, progress=False)
     
     # Descargar VIX
     vix = yf.download("^VIX", start=start, end=end, 
-                       auto_adjust=False, progress=False)
+                     auto_adjust=False, multi_level_index=False, progress=False)
     
-    # Aplanar MultiIndex si existe
-    for df in [df_ticker, vix]:
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-
     # Procesar índices
     df_ticker.index = pd.to_datetime(df_ticker.index)
-    vix_series = vix['Close'].rename('VIX') if 'Close' in vix.columns else vix.iloc[:, 0].rename('VIX')
+    vix_series = vix['Close'].rename('VIX')
     vix_series.index = pd.to_datetime(vix_series.index)
     
     # Merge
