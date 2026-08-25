@@ -48,12 +48,36 @@ DATOS: opciones (vencimientos, cadena, precio en vivo) vía Alpaca —
 utils/utils_alpaca.py (el mismo módulo que usa el screener de covered
 calls; get_option_chain ya devuelve puts, no ha hecho falta tocarlo).
 Precio diario/SMA30/SMA200/RV10 vía yfinance.
+
+UNIVERSO — CBOE "AVAILABLE WEEKLYS" (nuevo):
+Además del universo fijo (210 tickers) + Russell 1000 dinámico que ya
+construía create_tickers_universe(), get_full_universe() ahora descarga
+también el CSV público de Cboe con los tickers que tienen opciones
+semanales listadas (https://www.cboe.com/available_weeklys/), y añade
+como filas nuevas (Type='CboeWeeklys') los tickers de las secciones
+"Exchange Traded Products (ETFs and ETNs)" y "Equity" que no estuvieran
+ya en el universo. Las secciones de índices (SPX, VIX, RUT, XSP, etc.)
+del CSV se ignoran a propósito — ya están cubiertas por el universo fijo
+de índices, y el formato de esas filas (fechas de vencimiento, no un
+ticker+nombre) no encaja con el resto del parser.
+Esto es solo para AMPLIAR el universo de candidatos a escanear — el
+filtro fijo has_weekly_options() de Alpaca en Fase 2 sigue siendo la
+verificación real de cadencia semanal; el CSV de Cboe puede quedarse
+desactualizado o incluir algún ticker que Alpaca ya no liste, y esos
+simplemente caerán en el embudo con motivo "no_weekly_options" o
+"no_expirations", igual que cualquier otro ticker del universo fijo.
+Si la descarga del CSV de Cboe falla (red, cambio de formato, etc.), se
+degrada de forma silenciosa: el universo sigue siendo válido con lo que
+ya tenía (fijo + Russell 1000), solo se pierde la ampliación de Cboe —
+nunca es un error fatal para el screener.
 """
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import requests
+import csv
 from datetime import datetime, timedelta, date
 from statistics import NormalDist
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -86,6 +110,26 @@ SPREAD_MAX_PCT_OF_PREMIUM = 50.0
 
 _N = NormalDist()
 RISK_FREE_RATE = 0.045
+
+# CSV público de Cboe "Available Weeklys" (mismo fichero que descarga el
+# botón "Download Available Weeklys (csv)" en la página).
+CBOE_WEEKLYS_CSV_URL = "https://www.cboe.com/available_weeklys/get_csv_download/"
+
+# Marcadores de sección dentro del CSV (texto libre, sin cabecera de
+# columnas fija) → nombre interno de sección. Todo lo que no esté entre
+# uno de estos marcadores y el siguiente se ignora (incluye las
+# secciones de índices y las filas de fechas de vencimiento del
+# principio del fichero).
+CBOE_SECTION_MARKERS = {
+    "available weeklys - exchange traded products (etfs and etns)": "etf",
+    "available weeklys - equity": "equity",
+}
+
+CBOE_REQUEST_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/124.0.0.0 Safari/537.36"
+}
 
 REASON_ORDER = [
     "ok", "no_daily_data", "price_out_of_range", "sma_unavailable",
@@ -146,19 +190,116 @@ def _clean_ticker(raw):
 # 0. UNIVERSO
 # ======================================================================
 
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def get_cboe_weeklys_tickers():
+    """Descarga el CSV público de 'Available Weeklys' de Cboe y extrae
+    los tickers de las secciones de ETFs/ETNs y Acciones individuales
+    (las secciones de índices se ignoran a propósito, ver docstring del
+    módulo).
+
+    El CSV no tiene una cabecera de columnas fija por sección: cada
+    sección empieza con una línea de texto libre marcador
+    ("Available Weeklys - Exchange Traded Products (ETFs and ETNs)" /
+    "Available Weeklys - Equity"), seguida de filas "TICKER","NOMBRE"
+    hasta la siguiente sección o el final del fichero. Se detecta el
+    marcador por prefijo case-insensitive en vez de por posición fija,
+    ya que las filas de vencimientos disponibles al principio ocupan un
+    número variable de líneas.
+
+    Cacheado 24h — igual criterio que el Russell 1000 en tickers.py: es
+    un calendario de referencia que no cambia intradía.
+
+    Devuelve un set de tickers (vacío si la descarga o el parseo fallan
+    — el llamador debe tratarlo como 'sin datos adicionales de Cboe',
+    nunca como error fatal: el universo base sigue siendo válido sin
+    esto)."""
+    try:
+        resp = requests.get(CBOE_WEEKLYS_CSV_URL, headers=CBOE_REQUEST_HEADERS, timeout=20)
+        resp.raise_for_status()
+        text = resp.content.decode("utf-8-sig", errors="replace")
+    except Exception as e:
+        logger.warning(f"[cboe_weeklys] descarga falló: {e}")
+        return set()
+
+    tickers = set()
+    current_section = None
+    try:
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            low = line.lower()
+            matched = None
+            for marker, name in CBOE_SECTION_MARKERS.items():
+                if low.startswith(marker):
+                    matched = name
+                    break
+            if matched:
+                current_section = matched
+                continue
+
+            if current_section not in ("etf", "equity"):
+                continue
+
+            try:
+                row = next(csv.reader([line]))
+            except Exception:
+                continue
+            if not row:
+                continue
+
+            ticker = _clean_ticker(row[0])
+            if ticker:
+                tickers.add(ticker)
+    except Exception as e:
+        logger.warning(f"[cboe_weeklys] parseo falló: {e}")
+        return set()
+
+    if len(tickers) < 50:
+        # Señal de que el formato ha cambiado y el parser no está
+        # encontrando las secciones esperadas — mejor devolver vacío
+        # (degradación silenciosa) que un universo Cboe sospechosamente
+        # corto.
+        logger.warning(f"[cboe_weeklys] solo {len(tickers)} tickers extraídos — probablemente mal parseado, se descarta")
+        return set()
+
+    return tickers
+
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
 def get_full_universe():
+    """Universo completo del screener: base fija (210 tickers) + Russell
+    1000 dinámico (vía create_tickers_universe(), sin cambios) AMPLIADO
+    con los tickers del CSV 'Available Weeklys' de Cboe que no estuvieran
+    ya presentes. La ampliación de Cboe es aditiva y best-effort — si
+    falla, el universo base sigue siendo válido."""
     df = create_tickers_universe(include_russell1000=True)
     if df is None or df.empty:
-        return pd.DataFrame({"Ticker": []}), {}
-    df = df.copy()
+        df = pd.DataFrame(columns=["Ticker", "Type"])
+    else:
+        df = df.copy()
+
     df["Ticker"] = df["Ticker"].apply(_clean_ticker)
     df = df.dropna(subset=["Ticker"]).drop_duplicates("Ticker").reset_index(drop=True)
+
+    existing = set(df["Ticker"])
+    cboe_tickers = get_cboe_weeklys_tickers()
+    cboe_new = sorted(t for t in cboe_tickers if t and t not in existing)
+
+    if cboe_new:
+        cboe_df = pd.DataFrame({"Ticker": cboe_new, "Type": "CboeWeeklys"})
+        df = pd.concat([df, cboe_df], ignore_index=True)
+        df = df.drop_duplicates("Ticker").reset_index(drop=True)
+
     n_r = int((df["Type"] == "Russell1000").sum()) if "Type" in df.columns else 0
+    n_cboe_new = len(cboe_new)
     meta = {
         "r1000_ok": n_r > 0,
         "r1000_count": n_r,
-        "extra_count": len(df) - n_r,
+        "cboe_ok": len(cboe_tickers) > 0,
+        "cboe_total_found": len(cboe_tickers),
+        "cboe_new_count": n_cboe_new,
+        "extra_count": len(df) - n_r - n_cboe_new,
         "total_count": len(df),
     }
     return df[["Ticker"]].sort_values("Ticker").reset_index(drop=True), meta
@@ -920,6 +1061,7 @@ def reset_everything():
     get_option_expirations.clear()
     get_market_trend.clear()
     get_earnings_and_dividend_info.clear()
+    get_cboe_weeklys_tickers.clear()
     for key in ("results", "funnel", "debug_snapshot", "price_snapshot",
                 "scan_ts", "scanned_total"):
         st.session_state.pop(key, None)
@@ -1159,7 +1301,7 @@ def main():
     col_info, col_btn = st.columns([4, 1])
     with col_btn:
         if st.button("🔄 Actualizar Universo", type="primary", use_container_width=True):
-            with st.spinner("Reconstruyendo universo..."):
+            with st.spinner("Reconstruyendo universo (incluye descarga de Cboe Weeklys)..."):
                 df_universe, meta = refresh_universe()
                 st.session_state["df_universe"] = df_universe
                 st.session_state["meta_universe"] = meta
@@ -1176,9 +1318,16 @@ def main():
 
     with col_info:
         if meta.get("r1000_ok"):
+            if meta.get("cboe_ok"):
+                cboe_txt = (
+                    f" + Cboe Weeklys nuevos: {meta['cboe_new_count']:,} "
+                    f"(de {meta['cboe_total_found']:,} encontrados en el CSV)"
+                )
+            else:
+                cboe_txt = " · ⚠️ CSV de Cboe Weeklys no disponible en este refresco"
             st.success(
                 f"✅ **{meta['total_count']:,} tickers** "
-                f"(Russell 1000: {meta['r1000_count']:,} + Adicionales: {meta['extra_count']:,})"
+                f"(Russell 1000: {meta['r1000_count']:,} + Adicionales: {meta['extra_count']:,}{cboe_txt})"
             )
         else:
             st.warning(f"⚠️ Solo universo adicional: {meta['total_count']:,} tickers")
@@ -1787,8 +1936,8 @@ def render_results():
 
         st.dataframe(styler, use_container_width=True, height=550)
 
-        csv = df.to_csv(index=False).encode("utf-8")
-        st.download_button("⬇️ Descargar CSV", csv, f"csp_screener_{ts.strftime('%Y%m%d_%H%M')}.csv", "text/csv")
+        csv_export = df.to_csv(index=False).encode("utf-8")
+        st.download_button("⬇️ Descargar CSV", csv_export, f"csp_screener_{ts.strftime('%Y%m%d_%H%M')}.csv", "text/csv")
 
     with tab2:
         selected = st.selectbox("Selecciona un ticker para ver el detalle", options=df["Ticker"].tolist())
