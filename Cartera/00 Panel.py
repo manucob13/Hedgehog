@@ -1,5 +1,6 @@
 import streamlit as st
 import plotly.graph_objects as go
+import numpy as np
 import pandas as pd
 from pathlib import Path
 from datetime import date
@@ -75,11 +76,6 @@ def _sync_down():
 # Gráfico lineal de evolución del NLV
 # ---------------------------------------------------------------------------
 
-import plotly.graph_objects as go
-import numpy as np
-import pandas as pd
-
-
 def render_nlv_line_chart(equity_df, scale="linear", display_mode="dollar"):
     """
     Gráfico de evolución del NLV con línea/relleno verde cuando el valor es
@@ -109,10 +105,7 @@ def render_nlv_line_chart(equity_df, scale="linear", display_mode="dollar"):
         x0, x1 = x_num[i - 1], x_num[i]
 
         # Cambio de signo estricto entre dos puntos consecutivos: insertamos
-        # el punto real donde la recta que los une cruza y=0. Esto es lo que
-        # antes faltaba y provocaba el efecto "a trozos": el filtro where()
-        # cortaba la serie en el último punto antes del cambio de signo, en
-        # vez de llegar hasta cero.
+        # el punto real donde la recta que los une cruza y=0.
         if (
             not np.isnan(y0)
             and not np.isnan(y1)
@@ -332,6 +325,24 @@ def main():
             st.plotly_chart(
                 render_nlv_line_chart(equity_chart, scale=scale, display_mode=display_mode),
                 use_container_width=True,
+            )
+
+            # --- Variación del periodo seleccionado (no del año, del RANGO del gráfico) ---
+            period_df = equity_chart.sort_values("reportDate")
+            start_val = float(period_df["total"].iloc[0])
+            end_val = float(period_df["total"].iloc[-1])
+            change_abs = end_val - start_val
+            change_pct = (change_abs / start_val * 100) if start_val else None
+
+            color = "green" if change_abs >= 0 else "red"
+            sign = "+" if change_abs >= 0 else ""
+            pct_str = f" ({sign}{change_pct:.2f}%)" if change_pct is not None else ""
+            start_date_str = period_df["reportDate"].iloc[0].strftime("%d/%m/%Y")
+            end_date_str = period_df["reportDate"].iloc[-1].strftime("%d/%m/%Y")
+
+            st.markdown(
+                f"**Variación del periodo** ({start_date_str} → {end_date_str}): "
+                f":{color}[{sign}${change_abs:,.2f}{pct_str}]"
             )
 
     st.markdown("---")
