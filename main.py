@@ -79,12 +79,7 @@ cartera_operaciones = st.Page(
     icon="📋",
     url_path="cartera-operaciones"
 )
-cartera_importar = st.Page(
-    "Cartera/03 Importar.py", 
-    title="Importar", 
-    icon="⬆️",
-    url_path="cartera-importar"
-)
+
 # --- Sección DIVIDENDOS ---
 dividendos_panel = st.Page(
     "Dividendos/00 Panel.py", 
@@ -98,12 +93,7 @@ dividendos_asignacion = st.Page(
     icon="🎯",
     url_path="dividendos-asignacion"
 )
-dividendos_importar = st.Page(
-    "Dividendos/02 Importar.py", 
-    title="Importar", 
-    icon="⬆️",
-    url_path="dividendos-importar"
-)
+
 # --- Sección HERRAMIENTAS ---
 vix_term = st.Page(
     "Herramientas/01 VIX Term Structure.py", 
@@ -167,13 +157,11 @@ pg = st.navigation({
     "OPCIONES": [
         cartera_panel,
         cartera_calendario,
-        cartera_operaciones,
-        cartera_importar
+        cartera_operaciones
     ],
     "DIVIDENDOS": [
         dividendos_panel,
-        dividendos_asignacion,
-        dividendos_importar
+        dividendos_asignacion
     ],
     "HERRAMIENTAS": [
         vix_term, 
