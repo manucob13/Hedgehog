@@ -3,10 +3,13 @@ import plotly.graph_objects as go
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from datetime import date
+from datetime import date, datetime
 
 from utils.utils import check_password
-from Cartera.core.storage.db import read_trades, read_equity_summary, read_open_positions
+from Cartera.core.storage.db import (
+    read_trades, read_equity_summary, read_open_positions,
+    read_import_log, save_flex_import,
+)
 from Cartera.core.processing.metrics import (
     filter_closed_trades,
     profit_factor,
@@ -14,10 +17,13 @@ from Cartera.core.processing.metrics import (
     pnl_summary,
     account_summary,
 )
-from Cartera.core.storage.github_sync import download_db
+from Cartera.core.ingestion.flex_query import import_flex_report
+from Cartera.core.ingestion.ibkr_flex_service import fetch_flex_report, save_raw_xml, FlexServiceError
+from Cartera.core.storage.github_sync import download_db, upload_db
 import calendar as _calendar_module
 
 DB_PATH = Path(__file__).parent / "data" / "processed" / "cartera.db"
+RAW_DIR = Path(__file__).parent / "data" / "raw"
 REMOTE_DB_PATH = "cartera.db"
 
 RANGE_OPTIONS = [
@@ -57,19 +63,84 @@ def _range_start_date(range_label: str, today: date):
     return None
 
 
+def _get_github_secrets():
+    gh = st.secrets.get("github_data")
+    if not gh:
+        return None
+    token, repo = gh.get("token"), gh.get("repo")
+    branch = gh.get("branch", "main")
+    if not token or not repo:
+        return None
+    return token, repo, branch
+
+
 def _sync_down():
     """Trae la última versión de la BD desde GitHub antes de leer, por si
     el contenedor de Streamlit se reinició desde la última visita."""
-    gh = st.secrets.get("github_data")
-    if not gh:
+    creds = _get_github_secrets()
+    if creds is None:
         return
-    token, repo, branch = gh.get("token"), gh.get("repo"), gh.get("branch", "main")
-    if not token or not repo:
-        return
+    token, repo, branch = creds
     try:
         download_db(DB_PATH, REMOTE_DB_PATH, token, repo, branch)
     except Exception:
         pass  # si falla, seguimos con lo que haya en local sin romper la página
+
+
+def _sync_up():
+    creds = _get_github_secrets()
+    if creds is None:
+        return
+    token, repo, branch = creds
+    try:
+        upload_db(
+            DB_PATH, REMOTE_DB_PATH, token, repo, branch,
+            commit_message=f"Cartera: auto-actualización {datetime.now().isoformat(timespec='minutes')}",
+        )
+    except Exception as e:
+        st.warning(f"⚠️ No se pudo guardar en GitHub tras la auto-actualización: {e}")
+
+
+def _maybe_auto_update_from_ibkr():
+    """
+    Actualiza desde IBKR automáticamente, como máximo 1 vez al día.
+    Usa session_state para no repetir la llamada en cada rerun dentro de
+    la misma sesión (cambiar un selector no debe volver a llamar a IBKR).
+    """
+    if st.session_state.get("ibkr_auto_synced_cartera"):
+        return
+    st.session_state["ibkr_auto_synced_cartera"] = True  # evita reintentos aunque falle
+
+    last_date = None
+    if DB_PATH.exists():
+        log_df = read_import_log(DB_PATH)
+        if not log_df.empty:
+            try:
+                last_date = pd.to_datetime(log_df["imported_at"]).max().date()
+            except Exception:
+                last_date = None
+
+    if last_date == date.today():
+        return  # ya actualizado hoy, no hace falta llamar a IBKR
+
+    try:
+        ibkr_secrets = st.secrets["ibkr"]
+        token = ibkr_secrets["flex_token"]
+        query_id = ibkr_secrets["flex_query_id"]
+    except (KeyError, FileNotFoundError):
+        return  # sin secrets de IBKR, seguimos con lo que haya en local
+
+    with st.spinner("Actualizando datos desde IBKR (una vez al día)..."):
+        try:
+            xml_text = fetch_flex_report(token, query_id)
+            raw_path = save_raw_xml(xml_text, RAW_DIR)
+            parsed = import_flex_report(raw_path)
+            save_flex_import(DB_PATH, parsed, source_file="IBKR (auto, Panel)")
+            _sync_up()
+        except FlexServiceError as e:
+            st.warning(f"⚠️ No se pudo auto-actualizar desde IBKR ({e.code}): {e.message}")
+        except Exception as e:
+            st.warning(f"⚠️ No se pudo auto-actualizar desde IBKR: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +166,6 @@ def render_nlv_line_chart(equity_df, scale="linear", display_mode="dollar"):
     x_raw = df["reportDate"].to_numpy()
     y_raw = y_values.to_numpy(dtype=float)
 
-    # Fechas -> número (ns) para poder interpolar el punto exacto de cruce por cero
     x_num = x_raw.astype("datetime64[ns]").astype("int64").astype(float)
 
     x_full = [x_num[0]]
@@ -104,8 +174,6 @@ def render_nlv_line_chart(equity_df, scale="linear", display_mode="dollar"):
         y0, y1 = y_raw[i - 1], y_raw[i]
         x0, x1 = x_num[i - 1], x_num[i]
 
-        # Cambio de signo estricto entre dos puntos consecutivos: insertamos
-        # el punto real donde la recta que los une cruza y=0.
         if (
             not np.isnan(y0)
             and not np.isnan(y1)
@@ -113,7 +181,7 @@ def render_nlv_line_chart(equity_df, scale="linear", display_mode="dollar"):
             and y1 != 0
             and np.sign(y0) != np.sign(y1)
         ):
-            t = y0 / (y0 - y1)  # fracción del segmento donde y = 0
+            t = y0 / (y0 - y1)
             x_zero = x0 + t * (x1 - x0)
             x_full.append(x_zero)
             y_full.append(0.0)
@@ -124,11 +192,8 @@ def render_nlv_line_chart(equity_df, scale="linear", display_mode="dollar"):
     x_full = pd.to_datetime(np.array(x_full).astype("int64"))
     y_full = np.array(y_full)
 
-    # El relleno "hasta cero" no es válido en escala logarítmica (cero = -infinito en log).
     use_fill = scale == "linear"
 
-    # Con los cruces por cero ya insertados como puntos reales, el filtro por
-    # signo ahora sí empieza/termina cada tramo exactamente en 0, sin huecos.
     pos_y = np.where(y_full >= 0, y_full, np.nan)
     neg_y = np.where(y_full <= 0, y_full, np.nan)
 
@@ -161,7 +226,7 @@ def render_nlv_line_chart(equity_df, scale="linear", display_mode="dollar"):
     else:
         yaxis_config["tickprefix"] = "$"
         yaxis_config["tickformat"] = ",.0f"
-        yaxis_config["exponentformat"] = "none"  # evita notación científica en log
+        yaxis_config["exponentformat"] = "none"
 
     fig.update_layout(
         height=320,
@@ -238,11 +303,12 @@ def main():
     st.title("📊 Panel")
 
     _sync_down()
+    _maybe_auto_update_from_ibkr()
 
     if not DB_PATH.exists():
         st.info(
-            "Todavía no has importado ninguna operación. Ve a la página "
-            "**Actualizar** para traer tu primer reporte de IBKR."
+            "Todavía no hay datos disponibles. Comprueba que los secrets de "
+            "IBKR (`[ibkr]`) estén configurados correctamente."
         )
         return
 
@@ -251,22 +317,19 @@ def main():
 
     if trades.empty and equity.empty:
         st.info(
-            "Todavía no hay datos guardados. Ve a la página "
-            "**Actualizar** para traer tu primer reporte de IBKR."
+            "Todavía no hay datos guardados. Comprueba que los secrets de "
+            "IBKR (`[ibkr]`) estén configurados correctamente."
         )
         return
 
     today = date.today()
 
-    # --- Selector de año (afecta a P&L; el gráfico de NLV es siempre histórico completo) ---
     available_years = sorted(equity["reportDate"].dt.year.unique(), reverse=True) if not equity.empty else [today.year]
     default_index = available_years.index(today.year) if today.year in available_years else 0
     selected_year = st.selectbox("Año", options=available_years, index=default_index, key="panel_year")
 
-    # --- Resumen de cuenta (siempre el estado ACTUAL, no depende del selector) ---
     acc = account_summary(equity) if not equity.empty else None
 
-    # --- Operaciones cerradas del año seleccionado ---
     closed_selected = filter_closed_trades(
         trades, date_from=date(selected_year, 1, 1), date_to=date(selected_year, 12, 31)
     ) if not trades.empty else trades
@@ -275,10 +338,14 @@ def main():
     wr = win_rate(closed_selected)
     pnl = pnl_summary(closed_selected)
 
-    st.caption(f"Resumen de cuenta a fecha de hoy · P&L del año {selected_year}")
+    log_df = read_import_log(DB_PATH)
+    last_update_str = "—"
+    if not log_df.empty:
+        last_update_str = pd.to_datetime(log_df["imported_at"]).max().strftime("%d/%m/%Y %H:%M")
+
+    st.caption(f"Resumen de cuenta a fecha de hoy · P&L del año {selected_year} · Última actualización: {last_update_str}")
     st.markdown("---")
 
-    # --- Fila de tarjetas: Resumen de cuenta ---
     st.subheader("Resumen de cuenta")
     col1, col2, col3, col4 = st.columns(4)
     if acc:
@@ -293,7 +360,6 @@ def main():
 
     st.markdown("---")
 
-    # --- Gráfico lineal: evolución del valor de cartera (NLV) ---
     st.subheader("Evolución del valor de la cartera (NLV)")
     if equity.empty:
         st.caption("Sin datos suficientes para el gráfico")
@@ -327,7 +393,6 @@ def main():
                 use_container_width=True,
             )
 
-            # --- Variación del periodo seleccionado (no del año, del RANGO del gráfico) ---
             period_df = equity_chart.sort_values("reportDate")
             start_val = float(period_df["total"].iloc[0])
             end_val = float(period_df["total"].iloc[-1])
@@ -347,7 +412,6 @@ def main():
 
     st.markdown("---")
 
-    # --- Fila: Gauges + P&L acumulado (del año seleccionado) ---
     gcol1, gcol2, gcol3 = st.columns(3)
 
     with gcol1:
@@ -377,7 +441,6 @@ def main():
 
     st.markdown("---")
 
-    # --- Crédito abierto (siempre estado actual) ---
     st.subheader("Crédito abierto")
     positions = read_open_positions(DB_PATH)
     if positions.empty:
