@@ -465,11 +465,13 @@ def main():
     st.subheader(f"Dividendos mensuales {selected_year}")
     div_monthly = dividends_by_month(cash_tx, selected_year)
     div_total = dividends_total(cash_tx, selected_year)
+    avg_monthly = float(div_monthly["avg_net"].iloc[0]) if not div_monthly.empty else 0.0
 
     d1, d2, d3 = st.columns(3)
     d1.metric("Dividendo bruto (año)", f"${div_total['gross']:,.2f}")
     d2.metric("Retenciones (año)", f"${div_total['withholding_tax']:,.2f}")
     d3.metric("Dividendo neto (año)", f"${div_total['net']:,.2f}")
+    d3.caption(f"Media mensual: ${avg_monthly:,.2f}")
 
     st.plotly_chart(render_dividends_chart(div_monthly), use_container_width=True)
 
