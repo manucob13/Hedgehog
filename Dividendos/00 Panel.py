@@ -71,9 +71,18 @@ def _range_start_date(range_label: str, today: date):
     return None
 
 
-def _avg_dividend_last_6_months(monthly_df: pd.DataFrame, today: date, selected_year: int) -> float:
-    """Media del dividendo neto mensual de los últimos 6 meses YA TRANSCURRIDOS
-    dentro del año mostrado en el gráfico (selected_year).
+def _ema_dividend_last_6_months(
+    monthly_df: pd.DataFrame, today: date, selected_year: int, span: int = 6
+) -> float:
+    """Media móvil EXPONENCIAL (EMA) del dividendo neto mensual, con span=6
+    (ventana equivalente a "últimos 6 meses", pero dando más peso a los
+    meses recientes que a los antiguos, en vez de pesarlos todos igual
+    como hacía la media simple).
+
+    Se usa `pandas.Series.ewm(span=span, adjust=False)`, que es la
+    definición estándar de EMA: cada mes nuevo se pondera con
+    alpha = 2 / (span + 1) y el resto del peso decae exponencialmente
+    hacia atrás. Con span=6, alpha ≈ 0.2857.
 
     Supuestos sobre `monthly_df` (el mismo dataframe que alimenta las barras
     del gráfico "Dividendos mensuales"):
@@ -81,20 +90,23 @@ def _avg_dividend_last_6_months(monthly_df: pd.DataFrame, today: date, selected_
       - La columna "net" trae el dividendo neto de ese mes (0 si no hubo
         dividendos o si el mes todavía no ha ocurrido).
 
-    Si `selected_year` es el año en curso, solo se consideran los meses que ya
-    pasaron (no se cuentan meses futuros con net=0 como si fueran "sin
-    dividendos", ya que en realidad no tienen datos todavía).
+    Si `selected_year` es el año en curso, solo se consideran los meses que
+    ya pasaron (los meses futuros con net=0 no son "cero dividendos", son
+    datos que todavía no existen, así que no deben entrar en el cálculo).
     Si `selected_year` es un año anterior, se usan sus 12 meses completos.
-    Si `selected_year` es un año futuro (no debería ocurrir en la práctica),
-    devuelve 0.0.
+    Si `selected_year` es un año futuro, devuelve 0.0.
 
-    Nota: este cálculo queda acotado al año seleccionado en el filtro de la
-    página (igual que el propio gráfico). Si en algún momento se quiere una
-    media "real" de los últimos 6 meses naturales cruzando el límite de año
-    (p. ej. en enero/febrero, tomando también meses del año anterior), habría
-    que consultar `dividends_by_month` también para el año anterior y
-    combinar ambos — lo dejamos fuera por ahora para que este número siga
-    coincidiendo exactamente con lo que se ve en el gráfico de la página.
+    Se devuelve el ÚLTIMO valor de la serie EMA (el que incorpora todos los
+    meses transcurridos hasta la fecha), que es el número que corresponde
+    a "ahora mismo".
+
+    Nota: igual que antes, el cálculo queda acotado al año seleccionado en
+    el filtro de la página, para que coincida exactamente con los meses que
+    se ven en el gráfico. Si se quisiera una EMA "de verdad" usando también
+    meses de años anteriores como historial de arranque (para que el primer
+    mes del año no empiece con un peso artificialmente alto), habría que
+    pasar también los meses previos de `dividends_by_month` del año
+    anterior — lo dejamos fuera por ahora por la misma razón que antes.
     """
     if monthly_df.empty:
         return 0.0
@@ -110,8 +122,8 @@ def _avg_dividend_last_6_months(monthly_df: pd.DataFrame, today: date, selected_
     if df.empty:
         return 0.0
 
-    last6 = df.tail(6)
-    return float(last6["net"].mean())
+    ema_series = df["net"].ewm(span=span, adjust=False).mean()
+    return float(ema_series.iloc[-1])
 
 
 def _get_github_secrets():
@@ -332,12 +344,12 @@ def render_growth_chart(growth_df):
 # Gráfico de barras: dividendos netos por mes + línea de media (últimos 6 meses)
 # ---------------------------------------------------------------------------
 
-def render_dividends_chart(monthly_df, avg_last_6_months):
+def render_dividends_chart(monthly_df, ema_last_6_months):
     """
-    `avg_last_6_months` se calcula fuera de esta función (con
-    `_avg_dividend_last_6_months`) para que el valor de la línea punteada
+    `ema_last_6_months` se calcula fuera de esta función (con
+    `_ema_dividend_last_6_months`) para que el valor de la línea punteada
     sea exactamente el mismo número que se muestra en la métrica "Media
-    últimos 6 meses" del panel.
+    exponencial (6m)" del panel.
 
     Se usa `add_hline` en vez de un trace `Scatter` para la media: así la
     línea siempre cubre todo el ancho del gráfico (ENE -> DIC), incluso
@@ -355,11 +367,11 @@ def render_dividends_chart(monthly_df, avg_last_6_months):
     ))
 
     fig.add_hline(
-        y=avg_last_6_months,
+        y=ema_last_6_months,
         line_dash="dash",
         line_color="#F39C12",
         line_width=2,
-        annotation_text=f"Media 6m: ${avg_last_6_months:,.2f}",
+        annotation_text=f"EMA 6m: ${ema_last_6_months:,.2f}",
         annotation_position="top left",
         annotation_font_color="#F39C12",
     )
@@ -519,15 +531,15 @@ def main():
     st.subheader(f"Dividendos mensuales {selected_year}")
     div_monthly = dividends_by_month(cash_tx, selected_year)
     div_total = dividends_total(cash_tx, selected_year)
-    avg_last_6_months = _avg_dividend_last_6_months(div_monthly, today, selected_year)
+    ema_last_6_months = _ema_dividend_last_6_months(div_monthly, today, selected_year, span=6)
 
     d1, d2, d3, d4 = st.columns(4)
     d1.metric("Dividendo bruto (año)", f"${div_total['gross']:,.2f}")
     d2.metric("Retenciones (año)", f"${div_total['withholding_tax']:,.2f}")
     d3.metric("Dividendo neto (año)", f"${div_total['net']:,.2f}")
-    d4.metric("Media últimos 6 meses", f"${avg_last_6_months:,.2f}")
+    d4.metric("Media exponencial (6m)", f"${ema_last_6_months:,.2f}")
 
-    st.plotly_chart(render_dividends_chart(div_monthly, avg_last_6_months), use_container_width=True)
+    st.plotly_chart(render_dividends_chart(div_monthly, ema_last_6_months), use_container_width=True)
 
     st.markdown("---")
 
