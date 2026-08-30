@@ -71,6 +71,49 @@ def _range_start_date(range_label: str, today: date):
     return None
 
 
+def _avg_dividend_last_6_months(monthly_df: pd.DataFrame, today: date, selected_year: int) -> float:
+    """Media del dividendo neto mensual de los últimos 6 meses YA TRANSCURRIDOS
+    dentro del año mostrado en el gráfico (selected_year).
+
+    Supuestos sobre `monthly_df` (el mismo dataframe que alimenta las barras
+    del gráfico "Dividendos mensuales"):
+      - Tiene una fila por cada mes de `selected_year`, en orden ENE -> DIC.
+      - La columna "net" trae el dividendo neto de ese mes (0 si no hubo
+        dividendos o si el mes todavía no ha ocurrido).
+
+    Si `selected_year` es el año en curso, solo se consideran los meses que ya
+    pasaron (no se cuentan meses futuros con net=0 como si fueran "sin
+    dividendos", ya que en realidad no tienen datos todavía).
+    Si `selected_year` es un año anterior, se usan sus 12 meses completos.
+    Si `selected_year` es un año futuro (no debería ocurrir en la práctica),
+    devuelve 0.0.
+
+    Nota: este cálculo queda acotado al año seleccionado en el filtro de la
+    página (igual que el propio gráfico). Si en algún momento se quiere una
+    media "real" de los últimos 6 meses naturales cruzando el límite de año
+    (p. ej. en enero/febrero, tomando también meses del año anterior), habría
+    que consultar `dividends_by_month` también para el año anterior y
+    combinar ambos — lo dejamos fuera por ahora para que este número siga
+    coincidiendo exactamente con lo que se ve en el gráfico de la página.
+    """
+    if monthly_df.empty:
+        return 0.0
+
+    df = monthly_df.reset_index(drop=True)
+
+    if selected_year > today.year:
+        return 0.0
+    if selected_year == today.year:
+        df = df.iloc[: today.month]  # solo meses ya transcurridos
+    # si selected_year < today.year, se usan los 12 meses tal cual
+
+    if df.empty:
+        return 0.0
+
+    last6 = df.tail(6)
+    return float(last6["net"].mean())
+
+
 def _get_github_secrets():
     gh = st.secrets.get("github_data")
     if not gh:
@@ -286,12 +329,20 @@ def render_growth_chart(growth_df):
 
 
 # ---------------------------------------------------------------------------
-# Gráfico de barras: dividendos netos por mes + línea de media
+# Gráfico de barras: dividendos netos por mes + línea de media (últimos 6 meses)
 # ---------------------------------------------------------------------------
 
-def render_dividends_chart(monthly_df):
-    avg = float(monthly_df["avg_net"].iloc[0]) if not monthly_df.empty else 0.0
+def render_dividends_chart(monthly_df, avg_last_6_months):
+    """
+    `avg_last_6_months` se calcula fuera de esta función (con
+    `_avg_dividend_last_6_months`) para que el valor de la línea punteada
+    sea exactamente el mismo número que se muestra en la métrica "Media
+    últimos 6 meses" del panel.
 
+    Se usa `add_hline` en vez de un trace `Scatter` para la media: así la
+    línea siempre cubre todo el ancho del gráfico (ENE -> DIC), incluso
+    cuando faltan meses por transcurrir en el año seleccionado.
+    """
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=monthly_df["month_label"],
@@ -302,14 +353,17 @@ def render_dividends_chart(monthly_df):
         textposition="outside",
         name="Dividendo neto",
     ))
-    fig.add_trace(go.Scatter(
-        x=monthly_df["month_label"],
-        y=[avg] * len(monthly_df),
-        mode="lines",
-        line=dict(color="#F39C12", width=2, dash="dash"),
-        hovertemplate=f"Media: ${avg:,.2f}<extra></extra>",
-        name="Media mensual",
-    ))
+
+    fig.add_hline(
+        y=avg_last_6_months,
+        line_dash="dash",
+        line_color="#F39C12",
+        line_width=2,
+        annotation_text=f"Media 6m: ${avg_last_6_months:,.2f}",
+        annotation_position="top left",
+        annotation_font_color="#F39C12",
+    )
+
     fig.update_layout(
         height=300,
         margin=dict(l=10, r=10, t=20, b=10),
@@ -318,7 +372,7 @@ def render_dividends_chart(monthly_df):
         font={"color": "white"},
         xaxis=dict(showgrid=False),
         yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.08)", tickprefix="$"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        showlegend=False,
     )
     return fig
 
@@ -465,15 +519,15 @@ def main():
     st.subheader(f"Dividendos mensuales {selected_year}")
     div_monthly = dividends_by_month(cash_tx, selected_year)
     div_total = dividends_total(cash_tx, selected_year)
-    avg_monthly = float(div_monthly["avg_net"].iloc[0]) if not div_monthly.empty else 0.0
+    avg_last_6_months = _avg_dividend_last_6_months(div_monthly, today, selected_year)
 
-    d1, d2, d3 = st.columns(3)
+    d1, d2, d3, d4 = st.columns(4)
     d1.metric("Dividendo bruto (año)", f"${div_total['gross']:,.2f}")
     d2.metric("Retenciones (año)", f"${div_total['withholding_tax']:,.2f}")
     d3.metric("Dividendo neto (año)", f"${div_total['net']:,.2f}")
-    d3.caption(f"Media mensual: ${avg_monthly:,.2f}")
+    d4.metric("Media últimos 6 meses", f"${avg_last_6_months:,.2f}")
 
-    st.plotly_chart(render_dividends_chart(div_monthly), use_container_width=True)
+    st.plotly_chart(render_dividends_chart(div_monthly, avg_last_6_months), use_container_width=True)
 
     st.markdown("---")
 
