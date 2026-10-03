@@ -1742,14 +1742,14 @@ def main():
     with rc3:
         recovery_premium_received = st.number_input(
             "Prima cobrada en el CSP (por acción)", min_value=0.0, max_value=1000.0,
-            value=0.0, step=0.05, key="recovery_premium_received",
+            value=0.0, step=0.01, key="recovery_premium_received",
             help="La prima que ya cobraste al vender el put, por acción (no por "
                  "contrato). Reduce tu coste base efectivo.",
         )
     with rc4:
         recovery_commission_total = st.number_input(
             "Comisión total del CSP ($, se resta)", min_value=0.0, max_value=1000.0,
-            value=0.0, step=0.5, key="recovery_commission_total",
+            value=0.0, step=0.01, key="recovery_commission_total",
             help="Comisión/fee total del bróker al abrir el CSP (importe del "
                  "contrato completo, no por acción). Se asume la misma comisión "
                  "para la covered call de recovery, y se resta también ahí.",
