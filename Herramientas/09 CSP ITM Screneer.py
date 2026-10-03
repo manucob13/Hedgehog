@@ -693,10 +693,17 @@ def find_atm_call_candidate(calls_df, current_price):
     except Exception:
         return None
 
-def find_itm_covering_candidates(calls_df, current_price, assignment_price, dte_calendar):
+def find_itm_covering_candidates(calls_df, current_price, cost_basis, commission_total, dte_calendar):
     """De la cadena de calls de UN vencimiento, busca TODOS los strikes
-    ITM (strike < precio actual) cuya venta ya cubre la pérdida de la
-    asignación: (strike - precio_asignación)*100 + prima*100 >= 0.
+    ITM (strike < precio actual) cuya venta ya cubre la pérdida frente al
+    COSTE BASE EFECTIVO (cost_basis, que ya incorpora la prima cobrada y
+    la comisión del CSP original — ver build_recovery_calculator):
+
+        (strike - cost_basis)*100 + prima*100 - commission_total >= 0
+
+    commission_total es la comisión de ESTA segunda pata (la covered
+    call de recovery) — se asume igual a la del CSP original, ver
+    docstring de build_recovery_calculator.
 
     A diferencia de find_atm_call_candidate() (que devuelve un único
     strike, el más cercano al precio), aquí se devuelve la lista
@@ -715,7 +722,7 @@ def find_itm_covering_candidates(calls_df, current_price, assignment_price, dte_
         if c.empty:
             return []
 
-        c["recovery_dollar"] = (c["strike"] - assignment_price) * 100 + c["mid"] * 100
+        c["recovery_dollar"] = (c["strike"] - cost_basis) * 100 + c["mid"] * 100 - commission_total
         c = c[c["recovery_dollar"] >= 0]
         if c.empty:
             return []
@@ -740,16 +747,38 @@ def find_itm_covering_candidates(calls_df, current_price, assignment_price, dte_
     except Exception:
         return []
 
-def build_recovery_calculator(ticker, assignment_price, max_dte=RECOVERY_MAX_DTE):
+def build_recovery_calculator(ticker, assignment_price, premium_received=0.0,
+                               commission_total=0.0, max_dte=RECOVERY_MAX_DTE):
     """Tras una asignación de CSP, busca:
 
+    COSTE BASE EFECTIVO (nuevo): el precio de asignación por sí solo no
+    es tu coste real — ya cobraste una prima al vender el put original, y
+    pagaste una comisión por abrirlo. Ambos reducen lo que de verdad te
+    costó quedarte con las acciones:
+
+        coste_base_efectivo = assignment_price - premium_received
+                               + commission_total / 100
+
+    (premium_received es POR ACCIÓN; commission_total es el importe TOTAL
+    del contrato — por eso se divide entre 100 para expresarlo por
+    acción). Ejemplo: asignación a $41.50, prima cobrada $0.30/acción,
+    comisión total $1 → coste base = 41.50 - 0.30 + 0.01 = $41.21.
+
+    Todo lo que sigue (pérdida no realizada, recovery_dollar de cada
+    candidato) se calcula contra este coste base efectivo, NO contra
+    assignment_price directamente. Además, cada candidato de covered call
+    de recovery resta TAMBIÉN su propia comisión (commission_total, se
+    asume la misma que la del CSP) de la prima que cobra al abrir esa
+    segunda pata — así el resultado neto refleja las DOS comisiones
+    (apertura del CSP + apertura de la covered call), no solo la primera.
+
     1) ATM (comportamiento original): la covered call ATM (mayor
-       extrínseco) que recupera la pérdida no realizada frente al precio
-       de asignación, con vencimiento <= max_dte días. 'Recuperar' se
-       define como Opción B: (strike_call - precio_asignación)*100 +
-       prima*100 >= 0 — es decir, si te ejercen la call, el resultado
-       neto de la operación completa (desde la asignación del put hasta
-       la ejecución de la call) es >= 0.
+       extrínseco) que recupera la pérdida no realizada frente al coste
+       base efectivo, con vencimiento <= max_dte días. 'Recuperar' se
+       define como Opción B: (strike_call - coste_base)*100 + prima*100
+       - commission_total >= 0 — es decir, si te ejercen la call, el
+       resultado neto de la operación completa (CSP + asignación +
+       covered call) es >= 0.
 
        Recorre TODOS los vencimientos disponibles hasta max_dte días, de
        más cercano a más lejano, y devuelve:
@@ -775,7 +804,9 @@ def build_recovery_calculator(ticker, assignment_price, max_dte=RECOVERY_MAX_DTE
          cubren, <= max_dte), el de MAYOR delta (el más profundo ITM).
     """
     out = {"ticker": ticker, "error": None, "current_price": None,
-           "assignment_price": assignment_price}
+           "assignment_price": assignment_price,
+           "premium_received": premium_received,
+           "commission_total": commission_total}
 
     data = get_daily_data(ticker)
     if data is None:
@@ -785,12 +816,18 @@ def build_recovery_calculator(ticker, assignment_price, max_dte=RECOVERY_MAX_DTE
     current_price = get_live_price(ticker, fallback_price)
     out["current_price"] = current_price
 
-    if current_price >= assignment_price:
-        out["error"] = ("El precio actual ya está en o por encima del precio de "
-                         "asignación — no hay pérdida que recuperar con esta calculadora.")
+    effective_cost_basis = assignment_price - premium_received + (commission_total / 100)
+    out["effective_cost_basis"] = round(effective_cost_basis, 2)
+
+    if current_price >= effective_cost_basis:
+        out["error"] = (
+            "El precio actual ya está en o por encima de tu coste base efectivo "
+            f"(${effective_cost_basis:.2f}, tras descontar la prima cobrada y la "
+            "comisión del CSP) — no hay pérdida que recuperar con esta calculadora."
+        )
         return out
 
-    loss_per_share = assignment_price - current_price
+    loss_per_share = effective_cost_basis - current_price
     out["loss_per_share"] = round(loss_per_share, 2)
     out["loss_dollar"] = round(loss_per_share * 100, 2)
 
@@ -815,7 +852,9 @@ def build_recovery_calculator(ticker, assignment_price, max_dte=RECOVERY_MAX_DTE
 
         atm = find_atm_call_candidate(calls, current_price)
         if atm is not None:
-            recovery_dollar = round((atm["strike"] - assignment_price) * 100 + atm["mid"] * 100, 2)
+            recovery_dollar = round(
+                (atm["strike"] - effective_cost_basis) * 100 + atm["mid"] * 100 - commission_total, 2
+            )
             candidates.append({
                 "expiration": exp,
                 "dte": dte,
@@ -830,7 +869,9 @@ def build_recovery_calculator(ticker, assignment_price, max_dte=RECOVERY_MAX_DTE
                 "covers_loss": recovery_dollar >= 0,
             })
 
-        itm_candidates = find_itm_covering_candidates(calls, current_price, assignment_price, dte)
+        itm_candidates = find_itm_covering_candidates(
+            calls, current_price, effective_cost_basis, commission_total, dte
+        )
         for itm in itm_candidates:
             itm["expiration"] = exp
             itm["dte"] = dte
@@ -1678,15 +1719,17 @@ def main():
     st.markdown("### 🔄 Calculadora Recovery")
     st.caption(
         f"Para un ticker que te acaban de asignar en un CSP: busca la covered call "
-        f"ATM (mayor extrínseco) que recupera la pérdida frente al precio de "
-        f"asignación, con vencimiento a un máximo de {RECOVERY_MAX_DTE} días. Te da "
-        f"el primer vencimiento que ya cubre la pérdida y el siguiente, por si "
-        f"esperar una semana más te conviene. Además muestra dos alternativas ITM "
-        f"(strikes por debajo del precio actual, con más delta) que también cubren "
-        f"la pérdida: la de vencimiento más cercano y la de mayor delta."
+        f"ATM (mayor extrínseco) que recupera la pérdida frente a tu COSTE BASE "
+        f"EFECTIVO (precio de asignación, ya descontando la prima que cobraste al "
+        f"vender el put y la comisión que pagaste), con vencimiento a un máximo de "
+        f"{RECOVERY_MAX_DTE} días. Te da el primer vencimiento que ya cubre la "
+        f"pérdida y el siguiente, por si esperar una semana más te conviene. Además "
+        f"muestra dos alternativas ITM (strikes por debajo del precio actual, con "
+        f"más delta) que también cubren la pérdida: la de vencimiento más cercano y "
+        f"la de mayor delta."
     )
 
-    rc1, rc2, rc3 = st.columns([2, 1.5, 1])
+    rc1, rc2 = st.columns([2, 1.5])
     with rc1:
         recovery_ticker_raw = st.text_input("Ticker asignado", value="", placeholder="AAPL", key="recovery_ticker_input")
     with rc2:
@@ -1694,7 +1737,24 @@ def main():
             "Precio de asignación (strike del CSP)", min_value=0.01, max_value=100000.0,
             value=50.0, step=0.5, key="recovery_assignment_price",
         )
+
+    rc3, rc4, rc5 = st.columns([1.5, 1.5, 1])
     with rc3:
+        recovery_premium_received = st.number_input(
+            "Prima cobrada en el CSP (por acción)", min_value=0.0, max_value=1000.0,
+            value=0.0, step=0.05, key="recovery_premium_received",
+            help="La prima que ya cobraste al vender el put, por acción (no por "
+                 "contrato). Reduce tu coste base efectivo.",
+        )
+    with rc4:
+        recovery_commission_total = st.number_input(
+            "Comisión total del CSP ($, se resta)", min_value=0.0, max_value=1000.0,
+            value=0.0, step=0.5, key="recovery_commission_total",
+            help="Comisión/fee total del bróker al abrir el CSP (importe del "
+                 "contrato completo, no por acción). Se asume la misma comisión "
+                 "para la covered call de recovery, y se resta también ahí.",
+        )
+    with rc5:
         st.markdown("&nbsp;")
         recovery_btn = st.button("🔄 Buscar Recovery", use_container_width=True, key="recovery_btn")
 
@@ -1705,7 +1765,8 @@ def main():
         else:
             with st.spinner(f"Buscando recovery para {recovery_ticker}..."):
                 st.session_state["recovery_calc_result"] = build_recovery_calculator(
-                    recovery_ticker, recovery_assignment_price
+                    recovery_ticker, recovery_assignment_price,
+                    recovery_premium_received, recovery_commission_total,
                 )
 
     rr = st.session_state.get("recovery_calc_result")
@@ -1714,10 +1775,18 @@ def main():
         if rr.get("error"):
             st.warning(f"⚠️ {rr['error']}")
         elif rr.get("current_price") is not None:
-            m1, m2, m3 = st.columns(3)
+            m1, m2, m3, m4 = st.columns(4)
             m1.metric("🎯 Precio de asignación", f"${rr['assignment_price']:.2f}")
-            m2.metric("💲 Precio en vivo", f"${rr['current_price']:.2f}")
-            m3.metric("📉 Pérdida no realizada", f"${rr['loss_dollar']:.2f}",
+            m2.metric(
+                "📐 Coste base efectivo", f"${rr['effective_cost_basis']:.2f}",
+                help=(
+                    f"= Precio de asignación (${rr['assignment_price']:.2f}) - prima "
+                    f"cobrada (${rr['premium_received']:.2f}) + comisión/100 "
+                    f"(${rr['commission_total'] / 100:.2f})."
+                ),
+            )
+            m3.metric("💲 Precio en vivo", f"${rr['current_price']:.2f}")
+            m4.metric("📉 Pérdida no realizada", f"${rr['loss_dollar']:.2f}",
                        delta=f"-{rr['loss_per_share']:.2f}/acción", delta_color="inverse")
 
             if rr.get("meets_target"):
