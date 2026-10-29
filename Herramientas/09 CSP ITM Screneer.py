@@ -3,60 +3,73 @@ Cash Secured Put Screener
 ============================
 Objetivo: vender puts OTM/ATM con prima >= umbral mínimo, expresado como
 % del STRIKE (retorno sobre el capital realmente comprometido, no sobre
-el precio actual).
+el precio actual), eligiendo el strike MÁS ALEJADO del precio (más
+seguro, menor probabilidad de asignación) que todavía cumpla ese mínimo.
 
-NOVEDAD — MÚLTIPLES STRIKES POR TICKER:
-Antes se devolvía UN solo strike por ticker (el más alejado que cumplía
-la prima mínima). Ahora, con el checkbox "Mostrar todos los strikes que
-cumplen", se devuelven TODOS los strikes OTM/ATM que pasan los filtros
-(prima >= mínimo, o dentro de la banda mín–máx), uno por fila, con un
-tope opcional de strikes por ticker (se conservan los más seguros). Sin
-el checkbox, el comportamiento es el de antes (solo el más seguro).
-- El filtro de dividendos se evalúa POR STRIKE (depende del colchón OTM
-  de cada uno).
-- El embudo de diagnóstico sigue contando TICKERS, no filas.
-- La pestaña Detalle permite elegir ticker y strike.
-- El gráfico de precio dibuja una línea horizontal por cada strike del
-  mismo ticker (coloreada según la prima %), el precio actual y una banda
-  con el rango de strikes.
-
-El % se calcula sobre el strike (= capital que reservas, strike x 100)
-porque es el capital que de verdad arriesgas en un cash secured put.
+Como el strike está siempre <= precio actual (OTM/ATM), el intrínseco del
+put es 0 y la prima entera es "extrínseco". El % se calcula sobre el
+strike (= capital que reservas, strike x 100) porque es el capital que
+de verdad arriesgas en un cash secured put — no el precio actual, que ni
+siquiera es el precio al que comprarías si te asignan.
 
 FILTROS (activables/desactivables desde la UI salvo los marcados [fijo]):
 - Precio del subyacente: rango configurable
 - Precio > SMA30 [toggle, OFF por defecto]
-- Precio > SMA200 [toggle]
+- Precio > SMA200 [toggle, OFF por defecto]
 - PCR < 1.0 (sesgo alcista/neutral) [toggle]
-- Sin earnings entre la fecha de ENTRADA y el vencimiento [toggle, ON]
-- Sin riesgo de hueco por dividendo [toggle, ON] — ver docstring de
-  has_dividend_gap_risk()
-- OI mínimo del strike [toggle]
-- Spread bid-ask <= X% de la prima [toggle, OFF por defecto]
-- Prima mínima objetivo (% del STRIKE), o banda mín-máx opcional
-  [toggle; modo diagnóstico ignora ambos]
+- Sin earnings entre la fecha de ENTRADA y el vencimiento [toggle, ON por
+  defecto]
+- Sin riesgo de hueco por dividendo (ex-div entre entrada y vencimiento
+  con dividendo >= colchón OTM) [toggle, ON por defecto — ver docstring
+  de has_dividend_gap_risk() para por qué está adaptado y no es igual
+  que en el screener de covered calls]
+- OI mínimo del strike [toggle, OFF por defecto — el OI de Alpaca no
+  siempre es fiable para nombres poco líquidos]
+- Spread bid-ask <= X% de la prima [toggle, OFF por defecto — revisa
+  Spread_% en la tabla en vez de confiar ciegamente en el filtro]
+- Prima mínima objetivo (% del STRIKE, retorno sobre capital), o banda
+  mín-máx opcional [toggle; modo diagnóstico ignora ambos]
 - Bid > 0 y Ask > 0 (opción realmente cotizada) [fijo]
 - Ticker con opciones semanales listadas [fijo]
 - Vencimiento = EXACTAMENTE la fecha objetivo, sin tolerancia [fijo]
 - Filtros adicionales POST-escaneo (sobre resultados ya obtenidos, sin
   red): distancia OTM mínima, |delta| máximo, OI mínimo, volumen mínimo.
 
-RANKING: por OTM_% descendente por defecto (configurable en resultados).
+SELECCIÓN DE STRIKE (dentro de cada ticker): entre los strikes OTM/ATM que
+cumplen todos los filtros, se elige el MÁS ALEJADO del precio (mayor
+OTM_%) — el más seguro que aún así cumple la prima mínima pedida.
+RANKING (entre tickers): por OTM_% descendente (más seguro primero).
 PRECIO DE OPCIÓN: midprice (bid+ask)/2 siempre.
 PRECIO DEL SUBYACENTE: en vivo vía Alpaca (latest trade), con fallback al
 último cierre histórico (yfinance) si Alpaca no devuelve dato.
-CAPITAL REQUERIDO: strike x 100.
-DATOS: opciones vía Alpaca — utils/utils_alpaca.py. Precio diario/SMA30/
-SMA200/RV10 vía yfinance.
+CAPITAL REQUERIDO: strike x 100 (lo que hay que reservar para asegurar en
+efectivo 1 contrato, de ahí "cash secured").
+DATOS: opciones (vencimientos, cadena, precio en vivo) vía Alpaca —
+utils/utils_alpaca.py (el mismo módulo que usa el screener de covered
+calls; get_option_chain ya devuelve puts, no ha hecho falta tocarlo).
+Precio diario/SMA30/SMA200/RV10 vía yfinance.
 
-UNIVERSO — CBOE "AVAILABLE WEEKLYS":
-Además del universo fijo (210 tickers) + Russell 1000 dinámico,
-get_full_universe() descarga el CSV público de Cboe con los tickers que
-tienen opciones semanales listadas y añade (Type='CboeWeeklys') los de
-las secciones ETFs/ETNs y Equity que no estuvieran ya. Las secciones de
-índices se ignoran a propósito. Si la descarga falla, se degrada de forma
-silenciosa (nunca es un error fatal). El filtro fijo has_weekly_options()
-de Alpaca en Fase 2 sigue siendo la verificación real.
+UNIVERSO — CBOE "AVAILABLE WEEKLYS" (nuevo):
+Además del universo fijo (210 tickers) + Russell 1000 dinámico que ya
+construía create_tickers_universe(), get_full_universe() ahora descarga
+también el CSV público de Cboe con los tickers que tienen opciones
+semanales listadas (https://www.cboe.com/available_weeklys/), y añade
+como filas nuevas (Type='CboeWeeklys') los tickers de las secciones
+"Exchange Traded Products (ETFs and ETNs)" y "Equity" que no estuvieran
+ya en el universo. Las secciones de índices (SPX, VIX, RUT, XSP, etc.)
+del CSV se ignoran a propósito — ya están cubiertas por el universo fijo
+de índices, y el formato de esas filas (fechas de vencimiento, no un
+ticker+nombre) no encaja con el resto del parser.
+Esto es solo para AMPLIAR el universo de candidatos a escanear — el
+filtro fijo has_weekly_options() de Alpaca en Fase 2 sigue siendo la
+verificación real de cadencia semanal; el CSV de Cboe puede quedarse
+desactualizado o incluir algún ticker que Alpaca ya no liste, y esos
+simplemente caerán en el embudo con motivo "no_weekly_options" o
+"no_expirations", igual que cualquier otro ticker del universo fijo.
+Si la descarga del CSV de Cboe falla (red, cambio de formato, etc.), se
+degrada de forma silenciosa: el universo sigue siendo válido con lo que
+ya tenía (fijo + Russell 1000), solo se pierde la ampliación de Cboe —
+nunca es un error fatal para el screener.
 """
 
 import streamlit as st
@@ -98,9 +111,15 @@ SPREAD_MAX_PCT_OF_PREMIUM = 50.0
 _N = NormalDist()
 RISK_FREE_RATE = 0.045
 
-# CSV público de Cboe "Available Weeklys"
+# CSV público de Cboe "Available Weeklys" (mismo fichero que descarga el
+# botón "Download Available Weeklys (csv)" en la página).
 CBOE_WEEKLYS_CSV_URL = "https://www.cboe.com/available_weeklys/get_csv_download/"
 
+# Marcadores de sección dentro del CSV (texto libre, sin cabecera de
+# columnas fija) → nombre interno de sección. Todo lo que no esté entre
+# uno de estos marcadores y el siguiente se ignora (incluye las
+# secciones de índices y las filas de fechas de vencimiento del
+# principio del fichero).
 CBOE_SECTION_MARKERS = {
     "available weeklys - exchange traded products (etfs and etns)": "etf",
     "available weeklys - equity": "equity",
@@ -167,17 +186,6 @@ def _clean_ticker(raw):
         return None
     return t.replace(" ", "")
 
-def _safe_int(x, default=0):
-    """int() tolerante a None/NaN (el volumen/OI de Alpaca a veces vienen
-    vacíos)."""
-    try:
-        v = pd.to_numeric(x, errors="coerce")
-        if v is None or pd.isna(v):
-            return default
-        return int(v)
-    except Exception:
-        return default
-
 # ======================================================================
 # 0. UNIVERSO
 # ======================================================================
@@ -186,13 +194,25 @@ def _safe_int(x, default=0):
 def get_cboe_weeklys_tickers():
     """Descarga el CSV público de 'Available Weeklys' de Cboe y extrae
     los tickers de las secciones de ETFs/ETNs y Acciones individuales
-    (las secciones de índices se ignoran a propósito).
+    (las secciones de índices se ignoran a propósito, ver docstring del
+    módulo).
 
-    Cada sección empieza con una línea marcador de texto libre, seguida de
-    filas "TICKER","NOMBRE" hasta la siguiente sección. Cacheado 24h.
+    El CSV no tiene una cabecera de columnas fija por sección: cada
+    sección empieza con una línea de texto libre marcador
+    ("Available Weeklys - Exchange Traded Products (ETFs and ETNs)" /
+    "Available Weeklys - Equity"), seguida de filas "TICKER","NOMBRE"
+    hasta la siguiente sección o el final del fichero. Se detecta el
+    marcador por prefijo case-insensitive en vez de por posición fija,
+    ya que las filas de vencimientos disponibles al principio ocupan un
+    número variable de líneas.
 
-    Devuelve un set de tickers (vacío si la descarga o el parseo fallan —
-    nunca es un error fatal)."""
+    Cacheado 24h — igual criterio que el Russell 1000 en tickers.py: es
+    un calendario de referencia que no cambia intradía.
+
+    Devuelve un set de tickers (vacío si la descarga o el parseo fallan
+    — el llamador debe tratarlo como 'sin datos adicionales de Cboe',
+    nunca como error fatal: el universo base sigue siendo válido sin
+    esto)."""
     try:
         resp = requests.get(CBOE_WEEKLYS_CSV_URL, headers=CBOE_REQUEST_HEADERS, timeout=20)
         resp.raise_for_status()
@@ -237,6 +257,10 @@ def get_cboe_weeklys_tickers():
         return set()
 
     if len(tickers) < 50:
+        # Señal de que el formato ha cambiado y el parser no está
+        # encontrando las secciones esperadas — mejor devolver vacío
+        # (degradación silenciosa) que un universo Cboe sospechosamente
+        # corto.
         logger.warning(f"[cboe_weeklys] solo {len(tickers)} tickers extraídos — probablemente mal parseado, se descarta")
         return set()
 
@@ -244,9 +268,11 @@ def get_cboe_weeklys_tickers():
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
 def get_full_universe():
-    """Universo completo: base fija (210) + Russell 1000 dinámico AMPLIADO
-    con los tickers de Cboe Weeklys que no estuvieran ya presentes. La
-    ampliación de Cboe es aditiva y best-effort."""
+    """Universo completo del screener: base fija (210 tickers) + Russell
+    1000 dinámico (vía create_tickers_universe(), sin cambios) AMPLIADO
+    con los tickers del CSV 'Available Weeklys' de Cboe que no estuvieran
+    ya presentes. La ampliación de Cboe es aditiva y best-effort — si
+    falla, el universo base sigue siendo válido."""
     df = create_tickers_universe(include_russell1000=True)
     if df is None or df.empty:
         df = pd.DataFrame(columns=["Ticker", "Type"])
@@ -288,10 +314,15 @@ def refresh_universe():
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_daily_data(ticker):
-    """Descarga precio diario AJUSTADO vía yf.Ticker().history() (yf.download()
-    devuelve columnas mal aplanadas en esta instalación). Ventana de 420
-    días calendario para tener margen sobre el mínimo de 205 filas que
-    exige SMA200."""
+    """Descarga precio diario AJUSTADO vía yf.Ticker().history() — igual
+    razón que en el screener de covered calls: yf.download() devuelve
+    columnas mal aplanadas en esta instalación. Ventana de 420 días
+    calendario (~285-295 sesiones de trading) para tener margen de sobra
+    por encima del mínimo de 205 filas que exige SMA200 — con una ventana
+    más corta (300 días), el número real de sesiones de trading queda
+    demasiado cerca del umbral y cualquier distribución de festivos/fines
+    de semana puede tirarlo por debajo, descartando el ticker entero como
+    'sin datos' aunque yfinance sí esté respondiendo correctamente."""
     try:
         end = datetime.now() + timedelta(days=1)
         start = end - timedelta(days=420)
@@ -311,7 +342,7 @@ def get_daily_data(ticker):
 
 def get_trend_info(close):
     """SMA30 y SMA200 y distancia del precio a cada una. None si no hay
-    histórico suficiente para SMA200."""
+    histórico suficiente para SMA200 (el requisito más exigente)."""
     try:
         if len(close) < 205:
             return None
@@ -345,8 +376,9 @@ def get_rv10(close):
 # ======================================================================
 
 def bs_put_delta(S, K, T_years, sigma, r=RISK_FREE_RATE):
-    """Delta de un put europeo (Black-Scholes): N(d1) - 1, entre -1 y 0.
-    |delta| aproxima la probabilidad de acabar ITM (asignación)."""
+    """Delta de un put europeo (Black-Scholes): N(d1) - 1, siempre entre
+    -1 y 0. La magnitud (|delta|) es una aproximación habitual de la
+    probabilidad de acabar ITM (es decir, de asignación)."""
     try:
         if T_years <= 0 or sigma <= 0 or S <= 0 or K <= 0:
             return None
@@ -356,7 +388,9 @@ def bs_put_delta(S, K, T_years, sigma, r=RISK_FREE_RATE):
         return None
 
 def bs_call_delta(S, K, T_years, sigma, r=RISK_FREE_RATE):
-    """Delta de un call europeo (Black-Scholes): N(d1), entre 0 y 1."""
+    """Delta de un call europeo (Black-Scholes): N(d1), siempre entre 0 y
+    1. Usado en la Calculadora Recovery para mostrar el delta de los
+    candidatos ITM (cuanto más profundo el ITM, más cerca de 1)."""
     try:
         if T_years <= 0 or sigma <= 0 or S <= 0 or K <= 0:
             return None
@@ -372,7 +406,8 @@ def bs_call_delta(S, K, T_years, sigma, r=RISK_FREE_RATE):
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
 def get_earnings_and_dividend_info(ticker):
     """Fecha de earnings y datos de dividendo (ex-date + último importe
-    pagado, como estimación del próximo). Cacheado 6h."""
+    pagado, como estimación del próximo). Cacheado 6h — no cambian
+    intradía. Mismo patrón que el screener de covered calls."""
     info = {"earnings_date": None, "ex_div_date": None, "div_amount": None}
     try:
         stock = yf.Ticker(ticker)
@@ -403,17 +438,26 @@ def get_earnings_and_dividend_info(ticker):
 
 def has_earnings_in_period(earnings_date, entry_date, target_date):
     """True si hay earnings conocidos entre la fecha de ENTRADA y el
-    vencimiento, ambas inclusive."""
+    vencimiento, ambas inclusive. Los earnings son un riesgo genuino para
+    un CSP: un gap por sorpresa puede llevarse el precio muy por debajo
+    del strike de golpe, sin margen de reacción."""
     if earnings_date is None:
         return False
     return entry_date <= earnings_date <= target_date
 
 def has_dividend_gap_risk(ex_div_date, div_amount, entry_date, exp_date_obj, otm_distance_dollar):
-    """Riesgo de hueco por dividendo — ADAPTADO para puts. En el ex-date
-    el precio cae mecánicamente por el importe del dividendo; si ese
-    importe por sí solo es mayor o igual que tu colchón OTM (precio actual
-    - strike), la caída del propio dividendo podría meter el put en el
-    dinero sin que se mueva nada más. Se evalúa POR STRIKE."""
+    """Riesgo de hueco por dividendo — ADAPTADO para puts, no es lo mismo
+    que en covered calls. En una call, el riesgo es que el HOLDER ejerza
+    anticipadamente para cobrar el dividendo. En un put vendido, ese
+    incentivo de ejercicio anticipado no aplica igual (un dividendo
+    pendiente en realidad DESANIMA el ejercicio anticipado del holder,
+    porque le conviene esperar a la caída mecánica del precio en el
+    ex-date). El riesgo real aquí es otro: en el ex-date el precio cae
+    mecánicamente por el importe del dividendo — si ese importe por sí
+    solo es mayor o igual que tu colchón OTM (precio actual - strike),
+    la caída del propio dividendo podría meter el put en el dinero sin
+    que se mueva nada más. Por eso se compara el dividendo contra
+    otm_distance_dollar, no contra el extrínseco."""
     if ex_div_date is None or div_amount is None or div_amount <= 0:
         return False
     if entry_date <= ex_div_date <= exp_date_obj:
@@ -439,31 +483,32 @@ def compute_pcr(calls, puts, current_price, range_pct=15):
         return None
 
 # ======================================================================
-# 4. CANDIDATOS: TODOS los puts OTM/ATM que cumplen la prima mínima
+# 4. CANDIDATO: put OTM/ATM más seguro que cumple la prima mínima
 # ======================================================================
 
-def find_put_candidates(puts_df, current_price, dte_calendar,
-                        premium_min_pct, premium_max_pct,
-                        apply_oi_filter, min_oi,
-                        apply_spread_filter, spread_max_pct,
-                        diagnostic_mode=False):
-    """Entre los puts OTM/ATM (strike <= precio, intrínseco=0 y prima =
-    extrínseco entero), filtra por prima mínima (% del STRIKE) y devuelve
-    la LISTA COMPLETA de strikes que cumplen, ordenada del más seguro
-    (mayor OTM_%) al más cercano al dinero. El llamador decide si se queda
-    solo con el primero o con varios (y aplica el filtro de dividendos por
-    strike). Devuelve [] si no hay ninguno."""
+def find_safest_put_candidate(puts_df, current_price, dte_calendar,
+                               premium_min_pct, premium_max_pct,
+                               apply_oi_filter, min_oi,
+                               apply_spread_filter, spread_max_pct,
+                               diagnostic_mode=False):
+    """Entre los puts OTM/ATM (strike <= precio, así que intrínseco=0 y
+    prima=extrínseco entero), filtra por prima mínima (% del STRIKE) y
+    elige el strike MÁS ALEJADO del precio (mayor OTM_%) — el más seguro
+    que aún así cumple la prima mínima pedida. Mismo patrón que
+    find_deep_itm_candidate() del screener de covered calls, pero
+    optimizando por seguridad (distancia OTM) en vez de por downside
+    protection."""
     try:
         otm = puts_df[puts_df["strike"] <= current_price].copy()
         if otm.empty:
-            return []
+            return None
 
         otm["bid"] = pd.to_numeric(otm["bid"], errors="coerce").fillna(0)
         otm["ask"] = pd.to_numeric(otm["ask"], errors="coerce").fillna(0)
         otm["mid"] = (otm["bid"] + otm["ask"]) / 2
         otm = otm[(otm["bid"] > 0) & (otm["ask"] > 0) & (otm["mid"] > 0)]
         if otm.empty:
-            return []
+            return None
 
         otm["oi"] = pd.to_numeric(
             otm.get("openInterest", pd.Series(0, index=otm.index)), errors="coerce"
@@ -471,9 +516,12 @@ def find_put_candidates(puts_df, current_price, dte_calendar,
         if apply_oi_filter:
             otm = otm[otm["oi"] >= min_oi]
             if otm.empty:
-                return []
+                return None
 
-        # premium_pct = retorno sobre el capital comprometido (strike x 100)
+        # Intrínseco de un put OTM/ATM (strike <= precio) es siempre 0 —
+        # la prima entera es "extrínseco" / tiempo. premium_pct = retorno
+        # sobre el capital realmente comprometido (strike x 100), NO sobre
+        # el precio actual — es lo que de verdad arriesgas en un CSP.
         otm["premium_pct"] = otm["mid"] / otm["strike"] * 100
         otm["otm_pct"] = (current_price - otm["strike"]) / current_price * 100
         otm["spread_dollar"] = otm["ask"] - otm["bid"]
@@ -482,7 +530,7 @@ def find_put_candidates(puts_df, current_price, dte_calendar,
         if apply_spread_filter:
             otm = otm[otm["spread_dollar"] <= otm["mid"] * (spread_max_pct / 100)]
             if otm.empty:
-                return []
+                return None
 
         if diagnostic_mode:
             candidates = otm
@@ -493,48 +541,36 @@ def find_put_candidates(puts_df, current_price, dte_calendar,
         else:
             candidates = otm[otm["premium_pct"] >= premium_min_pct]
         if candidates.empty:
-            return []
+            return None
 
-        # Más seguro primero (mayor OTM_%)
-        candidates = candidates.sort_values("otm_pct", ascending=False)
+        # El más seguro = el más alejado del precio (mayor OTM_%).
+        best = candidates.sort_values("otm_pct", ascending=False).iloc[0]
 
         T_years = dte_calendar / 365.0
-        out = []
-        for _, row in candidates.iterrows():
-            iv_raw = row.get("impliedVolatility")
-            try:
-                iv = float(iv_raw) if iv_raw is not None else 0.0
-            except Exception:
-                iv = 0.0
-            if np.isnan(iv):
-                iv = 0.0
+        iv = float(best.get("impliedVolatility") or 0)
+        delta = bs_put_delta(current_price, float(best["strike"]), T_years, iv) if iv > 0 else None
 
-            strike = float(row["strike"])
-            delta = bs_put_delta(current_price, strike, T_years, iv) if iv > 0 else None
+        best_premium_pct = float(best["premium_pct"])
+        meets_range = best_premium_pct >= premium_min_pct
+        if premium_max_pct is not None:
+            meets_range = meets_range and best_premium_pct <= premium_max_pct
 
-            prem_pct = float(row["premium_pct"])
-            meets_range = prem_pct >= premium_min_pct
-            if premium_max_pct is not None:
-                meets_range = meets_range and prem_pct <= premium_max_pct
-
-            out.append({
-                "strike": strike,
-                "mid": round(float(row["mid"]), 2),
-                "bid": round(float(row["bid"]), 2),
-                "ask": round(float(row["ask"]), 2),
-                "premium_pct": round(prem_pct, 3),
-                "otm_pct": round(float(row["otm_pct"]), 2),
-                "spread_pct": round(float(row["spread_pct"]), 2),
-                "oi": _safe_int(row.get("oi", 0)),
-                "volume": _safe_int(row.get("volume", 0)),
-                "iv_pct": round(iv * 100, 2) if iv > 0 else None,
-                "delta": delta,
-                "in_target_band": bool(meets_range),
-            })
-        return out
-    except Exception as e:
-        _record_debug("error", f"find_put_candidates: {e}")
-        return []
+        return {
+            "strike": float(best["strike"]),
+            "mid": round(float(best["mid"]), 2),
+            "bid": round(float(best["bid"]), 2),
+            "ask": round(float(best["ask"]), 2),
+            "premium_pct": round(best_premium_pct, 3),
+            "otm_pct": round(float(best["otm_pct"]), 2),
+            "spread_pct": round(float(best["spread_pct"]), 2),
+            "oi": int(best["oi"]),
+            "volume": int(pd.to_numeric(best.get("volume", 0), errors="coerce") or 0),
+            "iv_pct": round(iv * 100, 2) if iv > 0 else None,
+            "delta": delta,
+            "in_target_band": bool(meets_range),
+        }
+    except Exception:
+        return None
 
 # ======================================================================
 # 4b. CALCULADORA: prima mínima necesaria para un % objetivo, por ticker
@@ -542,8 +578,11 @@ def find_put_candidates(puts_df, current_price, dte_calendar,
 
 def _find_put_for_calculator(puts_df, current_price, premium_min_pct, premium_max_pct):
     """Variante de selección para la calculadora: si hay strikes OTM/ATM
-    que cumplen la prima objetivo, coge el MÁS SEGURO. Si NINGUNO la
-    cumple, coge el de MAYOR prima disponible para mostrar cuánto falta."""
+    que cumplen la prima objetivo, coge el MÁS SEGURO de esos (igual que
+    el escáner). Si NINGUNO la cumple, en vez de devolver nada, coge el
+    de MAYOR prima disponible (el más cercano al dinero) para poder
+    mostrar "esto es lo mejor que hay ahora mismo, y así de lejos está de
+    tu objetivo" en vez de un simple "no hay candidato"."""
     otm = puts_df[puts_df["strike"] <= current_price].copy()
     if otm.empty:
         return None, False
@@ -555,7 +594,7 @@ def _find_put_for_calculator(puts_df, current_price, premium_min_pct, premium_ma
     if otm.empty:
         return None, False
 
-    otm["premium_pct"] = otm["mid"] / otm["strike"] * 100
+    otm["premium_pct"] = otm["mid"] / otm["strike"] * 100  # % del strike (retorno sobre capital)
     otm["otm_pct"] = (current_price - otm["strike"]) / current_price * 100
 
     if premium_max_pct is not None:
@@ -569,9 +608,11 @@ def _find_put_for_calculator(puts_df, current_price, premium_min_pct, premium_ma
 
 def build_csp_calculator(ticker, target_date, premium_min_pct, premium_max_pct):
     """Para un ticker y vencimiento EXACTO: calcula la prima mínima en $
-    que hace falta para tu % objetivo (% del STRIKE) y la compara con el
-    strike/mid real que mejor se ajusta. No aplica OI/spread/SMA/earnings/
-    dividendo."""
+    que hace falta para tu % objetivo (% del STRIKE, retorno sobre el
+    capital comprometido — no % del precio actual), y la compara con el
+    strike/mid real que mejor se ajusta (o se acerca) a ese objetivo ahora
+    mismo. No aplica OI/spread/SMA/earnings/dividendo — es una
+    calculadora informativa puntual, no el escáner completo."""
     out = {"ticker": ticker, "error": None, "current_price": None}
 
     data = get_daily_data(ticker)
@@ -609,6 +650,8 @@ def build_csp_calculator(ticker, target_date, premium_min_pct, premium_max_pct):
     out["meets_target"] = meets_target
     out["premium_cash_100"] = out["mid"] * 100
     out["capital_requerido"] = out["strike"] * 100
+    # % objetivo aplicado sobre EL STRIKE encontrado (no sobre el precio) —
+    # mismo capital que de verdad se compromete en el CSP.
     out["premium_min_dollar"] = (premium_min_pct / 100) * out["strike"]
     out["premium_max_dollar"] = (premium_max_pct / 100) * out["strike"] if premium_max_pct is not None else None
     return out
@@ -622,8 +665,9 @@ RECOVERY_MAX_DTE = 60
 
 def find_atm_call_candidate(calls_df, current_price):
     """De la cadena de calls de un vencimiento, elige el strike MÁS
-    CERCANO al precio actual (ATM real) — el que concentra el mayor
-    valor extrínseco."""
+    CERCANO al precio actual (ATM real) — es el que concentra el mayor
+    valor extrínseco, por eso es el que buscamos para maximizar la
+    prima cobrada por sesión de tiempo."""
     try:
         c = calls_df.copy()
         c["bid"] = pd.to_numeric(c["bid"], errors="coerce").fillna(0)
@@ -642,8 +686,8 @@ def find_atm_call_candidate(calls_df, current_price):
             "mid": round(float(best["mid"]), 2),
             "bid": round(float(best["bid"]), 2),
             "ask": round(float(best["ask"]), 2),
-            "oi": _safe_int(best.get("openInterest", 0)),
-            "volume": _safe_int(best.get("volume", 0)),
+            "oi": int(pd.to_numeric(best.get("openInterest", 0), errors="coerce") or 0),
+            "volume": int(pd.to_numeric(best.get("volume", 0), errors="coerce") or 0),
             "iv_pct": round(iv * 100, 2) if iv > 0 else None,
         }
     except Exception:
@@ -652,12 +696,22 @@ def find_atm_call_candidate(calls_df, current_price):
 def find_itm_covering_candidates(calls_df, current_price, cost_basis, commission_total, dte_calendar):
     """De la cadena de calls de UN vencimiento, busca TODOS los strikes
     ITM (strike < precio actual) cuya venta ya cubre la pérdida frente al
-    COSTE BASE EFECTIVO:
+    COSTE BASE EFECTIVO (cost_basis, que ya incorpora la prima cobrada y
+    la comisión del CSP original — ver build_recovery_calculator):
 
         (strike - cost_basis)*100 + prima*100 - commission_total >= 0
 
-    Devuelve la lista COMPLETA (cada uno con su delta Black-Scholes), o []
-    si ninguno cubre en este vencimiento."""
+    commission_total es la comisión de ESTA segunda pata (la covered
+    call de recovery) — se asume igual a la del CSP original, ver
+    docstring de build_recovery_calculator.
+
+    A diferencia de find_atm_call_candidate() (que devuelve un único
+    strike, el más cercano al precio), aquí se devuelve la lista
+    COMPLETA de strikes ITM que cubren, cada uno con su delta
+    (Black-Scholes) — porque luego, en build_recovery_calculator(), se
+    comparan entre TODOS los vencimientos para elegir dos candidatos
+    distintos: el de mejor DTE y el de mayor delta (más profundo ITM).
+    Devuelve [] si no hay ningún strike ITM que cubra en este vencimiento."""
     try:
         c = calls_df.copy()
         c["bid"] = pd.to_numeric(c["bid"], errors="coerce").fillna(0)
@@ -683,8 +737,8 @@ def find_itm_covering_candidates(calls_df, current_price, cost_basis, commission
                 "mid": round(float(row["mid"]), 2),
                 "bid": round(float(row["bid"]), 2),
                 "ask": round(float(row["ask"]), 2),
-                "oi": _safe_int(row.get("openInterest", 0)),
-                "volume": _safe_int(row.get("volume", 0)),
+                "oi": int(pd.to_numeric(row.get("openInterest", 0), errors="coerce") or 0),
+                "volume": int(pd.to_numeric(row.get("volume", 0), errors="coerce") or 0),
                 "iv_pct": round(iv * 100, 2) if iv > 0 else None,
                 "delta": delta,
                 "recovery_dollar": round(float(row["recovery_dollar"]), 2),
@@ -695,22 +749,60 @@ def find_itm_covering_candidates(calls_df, current_price, cost_basis, commission
 
 def build_recovery_calculator(ticker, assignment_price, premium_received=0.0,
                                commission_total=0.0, max_dte=RECOVERY_MAX_DTE):
-    """Tras una asignación de CSP, busca covered calls para recuperar la
-    pérdida.
+    """Tras una asignación de CSP, busca:
 
-    COSTE BASE EFECTIVO:
+    COSTE BASE EFECTIVO (nuevo): el precio de asignación por sí solo no
+    es tu coste real — ya cobraste una prima al vender el put original, y
+    pagaste una comisión por abrirlo. Ambos reducen lo que de verdad te
+    costó quedarte con las acciones:
+
         coste_base_efectivo = assignment_price - premium_received
                                + commission_total / 100
+
     (premium_received es POR ACCIÓN; commission_total es el importe TOTAL
-    del contrato). Cada candidato de recovery resta además su propia
-    comisión (se asume igual a la del CSP).
+    del contrato — por eso se divide entre 100 para expresarlo por
+    acción). Ejemplo: asignación a $41.50, prima cobrada $0.30/acción,
+    comisión total $1 → coste base = 41.50 - 0.30 + 0.01 = $41.21.
 
-    1) ATM: la covered call ATM que recupera la pérdida, vencimiento <=
-       max_dte días. Devuelve first_covering (el vencimiento más cercano
-       que cubre), next_after_first, o best_effort si ninguno cubre.
+    Todo lo que sigue (pérdida no realizada, recovery_dollar de cada
+    candidato) se calcula contra este coste base efectivo, NO contra
+    assignment_price directamente. Además, cada candidato de covered call
+    de recovery resta TAMBIÉN su propia comisión (commission_total, se
+    asume la misma que la del CSP) de la prima que cobra al abrir esa
+    segunda pata — así el resultado neto refleja las DOS comisiones
+    (apertura del CSP + apertura de la covered call), no solo la primera.
 
-    2) ITM: itm_best_dte (DTE más cercano; empate -> strike más alto) e
-       itm_max_delta (mayor delta), entre todos los ITM que cubren."""
+    1) ATM (comportamiento original): la covered call ATM (mayor
+       extrínseco) que recupera la pérdida no realizada frente al coste
+       base efectivo, con vencimiento <= max_dte días. 'Recuperar' se
+       define como Opción B: (strike_call - coste_base)*100 + prima*100
+       - commission_total >= 0 — es decir, si te ejercen la call, el
+       resultado neto de la operación completa (CSP + asignación +
+       covered call) es >= 0.
+
+       Recorre TODOS los vencimientos disponibles hasta max_dte días, de
+       más cercano a más lejano, y devuelve:
+       - first_covering: el vencimiento MÁS CERCANO cuyo ATM ya cubre la
+         pérdida (recovery_dollar >= 0) — salir cuanto antes.
+       - next_after_first: el vencimiento inmediatamente posterior a
+         ese, para comparar si esperar una semana más compensa (más
+         prima o incluso beneficio neto).
+       - Si NINGÚN vencimiento dentro de max_dte cubre la pérdida,
+         devuelve best_effort: el de mayor recovery_dollar disponible
+         (el que menos pérdida deja), igual patrón que la calculadora de
+         CSP normal.
+
+    2) ITM (nuevo): dos candidatos ADICIONALES que conviven con el ATM,
+       usando strikes ITM (más profundos, mayor delta) que TAMBIÉN
+       cubren la pérdida, buscando en TODOS los vencimientos <= max_dte
+       días:
+       - itm_best_dte: entre todos los strikes ITM que cubren (en
+         cualquier vencimiento <= max_dte), el de DTE más cercano;
+         empate en DTE se rompe por el strike más alto (el ITM menos
+         profundo de los que empatan).
+       - itm_max_delta: entre ese mismo conjunto (todos los ITM que
+         cubren, <= max_dte), el de MAYOR delta (el más profundo ITM).
+    """
     out = {"ticker": ticker, "error": None, "current_price": None,
            "assignment_price": assignment_price,
            "premium_received": premium_received,
@@ -802,9 +894,15 @@ def build_recovery_calculator(ticker, assignment_price, premium_received=0.0,
         out["best_effort"] = max(candidates, key=lambda c: c["recovery_dollar"])
         out["meets_target"] = False
 
+    # ── Candidatos ITM adicionales (conviven con el ATM de arriba) ──
     out["itm_all_candidates"] = itm_all
     if itm_all:
+        # Candidato 1: mejor DTE (vencimiento más cercano que cubre);
+        # empate en DTE -> strike más alto (el ITM menos profundo).
         out["itm_best_dte"] = sorted(itm_all, key=lambda c: (c["dte"], -c["strike"]))[0]
+
+        # Candidato 2: mayor delta (el más profundo ITM), dentro del
+        # mismo conjunto <= max_dte días.
         itm_with_delta = [c for c in itm_all if c["delta"] is not None]
         out["itm_max_delta"] = max(itm_with_delta, key=lambda c: c["delta"]) if itm_with_delta else None
     else:
@@ -861,9 +959,7 @@ def phase1_price_filter(ticker, params):
 
 def phase2_options_filter(survivor, params):
     """Datos de opciones (vencimientos + cadena de puts) vía Alpaca.
-    Devuelve (LISTA de filas, motivo): una fila por strike que cumple.
-    Si show_all_strikes está desactivado, la lista tiene un solo elemento
-    (el más seguro)."""
+    Precio en vivo del subyacente vía Alpaca también."""
     ticker = survivor["Ticker"]
     fallback_price = survivor["current_price"]
     target_date = params["target_expiration_date"]
@@ -900,69 +996,53 @@ def phase2_options_filter(survivor, params):
         if params["use_pcr_filter"] and pcr is not None and pcr >= 1.0:
             return None, "pcr_bearish"
 
-        candidates = find_put_candidates(
+        candidate = find_safest_put_candidate(
             puts, current_price, dte,
             params["premium_min"], params["premium_max"],
             params["use_oi_filter"], params["min_oi"],
             params["use_spread_filter"], params["spread_max_pct"],
             diagnostic_mode=params["diagnostic_mode"],
         )
-        if not candidates:
+        if candidate is None:
             return None, "no_put_candidate"
 
-        # Filtro de dividendos POR STRIKE (el colchón OTM cambia en cada uno)
-        if params["use_dividend_filter"]:
-            candidates = [
-                c for c in candidates
-                if not has_dividend_gap_risk(
-                    cal_info["ex_div_date"], cal_info["div_amount"],
-                    entry_date, target_date, current_price - c["strike"],
-                )
-            ]
-            if not candidates:
-                return None, "dividend_risk"
+        otm_distance_dollar = current_price - candidate["strike"]
+        if params["use_dividend_filter"] and has_dividend_gap_risk(
+            cal_info["ex_div_date"], cal_info["div_amount"], entry_date, target_date, otm_distance_dollar
+        ):
+            return None, "dividend_risk"
 
-        # Selección: solo el más seguro, o todos (con tope opcional).
-        # 'candidates' ya viene ordenada del más seguro al más cercano.
-        if not params["show_all_strikes"]:
-            candidates = candidates[:1]
-        else:
-            max_n = params.get("max_strikes_per_ticker", 0)
-            if max_n and max_n > 0:
-                candidates = candidates[:max_n]
+        iv_rv_ratio = (
+            round(candidate["iv_pct"] / survivor["rv"], 3)
+            if (candidate["iv_pct"] and survivor["rv"] and survivor["rv"] > 0) else None
+        )
 
-        rows = []
-        for cand in candidates:
-            iv_rv_ratio = (
-                round(cand["iv_pct"] / survivor["rv"], 3)
-                if (cand["iv_pct"] and survivor["rv"] and survivor["rv"] > 0) else None
-            )
-            rows.append({
-                "Ticker": ticker,
-                "Precio": round(current_price, 2),
-                "Vencimiento": exp_str,
-                "DTE": dte,
-                "Strike": cand["strike"],
-                "OTM_%": cand["otm_pct"],
-                "Retorno_Capital_%": cand["premium_pct"],
-                "Prima_Mid": cand["mid"],
-                "Bid": cand["bid"],
-                "Ask": cand["ask"],
-                "Capital_Requerido": round(cand["strike"] * 100, 2),
-                "Delta": cand["delta"],
-                "IV_%": cand["iv_pct"],
-                "RV_%": survivor["rv"],
-                "IV_RV": iv_rv_ratio,
-                "OI": cand["oi"],
-                "Volumen": cand["volume"],
-                "Spread_%": cand["spread_pct"],
-                "SMA30": survivor["sma30"],
-                "Dist_SMA30_%": survivor["dist_sma30_pct"],
-                "SMA200": survivor["sma200"],
-                "Dist_SMA200_%": survivor["dist_sma200_pct"],
-                "PCR": pcr,
-            })
-        return rows, "ok"
+        result = {
+            "Ticker": ticker,
+            "Precio": round(current_price, 2),
+            "Vencimiento": exp_str,
+            "DTE": dte,
+            "Strike": candidate["strike"],
+            "OTM_%": candidate["otm_pct"],
+            "Retorno_Capital_%": candidate["premium_pct"],
+            "Prima_Mid": candidate["mid"],
+            "Bid": candidate["bid"],
+            "Ask": candidate["ask"],
+            "Capital_Requerido": round(candidate["strike"] * 100, 2),
+            "Delta": candidate["delta"],
+            "IV_%": candidate["iv_pct"],
+            "RV_%": survivor["rv"],
+            "IV_RV": iv_rv_ratio,
+            "OI": candidate["oi"],
+            "Volumen": candidate["volume"],
+            "Spread_%": candidate["spread_pct"],
+            "SMA30": survivor["sma30"],
+            "Dist_SMA30_%": survivor["dist_sma30_pct"],
+            "SMA200": survivor["sma200"],
+            "Dist_SMA200_%": survivor["dist_sma200_pct"],
+            "PCR": pcr,
+        }
+        return result, "ok"
     except Exception as e:
         _record_debug("error", f"{ticker}: {e}")
         return None, "error"
@@ -995,25 +1075,21 @@ def run_screener(tickers, params, progress_bar, status_text):
                 survivors.append(r)
 
     results = []
-    tickers_ok = 0
     n_survivors = len(survivors)
     for i, s in enumerate(survivors, start=1):
         progress_bar.progress(0.5 + (i / max(n_survivors, 1)) * 0.5)
-        status_text.text(
-            f"🔍 Fase 2/2 — opciones: {i}/{n_survivors} ({s['Ticker']}) · "
-            f"tickers: {tickers_ok} · strikes: {len(results)}"
-        )
-        rows, reason = phase2_options_filter(s, params)
-        funnel[reason] = funnel.get(reason, 0) + 1   # el embudo cuenta TICKERS
-        if rows:
-            tickers_ok += 1
-            results.extend(rows)
+        status_text.text(f"🔍 Fase 2/2 — opciones: {i}/{n_survivors} ({s['Ticker']}) · encontrados: {len(results)}")
+        r, reason = phase2_options_filter(s, params)
+        funnel[reason] = funnel.get(reason, 0) + 1
+        if r is not None:
+            results.append(r)
 
-    status_text.text(f"✅ Completado: {len(results)} strikes en {tickers_ok} tickers")
+    status_text.text(f"✅ Completado: {len(results)} candidatos")
 
     df = pd.DataFrame(results)
     if not df.empty:
-        df = df.sort_values(["OTM_%", "Ticker"], ascending=[False, True]).reset_index(drop=True)
+        df = df.sort_values("OTM_%", ascending=False).reset_index(drop=True)
+        df.insert(0, "Rank", range(1, len(df) + 1))
 
     with _debug_lock:
         debug_snapshot = {k: list(v) for k, v in _debug_samples.items()}
@@ -1032,26 +1108,16 @@ def reset_everything():
         st.session_state.pop(key, None)
 
 # ======================================================================
-# 7. GRÁFICO DE PRECIO (con todos los strikes del mismo ticker)
+# 7. GRÁFICO DE PRECIO
 # ======================================================================
 
-def plot_price(ticker, strikes_df=None, days=120):
-    """Velas + SMA30/SMA200. Si strikes_df (filas de UN ticker con columnas
-    Strike, Retorno_Capital_%, OTM_%, Precio) viene informado, dibuja una
-    línea horizontal por strike (color según la prima %: ámbar = menos,
-    verde = más), la línea del precio actual y una banda con el rango de
-    strikes. Zoom por defecto a los últimos `days` días."""
+def plot_price(ticker):
     try:
         data = get_daily_data(ticker)
         if data is None:
             return None
-        data = data.copy()
-        if getattr(data.index, "tz", None) is not None:
-            data.index = data.index.tz_localize(None)
-
         sma30 = data["Close"].rolling(30).mean()
         sma200 = data["Close"].rolling(200).mean()
-
         fig = go.Figure()
         fig.add_trace(go.Candlestick(
             x=data.index, open=data["Open"], high=data["High"],
@@ -1059,73 +1125,36 @@ def plot_price(ticker, strikes_df=None, days=120):
             increasing_line_color="#6daa45", decreasing_line_color="#dd6974",
         ))
         fig.add_trace(go.Scatter(x=data.index, y=sma30, mode="lines", name="SMA30",
-                                 line=dict(color="#e8af34", width=2)))
+                                  line=dict(color="#e8af34", width=2)))
         fig.add_trace(go.Scatter(x=data.index, y=sma200, mode="lines", name="SMA200",
-                                 line=dict(color="#5b9bd5", width=2)))
-
-        x_start = data.index[-1] - pd.Timedelta(days=days)
-        x_end = data.index[-1] + pd.Timedelta(days=12)  # margen para etiquetas
-        recent = data.iloc[-days:]
-        y_vals = [float(recent["Low"].min()), float(recent["High"].max())]
-
-        has_strikes = strikes_df is not None and not strikes_df.empty
-        if has_strikes:
-            sdf = strikes_df.sort_values("Strike", ascending=False).reset_index(drop=True)
-            pmin = sdf["Retorno_Capital_%"].min()
-            pmax = sdf["Retorno_Capital_%"].max()
-            n = len(sdf)
-            label_all = n <= 12  # con muchos strikes, solo etiquetas en los extremos
-
-            # Banda entre el strike más lejano y el más cercano
-            if n > 1:
-                fig.add_hrect(y0=sdf["Strike"].min(), y1=sdf["Strike"].max(),
-                              fillcolor="rgba(109,170,69,0.08)", line_width=0)
-
-            for i, r in sdf.iterrows():
-                t = 0.5 if pmax == pmin else (r["Retorno_Capital_%"] - pmin) / (pmax - pmin)
-                color = f"rgb({int(232 - 123 * t)},{int(175 - 5 * t)},{int(52 + 17 * t)})"
-                show_label = label_all or i == 0 or i == n - 1
-                kwargs = {}
-                if show_label:
-                    kwargs = dict(
-                        annotation_text=f"K {r['Strike']:.2f} · {r['Retorno_Capital_%']:.2f}% · OTM {r['OTM_%']:.1f}%",
-                        annotation_position="right",
-                        annotation_font=dict(size=10, color=color),
-                    )
-                fig.add_hline(y=r["Strike"], line=dict(color=color, width=1.5, dash="dot"), **kwargs)
-                y_vals.append(float(r["Strike"]))
-
-            price_now = float(sdf.iloc[0]["Precio"])
-            fig.add_hline(y=price_now, line=dict(color="#ffffff", width=1),
-                          annotation_text=f"Precio {price_now:.2f}",
-                          annotation_position="left",
-                          annotation_font=dict(size=10))
-            y_vals.append(price_now)
-
-        pad = (max(y_vals) - min(y_vals)) * 0.05
+                                  line=dict(color="#5b9bd5", width=2)))
         fig.update_layout(
-            title=f"{ticker} — Precio + SMA30 + SMA200" + (f" + {len(strikes_df)} strikes" if has_strikes else ""),
-            template="plotly_dark", height=480,
+            title=f"{ticker} — Precio + SMA30 + SMA200",
+            template="plotly_dark", height=420,
             xaxis_rangeslider_visible=False, hovermode="x unified",
-            xaxis=dict(range=[x_start, x_end]),
-            yaxis=dict(range=[min(y_vals) - pad, max(y_vals) + pad]),
-            margin=dict(r=170),
         )
         return fig
-    except Exception as e:
-        logger.warning(f"[plot_price] {ticker}: {e}")
+    except Exception:
         return None
 
 # ======================================================================
 # 7b. FILTRO DE MERCADO: Indicador Trend SP500-NASDAQ
 # ======================================================================
+# Portado del notebook "Amplitud de mercado" (AM v1.10, celda 4). Misma
+# lógica exacta, pero con yf.Ticker().history() en vez de yf.download()
+# (aquí yf.download() da columnas mal aplanadas, igual razón que el resto
+# del pipeline). Gate previo a cualquier escaneo: si el mercado no está
+# alcista, el escáner queda bloqueado por defecto (con opción de anular).
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
 def get_market_trend():
     """SPX y NASDAQ por encima de la MENOR de sus medias de 100/200
     sesiones, con esa media subiendo, cuentan como alcistas (+1) cada uno;
-    si no, bajistas (-1). Suma: +2 Alcista, -2 Bajista, 0 mixto (ffill del
-    último valor no-mixto). Devuelve None si falla la descarga."""
+    si no, bajistas (-1). Suma de ambos: +2 Alcista, -2 Bajista, 0 mixto
+    (se rellena con el último valor no-mixto vía ffill, igual que el
+    notebook original — en la práctica el indicador es casi siempre
+    binario). Devuelve None si falla la descarga de cualquiera de los tres
+    tickers."""
     tickers = {"^GSPC": "SPX", "^IXIC": "NAS", "VTI": "VTI"}
     end = datetime.now() + timedelta(days=1)
     start = datetime(2015, 1, 1)
@@ -1188,7 +1217,9 @@ def get_market_trend():
         return None
 
 def plot_market_trend(mt):
-    """VTI coloreado verde/rojo/ámbar según Tendencia, con MA100/MA200."""
+    """VTI coloreado verde/rojo/ámbar según Tendencia, con MA100/MA200 de
+    referencia — versión plotly del gráfico matplotlib del notebook
+    original, para encajar con el resto de la app."""
     df_plot = mt["df_plot"].copy()
     color_map = {2: "#6daa45", -2: "#dd6974", 0: "#e8af34"}
 
@@ -1221,7 +1252,8 @@ def plot_market_trend(mt):
 def render_market_filter():
     """Apartado inicial 'Filtro de Mercado': calcula y grafica el
     indicador, y guarda en session_state si el mercado está alcista (o si
-    el usuario ha decidido anular el bloqueo)."""
+    el usuario ha decidido anular el bloqueo) para que el botón de
+    escaneo lo respete más abajo."""
     st.markdown("### 📈 Filtro de Mercado")
     st.caption(
         "Indicador Trend SP500-NASDAQ: alcista cuando el S&P 500 y el Nasdaq "
@@ -1284,11 +1316,12 @@ def main():
     st.markdown(
         "**Objetivo: prima mínima semanal (% del strike, retorno sobre capital) · "
         "Vencimiento EXACTO (sin tolerancia) · "
-        "Todos los strikes que cumplen, del más seguro (mayor OTM%) al más cercano**"
+        "Ranking por strike más seguro (mayor OTM%)**"
     )
     st.caption(
         "⚙️ Puts OTM/ATM vía Alpaca · filtros opcionales de SMA30/SMA200 · "
-        "OI y spread mínimos opcionales · precio diario/SMA vía yfinance"
+        "OI y spread mínimos opcionales (OFF por defecto) · precio diario/"
+        "SMA vía yfinance"
     )
 
     col_title, col_reset = st.columns([5, 1])
@@ -1375,31 +1408,12 @@ def main():
             premium_max = None
             st.caption(f"✅ Umbral activo: **≥ {premium_min}%** (sin techo)")
 
-        st.markdown("**🎯 Strikes por ticker**")
-        show_all_strikes = st.checkbox(
-            "Mostrar todos los strikes que cumplen (no solo el más seguro)", value=True,
-            help="Activado: cada ticker aparece con TODOS sus strikes OTM/ATM que "
-                 "cumplen la prima (del más seguro al más cercano al dinero). "
-                 "Desactivado: solo el strike más alejado que cumple (1 fila por ticker).",
-        )
-        max_strikes_per_ticker = st.number_input(
-            "Máx. strikes por ticker (0 = sin tope)", min_value=0, max_value=50,
-            value=5, step=1, disabled=not show_all_strikes,
-            help="Si hay más strikes válidos que este tope, se conservan los más "
-                 "seguros (mayor OTM%).",
-        )
-        if show_all_strikes:
-            cap_txt = f"hasta {int(max_strikes_per_ticker)}" if max_strikes_per_ticker > 0 else "sin tope"
-            st.caption(f"✅ Se mostrarán todos los strikes que cumplen ({cap_txt} por ticker).")
-        else:
-            st.caption("ℹ️ Solo se mostrará el strike más seguro de cada ticker.")
-
         st.markdown("**💲 Precio del subyacente**")
         pcol3, pcol4 = st.columns(2)
         with pcol3:
-            min_price = st.number_input("Precio mínimo ($)", min_value=1, max_value=10000, value=15, step=1)
+            min_price = st.number_input("Precio mínimo ($)", min_value=1, max_value=10000, value=15, step=5)
         with pcol4:
-            max_price = st.number_input("Precio máximo ($)", min_value=1, max_value=10000, value=50, step=1)
+            max_price = st.number_input("Precio máximo ($)", min_value=1, max_value=10000, value=50, step=5)
         if min_price > max_price:
             st.error(f"⚠️ El precio mínimo (${min_price:,}) es mayor que el máximo (${max_price:,}) — se intercambian.")
             min_price, max_price = max_price, min_price
@@ -1409,10 +1423,10 @@ def main():
         st.markdown("**💧 Liquidez mínima**")
         use_oi_filter = st.checkbox(
             "Exigir OI mínimo del strike", value=True,
-            help="Activado por defecto con un mínimo de 50. El open interest que "
-                 "reporta Alpaca viene a veces en 0 o muy bajo para nombres fuera de "
-                 "los índices más líquidos, incluso con bid/ask real — desactívalo si "
-                 "notas que te descarta candidatos válidos.",
+            help="Activado por defecto con un mínimo de 50. Ten en cuenta que el open "
+                 "interest que reporta Alpaca viene a veces en 0 o muy bajo para "
+                 "nombres fuera de los índices más líquidos, incluso con bid/ask real "
+                 "cotizado — desactívalo si notas que te descarta candidatos válidos.",
         )
         min_oi = st.number_input("OI mínimo del strike", min_value=10, max_value=10000, value=50, step=50,
                                   disabled=not use_oi_filter)
@@ -1421,13 +1435,13 @@ def main():
 
         st.markdown("**〰️ Spread bid-ask**")
         use_spread_filter = st.checkbox(
-            "Exigir spread ≤ X% de la prima", value=True,
-            help="Activado por defecto con un máximo del 70%. Puede excluir strikes "
-                 "válidos con spreads anchos pero cotización real: revisa Spread_% "
-                 "en la tabla.",
+            "Exigir spread ≤ X% de la prima", value=False,
+            help="Desactivado por defecto — igual razón que en el screener de covered "
+                 "calls: puede excluir strikes válidos con spreads anchos pero cotización "
+                 "real. Revisa Spread_% en la tabla.",
         )
         spread_max_pct = st.number_input("Spread máximo (% de la prima)", min_value=10, max_value=300,
-                                          value=70, step=10, disabled=not use_spread_filter)
+                                          value=50, step=10, disabled=not use_spread_filter)
         if not use_spread_filter:
             st.caption("ℹ️ Spread máximo NO se está aplicando — revisa Spread_% antes de operar.")
 
@@ -1473,15 +1487,15 @@ def main():
         )
         use_dividend_filter = st.checkbox(
             "Excluir riesgo de asignación por dividendo", value=True,
-            help="Descarta cada STRIKE si hay una fecha ex-dividendo entre entrada y "
-                 "vencimiento cuyo importe, por sí solo, sea mayor o igual que su "
+            help="Descarta el candidato si hay una fecha ex-dividendo entre entrada y "
+                 "vencimiento cuyo importe, por sí solo, sea mayor o igual que tu "
                  "colchón OTM (precio - strike) — la caída mecánica del propio "
                  "dividendo en el ex-date podría meter el put en el dinero sin que se "
                  "mueva nada más.",
         )
         diagnostic_mode = st.checkbox(
             "🔬 Modo diagnóstico (ignora el umbral de prima)", value=False,
-            help="Devuelve los candidatos OTM aunque su prima no alcance el mínimo "
+            help="Devuelve el mejor candidato OTM aunque su prima no alcance el mínimo "
                  "configurado, para ver los valores reales del mercado.",
         )
         st.caption(
@@ -1506,8 +1520,6 @@ def main():
         "use_earnings_filter": use_earnings_filter,
         "use_dividend_filter": use_dividend_filter,
         "diagnostic_mode": diagnostic_mode,
-        "show_all_strikes": show_all_strikes,
-        "max_strikes_per_ticker": int(max_strikes_per_ticker),
     }
 
     st.divider()
@@ -1560,11 +1572,7 @@ def main():
         st.session_state["scanned_total"] = len(scan_tickers)
 
         if not df_results.empty:
-            n_tk = df_results["Ticker"].nunique()
-            st.success(
-                f"✅ **{len(df_results)} strikes en {n_tk} tickers** encontrados "
-                f"sobre {len(scan_tickers):,} tickers analizados"
-            )
+            st.success(f"✅ **{len(df_results)} candidatos** encontrados sobre {len(scan_tickers):,} tickers analizados")
         else:
             st.warning("⚠️ Ningún ticker cumplió todos los filtros. Mira el embudo de diagnóstico más abajo.")
 
@@ -1901,8 +1909,8 @@ def main():
 
 def render_results():
     """Renderiza los resultados guardados en session_state (filtros
-    post-escaneo, métricas, tabs de ranking/detalle/gráficos). Ahora hay
-    VARIAS filas por ticker (una por strike)."""
+    post-escaneo, métricas, tabs de ranking/detalle/gráficos). Si aún
+    no hay escaneo, muestra un aviso y no hace nada más."""
     st.markdown("### 📊 Resultados")
 
     if "results" not in st.session_state or st.session_state["results"].empty:
@@ -1913,20 +1921,20 @@ def render_results():
     ts = st.session_state["scan_ts"]
 
     st.markdown("#### 🔧 Filtros adicionales sobre resultados")
-    st.caption("Se aplican sobre los strikes ya encontrados — no relanzan la descarga de datos.")
+    st.caption("Se aplican sobre los candidatos ya encontrados — no relanzan la descarga de datos.")
     colrf1, colrf2, colrf3, colrf4 = st.columns(4)
     with colrf1:
-        use_min_otm_filter = st.checkbox("Distancia OTM mínima (%)", value=True)
-        min_otm_value = st.number_input("Valor mínimo (%)", min_value=0.0, max_value=100.0, value=10.0, step=0.5,
+        use_min_otm_filter = st.checkbox("Distancia OTM mínima (%)", value=False)
+        min_otm_value = st.number_input("Valor mínimo (%)", min_value=0.0, max_value=100.0, value=5.0, step=0.5,
                                          disabled=not use_min_otm_filter, key="min_otm_value")
     with colrf2:
-        use_max_delta_filter = st.checkbox("|Delta| máximo", value=True)
-        max_delta_value = st.number_input("Valor máximo", min_value=0.0, max_value=1.0, value=0.20, step=0.01,
+        use_max_delta_filter = st.checkbox("|Delta| máximo", value=False)
+        max_delta_value = st.number_input("Valor máximo", min_value=0.0, max_value=1.0, value=0.30, step=0.01,
                                            disabled=not use_max_delta_filter, key="max_delta_value",
                                            help="Filas sin delta calculable se excluyen al activar este filtro.")
     with colrf3:
-        use_min_oi_post_filter = st.checkbox("OI mínimo", value=True)
-        min_oi_post_value = st.number_input("Valor mínimo", min_value=0, max_value=100000, value=50, step=10,
+        use_min_oi_post_filter = st.checkbox("OI mínimo", value=False)
+        min_oi_post_value = st.number_input("Valor mínimo", min_value=0, max_value=100000, value=100, step=50,
                                              disabled=not use_min_oi_post_filter, key="min_oi_post_value")
     with colrf4:
         use_min_vol_post_filter = st.checkbox("Volumen mínimo", value=False)
@@ -1944,38 +1952,19 @@ def render_results():
         df = df[df["Volumen"] >= min_vol_post_value]
 
     if use_min_otm_filter or use_max_delta_filter or use_min_oi_post_filter or use_min_vol_post_filter:
-        st.caption(f"ℹ️ Mostrando **{len(df)}** de {len(df_all)} strikes tras aplicar estos filtros.")
+        st.caption(f"ℹ️ Mostrando **{len(df)}** de {len(df_all)} candidatos tras aplicar estos filtros.")
 
     st.divider()
 
     if df.empty:
-        st.warning("⚠️ Ningún strike del último escaneo cumple estos filtros adicionales. Ajusta los valores de arriba.")
+        st.warning("⚠️ Ningún candidato del último escaneo cumple estos filtros adicionales. Ajusta los valores de arriba.")
         return
 
-    # ── Orden de la tabla ──────────────────────────────────────────────
-    sort_mode = st.radio(
-        "Ordenar por",
-        ["OTM_% (más seguro primero)", "Ticker, luego OTM_%", "Retorno_Capital_% (más prima primero)"],
-        horizontal=True, key="sort_mode",
-    )
-    if sort_mode.startswith("OTM_%"):
-        df = df.sort_values(["OTM_%", "Ticker"], ascending=[False, True])
-    elif sort_mode.startswith("Ticker"):
-        df = df.sort_values(["Ticker", "OTM_%"], ascending=[True, False])
-    else:
-        df = df.sort_values(["Retorno_Capital_%", "OTM_%"], ascending=[False, False])
-    df = df.reset_index(drop=True)
-    if "Rank" in df.columns:
-        df = df.drop(columns=["Rank"])
-    df.insert(0, "Rank", range(1, len(df) + 1))
-
-    n_tickers = df["Ticker"].nunique()
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("📊 Strikes totales", len(df))
-    k2.metric("🏷️ Tickers", n_tickers)
-    k3.metric("🛡️ OTM máx.", f"{df['OTM_%'].max():.2f}%")
-    k4.metric("💰 Retorno capital medio", f"{df['Retorno_Capital_%'].mean():.3f}%")
-    k5.metric("🕐 Escaneo", ts.strftime("%H:%M:%S"))
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("📊 Candidatos totales", len(df))
+    k2.metric("🛡️ OTM máx.", f"{df['OTM_%'].max():.2f}%")
+    k3.metric("💰 Retorno capital medio", f"{df['Retorno_Capital_%'].mean():.3f}%")
+    k4.metric("🕐 Escaneo", ts.strftime("%H:%M:%S"))
 
     st.divider()
 
@@ -2020,28 +2009,10 @@ def render_results():
         st.download_button("⬇️ Descargar CSV", csv_export, f"csp_screener_{ts.strftime('%Y%m%d_%H%M')}.csv", "text/csv")
 
     with tab2:
-        ticker_options = list(dict.fromkeys(df["Ticker"].tolist()))
-        dcol1, dcol2 = st.columns(2)
-        with dcol1:
-            selected = st.selectbox("Selecciona un ticker para ver el detalle", options=ticker_options, key="detail_ticker")
-        row = None
+        selected = st.selectbox("Selecciona un ticker para ver el detalle", options=df["Ticker"].tolist())
         if selected:
-            tdf = df[df["Ticker"] == selected].sort_values("OTM_%", ascending=False)
-            strike_labels = {
-                float(r["Strike"]): f"${r['Strike']:.2f} · {r['Retorno_Capital_%']:.2f}% · OTM {r['OTM_%']:.1f}%"
-                for _, r in tdf.iterrows()
-            }
-            with dcol2:
-                selected_strike = st.selectbox(
-                    f"Strike ({len(tdf)} disponibles)",
-                    options=list(strike_labels.keys()),
-                    format_func=lambda k: strike_labels[k],
-                    key=f"detail_strike_{selected}",
-                )
-            row = tdf[tdf["Strike"] == selected_strike].iloc[0]
-
-        if row is not None:
-            st.markdown(f"## {selected} — Cash Secured Put (K ${row['Strike']})")
+            row = df[df["Ticker"] == selected].iloc[0]
+            st.markdown(f"## {selected} — Cash Secured Put")
             col_a, col_b = st.columns(2)
             with col_a:
                 st.markdown("### 📌 Trade Setup")
@@ -2090,45 +2061,29 @@ def render_results():
     with tab3:
         col_g1, col_g2 = st.columns(2)
         with col_g1:
-            ticker_chart = st.selectbox("Ver gráfico de precio", options=list(dict.fromkeys(df["Ticker"].tolist())),
-                                         key="chart_select")
-            chart_days = st.select_slider("Días visibles", options=[60, 90, 120, 180, 250, 400], value=120,
-                                           key="chart_days")
+            ticker_chart = st.selectbox("Ver gráfico de precio", options=df["Ticker"].tolist(), key="chart_select")
             if ticker_chart:
-                strikes_ticker = df[df["Ticker"] == ticker_chart]
-                fig = plot_price(ticker_chart, strikes_df=strikes_ticker, days=chart_days)
+                fig = plot_price(ticker_chart)
                 if fig:
                     st.plotly_chart(fig, use_container_width=True)
-                    st.caption(
-                        f"Se dibujan los {len(strikes_ticker)} strikes de {ticker_chart} que siguen en la tabla "
-                        f"(tras los filtros adicionales). Color: verde = más prima, ámbar = menos."
-                    )
                 else:
                     st.warning("No se pudo cargar el gráfico.")
         with col_g2:
             fig_scatter = px.scatter(
-                df, x="Retorno_Capital_%", y="OTM_%", text="Strike", color="Ticker",
-                title="Distancia OTM vs Prima% (un punto por strike)",
-                template="plotly_dark", height=420,
+                df, x="Retorno_Capital_%", y="OTM_%", text="Ticker", color="OTM_%",
+                color_continuous_scale=["#dd6974", "#e8af34", "#6daa45"],
+                title="Distancia OTM vs Prima%", template="plotly_dark", height=420,
                 labels={"Retorno_Capital_%": "Retorno capital (%)", "OTM_%": "Distancia OTM (%)"},
-                hover_data=["Ticker", "Strike", "Prima_Mid", "Delta"],
             )
-            fig_scatter.update_traces(textposition="top center", marker_size=9)
-            fig_scatter.update_layout(showlegend=n_tickers <= 15)
+            fig_scatter.update_traces(textposition="top center", marker_size=10)
             st.plotly_chart(fig_scatter, use_container_width=True)
 
-        best_per_ticker = (
-            df.groupby("Ticker", as_index=False)
-              .agg(OTM_max=("OTM_%", "max"), Strikes=("Strike", "count"))
-              .sort_values("OTM_max", ascending=False)
-              .head(20)
-        )
         fig_bar = px.bar(
-            best_per_ticker, x="Ticker", y="OTM_max", color="OTM_max", text="Strikes",
+            df.head(20), x="Ticker", y="OTM_%", color="OTM_%",
             color_continuous_scale=["#dd6974", "#e8af34", "#6daa45"],
-            title="Top 20 tickers — mejor distancia OTM % (el número = strikes válidos del ticker)",
+            title="Top 20 — Distancia OTM % (mayor = más seguro)",
             template="plotly_dark", height=400,
-            labels={"OTM_max": "Distancia OTM máx. (%)"},
+            labels={"OTM_%": "Distancia OTM (%)"},
         )
         st.plotly_chart(fig_bar, use_container_width=True)
 
