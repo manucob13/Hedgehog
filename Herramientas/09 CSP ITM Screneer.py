@@ -1384,7 +1384,7 @@ def main():
         )
         max_strikes_per_ticker = st.number_input(
             "Máx. strikes por ticker (0 = sin tope)", min_value=0, max_value=50,
-            value=10, step=1, disabled=not show_all_strikes,
+            value=5, step=1, disabled=not show_all_strikes,
             help="Si hay más strikes válidos que este tope, se conservan los más "
                  "seguros (mayor OTM%).",
         )
@@ -1397,9 +1397,9 @@ def main():
         st.markdown("**💲 Precio del subyacente**")
         pcol3, pcol4 = st.columns(2)
         with pcol3:
-            min_price = st.number_input("Precio mínimo ($)", min_value=1, max_value=10000, value=15, step=5)
+            min_price = st.number_input("Precio mínimo ($)", min_value=1, max_value=10000, value=15, step=1)
         with pcol4:
-            max_price = st.number_input("Precio máximo ($)", min_value=1, max_value=10000, value=50, step=5)
+            max_price = st.number_input("Precio máximo ($)", min_value=1, max_value=10000, value=50, step=1)
         if min_price > max_price:
             st.error(f"⚠️ El precio mínimo (${min_price:,}) es mayor que el máximo (${max_price:,}) — se intercambian.")
             min_price, max_price = max_price, min_price
@@ -1421,12 +1421,13 @@ def main():
 
         st.markdown("**〰️ Spread bid-ask**")
         use_spread_filter = st.checkbox(
-            "Exigir spread ≤ X% de la prima", value=False,
-            help="Desactivado por defecto: puede excluir strikes válidos con spreads "
-                 "anchos pero cotización real. Revisa Spread_% en la tabla.",
+            "Exigir spread ≤ X% de la prima", value=True,
+            help="Activado por defecto con un máximo del 70%. Puede excluir strikes "
+                 "válidos con spreads anchos pero cotización real: revisa Spread_% "
+                 "en la tabla.",
         )
         spread_max_pct = st.number_input("Spread máximo (% de la prima)", min_value=10, max_value=300,
-                                          value=50, step=10, disabled=not use_spread_filter)
+                                          value=70, step=10, disabled=not use_spread_filter)
         if not use_spread_filter:
             st.caption("ℹ️ Spread máximo NO se está aplicando — revisa Spread_% antes de operar.")
 
@@ -1915,17 +1916,17 @@ def render_results():
     st.caption("Se aplican sobre los strikes ya encontrados — no relanzan la descarga de datos.")
     colrf1, colrf2, colrf3, colrf4 = st.columns(4)
     with colrf1:
-        use_min_otm_filter = st.checkbox("Distancia OTM mínima (%)", value=False)
-        min_otm_value = st.number_input("Valor mínimo (%)", min_value=0.0, max_value=100.0, value=5.0, step=0.5,
+        use_min_otm_filter = st.checkbox("Distancia OTM mínima (%)", value=True)
+        min_otm_value = st.number_input("Valor mínimo (%)", min_value=0.0, max_value=100.0, value=10.0, step=0.5,
                                          disabled=not use_min_otm_filter, key="min_otm_value")
     with colrf2:
-        use_max_delta_filter = st.checkbox("|Delta| máximo", value=False)
-        max_delta_value = st.number_input("Valor máximo", min_value=0.0, max_value=1.0, value=0.30, step=0.01,
+        use_max_delta_filter = st.checkbox("|Delta| máximo", value=True)
+        max_delta_value = st.number_input("Valor máximo", min_value=0.0, max_value=1.0, value=0.20, step=0.01,
                                            disabled=not use_max_delta_filter, key="max_delta_value",
                                            help="Filas sin delta calculable se excluyen al activar este filtro.")
     with colrf3:
-        use_min_oi_post_filter = st.checkbox("OI mínimo", value=False)
-        min_oi_post_value = st.number_input("Valor mínimo", min_value=0, max_value=100000, value=100, step=50,
+        use_min_oi_post_filter = st.checkbox("OI mínimo", value=True)
+        min_oi_post_value = st.number_input("Valor mínimo", min_value=0, max_value=100000, value=50, step=10,
                                              disabled=not use_min_oi_post_filter, key="min_oi_post_value")
     with colrf4:
         use_min_vol_post_filter = st.checkbox("Volumen mínimo", value=False)
