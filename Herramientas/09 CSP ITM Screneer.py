@@ -20,6 +20,15 @@ el checkbox, el comportamiento es el de antes (solo el más seguro).
   mismo ticker (coloreada según la prima %), el precio actual y una banda
   con el rango de strikes.
 
+CALCULADORAS DE RECOVERY (covered calls ATM / ITM):
+- Recovery Asignación: tras una asignación de CSP (precio de asignación,
+  prima cobrada y comisión).
+- Recovery Posición: para acciones que ya tienes y tienen una pérdida
+  latente TOTAL en $ (sin comisión). Coste base efectivo = precio en vivo
+  + pérdida/100.
+Ambas comparten el mismo núcleo de búsqueda (_recovery_search) y el mismo
+bloque de resultados (render_recovery_options).
+
 El % se calcula sobre el strike (= capital que reservas, strike x 100)
 porque es el capital que de verdad arriesgas en un cash secured put.
 
@@ -537,85 +546,10 @@ def find_put_candidates(puts_df, current_price, dte_calendar,
         return []
 
 # ======================================================================
-# 4b. CALCULADORA: prima mínima necesaria para un % objetivo, por ticker
-# ======================================================================
-
-def _find_put_for_calculator(puts_df, current_price, premium_min_pct, premium_max_pct):
-    """Variante de selección para la calculadora: si hay strikes OTM/ATM
-    que cumplen la prima objetivo, coge el MÁS SEGURO. Si NINGUNO la
-    cumple, coge el de MAYOR prima disponible para mostrar cuánto falta."""
-    otm = puts_df[puts_df["strike"] <= current_price].copy()
-    if otm.empty:
-        return None, False
-
-    otm["bid"] = pd.to_numeric(otm["bid"], errors="coerce").fillna(0)
-    otm["ask"] = pd.to_numeric(otm["ask"], errors="coerce").fillna(0)
-    otm["mid"] = (otm["bid"] + otm["ask"]) / 2
-    otm = otm[(otm["bid"] > 0) & (otm["ask"] > 0) & (otm["mid"] > 0)]
-    if otm.empty:
-        return None, False
-
-    otm["premium_pct"] = otm["mid"] / otm["strike"] * 100
-    otm["otm_pct"] = (current_price - otm["strike"]) / current_price * 100
-
-    if premium_max_pct is not None:
-        qualifying = otm[(otm["premium_pct"] >= premium_min_pct) & (otm["premium_pct"] <= premium_max_pct)]
-    else:
-        qualifying = otm[otm["premium_pct"] >= premium_min_pct]
-
-    if not qualifying.empty:
-        return qualifying.sort_values("otm_pct", ascending=False).iloc[0], True
-    return otm.sort_values("premium_pct", ascending=False).iloc[0], False
-
-def build_csp_calculator(ticker, target_date, premium_min_pct, premium_max_pct):
-    """Para un ticker y vencimiento EXACTO: calcula la prima mínima en $
-    que hace falta para tu % objetivo (% del STRIKE) y la compara con el
-    strike/mid real que mejor se ajusta. No aplica OI/spread/SMA/earnings/
-    dividendo."""
-    out = {"ticker": ticker, "error": None, "current_price": None}
-
-    data = get_daily_data(ticker)
-    if data is None:
-        out["error"] = "Sin datos diarios suficientes para este ticker."
-        return out
-    fallback_price = float(data["Close"].iloc[-1])
-    current_price = get_live_price(ticker, fallback_price)
-    out["current_price"] = current_price
-
-    expirations = get_option_expirations(ticker)
-    if not expirations:
-        out["error"] = "Este ticker no tiene vencimientos de opciones listados en Alpaca."
-        return out
-    if target_date not in expirations:
-        out["error"] = f"No hay vencimiento EXACTO el {target_date.strftime('%d %b %Y')} para este ticker."
-        return out
-
-    _, puts = get_option_chain(ticker, target_date)
-    if puts is None or puts.empty:
-        out["error"] = "Cadena de puts vacía en Alpaca para ese vencimiento."
-        return out
-
-    best, meets_target = _find_put_for_calculator(puts, current_price, premium_min_pct, premium_max_pct)
-    if best is None:
-        out["error"] = "No hay ningún strike OTM/ATM con bid/ask válido para ese vencimiento."
-        return out
-
-    out["strike"] = float(best["strike"])
-    out["mid"] = round(float(best["mid"]), 2)
-    out["bid"] = round(float(best["bid"]), 2)
-    out["ask"] = round(float(best["ask"]), 2)
-    out["premium_pct_real"] = round(float(best["premium_pct"]), 3)
-    out["otm_pct"] = round(float(best["otm_pct"]), 2)
-    out["meets_target"] = meets_target
-    out["premium_cash_100"] = out["mid"] * 100
-    out["capital_requerido"] = out["strike"] * 100
-    out["premium_min_dollar"] = (premium_min_pct / 100) * out["strike"]
-    out["premium_max_dollar"] = (premium_max_pct / 100) * out["strike"] if premium_max_pct is not None else None
-    return out
-
-# ======================================================================
-# 4c. CALCULADORA RECOVERY: covered call ATM / ITM para recuperar una
-#     asignación
+# 4c. CALCULADORAS RECOVERY: covered call ATM / ITM
+#     - Recovery Asignación (tras una asignación de CSP)
+#     - Recovery Posición (acciones ya en cartera con pérdida latente)
+#     Ambas comparten el núcleo _recovery_search().
 # ======================================================================
 
 RECOVERY_MAX_DTE = 60
@@ -693,52 +627,23 @@ def find_itm_covering_candidates(calls_df, current_price, cost_basis, commission
     except Exception:
         return []
 
-def build_recovery_calculator(ticker, assignment_price, premium_received=0.0,
-                               commission_total=0.0, max_dte=RECOVERY_MAX_DTE):
-    """Tras una asignación de CSP, busca covered calls para recuperar la
-    pérdida.
+def _recovery_search(out, ticker, current_price, effective_cost_basis,
+                     commission_total, max_dte):
+    """NÚCLEO COMÚN de las dos calculadoras de recovery. Recorre los
+    vencimientos (hasta max_dte días) y rellena en `out`:
 
-    COSTE BASE EFECTIVO:
-        coste_base_efectivo = assignment_price - premium_received
-                               + commission_total / 100
-    (premium_received es POR ACCIÓN; commission_total es el importe TOTAL
-    del contrato). Cada candidato de recovery resta además su propia
-    comisión (se asume igual a la del CSP).
+    1) ATM: la covered call ATM que recupera la pérdida frente al coste
+       base efectivo. Devuelve all_candidates, first_covering (el
+       vencimiento más cercano que cubre), next_after_first, o
+       best_effort si ninguno cubre. meets_target indica si alguno cubre.
 
-    1) ATM: la covered call ATM que recupera la pérdida, vencimiento <=
-       max_dte días. Devuelve first_covering (el vencimiento más cercano
-       que cubre), next_after_first, o best_effort si ninguno cubre.
+    2) ITM: itm_all_candidates, itm_best_dte (DTE más cercano; empate ->
+       strike más alto) e itm_max_delta (mayor delta), entre todos los ITM
+       que cubren.
 
-    2) ITM: itm_best_dte (DTE más cercano; empate -> strike más alto) e
-       itm_max_delta (mayor delta), entre todos los ITM que cubren."""
-    out = {"ticker": ticker, "error": None, "current_price": None,
-           "assignment_price": assignment_price,
-           "premium_received": premium_received,
-           "commission_total": commission_total}
-
-    data = get_daily_data(ticker)
-    if data is None:
-        out["error"] = "Sin datos diarios suficientes para este ticker."
-        return out
-    fallback_price = float(data["Close"].iloc[-1])
-    current_price = get_live_price(ticker, fallback_price)
-    out["current_price"] = current_price
-
-    effective_cost_basis = assignment_price - premium_received + (commission_total / 100)
-    out["effective_cost_basis"] = round(effective_cost_basis, 2)
-
-    if current_price >= effective_cost_basis:
-        out["error"] = (
-            "El precio actual ya está en o por encima de tu coste base efectivo "
-            f"(${effective_cost_basis:.2f}, tras descontar la prima cobrada y la "
-            "comisión del CSP) — no hay pérdida que recuperar con esta calculadora."
-        )
-        return out
-
-    loss_per_share = effective_cost_basis - current_price
-    out["loss_per_share"] = round(loss_per_share, 2)
-    out["loss_dollar"] = round(loss_per_share * 100, 2)
-
+    El resultado neto de cada candidato es:
+        (strike - coste_base_efectivo)*100 + prima*100 - commission_total
+    Devuelve el propio dict `out` (con out["error"] informado si falla)."""
     expirations = get_option_expirations(ticker)
     if not expirations:
         out["error"] = "Este ticker no tiene vencimientos de opciones listados en Alpaca."
@@ -812,6 +717,204 @@ def build_recovery_calculator(ticker, assignment_price, premium_received=0.0,
         out["itm_max_delta"] = None
 
     return out
+
+def build_recovery_calculator(ticker, assignment_price, premium_received=0.0,
+                               commission_total=0.0, max_dte=RECOVERY_MAX_DTE):
+    """RECOVERY ASIGNACIÓN. Tras una asignación de CSP, busca covered calls
+    para recuperar la pérdida.
+
+    COSTE BASE EFECTIVO:
+        coste_base_efectivo = assignment_price - premium_received
+                               + commission_total / 100
+    (premium_received es POR ACCIÓN; commission_total es el importe TOTAL
+    del contrato). Cada candidato de recovery resta además su propia
+    comisión (se asume igual a la del CSP)."""
+    out = {"ticker": ticker, "error": None, "current_price": None,
+           "assignment_price": assignment_price,
+           "premium_received": premium_received,
+           "commission_total": commission_total}
+
+    data = get_daily_data(ticker)
+    if data is None:
+        out["error"] = "Sin datos diarios suficientes para este ticker."
+        return out
+    fallback_price = float(data["Close"].iloc[-1])
+    current_price = get_live_price(ticker, fallback_price)
+    out["current_price"] = current_price
+
+    effective_cost_basis = assignment_price - premium_received + (commission_total / 100)
+    out["effective_cost_basis"] = round(effective_cost_basis, 2)
+
+    if current_price >= effective_cost_basis:
+        out["error"] = (
+            "El precio actual ya está en o por encima de tu coste base efectivo "
+            f"(${effective_cost_basis:.2f}, tras descontar la prima cobrada y la "
+            "comisión del CSP) — no hay pérdida que recuperar con esta calculadora."
+        )
+        return out
+
+    loss_per_share = effective_cost_basis - current_price
+    out["loss_per_share"] = round(loss_per_share, 2)
+    out["loss_dollar"] = round(loss_per_share * 100, 2)
+
+    return _recovery_search(out, ticker, current_price, effective_cost_basis,
+                            commission_total, max_dte)
+
+def build_recovery_position_calculator(ticker, loss_total_dollar, max_dte=RECOVERY_MAX_DTE):
+    """RECOVERY POSICIÓN. Para acciones que YA tienes (100 acciones, 1
+    contrato) con una pérdida latente TOTAL en $ (en positivo, p. ej. 38).
+    Sin comisión.
+
+    COSTE BASE EFECTIVO:
+        coste_base_efectivo = precio_en_vivo + pérdida_total / 100
+
+    Después busca covered calls ATM / ITM que recuperen esa pérdida con el
+    mismo núcleo que la calculadora de asignación."""
+    out = {"ticker": ticker, "error": None, "current_price": None,
+           "loss_dollar": round(float(loss_total_dollar), 2),
+           "loss_per_share": round(float(loss_total_dollar) / 100, 4),
+           "commission_total": 0.0}
+
+    if loss_total_dollar is None or loss_total_dollar <= 0:
+        out["error"] = "La pérdida debe ser un importe positivo (por ejemplo, 38)."
+        return out
+
+    data = get_daily_data(ticker)
+    if data is None:
+        out["error"] = "Sin datos diarios suficientes para este ticker."
+        return out
+    fallback_price = float(data["Close"].iloc[-1])
+    current_price = get_live_price(ticker, fallback_price)
+    out["current_price"] = current_price
+
+    loss_per_share = float(loss_total_dollar) / 100
+    effective_cost_basis = current_price + loss_per_share
+    out["effective_cost_basis"] = round(effective_cost_basis, 2)
+
+    return _recovery_search(out, ticker, current_price, effective_cost_basis,
+                            0.0, max_dte)
+
+def render_recovery_options(rr):
+    """Bloque de resultados COMÚN a ambas calculadoras de recovery: ATM
+    (primer vencimiento que cubre + siguiente), alternativas ITM y tablas
+    desplegables. Se llama solo si rr no tiene error."""
+    if rr.get("meets_target"):
+        first = rr["first_covering"]
+        nxt = rr.get("next_after_first")
+
+        st.success(
+            f"✅ Con vencimiento **{first['expiration'].strftime('%d %b %Y')}** "
+            f"(DTE={first['dte']}) ya recuperas la pérdida completa."
+        )
+
+        st.markdown("##### 🥇 Vencimiento más cercano que cubre la pérdida (ATM)")
+        f1, f2, f3, f4 = st.columns(4)
+        f1.metric("Vencimiento", first["expiration"].strftime("%d %b %Y"), f"DTE {first['dte']}")
+        f2.metric("Strike ATM (call)", f"${first['strike']:.2f}")
+        f3.metric("Prima Mid", f"${first['mid']:.2f}")
+        f4.metric("Resultado neto", f"${first['recovery_dollar']:.2f}",
+                   delta_color="normal")
+
+        if nxt:
+            st.markdown("##### 🥈 Siguiente vencimiento (para comparar)")
+            n1, n2, n3, n4 = st.columns(4)
+            n1.metric("Vencimiento", nxt["expiration"].strftime("%d %b %Y"), f"DTE {nxt['dte']}")
+            n2.metric("Strike ATM (call)", f"${nxt['strike']:.2f}")
+            n3.metric("Prima Mid", f"${nxt['mid']:.2f}")
+            n4.metric("Resultado neto", f"${nxt['recovery_dollar']:.2f}",
+                       delta=f"{nxt['recovery_dollar'] - first['recovery_dollar']:.2f} vs primero",
+                       delta_color="normal")
+            st.caption(
+                "ℹ️ Si el resultado neto del siguiente vencimiento es notablemente "
+                "mayor, puede compensar esperar una semana más a cambio de más prima."
+            )
+        else:
+            st.caption("ℹ️ No hay otro vencimiento disponible dentro del rango para comparar.")
+    else:
+        best = rr["best_effort"]
+        st.error(
+            f"🔴 Ningún vencimiento dentro de {RECOVERY_MAX_DTE} días cubre la "
+            f"pérdida completa con el ATM. El mejor disponible es "
+            f"**{best['expiration'].strftime('%d %b %Y')}** (DTE={best['dte']}), "
+            f"strike ATM ${best['strike']:.2f}, prima ${best['mid']:.2f} — "
+            f"resultado neto **${best['recovery_dollar']:.2f}** "
+            f"(sigues perdiendo ${-best['recovery_dollar']:.2f})."
+        )
+
+    # ── Candidatos ITM adicionales (conviven con el ATM) ──────────────
+    st.markdown("---")
+    st.markdown("##### 🎯 Alternativas ITM (más profundas, cubren la pérdida)")
+    st.caption(
+        "Strikes por debajo del precio actual (más delta, menos extrínseco) "
+        "que también cubren la pérdida, buscando en TODOS los vencimientos "
+        f"hasta {RECOVERY_MAX_DTE} días."
+    )
+    itm_best_dte = rr.get("itm_best_dte")
+    itm_max_delta = rr.get("itm_max_delta")
+
+    if itm_best_dte or itm_max_delta:
+        itm_col1, itm_col2 = st.columns(2)
+        with itm_col1:
+            st.markdown("**🥇 Mejor DTE (vencimiento más cercano que cubre)**")
+            if itm_best_dte:
+                ib1, ib2 = st.columns(2)
+                ib1.metric("Vencimiento", itm_best_dte["expiration"].strftime("%d %b %Y"),
+                           f"DTE {itm_best_dte['dte']}")
+                ib2.metric("Strike ITM", f"${itm_best_dte['strike']:.2f}")
+                ib3, ib4 = st.columns(2)
+                ib3.metric("Delta", f"{itm_best_dte['delta']:.3f}" if itm_best_dte["delta"] is not None else "—")
+                ib4.metric("Prima Mid", f"${itm_best_dte['mid']:.2f}")
+                st.metric("Resultado neto", f"${itm_best_dte['recovery_dollar']:.2f}")
+            else:
+                st.info("Sin candidato ITM que cubra la pérdida.")
+        with itm_col2:
+            st.markdown(f"**🥈 Mayor delta (más ITM), dentro de {RECOVERY_MAX_DTE} días**")
+            if itm_max_delta:
+                im1, im2 = st.columns(2)
+                im1.metric("Vencimiento", itm_max_delta["expiration"].strftime("%d %b %Y"),
+                           f"DTE {itm_max_delta['dte']}")
+                im2.metric("Strike ITM", f"${itm_max_delta['strike']:.2f}")
+                im3, im4 = st.columns(2)
+                im3.metric("Delta", f"{itm_max_delta['delta']:.3f}" if itm_max_delta["delta"] is not None else "—")
+                im4.metric("Prima Mid", f"${itm_max_delta['mid']:.2f}")
+                st.metric("Resultado neto", f"${itm_max_delta['recovery_dollar']:.2f}")
+            else:
+                st.info("Sin candidato ITM con delta calculable (IV no disponible).")
+    else:
+        st.info(
+            "Ningún strike ITM cubre la pérdida en ningún vencimiento analizado "
+            f"dentro de {RECOVERY_MAX_DTE} días."
+        )
+
+    with st.expander("📋 Ver todos los vencimientos analizados (ATM)"):
+        rows = [{
+            "Vencimiento": c["expiration"].strftime("%d %b %Y"),
+            "DTE": c["dte"],
+            "Strike ATM": f"${c['strike']:.2f}",
+            "Mid": f"${c['mid']:.2f}",
+            "IV %": f"{c['iv_pct']:.2f}%" if c["iv_pct"] else "—",
+            "OI": c["oi"],
+            "Volumen": c["volume"],
+            "Resultado neto": f"${c['recovery_dollar']:.2f}",
+            "¿Cubre?": "✅" if c["covers_loss"] else "❌",
+        } for c in rr["all_candidates"]]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    itm_all = rr.get("itm_all_candidates") or []
+    if itm_all:
+        with st.expander("📋 Ver todos los candidatos ITM que cubren la pérdida"):
+            itm_rows = [{
+                "Vencimiento": c["expiration"].strftime("%d %b %Y"),
+                "DTE": c["dte"],
+                "Strike ITM": f"${c['strike']:.2f}",
+                "Mid": f"${c['mid']:.2f}",
+                "Delta": f"{c['delta']:.3f}" if c["delta"] is not None else "—",
+                "IV %": f"{c['iv_pct']:.2f}%" if c["iv_pct"] else "—",
+                "OI": c["oi"],
+                "Volumen": c["volume"],
+                "Resultado neto": f"${c['recovery_dollar']:.2f}",
+            } for c in sorted(itm_all, key=lambda x: (x["dte"], -x["strike"]))]
+            st.dataframe(pd.DataFrame(itm_rows), use_container_width=True, hide_index=True)
 
 # ======================================================================
 # 5a. FASE 1 — precio diario + SMA30/SMA200 (paralela)
@@ -1600,115 +1703,8 @@ def main():
 
     st.divider()
 
-    # ── Calculadora de prima CSP ────────────────────────────────────────
-    st.markdown("### 🧮 Calculadora de Prima CSP")
-    st.caption(
-        "Para un ticker y vencimiento, calcula la prima mínima ($) que necesitas "
-        "para tu % objetivo, y te da el strike más seguro que ya lo cumple (o, si "
-        "ninguno lo cumple, el de mayor prima disponible para que veas cuánto te "
-        "falta). El precio del subyacente se pide en vivo cada vez que pulsas "
-        "Calcular."
-    )
-
-    cc1, cc2 = st.columns([2, 1.5])
-    with cc1:
-        calc_ticker_raw = st.text_input("Ticker", value="", placeholder="AAPL", key="calc_ticker_input")
-    with cc2:
-        calc_target_date = st.date_input(
-            "Fecha de vencimiento (exacta)", value=date.today() + timedelta(days=7),
-            min_value=date.today() + timedelta(days=1), max_value=date.today() + timedelta(days=180),
-            format="DD/MM/YYYY", key="calc_target_date_input",
-        )
-
-    cc3, cc4, cc5 = st.columns([1.5, 1.5, 1])
-    with cc3:
-        calc_premium_min = st.number_input(
-            "Prima mínima objetivo (%)", min_value=0.10, max_value=5.00,
-            value=1.00, step=0.05, key="calc_premium_min",
-        )
-    with cc4:
-        calc_premium_max = st.number_input(
-            "Prima máxima objetivo (%) — 0 = sin techo", min_value=0.0,
-            max_value=10.0, value=0.0, step=0.05, key="calc_premium_max",
-        )
-    with cc5:
-        st.markdown("&nbsp;")
-        calc_btn = st.button("🔄 Calcular", use_container_width=True, key="calc_btn")
-
-    if calc_btn:
-        calc_ticker = _clean_ticker(calc_ticker_raw)
-        if not calc_ticker:
-            st.error("⚠️ Escribe un ticker válido.")
-        else:
-            with st.spinner(f"Calculando {calc_ticker}..."):
-                st.session_state["csp_calc_result"] = build_csp_calculator(
-                    calc_ticker, calc_target_date, calc_premium_min,
-                    calc_premium_max if calc_premium_max > 0 else None,
-                )
-
-    cr = st.session_state.get("csp_calc_result")
-    if cr:
-        st.markdown(f"#### 📄 {cr['ticker']}")
-        if cr.get("error"):
-            st.warning(f"⚠️ {cr['error']}")
-        if cr.get("current_price") is not None and cr.get("strike") is not None:
-            m1, m2, m3 = st.columns(3)
-            m1.metric("💲 Precio en vivo", f"${cr['current_price']:.2f}")
-            m2.metric("🎯 Strike encontrado", f"${cr['strike']:.2f}")
-            m3.metric("🛡️ Distancia OTM", f"{cr['otm_pct']:.2f}%")
-
-            st.markdown("##### 💰 Prima: objetivo vs. real")
-            pm1, pm2 = st.columns(2)
-            pm1.metric(
-                "Prima mínima objetivo",
-                f"${cr['premium_min_dollar']:.2f}",
-                help=f"= {calc_premium_min:.2f}% del strike encontrado (no del precio actual).",
-            )
-            pm2.metric(
-                "Prima REAL (mid, ese strike)",
-                f"${cr['mid']:.2f} ({cr['premium_pct_real']:.2f}%)",
-                delta=f"{cr['mid'] - cr['premium_min_dollar']:.2f} vs objetivo",
-                delta_color="normal",
-            )
-
-            if cr["meets_target"]:
-                st.success(
-                    f"✅ El strike ${cr['strike']:.2f} cumple tu objetivo: cobras "
-                    f"${cr['mid']:.2f} ({cr['premium_pct_real']:.2f}%) frente a un "
-                    f"mínimo de ${cr['premium_min_dollar']:.2f} ({calc_premium_min:.2f}%) "
-                    f"— con {cr['otm_pct']:.2f}% de margen antes del strike."
-                )
-            else:
-                st.warning(
-                    f"⚠️ Ningún strike llega a tu objetivo ahora mismo. El de mayor "
-                    f"prima disponible es ${cr['strike']:.2f}, con ${cr['mid']:.2f} "
-                    f"({cr['premium_pct_real']:.2f}%) — por debajo del mínimo de "
-                    f"${cr['premium_min_dollar']:.2f} ({calc_premium_min:.2f}%)."
-                )
-
-            st.markdown("##### 💵 Cash para 1 contrato (100 acciones)")
-            ch1, ch2 = st.columns(2)
-            ch1.metric("Prima real (cash)", f"${cr['premium_cash_100']:.2f}")
-            ch2.metric("Capital requerido", f"${cr['capital_requerido']:,.2f}")
-
-            rows = [
-                {"Concepto": "Prima mínima objetivo ($)", "Valor": f"${cr['premium_min_dollar']:.2f}"},
-                {"Concepto": "Strike encontrado", "Valor": f"${cr['strike']:.2f}"},
-                {"Concepto": "Bid / Ask real", "Valor": f"${cr['bid']:.2f} / ${cr['ask']:.2f}"},
-                {"Concepto": "Mid real", "Valor": f"${cr['mid']:.2f}"},
-                {"Concepto": "Prima real (%)", "Valor": f"{cr['premium_pct_real']:.2f}%"},
-                {"Concepto": "Distancia OTM", "Valor": f"{cr['otm_pct']:.2f}%"},
-                {"Concepto": "Prima real — cash 1 contrato (100 acc.)", "Valor": f"${cr['premium_cash_100']:.2f}"},
-                {"Concepto": "Capital requerido (1 contrato)", "Valor": f"${cr['capital_requerido']:,.2f}"},
-            ]
-            if cr.get("premium_max_dollar") is not None:
-                rows.insert(1, {"Concepto": "Prima máxima objetivo ($)", "Valor": f"${cr['premium_max_dollar']:.2f}"})
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-    st.divider()
-
-    # ── Calculadora Recovery (covered call tras asignación de CSP) ─────
-    st.markdown("### 🔄 Calculadora Recovery")
+    # ── Calculadora Recovery Asignación (covered call tras asignación de CSP) ──
+    st.markdown("### 🔄 Calculadora Recovery Asignación")
     st.caption(
         f"Para un ticker que te acaban de asignar en un CSP: busca la covered call "
         f"ATM (mayor extrínseco) que recupera la pérdida frente a tu COSTE BASE "
@@ -1781,123 +1777,63 @@ def main():
             m4.metric("📉 Pérdida no realizada", f"${rr['loss_dollar']:.2f}",
                        delta=f"-{rr['loss_per_share']:.2f}/acción", delta_color="inverse")
 
-            if rr.get("meets_target"):
-                first = rr["first_covering"]
-                nxt = rr.get("next_after_first")
+            render_recovery_options(rr)
 
-                st.success(
-                    f"✅ Con vencimiento **{first['expiration'].strftime('%d %b %Y')}** "
-                    f"(DTE={first['dte']}) ya recuperas la pérdida completa."
+    st.divider()
+
+    # ── Calculadora Recovery Posición (acciones ya en cartera con pérdida) ──
+    st.markdown("### 🔄 Calculadora Recovery Posición")
+    st.caption(
+        f"Para acciones que YA tienes (100 acciones, 1 contrato) con una pérdida "
+        f"latente total en dólares: introduce el ticker y la pérdida en positivo "
+        f"(por ejemplo, 38). Tu coste base efectivo se calcula como precio en vivo "
+        f"+ pérdida/100, y se buscan las covered calls ATM e ITM que recuperan esa "
+        f"pérdida, con vencimiento a un máximo de {RECOVERY_MAX_DTE} días. Sin comisión."
+    )
+
+    pc1, pc2, pc3 = st.columns([2, 1.5, 1])
+    with pc1:
+        position_ticker_raw = st.text_input("Ticker", value="", placeholder="AAPL", key="position_ticker_input")
+    with pc2:
+        position_loss_total = st.number_input(
+            "Pérdida latente total ($, en positivo)", min_value=0.01, max_value=1000000.0,
+            value=38.0, step=1.0, key="position_loss_total",
+            help="Pérdida TOTAL de la posición (1 contrato = 100 acciones), no por "
+                 "acción. Ejemplo: 38 equivale a 0,38 $ por acción.",
+        )
+    with pc3:
+        st.markdown("&nbsp;")
+        position_btn = st.button("🔄 Buscar Recovery", use_container_width=True, key="position_btn")
+
+    if position_btn:
+        position_ticker = _clean_ticker(position_ticker_raw)
+        if not position_ticker:
+            st.error("⚠️ Escribe un ticker válido.")
+        else:
+            with st.spinner(f"Buscando recovery para {position_ticker}..."):
+                st.session_state["recovery_position_result"] = build_recovery_position_calculator(
+                    position_ticker, position_loss_total,
                 )
 
-                st.markdown("##### 🥇 Vencimiento más cercano que cubre la pérdida (ATM)")
-                f1, f2, f3, f4 = st.columns(4)
-                f1.metric("Vencimiento", first["expiration"].strftime("%d %b %Y"), f"DTE {first['dte']}")
-                f2.metric("Strike ATM (call)", f"${first['strike']:.2f}")
-                f3.metric("Prima Mid", f"${first['mid']:.2f}")
-                f4.metric("Resultado neto", f"${first['recovery_dollar']:.2f}",
-                           delta_color="normal")
-
-                if nxt:
-                    st.markdown("##### 🥈 Siguiente vencimiento (para comparar)")
-                    n1, n2, n3, n4 = st.columns(4)
-                    n1.metric("Vencimiento", nxt["expiration"].strftime("%d %b %Y"), f"DTE {nxt['dte']}")
-                    n2.metric("Strike ATM (call)", f"${nxt['strike']:.2f}")
-                    n3.metric("Prima Mid", f"${nxt['mid']:.2f}")
-                    n4.metric("Resultado neto", f"${nxt['recovery_dollar']:.2f}",
-                               delta=f"{nxt['recovery_dollar'] - first['recovery_dollar']:.2f} vs primero",
-                               delta_color="normal")
-                    st.caption(
-                        "ℹ️ Si el resultado neto del siguiente vencimiento es notablemente "
-                        "mayor, puede compensar esperar una semana más a cambio de más prima."
-                    )
-                else:
-                    st.caption("ℹ️ No hay otro vencimiento disponible dentro del rango para comparar.")
-            else:
-                best = rr["best_effort"]
-                st.error(
-                    f"🔴 Ningún vencimiento dentro de {RECOVERY_MAX_DTE} días cubre la "
-                    f"pérdida completa con el ATM. El mejor disponible es "
-                    f"**{best['expiration'].strftime('%d %b %Y')}** (DTE={best['dte']}), "
-                    f"strike ATM ${best['strike']:.2f}, prima ${best['mid']:.2f} — "
-                    f"resultado neto **${best['recovery_dollar']:.2f}** "
-                    f"(sigues perdiendo ${-best['recovery_dollar']:.2f})."
-                )
-
-            # ── Candidatos ITM adicionales (conviven con el ATM) ──────
-            st.markdown("---")
-            st.markdown("##### 🎯 Alternativas ITM (más profundas, cubren la pérdida)")
-            st.caption(
-                "Strikes por debajo del precio actual (más delta, menos extrínseco) "
-                "que también cubren la pérdida, buscando en TODOS los vencimientos "
-                f"hasta {RECOVERY_MAX_DTE} días."
+    pr = st.session_state.get("recovery_position_result")
+    if pr:
+        st.markdown(f"#### 📄 {pr['ticker']}")
+        if pr.get("error"):
+            st.warning(f"⚠️ {pr['error']}")
+        elif pr.get("current_price") is not None:
+            p1, p2, p3 = st.columns(3)
+            p1.metric("💲 Precio en vivo", f"${pr['current_price']:.2f}")
+            p2.metric(
+                "📐 Coste base efectivo", f"${pr['effective_cost_basis']:.2f}",
+                help=(
+                    f"= Precio en vivo (${pr['current_price']:.2f}) + pérdida total "
+                    f"(${pr['loss_dollar']:.2f}) / 100."
+                ),
             )
-            itm_best_dte = rr.get("itm_best_dte")
-            itm_max_delta = rr.get("itm_max_delta")
+            p3.metric("📉 Pérdida no realizada", f"${pr['loss_dollar']:.2f}",
+                       delta=f"-{pr['loss_per_share']:.2f}/acción", delta_color="inverse")
 
-            if itm_best_dte or itm_max_delta:
-                itm_col1, itm_col2 = st.columns(2)
-                with itm_col1:
-                    st.markdown("**🥇 Mejor DTE (vencimiento más cercano que cubre)**")
-                    if itm_best_dte:
-                        ib1, ib2 = st.columns(2)
-                        ib1.metric("Vencimiento", itm_best_dte["expiration"].strftime("%d %b %Y"),
-                                   f"DTE {itm_best_dte['dte']}")
-                        ib2.metric("Strike ITM", f"${itm_best_dte['strike']:.2f}")
-                        ib3, ib4 = st.columns(2)
-                        ib3.metric("Delta", f"{itm_best_dte['delta']:.3f}" if itm_best_dte["delta"] is not None else "—")
-                        ib4.metric("Prima Mid", f"${itm_best_dte['mid']:.2f}")
-                        st.metric("Resultado neto", f"${itm_best_dte['recovery_dollar']:.2f}")
-                    else:
-                        st.info("Sin candidato ITM que cubra la pérdida.")
-                with itm_col2:
-                    st.markdown(f"**🥈 Mayor delta (más ITM), dentro de {RECOVERY_MAX_DTE} días**")
-                    if itm_max_delta:
-                        im1, im2 = st.columns(2)
-                        im1.metric("Vencimiento", itm_max_delta["expiration"].strftime("%d %b %Y"),
-                                   f"DTE {itm_max_delta['dte']}")
-                        im2.metric("Strike ITM", f"${itm_max_delta['strike']:.2f}")
-                        im3, im4 = st.columns(2)
-                        im3.metric("Delta", f"{itm_max_delta['delta']:.3f}" if itm_max_delta["delta"] is not None else "—")
-                        im4.metric("Prima Mid", f"${itm_max_delta['mid']:.2f}")
-                        st.metric("Resultado neto", f"${itm_max_delta['recovery_dollar']:.2f}")
-                    else:
-                        st.info("Sin candidato ITM con delta calculable (IV no disponible).")
-            else:
-                st.info(
-                    "Ningún strike ITM cubre la pérdida en ningún vencimiento analizado "
-                    f"dentro de {RECOVERY_MAX_DTE} días."
-                )
-
-            with st.expander("📋 Ver todos los vencimientos analizados (ATM)"):
-                rows = [{
-                    "Vencimiento": c["expiration"].strftime("%d %b %Y"),
-                    "DTE": c["dte"],
-                    "Strike ATM": f"${c['strike']:.2f}",
-                    "Mid": f"${c['mid']:.2f}",
-                    "IV %": f"{c['iv_pct']:.2f}%" if c["iv_pct"] else "—",
-                    "OI": c["oi"],
-                    "Volumen": c["volume"],
-                    "Resultado neto": f"${c['recovery_dollar']:.2f}",
-                    "¿Cubre?": "✅" if c["covers_loss"] else "❌",
-                } for c in rr["all_candidates"]]
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-            itm_all = rr.get("itm_all_candidates") or []
-            if itm_all:
-                with st.expander("📋 Ver todos los candidatos ITM que cubren la pérdida"):
-                    itm_rows = [{
-                        "Vencimiento": c["expiration"].strftime("%d %b %Y"),
-                        "DTE": c["dte"],
-                        "Strike ITM": f"${c['strike']:.2f}",
-                        "Mid": f"${c['mid']:.2f}",
-                        "Delta": f"{c['delta']:.3f}" if c["delta"] is not None else "—",
-                        "IV %": f"{c['iv_pct']:.2f}%" if c["iv_pct"] else "—",
-                        "OI": c["oi"],
-                        "Volumen": c["volume"],
-                        "Resultado neto": f"${c['recovery_dollar']:.2f}",
-                    } for c in sorted(itm_all, key=lambda x: (x["dte"], -x["strike"]))]
-                    st.dataframe(pd.DataFrame(itm_rows), use_container_width=True, hide_index=True)
+            render_recovery_options(pr)
 
 def render_results():
     """Renderiza los resultados guardados en session_state (filtros
