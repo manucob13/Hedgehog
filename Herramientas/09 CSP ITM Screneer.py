@@ -716,6 +716,12 @@ def _recovery_search(out, ticker, current_price, effective_cost_basis,
             itm["dte"] = dte
         itm_all.extend(itm_candidates)
 
+    # Garantiza itm_pct en TODOS los candidatos ITM (por si la función de
+    # búsqueda no lo incluyera): evita KeyError al renderizar.
+    for itm in itm_all:
+        if "itm_pct" not in itm or itm["itm_pct"] is None:
+            itm["itm_pct"] = round((current_price - itm["strike"]) / current_price * 100, 2)
+
     if not candidates:
         out["error"] = "No se encontraron cadenas de calls válidas en ningún vencimiento disponible."
         return out
@@ -850,13 +856,15 @@ def build_recovery_position_calculator(ticker, loss_total_dollar, max_dte=RECOVE
 
 def _render_itm_card(c):
     """Tarjeta compacta de un candidato ITM (vencimiento, strike, % ITM,
-    delta, prima y resultado neto)."""
+    delta, prima y resultado neto). Tolerante a campos ausentes."""
     a1, a2 = st.columns(2)
     a1.metric("Vencimiento", c["expiration"].strftime("%d %b %Y"), f"DTE {c['dte']}")
     a2.metric("Strike ITM", f"${c['strike']:.2f}")
     b1, b2 = st.columns(2)
-    b1.metric("% ITM", f"{c['itm_pct']:.2f}%")
-    b2.metric("Delta", f"{c['delta']:.3f}" if c["delta"] is not None else "—")
+    itm_pct = c.get("itm_pct")
+    b1.metric("% ITM", f"{itm_pct:.2f}%" if itm_pct is not None else "—")
+    delta = c.get("delta")
+    b2.metric("Delta", f"{delta:.3f}" if delta is not None else "—")
     d1, d2 = st.columns(2)
     d1.metric("Prima Mid", f"${c['mid']:.2f}")
     d2.metric("Resultado neto", f"${c['recovery_dollar']:.2f}")
@@ -866,10 +874,10 @@ def _itm_rows(cands):
         "Vencimiento": c["expiration"].strftime("%d %b %Y"),
         "DTE": c["dte"],
         "Strike ITM": f"${c['strike']:.2f}",
-        "% ITM": f"{c['itm_pct']:.2f}%",
+        "% ITM": f"{c['itm_pct']:.2f}%" if c.get("itm_pct") is not None else "—",
         "Mid": f"${c['mid']:.2f}",
-        "Delta": f"{c['delta']:.3f}" if c["delta"] is not None else "—",
-        "IV %": f"{c['iv_pct']:.2f}%" if c["iv_pct"] else "—",
+        "Delta": f"{c['delta']:.3f}" if c.get("delta") is not None else "—",
+        "IV %": f"{c['iv_pct']:.2f}%" if c.get("iv_pct") else "—",
         "OI": c["oi"],
         "Volumen": c["volume"],
         "Resultado neto": f"${c['recovery_dollar']:.2f}",
