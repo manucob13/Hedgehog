@@ -29,6 +29,17 @@ CALCULADORAS DE RECOVERY (covered calls ATM / ITM):
 Ambas comparten el mismo núcleo de búsqueda (_recovery_search) y el mismo
 bloque de resultados (render_recovery_options).
 
+NOVEDAD — ITM MÁS PROFUNDO CON MARGEN:
+Además de las tarjetas ITM de referencia (mejor DTE y mayor delta, que
+solo exigen resultado neto >= 0), ahora se calculan dos selecciones con
+un MARGEN MÍNIMO (RECOVERY_MIN_MARGIN = $20, para cubrir comisiones y
+slippage):
+  1) ITM más cercano: el vencimiento más cercano (dentro de max_dte) que
+     tiene algún ITM con resultado neto >= margen; en ese vencimiento, el
+     strike más profundo.
+  2) ITM más profundo: el strike más bajo (mayor % ITM) de todos los
+     vencimientos dentro de max_dte con resultado neto >= margen.
+
 El % se calcula sobre el strike (= capital que reservas, strike x 100)
 porque es el capital que de verdad arriesgas en un cash secured put.
 
@@ -554,6 +565,10 @@ def find_put_candidates(puts_df, current_price, dte_calendar,
 
 RECOVERY_MAX_DTE = 60
 
+# Resultado neto mínimo ($ por contrato) que exigen las selecciones
+# "ITM más cercano" e "ITM más profundo", para cubrir comisiones y slippage.
+RECOVERY_MIN_MARGIN = 20.0
+
 def find_atm_call_candidate(calls_df, current_price):
     """De la cadena de calls de un vencimiento, elige el strike MÁS
     CERCANO al precio actual (ATM real) — el que concentra el mayor
@@ -590,8 +605,9 @@ def find_itm_covering_candidates(calls_df, current_price, cost_basis, commission
 
         (strike - cost_basis)*100 + prima*100 - commission_total >= 0
 
-    Devuelve la lista COMPLETA (cada uno con su delta Black-Scholes), o []
-    si ninguno cubre en este vencimiento."""
+    Devuelve la lista COMPLETA (cada uno con su delta Black-Scholes y su
+    % ITM = distancia del strike por debajo del precio), o [] si ninguno
+    cubre en este vencimiento."""
     try:
         c = calls_df.copy()
         c["bid"] = pd.to_numeric(c["bid"], errors="coerce").fillna(0)
@@ -611,9 +627,10 @@ def find_itm_covering_candidates(calls_df, current_price, cost_basis, commission
         out = []
         for _, row in c.iterrows():
             iv = float(row.get("impliedVolatility") or 0)
-            delta = bs_call_delta(current_price, float(row["strike"]), T_years, iv) if iv > 0 else None
+            strike = float(row["strike"])
+            delta = bs_call_delta(current_price, strike, T_years, iv) if iv > 0 else None
             out.append({
-                "strike": float(row["strike"]),
+                "strike": strike,
                 "mid": round(float(row["mid"]), 2),
                 "bid": round(float(row["bid"]), 2),
                 "ask": round(float(row["ask"]), 2),
@@ -621,6 +638,7 @@ def find_itm_covering_candidates(calls_df, current_price, cost_basis, commission
                 "volume": _safe_int(row.get("volume", 0)),
                 "iv_pct": round(iv * 100, 2) if iv > 0 else None,
                 "delta": delta,
+                "itm_pct": round((current_price - strike) / current_price * 100, 2),
                 "recovery_dollar": round(float(row["recovery_dollar"]), 2),
             })
         return out
@@ -637,9 +655,17 @@ def _recovery_search(out, ticker, current_price, effective_cost_basis,
        vencimiento más cercano que cubre), next_after_first, o
        best_effort si ninguno cubre. meets_target indica si alguno cubre.
 
-    2) ITM: itm_all_candidates, itm_best_dte (DTE más cercano; empate ->
-       strike más alto) e itm_max_delta (mayor delta), entre todos los ITM
-       que cubren.
+    2) ITM (referencia, resultado neto >= 0): itm_all_candidates,
+       itm_best_dte (DTE más cercano; empate -> strike más alto) e
+       itm_max_delta (mayor delta), entre todos los ITM que cubren.
+
+    3) ITM CON MARGEN (resultado neto >= RECOVERY_MIN_MARGIN):
+       - itm_margin_candidates: todos los ITM que cumplen el margen.
+       - itm_nearest_deep: vencimiento más cercano con algún ITM que
+         cumple el margen y, en él, el strike más profundo.
+       - itm_deepest: el strike más profundo (más bajo) de todos los
+         vencimientos; en empate, el vencimiento más cercano.
+       - itm_deepest_per_exp: el más profundo de cada vencimiento.
 
     El resultado neto de cada candidato es:
         (strike - coste_base_efectivo)*100 + prima*100 - commission_total
@@ -715,6 +741,34 @@ def _recovery_search(out, ticker, current_price, effective_cost_basis,
     else:
         out["itm_best_dte"] = None
         out["itm_max_delta"] = None
+
+    # ── ITM con margen mínimo (comisiones + slippage) ─────────────────
+    margin_list = [c for c in itm_all if c["recovery_dollar"] >= RECOVERY_MIN_MARGIN]
+    out["itm_margin_candidates"] = margin_list
+
+    if margin_list:
+        # Más profundo = strike más bajo. Empate: vencimiento más cercano.
+        out["itm_deepest"] = sorted(margin_list, key=lambda c: (c["strike"], c["dte"]))[0]
+
+        # Vencimiento más cercano con algún ITM válido; en él, el más profundo
+        # (empate: mayor resultado neto).
+        nearest_dte = min(c["dte"] for c in margin_list)
+        in_nearest = [c for c in margin_list if c["dte"] == nearest_dte]
+        out["itm_nearest_deep"] = sorted(
+            in_nearest, key=lambda c: (c["strike"], -c["recovery_dollar"])
+        )[0]
+
+        # El más profundo de CADA vencimiento (para la tabla desplegable)
+        per_exp = {}
+        for c in margin_list:
+            cur = per_exp.get(c["expiration"])
+            if cur is None or c["strike"] < cur["strike"]:
+                per_exp[c["expiration"]] = c
+        out["itm_deepest_per_exp"] = [per_exp[k] for k in sorted(per_exp.keys())]
+    else:
+        out["itm_deepest"] = None
+        out["itm_nearest_deep"] = None
+        out["itm_deepest_per_exp"] = []
 
     return out
 
@@ -794,10 +848,38 @@ def build_recovery_position_calculator(ticker, loss_total_dollar, max_dte=RECOVE
     return _recovery_search(out, ticker, current_price, effective_cost_basis,
                             0.0, max_dte)
 
+def _render_itm_card(c):
+    """Tarjeta compacta de un candidato ITM (vencimiento, strike, % ITM,
+    delta, prima y resultado neto)."""
+    a1, a2 = st.columns(2)
+    a1.metric("Vencimiento", c["expiration"].strftime("%d %b %Y"), f"DTE {c['dte']}")
+    a2.metric("Strike ITM", f"${c['strike']:.2f}")
+    b1, b2 = st.columns(2)
+    b1.metric("% ITM", f"{c['itm_pct']:.2f}%")
+    b2.metric("Delta", f"{c['delta']:.3f}" if c["delta"] is not None else "—")
+    d1, d2 = st.columns(2)
+    d1.metric("Prima Mid", f"${c['mid']:.2f}")
+    d2.metric("Resultado neto", f"${c['recovery_dollar']:.2f}")
+
+def _itm_rows(cands):
+    return [{
+        "Vencimiento": c["expiration"].strftime("%d %b %Y"),
+        "DTE": c["dte"],
+        "Strike ITM": f"${c['strike']:.2f}",
+        "% ITM": f"{c['itm_pct']:.2f}%",
+        "Mid": f"${c['mid']:.2f}",
+        "Delta": f"{c['delta']:.3f}" if c["delta"] is not None else "—",
+        "IV %": f"{c['iv_pct']:.2f}%" if c["iv_pct"] else "—",
+        "OI": c["oi"],
+        "Volumen": c["volume"],
+        "Resultado neto": f"${c['recovery_dollar']:.2f}",
+    } for c in cands]
+
 def render_recovery_options(rr):
     """Bloque de resultados COMÚN a ambas calculadoras de recovery: ATM
-    (primer vencimiento que cubre + siguiente), alternativas ITM y tablas
-    desplegables. Se llama solo si rr no tiene error."""
+    (primer vencimiento que cubre + siguiente), ITM más profundo con
+    margen, alternativas ITM de referencia y tablas desplegables. Se llama
+    solo si rr no tiene error."""
     if rr.get("meets_target"):
         first = rr["first_covering"]
         nxt = rr.get("next_after_first")
@@ -841,13 +923,50 @@ def render_recovery_options(rr):
             f"(sigues perdiendo ${-best['recovery_dollar']:.2f})."
         )
 
-    # ── Candidatos ITM adicionales (conviven con el ATM) ──────────────
+    # ── ITM MÁS PROFUNDO con margen mínimo ────────────────────────────
     st.markdown("---")
-    st.markdown("##### 🎯 Alternativas ITM (más profundas, cubren la pérdida)")
+    st.markdown(f"##### 🏆 ITM más profundo que cierra la pérdida (margen ≥ ${RECOVERY_MIN_MARGIN:.0f})")
+    st.caption(
+        f"Solo strikes ITM cuyo resultado neto es de al menos ${RECOVERY_MIN_MARGIN:.0f} "
+        f"(colchón para comisiones y slippage), buscando en TODOS los vencimientos "
+        f"hasta {RECOVERY_MAX_DTE} días. Más profundo = strike más bajo (mayor % ITM): "
+        f"más protección a la baja, con menos extrínseco y más probabilidad de asignación."
+    )
+    itm_nearest_deep = rr.get("itm_nearest_deep")
+    itm_deepest = rr.get("itm_deepest")
+
+    if itm_nearest_deep or itm_deepest:
+        deep_col1, deep_col2 = st.columns(2)
+        with deep_col1:
+            st.markdown("**📅 Más cercano (el más profundo del primer vencimiento válido)**")
+            if itm_nearest_deep:
+                _render_itm_card(itm_nearest_deep)
+            else:
+                st.info("Sin candidato ITM con ese margen.")
+        with deep_col2:
+            st.markdown(f"**⬇️ Más profundo dentro de {RECOVERY_MAX_DTE} días (cualquier vencimiento)**")
+            if itm_deepest:
+                _render_itm_card(itm_deepest)
+            else:
+                st.info("Sin candidato ITM con ese margen.")
+        if (itm_nearest_deep and itm_deepest
+                and itm_nearest_deep["expiration"] == itm_deepest["expiration"]
+                and itm_nearest_deep["strike"] == itm_deepest["strike"]):
+            st.caption("ℹ️ Ambas selecciones coinciden: el ITM más profundo está en el vencimiento más cercano.")
+    else:
+        st.info(
+            f"Ningún strike ITM alcanza un resultado neto de ${RECOVERY_MIN_MARGIN:.0f} "
+            f"en ningún vencimiento dentro de {RECOVERY_MAX_DTE} días."
+        )
+
+    # ── Candidatos ITM de referencia (resultado neto >= 0) ────────────
+    st.markdown("---")
+    st.markdown("##### 🎯 Alternativas ITM de referencia (resultado neto ≥ $0, sin margen)")
     st.caption(
         "Strikes por debajo del precio actual (más delta, menos extrínseco) "
-        "que también cubren la pérdida, buscando en TODOS los vencimientos "
-        f"hasta {RECOVERY_MAX_DTE} días."
+        "que cubren la pérdida, buscando en TODOS los vencimientos "
+        f"hasta {RECOVERY_MAX_DTE} días. Mejor DTE = vencimiento más cercano con el "
+        "strike más alto (el menos profundo); Mayor delta = el más ITM por delta."
     )
     itm_best_dte = rr.get("itm_best_dte")
     itm_max_delta = rr.get("itm_max_delta")
@@ -857,27 +976,13 @@ def render_recovery_options(rr):
         with itm_col1:
             st.markdown("**🥇 Mejor DTE (vencimiento más cercano que cubre)**")
             if itm_best_dte:
-                ib1, ib2 = st.columns(2)
-                ib1.metric("Vencimiento", itm_best_dte["expiration"].strftime("%d %b %Y"),
-                           f"DTE {itm_best_dte['dte']}")
-                ib2.metric("Strike ITM", f"${itm_best_dte['strike']:.2f}")
-                ib3, ib4 = st.columns(2)
-                ib3.metric("Delta", f"{itm_best_dte['delta']:.3f}" if itm_best_dte["delta"] is not None else "—")
-                ib4.metric("Prima Mid", f"${itm_best_dte['mid']:.2f}")
-                st.metric("Resultado neto", f"${itm_best_dte['recovery_dollar']:.2f}")
+                _render_itm_card(itm_best_dte)
             else:
                 st.info("Sin candidato ITM que cubra la pérdida.")
         with itm_col2:
             st.markdown(f"**🥈 Mayor delta (más ITM), dentro de {RECOVERY_MAX_DTE} días**")
             if itm_max_delta:
-                im1, im2 = st.columns(2)
-                im1.metric("Vencimiento", itm_max_delta["expiration"].strftime("%d %b %Y"),
-                           f"DTE {itm_max_delta['dte']}")
-                im2.metric("Strike ITM", f"${itm_max_delta['strike']:.2f}")
-                im3, im4 = st.columns(2)
-                im3.metric("Delta", f"{itm_max_delta['delta']:.3f}" if itm_max_delta["delta"] is not None else "—")
-                im4.metric("Prima Mid", f"${itm_max_delta['mid']:.2f}")
-                st.metric("Resultado neto", f"${itm_max_delta['recovery_dollar']:.2f}")
+                _render_itm_card(itm_max_delta)
             else:
                 st.info("Sin candidato ITM con delta calculable (IV no disponible).")
     else:
@@ -900,21 +1005,16 @@ def render_recovery_options(rr):
         } for c in rr["all_candidates"]]
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
+    per_exp = rr.get("itm_deepest_per_exp") or []
+    if per_exp:
+        with st.expander(f"📋 ITM más profundo de cada vencimiento (margen ≥ ${RECOVERY_MIN_MARGIN:.0f})"):
+            st.dataframe(pd.DataFrame(_itm_rows(per_exp)), use_container_width=True, hide_index=True)
+
     itm_all = rr.get("itm_all_candidates") or []
     if itm_all:
-        with st.expander("📋 Ver todos los candidatos ITM que cubren la pérdida"):
-            itm_rows = [{
-                "Vencimiento": c["expiration"].strftime("%d %b %Y"),
-                "DTE": c["dte"],
-                "Strike ITM": f"${c['strike']:.2f}",
-                "Mid": f"${c['mid']:.2f}",
-                "Delta": f"{c['delta']:.3f}" if c["delta"] is not None else "—",
-                "IV %": f"{c['iv_pct']:.2f}%" if c["iv_pct"] else "—",
-                "OI": c["oi"],
-                "Volumen": c["volume"],
-                "Resultado neto": f"${c['recovery_dollar']:.2f}",
-            } for c in sorted(itm_all, key=lambda x: (x["dte"], -x["strike"]))]
-            st.dataframe(pd.DataFrame(itm_rows), use_container_width=True, hide_index=True)
+        with st.expander("📋 Ver todos los candidatos ITM que cubren la pérdida (≥ $0)"):
+            sorted_all = sorted(itm_all, key=lambda x: (x["dte"], -x["strike"]))
+            st.dataframe(pd.DataFrame(_itm_rows(sorted_all)), use_container_width=True, hide_index=True)
 
 # ======================================================================
 # 5a. FASE 1 — precio diario + SMA30/SMA200 (paralela)
@@ -1712,9 +1812,10 @@ def main():
         f"vender el put y la comisión que pagaste), con vencimiento a un máximo de "
         f"{RECOVERY_MAX_DTE} días. Te da el primer vencimiento que ya cubre la "
         f"pérdida y el siguiente, por si esperar una semana más te conviene. Además "
-        f"muestra dos alternativas ITM (strikes por debajo del precio actual, con "
-        f"más delta) que también cubren la pérdida: la de vencimiento más cercano y "
-        f"la de mayor delta."
+        f"muestra el ITM más profundo que cierra la pérdida con un margen de "
+        f"${RECOVERY_MIN_MARGIN:.0f} (el del vencimiento más cercano y el más profundo "
+        f"de todos), y dos alternativas ITM de referencia (vencimiento más cercano y "
+        f"mayor delta)."
     )
 
     rc1, rc2 = st.columns([2, 1.5])
@@ -1788,7 +1889,8 @@ def main():
         f"latente total en dólares: introduce el ticker y la pérdida en positivo "
         f"(por ejemplo, 38). Tu coste base efectivo se calcula como precio en vivo "
         f"+ pérdida/100, y se buscan las covered calls ATM e ITM que recuperan esa "
-        f"pérdida, con vencimiento a un máximo de {RECOVERY_MAX_DTE} días. Sin comisión."
+        f"pérdida (con el ITM más profundo exigiendo ${RECOVERY_MIN_MARGIN:.0f} de "
+        f"margen), con vencimiento a un máximo de {RECOVERY_MAX_DTE} días. Sin comisión."
     )
 
     pc1, pc2, pc3 = st.columns([2, 1.5, 1])
