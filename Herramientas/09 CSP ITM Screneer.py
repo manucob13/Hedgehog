@@ -20,6 +20,16 @@ el checkbox, el comportamiento es el de antes (solo el más seguro).
   mismo ticker (coloreada según la prima %), el precio actual y una banda
   con el rango de strikes.
 
+NOVEDAD — SKEW25 (INFORMATIVO):
+Se calcula por ticker, a partir de la cadena del vencimiento objetivo (sin
+llamadas extra a la red): Skew25 = IV del put de delta -0.25 menos IV del
+call de delta +0.25, en puntos de volatilidad. Un skew alto significa que
+el mercado paga mucho más por protección bajista que por exposición
+alcista (el paper SSRN 7626643 lo asocia con peores retornos a 5 días).
+Aparece como columna en la tabla, en el detalle y en el CSV. En el
+post-filter hay un filtro OPCIONAL (OFF por defecto) que excluye los
+tickers del X% de skew más alto del escaneo.
+
 CALCULADORAS DE RECOVERY (covered calls ATM / ITM):
 - Recovery Asignación: tras una asignación de CSP (precio de asignación,
   prima cobrada y comisión).
@@ -49,7 +59,6 @@ FILTROS (activables/desactivables desde la UI salvo los marcados [fijo]):
 - Precio del subyacente: rango configurable
 - Precio > SMA30 [toggle, OFF por defecto]
 - Precio > SMA200 [toggle]
-- PCR < 1.0 (sesgo alcista/neutral) [toggle]
 - Sin earnings entre la fecha de ENTRADA y el vencimiento [toggle, ON]
 - Sin riesgo de hueco por dividendo [toggle, ON] — ver docstring de
   has_dividend_gap_risk()
@@ -61,7 +70,9 @@ FILTROS (activables/desactivables desde la UI salvo los marcados [fijo]):
 - Ticker con opciones semanales listadas [fijo]
 - Vencimiento = EXACTAMENTE la fecha objetivo, sin tolerancia [fijo]
 - Filtros adicionales POST-escaneo (sobre resultados ya obtenidos, sin
-  red): distancia OTM mínima, |delta| máximo, OI mínimo, volumen mínimo.
+  red): distancia OTM mínima, |delta| máximo, OI mínimo, volumen mínimo
+  y, opcionalmente, exclusión del X% de skew25 más alto.
+(El filtro PCR < 1.0 se eliminó: el PCR sigue como columna informativa.)
 
 RANKING: por OTM_% descendente por defecto (configurable en resultados).
 PRECIO DE OPCIÓN: midprice (bid+ask)/2 siempre.
@@ -120,6 +131,13 @@ SPREAD_MAX_PCT_OF_PREMIUM = 50.0
 _N = NormalDist()
 RISK_FREE_RATE = 0.045
 
+# Skew25: delta objetivo y tolerancia máxima para aceptar el strike más
+# cercano (la cadena semanal es poco densa, no siempre hay un 25δ exacto)
+SKEW_TARGET_DELTA = 0.25
+SKEW_DELTA_TOLERANCE = 0.08
+# Mínimo de tickers distintos para que el percentil de skew tenga sentido
+SKEW_MIN_TICKERS = 20
+
 # CSV público de Cboe "Available Weeklys"
 CBOE_WEEKLYS_CSV_URL = "https://www.cboe.com/available_weeklys/get_csv_download/"
 
@@ -138,7 +156,7 @@ REASON_ORDER = [
     "ok", "no_daily_data", "price_out_of_range", "sma_unavailable",
     "below_sma30", "below_sma200", "earnings_in_period",
     "no_expirations", "no_weekly_options",
-    "no_expiration_exact_dte", "no_puts_chain", "pcr_bearish",
+    "no_expiration_exact_dte", "no_puts_chain",
     "no_put_candidate", "dividend_risk", "error",
 ]
 
@@ -154,7 +172,6 @@ REASON_LABELS = {
     "no_weekly_options": "Sin cadencia de opciones semanales (Fase 2) [fijo]",
     "no_expiration_exact_dte": "Sin vencimiento EXACTO en la fecha objetivo (Fase 2) [fijo]",
     "no_puts_chain": "Cadena de puts vacía/no disponible en Alpaca (Fase 2)",
-    "pcr_bearish": "PCR >= 1.0 — sesgo bajista (Fase 2)",
     "no_put_candidate": "Sin strike OTM que cumpla prima/OI/bid/ask/spread (Fase 2)",
     "dividend_risk": "Riesgo de hueco por dividendo antes del vencimiento (Fase 2)",
     "error": "Excepción no controlada",
@@ -443,10 +460,13 @@ def has_dividend_gap_risk(ex_div_date, div_amount, entry_date, exp_date_obj, otm
     return False
 
 # ======================================================================
-# 3. PUT/CALL RATIO (sobre una cadena ya descargada, sin red)
+# 3. PUT/CALL RATIO (informativo) Y SKEW25 (sobre una cadena ya
+#    descargada, sin red)
 # ======================================================================
 
 def compute_pcr(calls, puts, current_price, range_pct=15):
+    """PCR de open interest en ±range_pct% del precio. Ya NO es un filtro:
+    solo se muestra como columna informativa."""
     try:
         lo = current_price * (1 - range_pct / 100)
         hi = current_price * (1 + range_pct / 100)
@@ -457,6 +477,57 @@ def compute_pcr(calls, puts, current_price, range_pct=15):
         if c_oi == 0:
             return None
         return round(p_oi / c_oi, 3)
+    except Exception:
+        return None
+
+def _iv_at_target_delta(chain_df, current_price, T_years, target_delta, is_put):
+    """IV de la opción cuya delta Black-Scholes está más cerca de
+    target_delta (en valor absoluto), solo si la distancia es <=
+    SKEW_DELTA_TOLERANCE. Usa únicamente opciones realmente cotizadas
+    (bid>0, ask>0) con IV válida. Devuelve None si no hay ninguna."""
+    try:
+        c = chain_df.copy()
+        c["bid"] = pd.to_numeric(c["bid"], errors="coerce").fillna(0)
+        c["ask"] = pd.to_numeric(c["ask"], errors="coerce").fillna(0)
+        c["iv"] = pd.to_numeric(c["impliedVolatility"], errors="coerce")
+        c = c[(c["bid"] > 0) & (c["ask"] > 0) & (c["iv"] > 0)]
+        if c.empty:
+            return None
+
+        fn = bs_put_delta if is_put else bs_call_delta
+        c["delta_bs"] = [
+            fn(current_price, float(k), T_years, float(iv))
+            for k, iv in zip(c["strike"], c["iv"])
+        ]
+        c = c.dropna(subset=["delta_bs"])
+        if c.empty:
+            return None
+
+        c["dist"] = (c["delta_bs"].abs() - target_delta).abs()
+        best = c.sort_values("dist", ascending=True).iloc[0]
+        if float(best["dist"]) > SKEW_DELTA_TOLERANCE:
+            return None
+        return float(best["iv"])
+    except Exception:
+        return None
+
+def compute_skew25(calls, puts, current_price, dte_calendar):
+    """Skew25 = IV del put de delta -0.25 menos IV del call de delta +0.25,
+    en PUNTOS de volatilidad (p. ej. 4.5 = 4.5 puntos). Skew alto = el
+    mercado paga más por protección bajista que por exposición alcista.
+    Devuelve None si falta cualquiera de las dos patas (el dato ausente NO
+    es una señal de riesgo y no se usa para excluir)."""
+    try:
+        if calls is None or calls.empty or puts is None or puts.empty:
+            return None
+        T_years = dte_calendar / 365.0
+        if T_years <= 0:
+            return None
+        iv_put = _iv_at_target_delta(puts, current_price, T_years, SKEW_TARGET_DELTA, is_put=True)
+        iv_call = _iv_at_target_delta(calls, current_price, T_years, SKEW_TARGET_DELTA, is_put=False)
+        if iv_put is None or iv_call is None:
+            return None
+        return round((iv_put - iv_call) * 100, 2)
     except Exception:
         return None
 
@@ -1067,9 +1138,8 @@ def phase2_options_filter(survivor, params):
         if puts is None or puts.empty:
             return None, "no_puts_chain"
 
+        # PCR: solo informativo (ya no filtra)
         pcr = compute_pcr(calls, puts, current_price) if calls is not None and not calls.empty else None
-        if params["use_pcr_filter"] and pcr is not None and pcr >= 1.0:
-            return None, "pcr_bearish"
 
         candidates = find_put_candidates(
             puts, current_price, dte,
@@ -1102,6 +1172,10 @@ def phase2_options_filter(survivor, params):
             if max_n and max_n > 0:
                 candidates = candidates[:max_n]
 
+        # Skew25 del ticker (una vez por ticker, sin red: usa la cadena ya
+        # descargada). Informativo; se filtra solo si se activa en resultados.
+        skew25 = compute_skew25(calls, puts, current_price, dte)
+
         rows = []
         for cand in candidates:
             iv_rv_ratio = (
@@ -1124,6 +1198,7 @@ def phase2_options_filter(survivor, params):
                 "IV_%": cand["iv_pct"],
                 "RV_%": survivor["rv"],
                 "IV_RV": iv_rv_ratio,
+                "Skew25": skew25,
                 "OI": cand["oi"],
                 "Volumen": cand["volume"],
                 "Spread_%": cand["spread_pct"],
@@ -1635,7 +1710,6 @@ def main():
         use_sma200_filter = st.checkbox("Precio > SMA200", value=True,
                                          help="Exige que el precio esté por encima de la media móvil de 200 sesiones "
                                               "(tendencia de fondo alcista).")
-        use_pcr_filter = st.checkbox("PCR < 1.0 (sesgo alcista/neutral)", value=True)
         use_earnings_filter = st.checkbox(
             "Excluir earnings entre entrada y vencimiento", value=True,
             help="Descarta el ticker si tiene earnings conocidos entre la 'Fecha de "
@@ -1673,7 +1747,6 @@ def main():
         "entry_date": entry_date,
         "use_sma30_filter": use_sma30_filter,
         "use_sma200_filter": use_sma200_filter,
-        "use_pcr_filter": use_pcr_filter,
         "use_earnings_filter": use_earnings_filter,
         "use_dividend_filter": use_dividend_filter,
         "diagnostic_mode": diagnostic_mode,
@@ -1907,20 +1980,25 @@ def main():
 
 def render_results():
     """Renderiza los resultados guardados en session_state (filtros
-    post-escaneo, métricas, tabs de ranking/detalle/gráficos). Ahora hay
-    VARIAS filas por ticker (una por strike)."""
+    post-escaneo, métricas, tabs de ranking/detalle/gráficos). Hay VARIAS
+    filas por ticker (una por strike)."""
     st.markdown("### 📊 Resultados")
 
     if "results" not in st.session_state or st.session_state["results"].empty:
         st.info("👆 Configura los parámetros y pulsa **INICIAR ESCANEO**.")
         return
 
-    df_all = st.session_state["results"]
+    df_all = st.session_state["results"].copy()
     ts = st.session_state["scan_ts"]
+
+    # Compatibilidad: resultados de un escaneo anterior a esta versión no
+    # traen la columna Skew25.
+    if "Skew25" not in df_all.columns:
+        df_all["Skew25"] = np.nan
 
     st.markdown("#### 🔧 Filtros adicionales sobre resultados")
     st.caption("Se aplican sobre los strikes ya encontrados — no relanzan la descarga de datos.")
-    colrf1, colrf2, colrf3, colrf4 = st.columns(4)
+    colrf1, colrf2, colrf3, colrf4, colrf5 = st.columns(5)
     with colrf1:
         use_min_otm_filter = st.checkbox("Distancia OTM mínima (%)", value=True)
         min_otm_value = st.number_input("Valor mínimo (%)", min_value=0.0, max_value=100.0, value=10.0, step=0.5,
@@ -1938,6 +2016,18 @@ def render_results():
         use_min_vol_post_filter = st.checkbox("Volumen mínimo", value=False)
         min_vol_post_value = st.number_input("Valor mínimo", min_value=0, max_value=100000, value=10, step=10,
                                               disabled=not use_min_vol_post_filter, key="min_vol_post_value")
+    with colrf5:
+        use_skew_filter = st.checkbox(
+            "Excluir skew25 alto", value=False,
+            help="OFF por defecto: Skew25 es informativo. Activado: excluye los "
+                 "tickers del X% de skew25 más alto de este escaneo (percentil "
+                 "calculado sobre tickers distintos, no sobre filas). Skew25 = IV "
+                 f"put 25δ − IV call 25δ, en puntos. Solo se aplica con al menos "
+                 f"{SKEW_MIN_TICKERS} tickers con skew calculable; los tickers sin "
+                 "skew calculable no se excluyen.",
+        )
+        skew_top_pct = st.number_input("Top X% a excluir", min_value=5, max_value=50, value=20, step=5,
+                                        disabled=not use_skew_filter, key="skew_top_pct")
 
     df = df_all.copy()
     if use_min_otm_filter:
@@ -1949,8 +2039,32 @@ def render_results():
     if use_min_vol_post_filter:
         df = df[df["Volumen"] >= min_vol_post_value]
 
-    if use_min_otm_filter or use_max_delta_filter or use_min_oi_post_filter or use_min_vol_post_filter:
+    skew_applied = False
+    skew_msg = None
+    if use_skew_filter:
+        # Percentil sobre TICKERS distintos del escaneo completo (df_all),
+        # para que el corte no dependa de los demás filtros de esta fila.
+        per_ticker = df_all.groupby("Ticker")["Skew25"].first().dropna()
+        if len(per_ticker) < SKEW_MIN_TICKERS:
+            skew_msg = (
+                f"ℹ️ Filtro de skew NO aplicado: solo hay {len(per_ticker)} tickers con "
+                f"skew calculable (mínimo {SKEW_MIN_TICKERS}) y con tan pocos el "
+                f"percentil no es significativo."
+            )
+        else:
+            cutoff = float(per_ticker.quantile(1 - skew_top_pct / 100))
+            excluded = set(per_ticker[per_ticker >= cutoff].index)
+            df = df[~df["Ticker"].isin(excluded)]
+            skew_applied = True
+            skew_msg = (
+                f"ℹ️ Skew25: excluidos **{len(excluded)}** de {len(per_ticker)} tickers "
+                f"(skew25 ≥ {cutoff:.2f} puntos, top {int(skew_top_pct)}% del escaneo)."
+            )
+
+    if use_min_otm_filter or use_max_delta_filter or use_min_oi_post_filter or use_min_vol_post_filter or skew_applied:
         st.caption(f"ℹ️ Mostrando **{len(df)}** de {len(df_all)} strikes tras aplicar estos filtros.")
+    if skew_msg:
+        st.caption(skew_msg)
 
     st.divider()
 
@@ -1991,7 +2105,7 @@ def render_results():
         cols_show = [
             "Rank", "Ticker", "Precio", "Strike", "OTM_%", "Retorno_Capital_%",
             "Prima_Mid", "Bid", "Ask", "Capital_Requerido",
-            "Delta", "DTE", "Vencimiento", "IV_%", "RV_%", "IV_RV",
+            "Delta", "DTE", "Vencimiento", "IV_%", "RV_%", "IV_RV", "Skew25",
             "OI", "Volumen", "Spread_%", "SMA30", "Dist_SMA30_%",
             "SMA200", "Dist_SMA200_%", "PCR",
         ]
@@ -2047,6 +2161,7 @@ def render_results():
             row = tdf[tdf["Strike"] == selected_strike].iloc[0]
 
         if row is not None:
+            skew_txt = f"{row['Skew25']:.2f} pts" if pd.notna(row.get("Skew25")) else "n/d"
             st.markdown(f"## {selected} — Cash Secured Put (K ${row['Strike']})")
             col_a, col_b = st.columns(2)
             with col_a:
@@ -2070,11 +2185,12 @@ def render_results():
 |---|---|
 | 💵 Capital requerido (1 contrato) | **${row['Capital_Requerido']:,.2f}** |
 | 📈 IV / RV | {row['IV_%']}% / {row['RV_%']}% (ratio: {row['IV_RV']}) |
+| 📉 Skew25 (put 25δ − call 25δ) | {skew_txt} |
 | 💧 OI / Volumen | {row['OI']:,} / {row['Volumen']:,} |
 | 〰️ Spread bid-ask | {row['Spread_%']}% |
 | 📐 SMA30 | {row['SMA30']} ({row['Dist_SMA30_%']}%) |
 | 📐 SMA200 | {row['SMA200']} ({row['Dist_SMA200_%']}%) |
-| 🗳️ PCR | {row['PCR']} |
+| 🗳️ PCR (informativo) | {row['PCR']} |
 """)
             st.markdown("---")
             st.markdown("### 💡 Interpretación")
