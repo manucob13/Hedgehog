@@ -60,6 +60,13 @@ weic_calculos = st.Page(
     icon="🦉",
     url_path="weic-calculos"
 )
+# --- Sección ESTRATEGIAS → BUT ---
+but_elementos = st.Page(
+    "Estrategias/BUT/00 BUT Elementos.py", 
+    title="Elementos", 
+    icon="🦋",
+    url_path="but-elementos"
+)
 # --- Sección CARTERA ---
 cartera_panel = st.Page(
     "Cartera/00 Panel.py", 
@@ -151,9 +158,10 @@ screener_CSP = st.Page(
 )
 # 3. CREACIÓN DE LA NAVEGACIÓN JERÁRQUICA
 pg = st.navigation({
-    "Time Edge": [te_signals, te_op_21dte,te_op_60dte],
-    "Triple Calendar": [tc_signals, tc_calculos,tc_ajustes],
+    "Time Edge": [te_signals, te_op_21dte, te_op_60dte],
+    "Triple Calendar": [tc_signals, tc_calculos, tc_ajustes],
     "WEIC": [weic_calculos],
+    "BUT": [but_elementos],
     "OPCIONES": [
         cartera_panel,
         cartera_calendario,
