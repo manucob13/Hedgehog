@@ -156,6 +156,12 @@ screener_CSP = st.Page(
     icon="🛡️",
     url_path="screener-csp"
 )
+cc_stock_repair = st.Page(
+    "Herramientas/10 CC Stock Repair.py",
+    title="CC Stock Repair",
+    icon="🛠️",
+    url_path="cc-stock-repair"
+)
 # 3. CREACIÓN DE LA NAVEGACIÓN JERÁRQUICA
 pg = st.navigation({
     "Time Edge": [te_signals, te_op_21dte, te_op_60dte],
@@ -180,7 +186,8 @@ pg = st.navigation({
         regime_hmm,
         screener_CC,
         screener_ITM,
-        screener_CSP
+        screener_CSP,
+        cc_stock_repair
     ]
 })
 # 4. EJECUCIÓN
