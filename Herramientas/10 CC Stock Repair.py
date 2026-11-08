@@ -1,14 +1,16 @@
 """
 CC Stock Repair
 ===============
-Objetivo: bajar el coste base (CB) de acciones en recuperación vendiendo
-covered calls y elegir el STRIKE (y ver su delta) a partir de un RATIO
-OBJETIVO que fijas tú (por defecto 50 %, editable en cualquier momento).
+Objetivo: analizar covered calls normalizando la curva de ratios desde el
+ratio ATM actual que introduces. Se muestran tres alternativas: principal,
+delta cercana a 0.20 y compromiso entre prima y ratio objetivo.
 
 QUÉ ES EL RATIO
     ratio = coste de recompra / prima cobrada
-Es el equivalente a tu ratio ajustes/primas del Excel (hoy 61 %). Aquí se
-ESTIMA antes de operar, para cada strike, así:
+El ratio actual de tu Excel (por ejemplo, 61 %) se introduce como ancla ATM.
+A partir de ese valor, el modelo estima cómo cambia el ratio al subir cada
+strike. El ratio normalizado no es un cálculo contable del Excel, sino una
+curva estimada calibrada al valor actual que introduces:
 
   - PRIMA: mid (bid+ask)/2 de la call en Alpaca. Ya lleva dentro la IV que
     cobra el mercado.
@@ -27,11 +29,14 @@ VOLATILIDAD REAL (dos fuentes, eliges cuál usar en el cálculo):
     últimos 20 cierres, anualizada.
   Las dos se muestran siempre para que puedas contrastarlas.
 
-RECOMENDACIÓN
-    El strike MÁS CERCANO AL ATM (más prima) cuyo ratio estimado sea
-    <= ratio objetivo. Si ninguno lo cumple, se muestra el de menor ratio y
-    se avisa. Cambiar el ratio objetivo recalcula la recomendación al
-    instante, sin volver a descargar datos.
+NORMALIZACIÓN Y RECOMENDACIONES
+    El ratio actual introducido se asigna al strike cotizado más cercano al
+    precio spot (ATM). Los ratios del resto de strikes se escalan en relación
+    con el ratio bruto del modelo en ATM. Se muestran tres alternativas:
+      1) Principal: strike más cercano al ATM que alcanza el objetivo; si
+         ninguno lo alcanza, fallback a delta cercana a 0.20.
+      2) Conservadora: delta más cercana a 0.20.
+      3) Compromiso: mayor prima dentro del margen configurable sobre objetivo.
 
 FECHAS
     Fecha de entrada y de salida (vencimiento). DTE = días naturales entre
@@ -90,6 +95,7 @@ _N = NormalDist()
 RISK_FREE_RATE = 0.045        # solo para el delta Black-Scholes de reserva
 TRADING_DAYS = 252
 DEFAULT_TARGET_RATIO = 50.0   # % — ratio objetivo por defecto
+DEFAULT_CURRENT_RATIO = 61.0
 DEFAULT_ATR_PERIOD = 14
 DEFAULT_ATR_TO_SIGMA = 1.5    # ATR ≈ 1.5 × desviación típica diaria (ajustable)
 DEFAULT_MAX_OTM_PCT = 25.0    # strikes hasta +25 % sobre el precio
@@ -144,6 +150,39 @@ def parse_cost_basis(raw):
             continue
         if t and val > 0:
             out[t] = val
+    return out
+
+
+def parse_ratio_input(raw, tickers, default=61.0):
+    """
+    Admite un ratio único para todos los tickers ("61") o valores por ticker
+    ("SOFI=61, HOOD=58"). Devuelve {ticker: ratio_pct}.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return {t: float(default) for t in tickers}
+
+    if "=" not in text:
+        try:
+            value = float(text.replace("%", "").strip())
+            if 0 < value <= 300:
+                return {t: value for t in tickers}
+        except Exception:
+            pass
+        return {}
+
+    out = {}
+    for part in text.replace(";", ",").split(","):
+        if "=" not in part:
+            continue
+        ticker, value = part.split("=", 1)
+        ticker = _clean_ticker(ticker)
+        try:
+            ratio = float(value.replace("%", "").strip())
+        except Exception:
+            continue
+        if ticker and 0 < ratio <= 300:
+            out[ticker] = ratio
     return out
 
 # ======================================================================
@@ -233,77 +272,101 @@ def bs_call_delta(S, K, T_years, sigma, r=RISK_FREE_RATE):
 # 3. TABLA DE STRIKES: prima, delta, coste esperado, ratio y neto
 # ======================================================================
 
-def build_strike_table(calls, S, dte_cal, n_td, sigma_real, p, cost_basis=None):
-    """A partir de la cadena de calls del vencimiento, devuelve
-    (DataFrame de strikes, IV del ATM en %). Devuelve (None, None) si no hay
-    calls cotizadas en el rango."""
+
+def build_strike_table(calls, S, dte_cal, n_td, sigma_real, p,
+                       cost_basis=None, current_ratio=61.0):
+    """
+    Calcula ratios brutos por strike y los NORMALIZA desde el ATM:
+        ratio_normalizado(K) = ratio_modelo(K) / ratio_modelo(ATM) * ratio_actual
+    Así, el strike ATM queda anclado exactamente al ratio actual introducido
+    por el usuario. La selección posterior se hace solo entre strikes ATM/OTM.
+    """
     try:
         c = calls.copy().reset_index(drop=True)
         c["strike"] = pd.to_numeric(c["strike"], errors="coerce")
         c = c.dropna(subset=["strike"])
+
         for col in ("bid", "ask"):
             c[col] = pd.to_numeric(c[col], errors="coerce").fillna(0)
+
         c["mid"] = (c["bid"] + c["ask"]) / 2
         c = c[(c["bid"] > 0) & (c["ask"] > 0) & (c["mid"] > 0)].reset_index(drop=True)
         if c.empty:
-            return None, None
+            return None, None, None
 
         if "impliedVolatility" in c.columns:
             c["iv"] = pd.to_numeric(c["impliedVolatility"], errors="coerce")
         else:
             c["iv"] = np.nan
 
-        # IV del ATM: strike más cercano al precio con IV válida
         with_iv = c[c["iv"] > 0]
         if with_iv.empty:
             iv_atm = None
         else:
-            idx = (with_iv["strike"] - S).abs().idxmin()
-            iv_atm = float(with_iv.loc[idx, "iv"]) * 100
+            idx_iv = (with_iv["strike"] - S).abs().idxmin()
+            iv_atm = float(with_iv.loc[idx_iv, "iv"]) * 100
 
-        # Rango de strikes a evaluar
-        lo = S * (1 - ATM_LOOKBACK_PCT / 100)
-        hi = S * (1 + p["max_otm_pct"] / 100)
-        c = c[(c["strike"] >= lo) & (c["strike"] <= hi)].reset_index(drop=True)
-        if c.empty:
-            return None, iv_atm
+        c["oi"] = (
+            pd.to_numeric(c["openInterest"], errors="coerce").fillna(0)
+            if "openInterest" in c.columns else 0
+        )
+        c["vol"] = (
+            pd.to_numeric(c["volume"], errors="coerce").fillna(0)
+            if "volume" in c.columns else 0
+        )
 
-        c["oi"] = pd.to_numeric(c["openInterest"], errors="coerce").fillna(0) if "openInterest" in c.columns else 0
-        c["vol"] = pd.to_numeric(c["volume"], errors="coerce").fillna(0) if "volume" in c.columns else 0
-
-        # Delta: Alpaca si la cadena lo trae; si no, Black-Scholes con la IV del strike
         if "delta" in c.columns:
             d_alp = pd.to_numeric(c["delta"], errors="coerce")
             d_alp = d_alp.where((d_alp > 0) & (d_alp <= 1))
         else:
             d_alp = pd.Series(np.nan, index=c.index)
+
         T_delta = max(dte_cal, 1) / 365.0
         d_bs = pd.Series(
             [
-                _nz(bs_call_delta(S, float(k), T_delta, float(v))) if (pd.notna(v) and v > 0) else np.nan
+                _nz(bs_call_delta(S, float(k), T_delta, float(v)))
+                if pd.notna(v) and v > 0 else np.nan
                 for k, v in zip(c["strike"], c["iv"])
             ],
             index=c.index,
             dtype=float,
         )
         c["delta"] = d_alp.where(d_alp.notna(), d_bs)
-        c["delta_src"] = np.where(d_alp.notna(), "Alpaca", np.where(d_bs.notna(), "BS", "—"))
+        c["delta_src"] = np.where(
+            d_alp.notna(), "Alpaca",
+            np.where(d_bs.notna(), "BS", "—")
+        )
 
-        # Coste esperado de recompra con la volatilidad REAL, ratio y neto
         T_td = max(n_td, 1) / TRADING_DAYS
-        c["coste"] = [bs_call_price(S, float(k), T_td, sigma_real) for k in c["strike"]]
-        c["ratio"] = c["coste"] / c["mid"] * 100
+        c["coste"] = [
+            bs_call_price(S, float(k), T_td, sigma_real)
+            for k in c["strike"]
+        ]
+        c["ratio_raw"] = c["coste"] / c["mid"] * 100
         c["neto"] = c["mid"] - c["coste"]
         c["spread_pct"] = (c["ask"] - c["bid"]) / c["mid"] * 100
 
-        # Filtros de liquidez opcionales
+        # Ancla: strike cotizado más cercano al precio spot actual.
+        atm_idx = (c["strike"] - S).abs().idxmin()
+        atm_raw_ratio = float(c.loc[atm_idx, "ratio_raw"])
+        if not np.isfinite(atm_raw_ratio) or atm_raw_ratio <= 0:
+            return None, iv_atm, None
+
+        c["ratio"] = (c["ratio_raw"] / atm_raw_ratio) * float(current_ratio)
+
+        # Limitar el universo de strikes. Conservamos algo de ITM en la tabla
+        # para contexto, pero las recomendaciones solo usan ATM/OTM.
+        lo = S * (1 - ATM_LOOKBACK_PCT / 100)
+        hi = S * (1 + p["max_otm_pct"] / 100)
+        c = c[(c["strike"] >= lo) & (c["strike"] <= hi)].copy()
+
         if p["use_oi_filter"]:
             c = c[c["oi"] >= p["min_oi"]]
         if p["use_spread_filter"]:
             c = c[c["spread_pct"] <= p["spread_max_pct"]]
         c = c.reset_index(drop=True)
         if c.empty:
-            return None, iv_atm
+            return None, iv_atm, atm_raw_ratio
 
         out = pd.DataFrame({
             "Strike": c["strike"].round(2),
@@ -318,6 +381,7 @@ def build_strike_table(calls, S, dte_cal, n_td, sigma_real, p, cost_basis=None):
             "IV_%": (c["iv"] * 100).round(1),
             "Recompra_esp": c["coste"].round(2),
             "Neto_esp": c["neto"].round(2),
+            "Ratio_modelo_%": c["ratio_raw"].round(1),
             "Ratio_est_%": c["ratio"].round(1),
             "OI": c["oi"].astype(int),
             "Volumen": c["vol"].astype(int),
@@ -326,26 +390,81 @@ def build_strike_table(calls, S, dte_cal, n_td, sigma_real, p, cost_basis=None):
         if cost_basis:
             out["Prima/CB_%"] = (c["mid"] / cost_basis * 100).round(2)
             out["Bajo_CB"] = np.where(c["strike"] < cost_basis, "⚠️", "")
+
         out = out.sort_values("Strike").reset_index(drop=True)
-        return out, iv_atm
+        return out, iv_atm, atm_raw_ratio
     except Exception as e:
         logger.warning(f"[strike_table] {e}")
-        return None, None
+        return None, None, None
 
-def select_recommendation(df, target_ratio):
-    """Strike más cercano al ATM (el de menor strike) cuyo ratio estimado sea
-    <= objetivo. Si ninguno cumple, el de menor ratio. Devuelve (fila, cumple)."""
-    ok = df[df["Ratio_est_%"] <= target_ratio]
-    if not ok.empty:
-        return ok.sort_values("Strike").iloc[0], True
-    return df.sort_values(["Ratio_est_%", "Strike"]).iloc[0], False
 
-# ======================================================================
+def _otm_candidates(df):
+    """Solo strikes ATM o superiores; ordenados desde el ATM hacia arriba."""
+    x = df[pd.to_numeric(df["OTM_%"], errors="coerce") >= -0.01].copy()
+    return x.sort_values("Strike").reset_index(drop=True)
+
+
+def select_recommendations(df, target_ratio, compromise_buffer=10.0):
+    """
+    Devuelve tres alternativas:
+      1) Principal: strike más cercano al ATM que cumple el ratio objetivo.
+         Si ninguno cumple, fallback al delta más cercano a 0.20.
+      2) Conservadora: delta más cercano a 0.20.
+      3) Compromiso: mayor prima dentro de target + buffer, priorizando
+         opciones que quedan ligeramente por encima del objetivo.
+    """
+    candidates = _otm_candidates(df)
+    if candidates.empty:
+        candidates = df.sort_values("Strike").copy()
+
+    delta_rows = candidates[pd.to_numeric(candidates["Delta"], errors="coerce").notna()].copy()
+    if not delta_rows.empty:
+        delta_rows["_delta_gap"] = (delta_rows["Delta"] - 0.20).abs()
+        conservative = delta_rows.sort_values(
+            ["_delta_gap", "Strike"], ascending=[True, True]
+        ).iloc[0].drop(labels=["_delta_gap"])
+    else:
+        conservative = candidates.sort_values("Strike", ascending=False).iloc[0]
+
+    qualifying = candidates[candidates["Ratio_est_%"] <= target_ratio]
+    if not qualifying.empty:
+        principal = qualifying.sort_values("Strike").iloc[0]
+        principal_meets = True
+    else:
+        principal = conservative
+        principal_meets = False
+
+    slightly_above = candidates[
+        (candidates["Ratio_est_%"] > target_ratio)
+        & (candidates["Ratio_est_%"] <= target_ratio + compromise_buffer)
+    ]
+    if not slightly_above.empty:
+        # Dentro del margen, prima máxima; desempate por ratio más bajo.
+        compromise = slightly_above.sort_values(
+            ["Prima_Mid", "Ratio_est_%"], ascending=[False, True]
+        ).iloc[0]
+    else:
+        # Si no hay ninguno en el margen, elige el ratio más cercano al objetivo.
+        # En empate, prioriza la prima más alta.
+        candidates = candidates.copy()
+        candidates["_ratio_gap"] = (candidates["Ratio_est_%"] - target_ratio).abs()
+        compromise = candidates.sort_values(
+            ["_ratio_gap", "Prima_Mid"], ascending=[True, False]
+        ).iloc[0].drop(labels=["_ratio_gap"])
+
+    return {
+        "principal": principal,
+        "principal_meets": principal_meets,
+        "conservative": conservative,
+        "compromise": compromise,
+    }
+
 # 4. ANÁLISIS DE UN TICKER
 # ======================================================================
 
-def analyze_ticker(ticker, entry_date, exit_date, p, cost_basis=None):
-    out = {"ticker": ticker, "error": None}
+
+def analyze_ticker(ticker, entry_date, exit_date, p, cost_basis=None, current_ratio=61.0):
+    out = {"ticker": ticker, "error": None, "current_ratio": current_ratio}
 
     data = get_daily_data(ticker)
     if data is None:
@@ -399,11 +518,13 @@ def analyze_ticker(ticker, entry_date, exit_date, p, cost_basis=None):
         rv_used = vol["rv_atr"]
     sigma_real = rv_used / 100.0
 
-    table, iv_atm = build_strike_table(calls, S, dte_cal, n_td, sigma_real, p, cost_basis)
+    table, iv_atm, atm_raw_ratio = build_strike_table(
+        calls, S, dte_cal, n_td, sigma_real, p, cost_basis, current_ratio
+    )
     if table is None or table.empty:
         out["error"] = (
-            "Ninguna call cotizada (bid>0 y ask>0) cumple el rango de strikes y los filtros de "
-            "liquidez. Prueba a relajar el spread/OI o a ampliar el rango OTM en Ajustes avanzados."
+            "Ninguna call cotizada cumple el rango de strikes y los filtros de liquidez. "
+            "Prueba a relajar spread/OI o ampliar el rango OTM."
         )
         return out
 
@@ -430,6 +551,8 @@ def analyze_ticker(ticker, entry_date, exit_date, p, cost_basis=None):
         "table": table,
         "cost_basis": cost_basis,
         "daily": data,
+        "current_ratio": float(current_ratio),
+        "atm_raw_ratio": round(float(atm_raw_ratio), 2) if atm_raw_ratio else None,
     })
     return out
 
@@ -523,9 +646,9 @@ def plot_price(res, rec, days=90):
 # 6. RESULTADOS
 # ======================================================================
 
-def render_results(target):
-    st.markdown("### 📊 Resultados")
 
+def render_results(target, compromise_buffer=10.0):
+    st.markdown("### 📊 Resultados")
     results = st.session_state.get("cc_results")
     if not results:
         st.info("👆 Escribe tus tickers, revisa las fechas y pulsa **CALCULAR STRIKES**.")
@@ -533,8 +656,10 @@ def render_results(target):
 
     ts = st.session_state.get("cc_ts")
     if ts:
-        st.caption(f"🕐 Último cálculo: {ts.strftime('%d/%m/%Y %H:%M:%S')} · el ratio objetivo "
-                   f"se aplica al instante, sin recalcular datos.")
+        st.caption(
+            f"🕐 Último cálculo: {ts.strftime('%d/%m/%Y %H:%M:%S')} · "
+            "puedes cambiar el ratio objetivo y las tres alternativas se actualizan sin descargar datos."
+        )
 
     ok = [r for r in results if not r.get("error")]
     bad = [r for r in results if r.get("error")]
@@ -543,45 +668,45 @@ def render_results(target):
     if not ok:
         return
 
-    # ── Resumen: una fila por ticker ───────────────────────────────────
-    rows = []
     recs = {}
+    summary_rows = []
     for r in ok:
-        rec, meets = select_recommendation(r["table"], target)
-        recs[r["ticker"]] = (rec, meets)
-        rows.append({
+        choices = select_recommendations(r["table"], target, compromise_buffer)
+        recs[r["ticker"]] = choices
+        main = choices["principal"]
+        summary_rows.append({
             "Ticker": r["ticker"],
             "Precio": r["price"],
+            "Ratio ATM actual": r["current_ratio"],
+            "Objetivo": target,
             "Vencimiento": r["expiration"].strftime("%d/%m/%Y"),
             "DTE": r["dte_cal"],
-            "IV_ATM_%": r["iv_atm"],
-            "Vol_real_%": r["rv_used"],
-            "IV/Real": r["iv_rv"],
-            "Strike": float(rec["Strike"]),
-            "OTM_%": float(rec["OTM_%"]),
-            "Delta": rec["Delta"],
-            "Prima": float(rec["Prima_Mid"]),
-            "Prima_%": float(rec["Prima_%"]),
-            "Ratio_est_%": float(rec["Ratio_est_%"]),
-            "Neto_esp": float(rec["Neto_esp"]),
-            "Estado": "✅ Cumple" if meets else "⚠️ Ninguno cumple",
+            "Strike principal": float(main["Strike"]),
+            "Delta": main["Delta"],
+            "Prima": float(main["Prima_Mid"]),
+            "Ratio estimado": float(main["Ratio_est_%"]),
+            "Estado": "Cumple objetivo" if choices["principal_meets"] else "Fallback ~0.20Δ",
         })
-    st.markdown(f"#### 🎯 Strike recomendado por ticker (ratio objetivo ≤ {target:.0f}%)")
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    st.markdown("#### 🎯 Resumen por ticker")
+    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
     st.download_button(
         "⬇️ Descargar resumen CSV",
-        pd.DataFrame(rows).to_csv(index=False).encode("utf-8"),
+        pd.DataFrame(summary_rows).to_csv(index=False).encode("utf-8"),
         f"cc_stock_repair_resumen_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
         "text/csv",
     )
-
     st.divider()
 
-    # ── Detalle de un ticker ───────────────────────────────────────────
-    st.markdown("#### 🔍 Detalle")
-    selected = st.selectbox("Ticker", options=[r["ticker"] for r in ok], key="cc_detail_ticker")
+    st.markdown("#### 🔍 Análisis detallado")
+    selected = st.selectbox(
+        "Ticker", options=[r["ticker"] for r in ok], key="cc_detail_ticker"
+    )
     res = next(r for r in ok if r["ticker"] == selected)
-    rec, meets = recs[selected]
+    choices = recs[selected]
+    main = choices["principal"]
+    conservative = choices["conservative"]
+    compromise = choices["compromise"]
     df = res["table"]
 
     if res["expiration"] != res["requested_exit"]:
@@ -590,88 +715,123 @@ def render_results(target):
             f"se ha usado el más cercano, **{res['expiration'].strftime('%d/%m/%Y')}**."
         )
     if res["entry_date"] > date.today():
-        st.caption("ℹ️ La fecha de entrada es futura: el DTE se cuenta desde ella, pero prima, IV y "
-                   "delta son los de hoy.")
+        st.caption(
+            "ℹ️ La fecha de entrada es futura: DTE se cuenta desde ella, "
+            "pero prima, IV y delta son los de hoy."
+        )
 
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("💲 Precio", f"${res['price']:.2f}")
-    m2.metric("⏱️ DTE / días mercado", f"{res['dte_cal']} / {res['n_td']}",
-              help=f"Vencimiento {res['expiration'].strftime('%d/%m/%Y')}.")
-    m3.metric("📈 IV ATM", f"{res['iv_atm']:.1f}%" if res["iv_atm"] else "n/d")
-    m4.metric(f"📉 Vol. real ({res['vol_source']})", f"{res['rv_used']:.1f}%",
-              help=(f"ATR(14) = ${res['atr']:.2f} ({res['atr_pct']:.2f}% del precio). "
-                    f"Vol. real vía ATR: {res['rv_atr']:.1f}% · vía cierres 20d: "
-                    f"{res['rv20']:.1f}%" if res["rv20"] else
-                    f"ATR(14) = ${res['atr']:.2f} ({res['atr_pct']:.2f}% del precio)."))
-    m5.metric("⚖️ IV / real", f"{res['iv_rv']:.2f}" if res["iv_rv"] else "n/d",
-              help="Por encima de 1 la prima está cara respecto a lo que la acción se mueve de verdad.")
+    m2.metric("Ratio ATM actual", f"{res['current_ratio']:.1f}%")
+    m3.metric("🎯 Ratio objetivo", f"{target:.1f}%")
+    m4.metric("📈 IV ATM", f"{res['iv_atm']:.1f}%" if res["iv_atm"] else "n/d")
+    m5.metric("📉 Vol. real", f"{res['rv_used']:.1f}%")
 
-    st.markdown("##### 🎯 Strike recomendado")
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("🎯 Strike", f"${rec['Strike']:.2f}", delta=f"{rec['OTM_%']:+.1f}% vs precio", delta_color="off")
-    k2.metric("📐 Delta", f"{rec['Delta']:.3f}" if pd.notna(rec["Delta"]) else "n/d",
-              help=f"Fuente: {rec['Δ_fuente']}.")
-    k3.metric("💵 Prima", f"${rec['Prima_Mid']:.2f}", delta=f"{rec['Prima_%']:.2f}% del precio", delta_color="off")
-    k4.metric("⚖️ Ratio estimado", f"{rec['Ratio_est_%']:.1f}%",
-              delta=f"objetivo {target:.0f}%", delta_color="off")
-    k5.metric("💰 Neto esperado", f"${rec['Neto_esp']:.2f}",
-              help="Prima menos coste esperado de recompra, por acción.")
+    st.caption(
+        f"ATM anclado al ratio que has introducido ({res['current_ratio']:.1f}%). "
+        f"El modelo calcula cómo cambia ese ratio al subir el strike. "
+        f"Ratio bruto del modelo en ATM antes de normalizar: {res['atm_raw_ratio']:.1f}%."
+    )
 
-    if meets:
-        st.success(
-            f"✅ Vender la **call {rec['Strike']:.2f}** ({res['expiration'].strftime('%d/%m/%Y')}, "
-            f"DTE {res['dte_cal']}): cobras ${rec['Prima_Mid']:.2f} por acción "
-            f"(${rec['Prima_Mid'] * 100:.0f} por contrato) y el modelo estima una recompra media de "
-            f"${rec['Recompra_esp']:.2f}, es decir, un ratio del {rec['Ratio_est_%']:.1f}% "
-            f"(≤ {target:.0f}%). Es el strike más cercano al ATM que cumple tu objetivo."
+    def show_choice(title, row, note, status=None):
+        with st.container(border=True):
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Strike", f"${float(row['Strike']):.2f}",
+                      delta=f"{float(row['OTM_%']):+.2f}% vs spot", delta_color="off")
+            c2.metric("Delta", f"{float(row['Delta']):.3f}" if pd.notna(row["Delta"]) else "n/d")
+            c3.metric("Prima mid", f"${float(row['Prima_Mid']):.2f}",
+                      delta=f"${float(row['Prima_Mid']) * 100:.0f}/contrato", delta_color="off")
+            c4.metric("Ratio normalizado", f"{float(row['Ratio_est_%']):.1f}%",
+                      delta=f"{float(row['Ratio_est_%']) - target:+.1f} pp vs objetivo",
+                      delta_color="inverse")
+            c5.metric("Neto estimado", f"${float(row['Neto_esp']):.2f}")
+            st.markdown(f"**{title}**")
+            st.caption(note)
+            if status:
+                st.caption(status)
+
+    st.markdown("##### 1. Principal — prima prioritaria cumpliendo el objetivo")
+    if choices["principal_meets"]:
+        show_choice(
+            "Strike más cercano al ATM que cumple el ratio",
+            main,
+            "Selecciona el strike más bajo (más cercano al ATM) cuyo ratio normalizado sea "
+            f"≤ {target:.1f}%. Entre los que cumplen, prioriza la prima más alta por cercanía al ATM.",
+            "Objetivo alcanzado."
         )
     else:
+        show_choice(
+            "Fallback — delta más cercana a 0.20",
+            main,
+            "Ningún strike disponible alcanza el objetivo. Como alternativa, se selecciona "
+            "la call OTM cuya delta está más cerca de 0.20; no se aplica 0.20 como filtro mínimo.",
+            "El ratio puede quedar por encima del objetivo."
+        )
         st.warning(
-            f"⚠️ Ningún strike del rango alcanza un ratio ≤ {target:.0f}%. Se muestra el de menor ratio "
-            f"({rec['Ratio_est_%']:.1f}%, strike {rec['Strike']:.2f}). Sube el ratio objetivo, amplía el "
-            f"rango OTM o elige otro vencimiento."
+            f"Ninguna call ATM/OTM alcanza el {target:.1f}%. Se muestra el fallback cercano a 0.20 delta."
         )
 
-    cb = res.get("cost_basis")
-    if cb:
-        cbm1, cbm2 = st.columns(2)
-        cbm1.metric("📐 Coste base", f"${cb:.2f}")
-        cbm2.metric("📉 Prima / CB", f"{rec['Prima_Mid'] / cb * 100:.2f}%",
-                    help="Cuánto baja tu coste base este ciclo si te quedas la prima completa.")
-        if rec["Strike"] < cb:
-            st.warning("⚠️ El strike recomendado está por debajo de tu coste base: si te ejercieran, "
-                       "realizarías pérdida.")
+    st.markdown("##### 2. Conservadora — delta cercana a 0.20")
+    show_choice(
+        "Alternativa de menor delta",
+        conservative,
+        "Busca la delta más próxima a 0.20 entre las calls ATM/OTM. Es una referencia de menor "
+        "probabilidad de terminar ITM, no una garantía de conservar las acciones."
+    )
+
+    st.markdown(f"##### 3. Compromiso — más prima aceptando hasta +{compromise_buffer:.1f} puntos")
+    show_choice(
+        "Alternativa de compromiso",
+        compromise,
+        "Busca la prima más alta entre las opciones cuyo ratio queda por encima del objetivo, "
+        f"pero no más de {compromise_buffer:.1f} puntos. Si no existe una opción en ese margen, "
+        "repite la principal."
+    )
+
+    if res.get("cost_basis"):
+        cb = float(res["cost_basis"])
+        st.metric("📐 Coste base", f"${cb:.2f}")
+        if float(main["Strike"]) < cb:
+            st.warning(
+                "El strike principal está por debajo de tu coste base: si te asignan, "
+                "realizarías una pérdida respecto a ese coste."
+            )
 
     tab1, tab2, tab3 = st.tabs(["📋 Tabla de strikes", "📊 Prima vs ratio", "📈 Precio"])
-
     with tab1:
         cols = [
-            "Strike", "OTM_%", "Delta", "Δ_fuente", "Prima_Mid", "Bid", "Ask", "Prima_%",
-            "Prima_anual_%", "IV_%", "Recompra_esp", "Neto_esp", "Ratio_est_%",
-            "OI", "Volumen", "Spread_%",
+            "Strike", "OTM_%", "Delta", "Δ_fuente", "Prima_Mid", "Bid", "Ask",
+            "Prima_%", "Prima_anual_%", "IV_%", "Recompra_esp", "Neto_esp",
+            "Ratio_modelo_%", "Ratio_est_%", "OI", "Volumen", "Spread_%"
         ]
         if "Prima/CB_%" in df.columns:
             cols += ["Prima/CB_%", "Bajo_CB"]
         view = df[cols].copy()
-        view.insert(0, "Rec.", np.where(view["Strike"] == float(rec["Strike"]), "⭐", ""))
-
+        view.insert(0, "Rec.", "")
+        for label, row in [
+            ("1 Principal", main), ("2 Delta 0.20", conservative),
+            ("3 Compromiso", compromise)
+        ]:
+            view.loc[view["Strike"] == float(row["Strike"]), "Rec."] += label + " "
         def color_ratio(val):
             try:
                 if pd.isna(val):
                     return ""
                 if val <= target:
                     return "background-color:#1e3a1e; color:#6daa45"
-                if val <= target * 1.25:
+                if val <= target + compromise_buffer:
                     return "background-color:#3a3a1e; color:#e8af34"
                 return "background-color:#3a1e1e; color:#dd6974"
             except Exception:
                 return ""
-
-        st.dataframe(view.style.map(color_ratio, subset=["Ratio_est_%"]),
-                     use_container_width=True, height=480, hide_index=True)
+        st.dataframe(
+            view.style.map(color_ratio, subset=["Ratio_est_%"]),
+            use_container_width=True, height=480, hide_index=True
+        )
         st.caption(
-            "Ratio_est_% = coste esperado de recompra / prima. Verde: cumple el objetivo · ámbar: hasta un "
-            "25 % por encima · rojo: más. Neto_esp = prima − coste esperado. Δ_fuente: Alpaca o Black-Scholes."
+            "Ratio_modelo_% es el ratio bruto de Black-Scholes. Ratio_est_% es ese ratio "
+            "normalizado para que el strike ATM coincida con tu ratio actual. "
+            "Verde: objetivo alcanzado; ámbar: hasta el margen de compromiso; rojo: por encima."
         )
         st.download_button(
             f"⬇️ Descargar tabla de {selected} (CSV)",
@@ -681,34 +841,50 @@ def render_results(target):
         )
 
     with tab2:
-        st.plotly_chart(plot_strike_curve(df, rec, target, selected), use_container_width=True)
+        st.plotly_chart(
+            plot_strike_curve(df, main, target, selected),
+            use_container_width=True
+        )
         st.caption(
-            "Al alejarte del ATM baja el ratio (más estable) pero también baja la prima y, normalmente, "
-            "el neto. La estrella marca el strike más cercano al ATM que cumple tu objetivo."
+            "La curva de ratio usa el ratio normalizado desde el ATM actual. "
+            "La línea horizontal marca tu objetivo."
         )
 
     with tab3:
-        days = st.select_slider("Días visibles", options=[30, 60, 90, 120, 180, 250], value=90, key="cc_days")
-        fig = plot_price(res, rec, days=days)
+        days = st.select_slider(
+            "Días visibles", options=[30, 60, 90, 120, 180, 250],
+            value=90, key="cc_days"
+        )
+        fig = plot_price(res, main, days=days)
         if fig:
             st.plotly_chart(fig, use_container_width=True)
-            em_iv_txt = f" · movimiento esperado por IV ±{res['em_iv']:.2f}" if res.get("em_iv") else ""
+            em_iv_txt = (
+                f" · movimiento esperado por IV ±{res['em_iv']:.2f}"
+                if res.get("em_iv") else ""
+            )
             st.caption(
-                f"Banda azul: precio ± movimiento esperado con la volatilidad real "
+                f"Banda azul: precio ± movimiento esperado con volatilidad real "
                 f"(±{res['em_real']:.2f}){em_iv_txt}."
             )
         else:
             st.warning("No se pudo cargar el gráfico.")
 
-    with st.expander("ℹ️ Cómo se calcula"):
+    with st.expander("ℹ️ Cómo se calcula la normalización"):
         st.markdown(
-            "- **Prima**: mid (bid+ask)/2 de la call en Alpaca; ya incluye la IV del mercado.\n"
-            "- **Recompra esperada**: valor Black-Scholes de esa call con la **volatilidad real** "
-            "(sin deriva) y los días de mercado entre entrada y salida.\n"
-            "- **Ratio estimado** = recompra esperada / prima. **Neto esperado** = prima − recompra esperada.\n"
-            "- **Recomendación**: strike más cercano al ATM con ratio estimado ≤ objetivo.\n"
-            "- Es una estimación: las colas gordas, los gaps y las tendencias hacen que tu ratio real "
-            "difiera. Contrástalo con tu Excel y ajusta el objetivo."
+            "- **Ratio actual ATM**: el valor que introduces (por ejemplo, 61%). "
+            "Se asigna al strike cotizado más cercano al precio actual.\n"
+            "- **Ratio modelo**: coste esperado de recompra / prima mid, calculado "
+            "con Black-Scholes y la volatilidad real seleccionada.\n"
+            "- **Ratio normalizado por strike**: ratio modelo del strike dividido por "
+            "el ratio modelo ATM y multiplicado por tu ratio actual. Por tanto, "
+            "el ATM queda anclado exactamente al ratio que has introducido.\n"
+            "- **Principal**: strike ATM/OTM más cercano al precio que alcanza el objetivo; "
+            "si ninguno lo consigue, fallback a delta cercana a 0.20.\n"
+            "- **Conservadora**: delta más cercana a 0.20.\n"
+            "- **Compromiso**: mayor prima dentro del margen configurable por encima del objetivo.\n\n"
+            "**Importante:** esta normalización adapta la curva del modelo a tu ratio histórico "
+            "actual; no predice el ratio contable exacto después de una operación. El resultado "
+            "es una estimación, no una garantía de recompra ni de conservar las acciones."
         )
 
 # ======================================================================
@@ -737,7 +913,7 @@ def main():
     )
     st.caption(
         "⚙️ Opciones y precio vía Alpaca · ATR / volatilidad real vía yfinance · "
-        "el ratio objetivo es tuyo: cámbialo cuando quieras."
+        "ratio actual ATM normalizado hacia el objetivo."
     )
 
     col_title, col_reset = st.columns([5, 1])
@@ -759,12 +935,15 @@ def main():
             "🏷️ Ticker(s)", value="", placeholder="SOFI, HOOD, F",
             help="Uno o varios, separados por coma o espacio.",
         )
+        current_ratio_raw = st.text_input(
+            "📍 Ratio actual ATM (%)", value=str(DEFAULT_CURRENT_RATIO),
+            help="Tu ratio actual de Excel, que se asigna al strike más cercano al precio de hoy. "
+                 "Un valor (61) se aplica a todos los tickers; también puedes indicar SOFI=61, HOOD=58.",
+        )
         target_ratio = st.number_input(
             "🎯 Ratio objetivo (%)", min_value=5.0, max_value=150.0,
             value=DEFAULT_TARGET_RATIO, step=1.0,
-            help="Ratio coste de recompra / prima que quieres como máximo. Tu ratio actual del Excel "
-                 "es una buena referencia: ve bajándolo poco a poco. Se aplica al instante sobre los "
-                 "datos ya calculados.",
+            help="Objetivo del ratio normalizado que quieres alcanzar al subir el strike desde el ATM.",
         )
         cost_basis_raw = st.text_input(
             "📐 Coste base (opcional)", value="", placeholder="SOFI=14.2, HOOD=30",
@@ -825,7 +1004,7 @@ def main():
         with a2:
             use_spread_filter = st.checkbox("Exigir spread ≤ X% de la prima", value=True)
             spread_max_pct = st.number_input("Spread máximo (%)", min_value=10, max_value=300,
-                                             value=70, step=10, disabled=not use_spread_filter)
+                                             value=50, step=10, disabled=not use_spread_filter)
         with a3:
             use_oi_filter = st.checkbox(
                 "Exigir OI mínimo", value=False,
@@ -833,6 +1012,11 @@ def main():
             )
             min_oi = st.number_input("OI mínimo", min_value=1, max_value=100000,
                                      value=50, step=10, disabled=not use_oi_filter)
+            compromise_buffer = st.number_input(
+                "Margen máximo de compromiso (puntos %)", min_value=1.0, max_value=30.0,
+                value=10.0, step=1.0,
+                help="La tercera alternativa puede quedar hasta este número de puntos por encima del objetivo."
+            )
 
     params = {
         "atr_period": int(atr_period),
@@ -851,11 +1035,20 @@ def main():
     # ── Cálculo ────────────────────────────────────────────────────────
     tickers = parse_tickers(tickers_raw)
     cost_basis_map = parse_cost_basis(cost_basis_raw)
+    current_ratio_map = parse_ratio_input(current_ratio_raw, tickers)
 
-    calc_btn = st.button("🛠️ CALCULAR STRIKES", type="primary", use_container_width=True,
-                         disabled=(len(tickers) == 0) or (exit_date <= entry_date))
+    missing_ratios = [t for t in tickers if t not in current_ratio_map]
+    calc_btn = st.button(
+        "🛠️ CALCULAR STRIKES", type="primary", use_container_width=True,
+        disabled=(len(tickers) == 0) or (exit_date <= entry_date) or bool(missing_ratios)
+    )
     if not tickers:
         st.caption("ℹ️ Escribe al menos un ticker.")
+    if missing_ratios:
+        st.error(
+            "Falta el ratio actual para: " + ", ".join(missing_ratios)
+            + ". Introduce un valor único para todos o un valor por ticker, por ejemplo SOFI=61, HOOD=58."
+        )
 
     if calc_btn:
         results = []
@@ -864,7 +1057,10 @@ def main():
         for i, t in enumerate(tickers, start=1):
             status.text(f"🔍 Analizando {t} ({i}/{len(tickers)})...")
             try:
-                results.append(analyze_ticker(t, entry_date, exit_date, params, cost_basis_map.get(t)))
+                results.append(analyze_ticker(
+                    t, entry_date, exit_date, params,
+                    cost_basis_map.get(t), current_ratio_map[t]
+                ))
             except Exception as e:
                 logger.warning(f"[analyze] {t}: {e}")
                 results.append({"ticker": t, "error": f"Error inesperado: {e}"})
@@ -876,7 +1072,7 @@ def main():
 
     st.divider()
 
-    render_results(float(target_ratio))
+    render_results(float(target_ratio), float(compromise_buffer))
 
 if __name__ == "__main__":
     main()
