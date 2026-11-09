@@ -162,6 +162,12 @@ cc_stock_repair = st.Page(
     icon="🛠️",
     url_path="cc-stock-repair"
 )
+screener_collar = st.Page(
+    "Herramientas/11 Collar Screener.py",
+    title="Screener Collar",
+    icon="🧱",
+    url_path="screener-collar"
+)
 # 3. CREACIÓN DE LA NAVEGACIÓN JERÁRQUICA
 pg = st.navigation({
     "Time Edge": [te_signals, te_op_21dte, te_op_60dte],
@@ -187,7 +193,8 @@ pg = st.navigation({
         screener_CC,
         screener_ITM,
         screener_CSP,
-        cc_stock_repair
+        cc_stock_repair,
+        screener_collar
     ]
 })
 # 4. EJECUCIÓN
