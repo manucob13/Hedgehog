@@ -94,12 +94,6 @@ dividendos_panel = st.Page(
     icon="💰",
     url_path="dividendos-panel"
 )
-dividendos_asignacion = st.Page(
-    "Dividendos/01 Asignacion.py", 
-    title="Asignación", 
-    icon="🎯",
-    url_path="dividendos-asignacion"
-)
 
 # --- Sección HERRAMIENTAS ---
 vix_term = st.Page(
@@ -180,8 +174,7 @@ pg = st.navigation({
         cartera_operaciones
     ],
     "DIVIDENDOS": [
-        dividendos_panel,
-        dividendos_asignacion
+        dividendos_panel
     ],
     "HERRAMIENTAS": [
         vix_term, 
