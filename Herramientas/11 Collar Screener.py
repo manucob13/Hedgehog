@@ -1,33 +1,41 @@
 """
-Collar Screener (coste cero) — versión simplificada
-====================================================
+Collar Screener (riesgo cero) — v2: DTE 30-60, solo crédito, margen IBKR aprox.
+===============================================================================
 Estructura (por 100 acciones, mismo vencimiento):
 
     + 100 acciones
     + 1 long put ATM (el strike más cercano al precio)
     - 1 short call OTM: el strike MÁS LEJANO cuya prima financia el put
-      (coste neto = débito pequeño o crédito)
 
-TRAMOS DE VENCIMIENTO (todos editables en la interfaz):
-  1) Corto : todos los vencimientos entre 30 y 90 días  -> ganancia máx. >= 5%
-  2) ~6 meses : UN vencimiento, el más cercano a 180 DTE -> ganancia máx. >= 25%
-  3) ~12 meses: UN vencimiento, el más cercano a 365 DTE -> ganancia máx. >= 50%
+VENCIMIENTOS: todos los que caen entre DTE desde (30) y DTE hasta (60).
 
-TABLAS:
-  - Ranking por ganancia máxima %
-  - Ranking por tiempo (DTE de menor a mayor)
-
-Los filtros de OI y spread se aplican internamente a ambas patas, pero sus
-columnas no se muestran.
-
-AVISO: no hay filtro de dividendos. Un call corto ITM cerca de un ex-dividend
-tiene riesgo de ejercicio anticipado.
+OPCIÓN "SOLO CRÉDITO" (activada por defecto): el call debe ingresar más que lo
+que cuesta el put (crédito neto >= 0,5 céntimos por acción). Si se desactiva,
+se acepta un débito pequeño (tolerancia configurable).
 
 FILTROS DE TENDENCIA (opcionales, Fase 1): precio > SMA200, SMA50 > SMA200,
 momentum 12-1 meses, cercanía al máximo de 52 semanas y volatilidad máxima.
 
-FASES: Fase 1 (paralela, yfinance): precio y filtros. Fase 2 (secuencial, Alpaca):
-vencimientos, cadenas y collar. Precio de opción = midprice. Solo screener.
+MARGEN (aproximado, cuenta margin IBKR, Reg T, acciones de EE. UU.):
+  - Margen inicial  = 50% x valor de las acciones + importe ITM del call
+                      (el call es OTM, así que el segundo término es 0)
+  - Margen mantenim.= mínimo( 10% x strike put + importe OTM del put ,
+                              25% x strike call )  x 100
+  Fuente: tabla "US Options Margin - Collar" de IBKR. IBKR puede exigir más
+  en acciones concretas (volatilidad, concentración) y optimiza el margen del
+  conjunto de la cartera: es una estimación, no el margen real.
+
+TABLAS: ranking por ganancia máxima % y ranking por tiempo (DTE ascendente).
+Incluye el midprice del put y del call (por acción) para usarlo después en IBKR.
+No hay llamada a IBKR en este código. Solo screener.
+
+GRÁFICOS: velas diarias de hasta 6 meses con SMA30 y bandas de Bollinger.
+
+AVISO: no hay filtro de dividendos. Un call corto ITM cerca de un ex-dividend
+tiene riesgo de ejercicio anticipado.
+
+FASES: Fase 1 (paralela, yfinance): precio y filtros. Fase 2 (secuencial,
+Alpaca): vencimientos, cadenas y collar. Precio de opción = midprice.
 """
 
 import streamlit as st
@@ -61,7 +69,9 @@ SOCKET_TIMEOUT = 15
 socket.setdefaulttimeout(SOCKET_TIMEOUT)
 
 MAX_WORKERS = 3
-ATM_MAX_DIST_PCT = 2.0   # el put ATM no puede estar a más de este % del precio
+ATM_MAX_DIST_PCT = 2.0     # el put ATM no puede estar a más de este % del precio
+MIN_CREDIT = 0.005         # crédito mínimo por acción en modo "solo crédito"
+CHART_DAYS = 183           # ~6 meses de gráfico
 
 CBOE_WEEKLYS_CSV_URL = "https://www.cboe.com/available_weeklys/get_csv_download/"
 
@@ -88,9 +98,9 @@ REASON_LABELS = {
     "price_out_of_range": "Precio fuera de rango (Fase 1)",
     "technical_filter": "Descartado por filtros de tendencia/momentum/volatilidad (Fase 1)",
     "no_expirations": "Sin vencimientos listados en Alpaca (Fase 2)",
-    "no_expirations_in_window": "Sin vencimientos en ningún tramo (Fase 2)",
+    "no_expirations_in_window": "Sin vencimientos en el rango de DTE (Fase 2)",
     "no_chain": "Cadenas vacías/no disponibles (Fase 2)",
-    "no_collar": "Ningún collar cumple ganancia mínima/OI/spread (Fase 2)",
+    "no_collar": "Ningún collar cumple crédito/ganancia/OI/spread (Fase 2)",
     "error": "Excepción no controlada",
 }
 
@@ -229,7 +239,7 @@ def refresh_universe():
 
 
 # ======================================================================
-# 1. FASE 1 — precio (paralela)
+# 1. FASE 1 — precio y filtros de tendencia (paralela)
 # ======================================================================
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -358,11 +368,23 @@ def _prep_leg(df, apply_oi, min_oi, apply_spread, spread_max_pct):
     return d
 
 
-def find_collar(ticker, exp, calls, puts, price, params, tramo, min_gain_pct):
+def approx_margin(price, kp, kc, params):
+    """Margen aproximado IBKR (Reg T, cuenta margin, EE. UU.) por 100 acciones.
+    Inicial    = % inicial x valor acciones + importe ITM del call
+    Mantenim.  = min(10% x K put + importe OTM del put, 25% x K call)"""
+    itm_call = max(price - kc, 0.0)
+    otm_put = max(price - kp, 0.0)
+    initial = (params["margin_init_pct"] / 100.0 * price + itm_call) * 100
+    maint = min(params["margin_maint_put_pct"] / 100.0 * kp + otm_put,
+                params["margin_maint_call_pct"] / 100.0 * kc) * 100
+    return round(initial, 2), round(maint, 2)
+
+
+def find_collar(ticker, exp, calls, puts, price, params):
     """Devuelve el collar (dict) del vencimiento o None.
     Put = strike más cercano al precio. Call = strike más lejano (> precio)
-    con prima >= prima put - tolerancia de débito. Se exige ganancia máx.
-    >= min_gain_pct."""
+    que financia el put (crédito si 'solo crédito', o débito dentro de la
+    tolerancia). Se exige ganancia máx. >= ganancia mínima."""
     try:
         dte = (exp - date.today()).days
         if dte <= 0:
@@ -383,9 +405,13 @@ def find_collar(ticker, exp, calls, puts, price, params, tramo, min_gain_pct):
 
         kp = float(pr["strike"])
         put_mid = float(pr["mid"])
-        tol = price * params["debit_tol_pct"] / 100.0
 
-        ok = c[(c["strike"] > price) & (c["mid"] >= put_mid - tol)]
+        if params["only_credit"]:
+            min_call_mid = put_mid + MIN_CREDIT - 1e-9
+        else:
+            min_call_mid = put_mid - price * params["debit_tol_pct"] / 100.0
+
+        ok = c[(c["strike"] > price) & (c["mid"] >= min_call_mid)]
         if ok.empty:
             return None
         cr = ok.sort_values("strike", ascending=False).iloc[0]
@@ -398,34 +424,39 @@ def find_collar(ticker, exp, calls, puts, price, params, tramo, min_gain_pct):
         if max_gain <= 0:
             return None
         gain_pct = max_gain / price * 100
-        if gain_pct < min_gain_pct:
+        if gain_pct < params["min_gain"]:
             return None
 
         iv_put = _iv_or_none(pr["iv"])
         iv_call = _iv_or_none(cr["iv"])
         skew = round((iv_call - iv_put) * 100, 1) if (iv_put and iv_call) else None
 
-        if net_cost > 0.005:
-            tipo = "Débito"
-        elif net_cost < -0.005:
+        if net_cost < -0.0049:
             tipo = "Crédito"
+        elif net_cost > 0.0049:
+            tipo = "Débito"
         else:
             tipo = "Cero"
 
+        margin_init, margin_maint = approx_margin(price, kp, kc, params)
+
         return {
             "Ticker": ticker,
-            "Tramo": tramo,
             "Precio": round(price, 2),
             "Vencimiento": exp.isoformat(),
             "DTE": dte,
             "Strike_Put": kp,
+            "Put_Mid": round(put_mid, 3),
             "Strike_Call": kc,
+            "Call_Mid": round(call_mid, 3),
             "Tipo": tipo,
             "Coste_Neto_$": round(net_cost * 100, 2),
             "Coste_Neto_%": round(net_cost / price * 100, 2),
             "Ganancia_Max_$": round(max_gain * 100, 2),
             "Ganancia_Max_%": round(gain_pct, 2),
             "Call_Skew": skew,
+            "Margen_Inicial_$": margin_init,
+            "Margen_Mant_$": margin_maint,
             "_coste_acc": round(net_cost, 4),   # interno (gráfico)
         }
     except Exception as e:
@@ -437,30 +468,6 @@ def find_collar(ticker, exp, calls, puts, price, params, tramo, min_gain_pct):
 # 3. FASE 2 — opciones (SECUENCIAL)
 # ======================================================================
 
-def select_expirations(expirations, params):
-    """Devuelve lista de (vencimiento, nombre_tramo, ganancia_min_%)."""
-    today = date.today()
-    exps = sorted(expirations)
-    out = []
-
-    # Tramo 1: todos los vencimientos en [min, max]
-    for e in exps:
-        d = (e - today).days
-        if params["t1_min_dte"] <= d <= params["t1_max_dte"]:
-            out.append((e, "Corto", params["t1_gain"]))
-
-    # Tramos 2 y 3: UN vencimiento, el más cercano al objetivo (dentro de la tolerancia)
-    for name, target, tol, gain in (
-        ("~6 meses", params["t2_target"], params["t2_tol"], params["t2_gain"]),
-        ("~12 meses", params["t3_target"], params["t3_tol"], params["t3_gain"]),
-    ):
-        cands = [e for e in exps if abs((e - today).days - target) <= tol]
-        if cands:
-            best = min(cands, key=lambda e: abs((e - today).days - target))
-            out.append((best, name, gain))
-    return out
-
-
 def phase2_collar_scan(survivor, params):
     ticker = survivor["Ticker"]
     fallback_price = survivor["current_price"]
@@ -469,15 +476,19 @@ def phase2_collar_scan(survivor, params):
         if not expirations:
             return None, "no_expirations"
 
-        selected = select_expirations(expirations, params)
-        if not selected:
+        today = date.today()
+        valid = sorted(
+            e for e in expirations
+            if params["min_dte"] <= (e - today).days <= params["max_dte"]
+        )
+        if not valid:
             return None, "no_expirations_in_window"
 
         price = get_live_price(ticker, fallback_price)
 
         rows = []
         chains_ok = 0
-        for exp, tramo, min_gain in selected:
+        for exp in valid:
             try:
                 calls, puts = get_option_chain(ticker, exp)
             except Exception as e:
@@ -486,7 +497,7 @@ def phase2_collar_scan(survivor, params):
             if calls is None or puts is None or calls.empty or puts.empty:
                 continue
             chains_ok += 1
-            row = find_collar(ticker, exp, calls, puts, price, params, tramo, min_gain)
+            row = find_collar(ticker, exp, calls, puts, price, params)
             if row:
                 rows.append(row)
 
@@ -509,7 +520,7 @@ def run_screener(tickers, params, progress_bar, status_text):
     funnel = {r: 0 for r in REASON_ORDER}
     total = len(tickers)
 
-    status_text.text(f"🔍 Fase 1/2 — precio: 0/{total}")
+    status_text.text(f"🔍 Fase 1/2 — precio y filtros: 0/{total}")
     survivors = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(phase1_price_filter, t, params): t for t in tickers}
@@ -517,7 +528,7 @@ def run_screener(tickers, params, progress_bar, status_text):
         for future in as_completed(futures):
             done += 1
             progress_bar.progress(done / total * 0.3)
-            status_text.text(f"🔍 Fase 1/2 — precio: {done}/{total} · supervivientes: {len(survivors)}")
+            status_text.text(f"🔍 Fase 1/2 — precio y filtros: {done}/{total} · supervivientes: {len(survivors)}")
             r, reason = None, "error"
             try:
                 r, reason = future.result(timeout=SOCKET_TIMEOUT + 10)
@@ -558,6 +569,7 @@ def run_screener(tickers, params, progress_bar, status_text):
 
 def reset_everything():
     get_price_data.clear()
+    get_chart_data.clear()
     get_option_expirations.clear()
     get_cboe_weeklys_tickers.clear()
     for key in ("results", "funnel", "debug_snapshot", "scan_ts", "scanned_total"):
@@ -565,8 +577,83 @@ def reset_everything():
 
 
 # ======================================================================
-# 5. GRÁFICO
+# 5. GRÁFICOS
 # ======================================================================
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_chart_data(ticker):
+    """Velas diarias (1 año: margen para calentar las medias) vía yfinance."""
+    try:
+        h = yf.Ticker(ticker).history(period="1y", interval="1d", auto_adjust=False)
+        if h is None or h.empty:
+            return None
+        h = h.dropna(subset=["Close"])
+        return h[["Open", "High", "Low", "Close"]]
+    except Exception as e:
+        logger.warning(f"[chart] {ticker}: {e}")
+        return None
+
+
+def build_price_chart(ticker, bb_period, bb_std, strikes=None, height=460):
+    """Velas diarias de hasta 6 meses + SMA30 + bandas de Bollinger.
+    strikes = {"put": kp, "call": kc} dibuja líneas horizontales (opcional).
+    Devuelve (figura, texto_resumen) o (None, mensaje)."""
+    h = get_chart_data(ticker)
+    if h is None or len(h) < max(bb_period, 30) + 5:
+        return None, f"{ticker}: sin datos suficientes para el gráfico."
+
+    close = h["Close"]
+    sma30 = close.rolling(30).mean()
+    mid = close.rolling(bb_period).mean()
+    sd = close.rolling(bb_period).std(ddof=0)
+    upper = mid + bb_std * sd
+    lower = mid - bb_std * sd
+
+    mask = h.index >= (h.index[-1] - pd.Timedelta(days=CHART_DAYS))
+    hv = h.loc[mask]
+    x = hv.index
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=x, y=upper.loc[mask], mode="lines", name=f"Bollinger sup ({bb_period}, {bb_std:g})",
+                             line=dict(color="rgba(91,155,213,0.8)", width=1)))
+    fig.add_trace(go.Scatter(x=x, y=lower.loc[mask], mode="lines", name="Bollinger inf",
+                             line=dict(color="rgba(91,155,213,0.8)", width=1),
+                             fill="tonexty", fillcolor="rgba(91,155,213,0.10)"))
+    fig.add_trace(go.Scatter(x=x, y=mid.loc[mask], mode="lines", name=f"Media Bollinger ({bb_period})",
+                             line=dict(color="rgba(91,155,213,0.6)", width=1, dash="dot")))
+    fig.add_trace(go.Candlestick(x=x, open=hv["Open"], high=hv["High"], low=hv["Low"], close=hv["Close"],
+                                 name="Precio",
+                                 increasing_line_color="#6daa45", decreasing_line_color="#dd6974"))
+    fig.add_trace(go.Scatter(x=x, y=sma30.loc[mask], mode="lines", name="SMA30",
+                             line=dict(color="#e8af34", width=2)))
+
+    if strikes:
+        fig.add_hline(y=strikes["put"], line=dict(color="#dd6974", width=1, dash="dash"),
+                      annotation_text=f"Put {strikes['put']:.2f}", annotation_position="bottom left")
+        fig.add_hline(y=strikes["call"], line=dict(color="#5b9bd5", width=1, dash="dash"),
+                      annotation_text=f"Call {strikes['call']:.2f}", annotation_position="top left")
+
+    fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+    fig.update_layout(
+        title=f"{ticker} — diario, últimos 6 meses",
+        template="plotly_dark", height=height, hovermode="x unified",
+        xaxis_rangeslider_visible=False,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        margin=dict(l=10, r=10, t=70, b=10),
+        yaxis_title="Precio ($)",
+    )
+
+    last = float(close.iloc[-1])
+    s30 = float(sma30.iloc[-1]) if pd.notna(sma30.iloc[-1]) else None
+    up, lo = float(upper.iloc[-1]), float(lower.iloc[-1])
+    pctb = (last - lo) / (up - lo) if up > lo else None
+    parts = [f"Cierre {last:.2f}"]
+    if s30:
+        parts.append(f"SMA30 {s30:.2f} ({(last / s30 - 1) * 100:+.1f}%)")
+    if pctb is not None:
+        parts.append(f"%B {pctb:.0%}")
+    return fig, " · ".join(parts)
+
 
 def plot_payoff(row):
     """Resultado al vencimiento del collar (por acción)."""
@@ -575,7 +662,7 @@ def plot_payoff(row):
     kc = float(row["Strike_Call"])
     net_cost = float(row["_coste_acc"])
 
-    xs = np.linspace(S * 0.7, S * 1.5, 200)
+    xs = np.linspace(S * 0.7, S * 1.3, 200)
     pnl = (xs - S) + np.maximum(kp - xs, 0) - np.maximum(xs - kc, 0) - net_cost
 
     fig = go.Figure()
@@ -584,12 +671,14 @@ def plot_payoff(row):
     fig.add_trace(go.Scatter(x=xs, y=pnl, mode="lines", name="Collar",
                              line=dict(color="#6daa45", width=3)))
     fig.add_vline(x=S, line=dict(color="#ffffff", width=1), annotation_text=f"Precio {S:.2f}")
+    fig.add_vline(x=kp, line=dict(color="#dd6974", width=1, dash="dot"),
+                  annotation_text=f"Put {kp:.2f}", annotation_position="bottom left")
     fig.add_vline(x=kc, line=dict(color="#5b9bd5", width=1, dash="dot"),
                   annotation_text=f"Call {kc:.2f}", annotation_position="top right")
     fig.add_hline(y=0, line=dict(color="#666666", width=1))
     fig.update_layout(
         title=f"{row['Ticker']} — resultado al vencimiento {row['Vencimiento']} (por acción)",
-        template="plotly_dark", height=400, hovermode="x unified",
+        template="plotly_dark", height=380, hovermode="x unified",
         xaxis_title="Precio de la acción al vencimiento",
         yaxis_title="Resultado ($ por acción)",
     )
@@ -606,10 +695,10 @@ def main():
     if not check_password():
         st.stop()
 
-    st.title("🧱 Collar Screener — riesgo cero")
+    st.title("🧱 Collar Screener — crédito, DTE 30-60")
     st.markdown(
         "**Acciones + put ATM + call más lejano que lo financia · "
-        "tres tramos de vencimiento con ganancia mínima propia**"
+        "midprices y margen IBKR aproximado en la tabla**"
     )
 
     col_title, col_reset = st.columns([5, 1])
@@ -650,43 +739,37 @@ def main():
     # ── Parámetros ─────────────────────────────────────────────────────
     st.markdown("### ⚙️ Parámetros")
 
-    st.markdown("**📆 Tramos de vencimiento y ganancia máxima mínima**")
-    t1, t2, t3 = st.columns(3)
-    with t1:
-        st.markdown("🟢 **Corto** (todos los vencimientos)")
-        a, b = st.columns(2)
-        t1_min_dte = a.number_input("DTE desde", 1, 365, 30, 5, key="t1min")
-        t1_max_dte = b.number_input("DTE hasta", 2, 365, 90, 5, key="t1max")
-        t1_gain = st.number_input("Ganancia mín. (%)", 0.0, 500.0, 5.0, 1.0, key="t1g")
-    with t2:
-        st.markdown("🟡 **~6 meses** (1 vencimiento)")
-        a, b = st.columns(2)
-        t2_target = a.number_input("DTE objetivo", 30, 730, 180, 10, key="t2t")
-        t2_tol = b.number_input("Tolerancia ± días", 5, 120, 30, 5, key="t2tol")
-        t2_gain = st.number_input("Ganancia mín. (%)", 0.0, 500.0, 25.0, 1.0, key="t2g")
-    with t3:
-        st.markdown("🔴 **~12 meses** (1 vencimiento)")
-        a, b = st.columns(2)
-        t3_target = a.number_input("DTE objetivo", 30, 800, 365, 10, key="t3t")
-        t3_tol = b.number_input("Tolerancia ± días", 5, 180, 45, 5, key="t3tol")
-        t3_gain = st.number_input("Ganancia mín. (%)", 0.0, 500.0, 50.0, 1.0, key="t3g")
-
-    if t1_min_dte > t1_max_dte:
-        t1_min_dte, t1_max_dte = t1_max_dte, t1_min_dte
-
     c1, c2 = st.columns(2)
     with c1:
+        st.markdown("**📆 Vencimientos y ganancia**")
+        a, b = st.columns(2)
+        min_dte = a.number_input("DTE desde", 1, 365, 30, 5)
+        max_dte = b.number_input("DTE hasta", 2, 365, 60, 5)
+        if min_dte > max_dte:
+            min_dte, max_dte = max_dte, min_dte
+        min_gain = st.number_input(
+            "Ganancia máx. mínima (%)", 0.0, 500.0, 0.0, 0.5,
+            help="Con 'solo crédito' y put ATM, el call suele quedar a pocos puntos "
+                 "del precio: una ganancia mínima alta puede dejar el resultado vacío.",
+        )
+
         st.markdown("**🧱 Riesgo del collar**")
+        only_credit = st.checkbox(
+            "Solo crédito", value=True,
+            help="El call debe ingresar más que lo que cuesta el put (crédito neto). "
+                 "Desmárcalo para aceptar un débito pequeño.",
+        )
         debit_tol_pct = st.number_input(
             "Débito máximo (% del precio de la acción)", 0.0, 10.0, 0.5, 0.1,
-            help="Cuánto más puede costar el put que lo que ingresa el call. "
-                 "0 = el call debe valer al menos lo que el put. Los créditos se aceptan siempre.",
+            disabled=only_credit,
+            help="Solo se usa si 'Solo crédito' está desactivado.",
         )
         pc1, pc2 = st.columns(2)
         min_price = pc1.number_input("Precio mínimo ($)", 1, 10000, 15, 1)
         max_price = pc2.number_input("Precio máximo ($)", 1, 10000, 100, 1)
         if min_price > max_price:
             min_price, max_price = max_price, min_price
+
     with c2:
         st.markdown("**💧 Liquidez (filtro interno, ambas patas)**")
         use_oi_filter = st.checkbox("Exigir OI mínimo", value=True)
@@ -694,6 +777,15 @@ def main():
         use_spread_filter = st.checkbox("Exigir spread ≤ X% de la prima", value=True)
         spread_max_pct = st.number_input("Spread máximo (%)", 10, 300, 70, 10,
                                          disabled=not use_spread_filter)
+
+        with st.expander("🏦 Margen IBKR aproximado (cuenta margin, Reg T)"):
+            st.caption("Inicial = % x valor de las acciones (el call es OTM, no suma importe ITM). "
+                       "Mantenimiento = mín(% x strike put + importe OTM del put; % x strike call). "
+                       "Ajusta los % si tu broker exige más en alguna acción.")
+            margin_init_pct = st.number_input("Margen inicial (% del valor de las acciones)",
+                                              10.0, 100.0, 50.0, 5.0)
+            margin_maint_put_pct = st.number_input("Mantenimiento: % del strike put", 1.0, 50.0, 10.0, 1.0)
+            margin_maint_call_pct = st.number_input("Mantenimiento: % del strike call", 1.0, 50.0, 25.0, 1.0)
 
     st.markdown("**📈 Filtros de tendencia (Fase 1, opcionales)**")
     st.caption("Descartan activos en caída antes de consultar las opciones, así que además "
@@ -722,17 +814,18 @@ def main():
                               disabled=not use_vol)
 
     params = {
+        "min_dte": int(min_dte), "max_dte": int(max_dte), "min_gain": min_gain,
+        "only_credit": only_credit, "debit_tol_pct": debit_tol_pct,
+        "min_price": min_price, "max_price": max_price,
+        "use_oi_filter": use_oi_filter, "min_oi": min_oi,
+        "use_spread_filter": use_spread_filter, "spread_max_pct": spread_max_pct,
+        "margin_init_pct": margin_init_pct,
+        "margin_maint_put_pct": margin_maint_put_pct,
+        "margin_maint_call_pct": margin_maint_call_pct,
         "use_trend": use_trend, "use_sma_cross": use_sma_cross,
         "use_momentum": use_momentum, "min_momentum": min_momentum,
         "use_high52": use_high52, "max_dist_high": max_dist_high,
         "use_vol": use_vol, "max_vol": max_vol,
-        "t1_min_dte": int(t1_min_dte), "t1_max_dte": int(t1_max_dte), "t1_gain": t1_gain,
-        "t2_target": int(t2_target), "t2_tol": int(t2_tol), "t2_gain": t2_gain,
-        "t3_target": int(t3_target), "t3_tol": int(t3_tol), "t3_gain": t3_gain,
-        "debit_tol_pct": debit_tol_pct,
-        "min_price": min_price, "max_price": max_price,
-        "use_oi_filter": use_oi_filter, "min_oi": min_oi,
-        "use_spread_filter": use_spread_filter, "spread_max_pct": spread_max_pct,
     }
 
     st.divider()
@@ -795,15 +888,19 @@ def main():
     render_results()
 
 
+REQUIRED_COLS = {
+    "Ticker", "Precio", "Vencimiento", "DTE", "Strike_Put", "Put_Mid", "Strike_Call",
+    "Call_Mid", "Tipo", "Coste_Neto_$", "Coste_Neto_%", "Ganancia_Max_$",
+    "Ganancia_Max_%", "Call_Skew", "Margen_Inicial_$", "Margen_Mant_$", "_coste_acc",
+}
+
+
 def render_results():
     st.markdown("### 📊 Resultados")
 
-    # Si quedan resultados de una versión anterior del código (otras columnas),
-    # se descartan para evitar KeyError.
-    required_cols = {"Tramo", "Tipo", "Coste_Neto_$", "Coste_Neto_%", "Ganancia_Max_$",
-                     "Ganancia_Max_%", "Call_Skew", "_coste_acc"}
+    # Resultados de una versión anterior del código (otras columnas): se descartan.
     stale = st.session_state.get("results")
-    if stale is not None and not stale.empty and not required_cols.issubset(stale.columns):
+    if stale is not None and not stale.empty and not REQUIRED_COLS.issubset(stale.columns):
         for key in ("results", "funnel", "debug_snapshot", "scan_ts", "scanned_total"):
             st.session_state.pop(key, None)
         st.warning("⚠️ Había resultados de una versión anterior del screener. "
@@ -818,19 +915,16 @@ def render_results():
     ts = st.session_state["scan_ts"]
 
     # Filtros rápidos sobre resultados
-    f1, f2, f3 = st.columns([2, 1, 1])
+    f1, f2 = st.columns([1, 3])
     with f1:
-        tramos = st.multiselect("Tramos", ["Corto", "~6 meses", "~12 meses"],
-                                default=["Corto", "~6 meses", "~12 meses"])
-    with f2:
-        only_credit = st.checkbox("Solo coste ≤ 0 (cero o crédito)", value=False)
-    with f3:
         use_skew = st.checkbox("Call skew ≥ 0", value=False,
                                help="IV call − IV put, en puntos. Excluye los sin dato.")
+    with f2:
+        pick = st.multiselect("Tickers (vacío = todos)", sorted(df_all["Ticker"].unique()))
 
-    df = df_all[df_all["Tramo"].isin(tramos)]
-    if only_credit:
-        df = df[df["Tipo"].isin(["Crédito", "Cero"])]
+    df = df_all
+    if pick:
+        df = df[df["Ticker"].isin(pick)]
     if use_skew:
         df = df[df["Call_Skew"].notna() & (df["Call_Skew"] >= 0)]
 
@@ -846,15 +940,19 @@ def render_results():
     st.caption(f"Último escaneo: {ts.strftime('%H:%M:%S')}")
 
     cols_show = [
-        "Ticker", "Tramo", "Precio", "Vencimiento", "DTE",
-        "Strike_Put", "Strike_Call", "Tipo", "Coste_Neto_$", "Coste_Neto_%",
+        "Ticker", "Precio", "Vencimiento", "DTE",
+        "Strike_Put", "Put_Mid", "Strike_Call", "Call_Mid",
+        "Tipo", "Coste_Neto_$", "Coste_Neto_%",
         "Ganancia_Max_$", "Ganancia_Max_%", "Call_Skew",
+        "Margen_Inicial_$", "Margen_Mant_$",
     ]
     names = {
-        "Strike_Put": "Put (ATM)", "Strike_Call": "Call",
+        "Strike_Put": "Put (ATM)", "Put_Mid": "Put mid",
+        "Strike_Call": "Call", "Call_Mid": "Call mid",
         "Coste_Neto_$": "Coste neto $", "Coste_Neto_%": "Coste neto %",
         "Ganancia_Max_$": "Ganancia máx. $", "Ganancia_Max_%": "Ganancia máx. %",
         "Call_Skew": "Call skew",
+        "Margen_Inicial_$": "Margen inicial $", "Margen_Mant_$": "Margen mant. $",
     }
 
     def color_tipo(v):
@@ -871,10 +969,13 @@ def render_results():
         styler = (
             view.style
             .format({
-                "Precio": "${:,.2f}", "Put (ATM)": "{:,.2f}", "Call": "{:,.2f}",
+                "Precio": "${:,.2f}",
+                "Put (ATM)": "{:,.2f}", "Put mid": "{:.3f}",
+                "Call": "{:,.2f}", "Call mid": "{:.3f}",
                 "Coste neto $": "{:+,.0f}", "Coste neto %": "{:+.2f}%",
                 "Ganancia máx. $": "${:,.0f}", "Ganancia máx. %": "{:.1f}%",
                 "Call skew": "{:+.1f}",
+                "Margen inicial $": "${:,.0f}", "Margen mant. $": "${:,.0f}",
             }, na_rep="–")
             .map(color_tipo, subset=["Tipo"])
         )
@@ -884,11 +985,17 @@ def render_results():
             f"{file_prefix}_{ts.strftime('%Y%m%d_%H%M')}.csv", "text/csv", key=f"dl_{key}",
         )
 
-    tab1, tab2, tab3 = st.tabs(["🥇 Por ganancia", "⏱️ Por tiempo", "🔍 Detalle"])
+    with st.expander("⚙️ Opciones de los gráficos (Bollinger)"):
+        bcol1, bcol2 = st.columns(2)
+        bb_period = bcol1.number_input("Periodo de Bollinger", 5, 100, 20, 1, key="bb_period")
+        bb_std = bcol2.number_input("Desviaciones típicas", 0.5, 4.0, 2.0, 0.5, key="bb_std")
+
+    tab1, tab2, tab3, tab4 = st.tabs(["🥇 Por ganancia", "⏱️ Por tiempo", "📈 Gráficos", "🔍 Detalle"])
 
     with tab1:
-        st.caption("Ordenado por ganancia máxima % (mayor primero). "
-                   "Coste neto: positivo = débito, negativo = crédito, por 100 acciones.")
+        st.caption("Ordenado por ganancia máxima % (mayor primero). Por 100 acciones. "
+                   "Coste neto: positivo = débito, negativo = crédito. Mid = precio medio por acción. "
+                   "Margen = estimación IBKR (Reg T), no el margen real.")
         show_table(df.sort_values(["Ganancia_Max_%", "Ticker"], ascending=[False, True]),
                    "gan", "collar_ganancia")
 
@@ -898,7 +1005,29 @@ def render_results():
                    "tiempo", "collar_tiempo")
 
     with tab3:
-        d = df.sort_values(["Ganancia_Max_%"], ascending=False)
+        st.caption("Velas diarias, 6 meses, SMA30 y bandas de Bollinger. "
+                   "%B: posición del cierre dentro de las bandas (0% = banda inferior, 100% = superior).")
+        ticker_opts = list(dict.fromkeys(
+            df.sort_values("Ganancia_Max_%", ascending=False)["Ticker"].tolist()
+        ))
+        chosen = st.multiselect("Activos a graficar", ticker_opts, default=ticker_opts[:4],
+                                key="chart_tickers")
+        if len(chosen) > 12:
+            st.info("Se muestran los 12 primeros.")
+            chosen = chosen[:12]
+        for i in range(0, len(chosen), 2):
+            cols = st.columns(2)
+            for col, tk in zip(cols, chosen[i:i + 2]):
+                with col:
+                    fig, info = build_price_chart(tk, int(bb_period), float(bb_std), height=380)
+                    if fig is None:
+                        st.warning(info)
+                    else:
+                        st.plotly_chart(fig, use_container_width=True, key=f"pc_{tk}")
+                        st.caption(info)
+
+    with tab4:
+        d = df.sort_values("Ganancia_Max_%", ascending=False)
         labels = {
             int(i): (f"{r['Ticker']} · {r['Vencimiento']} ({r['DTE']}d) · "
                      f"Put {r['Strike_Put']:.2f} / Call {r['Strike_Call']:.2f} · "
@@ -914,7 +1043,24 @@ def render_results():
         skew = f"{row['Call_Skew']:+.1f} pts" if pd.notna(row["Call_Skew"]) else "n/d"
         m3.metric("Call skew", skew)
         m4.metric("Vencimiento", f"{row['DTE']} días", row["Vencimiento"], delta_color="off")
-        st.plotly_chart(plot_payoff(row), use_container_width=True)
+
+        n1, n2, n3, n4 = st.columns(4)
+        n1.metric("Put mid", f"{row['Put_Mid']:.3f}", f"Strike {row['Strike_Put']:.2f}", delta_color="off")
+        n2.metric("Call mid", f"{row['Call_Mid']:.3f}", f"Strike {row['Strike_Call']:.2f}", delta_color="off")
+        n3.metric("Margen inicial (aprox.)", f"${row['Margen_Inicial_$']:,.0f}")
+        n4.metric("Margen mant. (aprox.)", f"${row['Margen_Mant_$']:,.0f}")
+
+        fig, info = build_price_chart(
+            row["Ticker"], int(bb_period), float(bb_std),
+            strikes={"put": float(row["Strike_Put"]), "call": float(row["Strike_Call"])},
+        )
+        if fig is None:
+            st.warning(info)
+        else:
+            st.plotly_chart(fig, use_container_width=True, key=f"pd_{sel}")
+            st.caption(info)
+
+        st.plotly_chart(plot_payoff(row), use_container_width=True, key=f"po_{sel}")
         st.caption("Sin filtro de dividendos: revisa el riesgo de ejercicio anticipado del call "
                    "cerca de un ex-dividend.")
 
