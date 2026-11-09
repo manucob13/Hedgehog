@@ -402,16 +402,6 @@ def main():
                 <span style="color:#DDD;font-size:12px;">{name}</span>
             </div>
             """
-        for regime, color in REGIME_COLORS.items():
-            if regime == "RIESGO":
-                continue
-            legend_items_html += f"""
-            <div style="display:flex;align-items:center;gap:6px;margin-right:18px;">
-                <div style="width:10px;height:10px;border-radius:50%;background-color:{color};border:1px solid black;"></div>
-                <span style="color:#DDD;font-size:12px;">{regime}</span>
-            </div>
-            """
-
         st.markdown(
             f"""
             <div style="display:flex;flex-wrap:nowrap;align-items:center;
@@ -470,17 +460,6 @@ def main():
             line=dict(color=SERIES_COLORS["EMA 21"], width=1.1, dash="dash"), opacity=0.7,
             showlegend=False,
         ), row=1, col=1)
-
-        # Puntos de régimen: debajo de cada vela (low) para no tapar el precio
-        offset = (df_plot["High"].max() - df_plot["Low"].min()) * 0.015
-        for r, c in REGIME_COLORS.items():
-            m = df_plot["Regime_MACDV"] == r
-            if m.any():
-                fig.add_trace(go.Scatter(
-                    x=df_plot.index[m], y=df_plot["Low"][m] - offset, mode="markers", name=r,
-                    marker=dict(color=c, size=5, line=dict(color="black", width=0.5)),
-                    showlegend=False,
-                ), row=1, col=1)
 
         last_price = float(df_plot["Close"].iloc[-1])
         fig.add_annotation(
