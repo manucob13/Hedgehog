@@ -582,8 +582,7 @@ def main():
             },
         )
         st.caption(
-            "🟢 Verde = por encima del objetivo · 🔴 Rojo = por debajo del objetivo. "
-            "Detalle completo en la página **Asignación**."
+            "🟢 Verde = por encima del objetivo · 🔴 Rojo = por debajo del objetivo."
         )
     else:
         cols_to_show = [
@@ -605,10 +604,6 @@ def main():
                 "percentOfNAV": st.column_config.NumberColumn("% NLV", format="%.2f%%"),
                 "fifoPnlUnrealized": st.column_config.NumberColumn("P&L no realizado", format="$%.2f"),
             },
-        )
-        st.caption(
-            "Ve a la página **Asignación** para definir tu tabla objetivo y "
-            "ver aquí la diferencia con tus holdings."
         )
 
 
