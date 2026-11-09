@@ -23,7 +23,10 @@ columnas no se muestran.
 AVISO: no hay filtro de dividendos. Un call corto ITM cerca de un ex-dividend
 tiene riesgo de ejercicio anticipado.
 
-FASES: Fase 1 (paralela, yfinance): precio. Fase 2 (secuencial, Alpaca):
+FILTROS DE TENDENCIA (opcionales, Fase 1): precio > SMA200, SMA50 > SMA200,
+momentum 12-1 meses, cercanía al máximo de 52 semanas y volatilidad máxima.
+
+FASES: Fase 1 (paralela, yfinance): precio y filtros. Fase 2 (secuencial, Alpaca):
 vencimientos, cadenas y collar. Precio de opción = midprice. Solo screener.
 """
 
@@ -74,7 +77,7 @@ CBOE_REQUEST_HEADERS = {
 }
 
 REASON_ORDER = [
-    "ok", "no_price_data", "price_out_of_range",
+    "ok", "no_price_data", "price_out_of_range", "technical_filter",
     "no_expirations", "no_expirations_in_window",
     "no_chain", "no_collar", "error",
 ]
@@ -83,6 +86,7 @@ REASON_LABELS = {
     "ok": "✅ Con al menos un collar válido",
     "no_price_data": "Sin precio disponible (Fase 1)",
     "price_out_of_range": "Precio fuera de rango (Fase 1)",
+    "technical_filter": "Descartado por filtros de tendencia/momentum/volatilidad (Fase 1)",
     "no_expirations": "Sin vencimientos listados en Alpaca (Fase 2)",
     "no_expirations_in_window": "Sin vencimientos en ningún tramo (Fase 2)",
     "no_chain": "Cadenas vacías/no disponibles (Fase 2)",
@@ -229,10 +233,12 @@ def refresh_universe():
 # ======================================================================
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def get_last_price(ticker):
-    """Último cierre diario vía yfinance. None si falla."""
+def get_price_data(ticker):
+    """Histórico diario (2 años) vía yfinance y los indicadores para los filtros
+    opcionales. Devuelve un dict (valores None si no hay historial suficiente)
+    o None si falla la descarga."""
     try:
-        h = yf.Ticker(ticker).history(period="5d", interval="1d", auto_adjust=False)
+        h = yf.Ticker(ticker).history(period="2y", interval="1d", auto_adjust=False)
         if h is None or h.empty:
             _record_debug("no_price_data", f"{ticker}: descarga vacía")
             return None
@@ -240,20 +246,78 @@ def get_last_price(ticker):
         if close.empty:
             _record_debug("no_price_data", f"{ticker}: sin cierres")
             return None
-        return float(close.iloc[-1])
+
+        n = len(close)
+        price = float(close.iloc[-1])
+        data = {"price": price, "sma50": None, "sma200": None,
+                "mom_12_1": None, "dist_high_pct": None, "vol_pct": None}
+
+        if n >= 50:
+            data["sma50"] = float(close.iloc[-50:].mean())
+        if n >= 200:
+            data["sma200"] = float(close.iloc[-200:].mean())
+        if n >= 253:
+            # Momentum 12-1: rentabilidad de hace ~252 sesiones a hace ~21 sesiones
+            data["mom_12_1"] = float(close.iloc[-22] / close.iloc[-253] - 1) * 100
+        if n >= 240:
+            high52 = float(close.iloc[-252:].max())
+            data["dist_high_pct"] = (high52 - price) / high52 * 100
+        if n >= 120:
+            rets = np.log(close.iloc[-252:] / close.iloc[-252:].shift(1)).dropna()
+            data["vol_pct"] = float(rets.std() * np.sqrt(252) * 100)
+        return data
     except Exception as e:
         _record_debug("no_price_data", f"{ticker}: {e}")
         return None
 
 
+def passes_technical(ticker, d, params):
+    """Aplica los filtros técnicos activados. Devuelve (ok, motivo)."""
+    price = d["price"]
+
+    if params["use_trend"]:
+        if d["sma200"] is None:
+            return False, "historial insuficiente para SMA200"
+        if price <= d["sma200"]:
+            return False, f"precio {price:.2f} <= SMA200 {d['sma200']:.2f}"
+    if params["use_sma_cross"]:
+        if d["sma50"] is None or d["sma200"] is None:
+            return False, "historial insuficiente para SMA50/SMA200"
+        if d["sma50"] <= d["sma200"]:
+            return False, f"SMA50 {d['sma50']:.2f} <= SMA200 {d['sma200']:.2f}"
+    if params["use_momentum"]:
+        if d["mom_12_1"] is None:
+            return False, "historial insuficiente para momentum 12-1"
+        if d["mom_12_1"] <= params["min_momentum"]:
+            return False, f"momentum 12-1 = {d['mom_12_1']:.1f}%"
+    if params["use_high52"]:
+        if d["dist_high_pct"] is None:
+            return False, "historial insuficiente para máximo 52s"
+        if d["dist_high_pct"] > params["max_dist_high"]:
+            return False, f"{d['dist_high_pct']:.1f}% por debajo del máximo 52s"
+    if params["use_vol"]:
+        if d["vol_pct"] is None:
+            return False, "historial insuficiente para volatilidad"
+        if d["vol_pct"] > params["max_vol"]:
+            return False, f"volatilidad realizada {d['vol_pct']:.0f}%"
+    return True, ""
+
+
 def phase1_price_filter(ticker, params):
     try:
-        price = get_last_price(ticker)
-        if price is None:
+        data = get_price_data(ticker)
+        if data is None:
             return None, "no_price_data"
+        price = data["price"]
         if not (params["min_price"] <= price <= params["max_price"]):
             _record_debug("price_out_of_range", f"{ticker}: precio = {price}")
             return None, "price_out_of_range"
+
+        ok, why = passes_technical(ticker, data, params)
+        if not ok:
+            _record_debug("technical_filter", f"{ticker}: {why}")
+            return None, "technical_filter"
+
         return {"Ticker": ticker, "current_price": round(price, 2)}, "ok"
     except Exception as e:
         _record_debug("error", f"{ticker}: {e}")
@@ -493,7 +557,7 @@ def run_screener(tickers, params, progress_bar, status_text):
 
 
 def reset_everything():
-    get_last_price.clear()
+    get_price_data.clear()
     get_option_expirations.clear()
     get_cboe_weeklys_tickers.clear()
     for key in ("results", "funnel", "debug_snapshot", "scan_ts", "scanned_total"):
@@ -631,7 +695,37 @@ def main():
         spread_max_pct = st.number_input("Spread máximo (%)", 10, 300, 70, 10,
                                          disabled=not use_spread_filter)
 
+    st.markdown("**📈 Filtros de tendencia (Fase 1, opcionales)**")
+    st.caption("Descartan activos en caída antes de consultar las opciones, así que además "
+               "aceleran el escaneo. Todos desactivados por defecto. Un activo con historial "
+               "insuficiente para un filtro activo se descarta.")
+    g1, g2, g3 = st.columns(3)
+    with g1:
+        use_trend = st.checkbox("Precio > media de 200 días", value=False,
+                                help="Seguimiento de tendencia (Faber 2007).")
+        use_sma_cross = st.checkbox("Media 50d > media 200d", value=False,
+                                    help="Tendencia alcista confirmada (golden cross).")
+    with g2:
+        use_momentum = st.checkbox("Momentum 12-1 meses >", value=False,
+                                   help="Rentabilidad de hace 12 meses a hace 1 mes "
+                                        "(Jegadeesh y Titman 1993).")
+        min_momentum = st.number_input("Momentum mínimo (%)", -50.0, 200.0, 0.0, 5.0,
+                                       disabled=not use_momentum)
+    with g3:
+        use_high52 = st.checkbox("Cerca del máximo de 52 semanas", value=False,
+                                 help="George y Hwang (2004).")
+        max_dist_high = st.number_input("Máx. distancia al máximo (%)", 1.0, 80.0, 15.0, 1.0,
+                                        disabled=not use_high52)
+    use_vol = st.checkbox("Limitar volatilidad realizada (1 año)", value=False,
+                          help="Evita el sesgo del screener hacia activos muy volátiles.")
+    max_vol = st.number_input("Volatilidad anualizada máxima (%)", 10.0, 300.0, 60.0, 5.0,
+                              disabled=not use_vol)
+
     params = {
+        "use_trend": use_trend, "use_sma_cross": use_sma_cross,
+        "use_momentum": use_momentum, "min_momentum": min_momentum,
+        "use_high52": use_high52, "max_dist_high": max_dist_high,
+        "use_vol": use_vol, "max_vol": max_vol,
         "t1_min_dte": int(t1_min_dte), "t1_max_dte": int(t1_max_dte), "t1_gain": t1_gain,
         "t2_target": int(t2_target), "t2_tol": int(t2_tol), "t2_gain": t2_gain,
         "t3_target": int(t3_target), "t3_tol": int(t3_tol), "t3_gain": t3_gain,
@@ -703,6 +797,18 @@ def main():
 
 def render_results():
     st.markdown("### 📊 Resultados")
+
+    # Si quedan resultados de una versión anterior del código (otras columnas),
+    # se descartan para evitar KeyError.
+    required_cols = {"Tramo", "Tipo", "Coste_Neto_$", "Coste_Neto_%", "Ganancia_Max_$",
+                     "Ganancia_Max_%", "Call_Skew", "_coste_acc"}
+    stale = st.session_state.get("results")
+    if stale is not None and not stale.empty and not required_cols.issubset(stale.columns):
+        for key in ("results", "funnel", "debug_snapshot", "scan_ts", "scanned_total"):
+            st.session_state.pop(key, None)
+        st.warning("⚠️ Había resultados de una versión anterior del screener. "
+                   "Se han descartado: lanza un nuevo escaneo.")
+        return
 
     if "results" not in st.session_state or st.session_state["results"].empty:
         st.info("👆 Configura los parámetros y pulsa **INICIAR ESCANEO**.")
