@@ -7,7 +7,12 @@ Estructura (por 100 acciones, mismo vencimiento):
     + 1 long put ATM (el strike más cercano al precio)
     - 1 short call OTM: el strike MÁS LEJANO cuya prima financia el put
 
-VENCIMIENTOS: todos los que caen entre DTE desde (30) y DTE hasta (60).
+VENCIMIENTOS (tres tramos, todos editables):
+  - Corto    : todos los vencimientos entre 30 y 60 DTE (ganancia mín. 0%)
+  - ~6 meses : UN vencimiento, el más cercano a 180 DTE (ganancia mín. 20%)
+  - ~12 meses: UN vencimiento, el más cercano a 365 DTE (ganancia mín. 20%)
+Cada tramo exige su propia ganancia máxima mínima. La opción "solo crédito"
+se aplica a los tres.
 
 OPCIÓN "SOLO CRÉDITO" (activada por defecto): el call debe ingresar más que lo
 que cuesta el put (crédito neto >= 0,5 céntimos por acción). Si se desactiva,
@@ -49,6 +54,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 import warnings
 import socket
+import time
 import logging
 import plotly.graph_objects as go
 
@@ -119,6 +125,36 @@ def _record_debug(reason, msg):
 def _reset_debug():
     with _debug_lock:
         _debug_samples.clear()
+
+
+# Diagnóstico a nivel de VENCIMIENTO: por qué se descarta cada vencimiento evaluado
+_diag_lock = Lock()
+_diag_counts = {}
+
+DIAG_LABELS = {
+    "ok": "✅ Collar válido",
+    "put_sin_cotizacion": "Puts sin bid/ask > 0 (mercado cerrado o datos vacíos)",
+    "call_sin_cotizacion": "Calls sin bid/ask > 0 (mercado cerrado o datos vacíos)",
+    "put_oi": "Puts: ninguno alcanza el OI mínimo",
+    "call_oi": "Calls: ninguno alcanza el OI mínimo",
+    "put_spread": "Puts: todos con spread demasiado ancho",
+    "call_spread": "Calls: todos con spread demasiado ancho",
+    "put_atm_lejos": f"El put líquido más cercano está a más del {ATM_MAX_DIST_PCT:g}% del precio",
+    "sin_calls_otm": "Sin calls OTM líquidos",
+    "call_no_financia_put": "Ningún call OTM paga lo suficiente para financiar el put",
+    "ganancia_no_positiva": "Ganancia máxima <= 0",
+    "ganancia_baja": "Ganancia máxima por debajo del mínimo exigido",
+}
+
+
+def _reset_diag():
+    with _diag_lock:
+        _diag_counts.clear()
+
+
+def _count_diag(reason):
+    with _diag_lock:
+        _diag_counts[reason] = _diag_counts.get(reason, 0) + 1
 
 
 def _clean_ticker(raw):
@@ -243,14 +279,33 @@ def refresh_universe():
 # ======================================================================
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def get_price_data(ticker):
-    """Histórico diario (2 años) vía yfinance y los indicadores para los filtros
-    opcionales. Devuelve un dict (valores None si no hay historial suficiente)
-    o None si falla la descarga."""
+def _fetch_history(ticker, period):
+    """Descarga yfinance con un reintento. Si falla o viene vacía LANZA una
+    excepción: st.cache_data no cachea las excepciones, así que un fallo puntual
+    (p. ej. límite de peticiones de Yahoo) no se queda guardado 30 minutos."""
+    last_err = None
+    for _ in range(2):
+        try:
+            h = yf.Ticker(ticker).history(period=period, interval="1d", auto_adjust=False)
+            if h is not None and not h.empty and h["Close"].notna().any():
+                return h
+            last_err = "descarga vacía"
+        except Exception as e:
+            last_err = str(e)
+        time.sleep(0.7)
+    raise RuntimeError(last_err or "sin datos")
+
+
+def get_price_data(ticker, long_history=False):
+    """Precio y, si long_history=True (hay filtros de tendencia activos), los
+    indicadores sobre 2 años de histórico. Con los filtros desactivados solo se
+    descargan 5 días (mucho más ligero y con menos riesgo de bloqueo de Yahoo).
+    Devuelve un dict o None si falla la descarga."""
     try:
-        h = yf.Ticker(ticker).history(period="2y", interval="1d", auto_adjust=False)
-        if h is None or h.empty:
-            _record_debug("no_price_data", f"{ticker}: descarga vacía")
+        try:
+            h = _fetch_history(ticker, "2y" if long_history else "5d")
+        except Exception as e:
+            _record_debug("no_price_data", f"{ticker}: {e}")
             return None
         close = h["Close"].dropna()
         if close.empty:
@@ -315,7 +370,7 @@ def passes_technical(ticker, d, params):
 
 def phase1_price_filter(ticker, params):
     try:
-        data = get_price_data(ticker)
+        data = get_price_data(ticker, params["need_history"])
         if data is None:
             return None, "no_price_data"
         price = data["price"]
@@ -368,6 +423,19 @@ def _prep_leg(df, apply_oi, min_oi, apply_spread, spread_max_pct):
     return d
 
 
+def _leg_status(df, params):
+    """Pata limpia + motivo si queda vacía (sin_cotizacion / oi / spread)."""
+    out = _prep_leg(df, params["use_oi_filter"], params["min_oi"],
+                    params["use_spread_filter"], params["spread_max_pct"])
+    if not out.empty:
+        return out, None
+    if _prep_leg(df, False, 0, False, 0).empty:
+        return out, "sin_cotizacion"
+    if params["use_oi_filter"] and _prep_leg(df, True, params["min_oi"], False, 0).empty:
+        return out, "oi"
+    return out, "spread"
+
+
 def approx_margin(price, kp, kc, params):
     """Margen aproximado IBKR (Reg T, cuenta margin, EE. UU.) por 100 acciones.
     Inicial    = % inicial x valor acciones + importe ITM del call
@@ -380,7 +448,7 @@ def approx_margin(price, kp, kc, params):
     return round(initial, 2), round(maint, 2)
 
 
-def find_collar(ticker, exp, calls, puts, price, params):
+def find_collar(ticker, exp, calls, puts, price, params, tramo="Corto", min_gain=0.0):
     """Devuelve el collar (dict) del vencimiento o None.
     Put = strike más cercano al precio. Call = strike más lejano (> precio)
     que financia el put (crédito si 'solo crédito', o débito dentro de la
@@ -390,17 +458,17 @@ def find_collar(ticker, exp, calls, puts, price, params):
         if dte <= 0:
             return None
 
-        p = _prep_leg(puts, params["use_oi_filter"], params["min_oi"],
-                      params["use_spread_filter"], params["spread_max_pct"])
-        c = _prep_leg(calls, params["use_oi_filter"], params["min_oi"],
-                      params["use_spread_filter"], params["spread_max_pct"])
+        p, why_p = _leg_status(puts, params)
+        c, why_c = _leg_status(calls, params)
         if p.empty or c.empty:
+            _count_diag(f"put_{why_p}" if p.empty else f"call_{why_c}")
             return None
 
         # Put ATM: el strike más cercano al precio
         p = p.assign(dist=(p["strike"] - price).abs())
         pr = p.sort_values("dist").iloc[0]
         if pr["dist"] / price * 100 > ATM_MAX_DIST_PCT:
+            _count_diag("put_atm_lejos")
             return None
 
         kp = float(pr["strike"])
@@ -411,8 +479,13 @@ def find_collar(ticker, exp, calls, puts, price, params):
         else:
             min_call_mid = put_mid - price * params["debit_tol_pct"] / 100.0
 
-        ok = c[(c["strike"] > price) & (c["mid"] >= min_call_mid)]
+        otm = c[c["strike"] > price]
+        if otm.empty:
+            _count_diag("sin_calls_otm")
+            return None
+        ok = otm[otm["mid"] >= min_call_mid]
         if ok.empty:
+            _count_diag("call_no_financia_put")
             return None
         cr = ok.sort_values("strike", ascending=False).iloc[0]
 
@@ -422,10 +495,13 @@ def find_collar(ticker, exp, calls, puts, price, params):
         net_cost = put_mid - call_mid                 # + débito / - crédito
         max_gain = kc - price - net_cost
         if max_gain <= 0:
+            _count_diag("ganancia_no_positiva")
             return None
         gain_pct = max_gain / price * 100
-        if gain_pct < params["min_gain"]:
+        if gain_pct < min_gain:
+            _count_diag("ganancia_baja")
             return None
+        _count_diag("ok")
 
         iv_put = _iv_or_none(pr["iv"])
         iv_call = _iv_or_none(cr["iv"])
@@ -442,6 +518,7 @@ def find_collar(ticker, exp, calls, puts, price, params):
 
         return {
             "Ticker": ticker,
+            "Tramo": tramo,
             "Precio": round(price, 2),
             "Vencimiento": exp.isoformat(),
             "DTE": dte,
@@ -468,6 +545,34 @@ def find_collar(ticker, exp, calls, puts, price, params):
 # 3. FASE 2 — opciones (SECUENCIAL)
 # ======================================================================
 
+def select_expirations(expirations, params):
+    """Devuelve [(vencimiento, tramo, ganancia_min_%)].
+    Corto: todos los vencimientos entre DTE desde y DTE hasta.
+    ~6 meses y ~12 meses: UN vencimiento cada uno, el más cercano al DTE
+    objetivo dentro de la tolerancia (si el ticker lo tiene listado)."""
+    today = date.today()
+    exps = sorted(expirations)
+    out, seen = [], set()
+
+    for e in exps:
+        if params["min_dte"] <= (e - today).days <= params["max_dte"]:
+            out.append((e, "Corto", params["min_gain"]))
+            seen.add(e)
+
+    for use, name, target, tol, gain in (
+        (params["t2_use"], "~6 meses", params["t2_target"], params["t2_tol"], params["t2_gain"]),
+        (params["t3_use"], "~12 meses", params["t3_target"], params["t3_tol"], params["t3_gain"]),
+    ):
+        if not use:
+            continue
+        cands = [e for e in exps if e not in seen and abs((e - today).days - target) <= tol]
+        if cands:
+            best = min(cands, key=lambda e: abs((e - today).days - target))
+            out.append((best, name, gain))
+            seen.add(best)
+    return out
+
+
 def phase2_collar_scan(survivor, params):
     ticker = survivor["Ticker"]
     fallback_price = survivor["current_price"]
@@ -476,19 +581,15 @@ def phase2_collar_scan(survivor, params):
         if not expirations:
             return None, "no_expirations"
 
-        today = date.today()
-        valid = sorted(
-            e for e in expirations
-            if params["min_dte"] <= (e - today).days <= params["max_dte"]
-        )
-        if not valid:
+        selected = select_expirations(expirations, params)
+        if not selected:
             return None, "no_expirations_in_window"
 
         price = get_live_price(ticker, fallback_price)
 
         rows = []
         chains_ok = 0
-        for exp in valid:
+        for exp, tramo, tramo_gain in selected:
             try:
                 calls, puts = get_option_chain(ticker, exp)
             except Exception as e:
@@ -497,7 +598,7 @@ def phase2_collar_scan(survivor, params):
             if calls is None or puts is None or calls.empty or puts.empty:
                 continue
             chains_ok += 1
-            row = find_collar(ticker, exp, calls, puts, price, params)
+            row = find_collar(ticker, exp, calls, puts, price, params, tramo, tramo_gain)
             if row:
                 rows.append(row)
 
@@ -517,6 +618,7 @@ def phase2_collar_scan(survivor, params):
 
 def run_screener(tickers, params, progress_bar, status_text):
     _reset_debug()
+    _reset_diag()
     funnel = {r: 0 for r in REASON_ORDER}
     total = len(tickers)
 
@@ -563,12 +665,14 @@ def run_screener(tickers, params, progress_bar, status_text):
 
     with _debug_lock:
         debug_snapshot = {k: list(v) for k, v in _debug_samples.items()}
+    with _diag_lock:
+        diag_snapshot = dict(_diag_counts)
 
-    return df, funnel, debug_snapshot
+    return df, funnel, debug_snapshot, diag_snapshot
 
 
 def reset_everything():
-    get_price_data.clear()
+    _fetch_history.clear()
     get_chart_data.clear()
     get_option_expirations.clear()
     get_cboe_weeklys_tickers.clear()
@@ -741,17 +845,31 @@ def main():
 
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("**📆 Vencimientos y ganancia**")
-        a, b = st.columns(2)
-        min_dte = a.number_input("DTE desde", 1, 365, 30, 5)
-        max_dte = b.number_input("DTE hasta", 2, 365, 60, 5)
+        st.markdown("**📆 Vencimientos y ganancia mínima por tramo**")
+        st.caption("🟢 Corto: todos los vencimientos del rango · 🟡 ~6 meses y 🔴 ~12 meses: "
+                   "UN vencimiento cada uno, el más cercano al objetivo.")
+        ta, tb, tc = st.columns(3)
+        min_dte = ta.number_input("Corto: DTE desde", 1, 365, 30, 5)
+        max_dte = tb.number_input("Corto: DTE hasta", 2, 365, 60, 5)
+        min_gain = tc.number_input(
+            "Corto: ganancia mín. (%)", 0.0, 500.0, 0.0, 0.5,
+            help="Con 'solo crédito' y put ATM, el call suele quedar a pocos puntos "
+                 "del precio en vencimientos cortos: una ganancia mínima alta deja el tramo vacío.",
+        )
         if min_dte > max_dte:
             min_dte, max_dte = max_dte, min_dte
-        min_gain = st.number_input(
-            "Ganancia máx. mínima (%)", 0.0, 500.0, 0.0, 0.5,
-            help="Con 'solo crédito' y put ATM, el call suele quedar a pocos puntos "
-                 "del precio: una ganancia mínima alta puede dejar el resultado vacío.",
-        )
+
+        t2_use = st.checkbox("Incluir ~6 meses", value=True)
+        ua, ub, uc = st.columns(3)
+        t2_target = ua.number_input("~6m: DTE objetivo", 60, 730, 180, 10, disabled=not t2_use)
+        t2_tol = ub.number_input("~6m: tolerancia ± días", 5, 120, 30, 5, disabled=not t2_use)
+        t2_gain = uc.number_input("~6m: ganancia mín. (%)", 0.0, 500.0, 20.0, 1.0, disabled=not t2_use)
+
+        t3_use = st.checkbox("Incluir ~12 meses", value=True)
+        va, vb, vc = st.columns(3)
+        t3_target = va.number_input("~12m: DTE objetivo", 120, 800, 365, 10, disabled=not t3_use)
+        t3_tol = vb.number_input("~12m: tolerancia ± días", 5, 180, 45, 5, disabled=not t3_use)
+        t3_gain = vc.number_input("~12m: ganancia mín. (%)", 0.0, 500.0, 20.0, 1.0, disabled=not t3_use)
 
         st.markdown("**🧱 Riesgo del collar**")
         only_credit = st.checkbox(
@@ -815,6 +933,8 @@ def main():
 
     params = {
         "min_dte": int(min_dte), "max_dte": int(max_dte), "min_gain": min_gain,
+        "t2_use": t2_use, "t2_target": int(t2_target), "t2_tol": int(t2_tol), "t2_gain": t2_gain,
+        "t3_use": t3_use, "t3_target": int(t3_target), "t3_tol": int(t3_tol), "t3_gain": t3_gain,
         "only_credit": only_credit, "debit_tol_pct": debit_tol_pct,
         "min_price": min_price, "max_price": max_price,
         "use_oi_filter": use_oi_filter, "min_oi": min_oi,
@@ -826,6 +946,7 @@ def main():
         "use_momentum": use_momentum, "min_momentum": min_momentum,
         "use_high52": use_high52, "max_dist_high": max_dist_high,
         "use_vol": use_vol, "max_vol": max_vol,
+        "need_history": any([use_trend, use_sma_cross, use_momentum, use_high52, use_vol]),
     }
 
     st.divider()
@@ -849,11 +970,12 @@ def main():
     if scan_btn:
         progress_bar = st.progress(0)
         status_text = st.empty()
-        df_results, funnel, debug_snapshot = run_screener(
+        df_results, funnel, debug_snapshot, diag = run_screener(
             scan_universe, params, progress_bar, status_text
         )
         progress_bar.empty()
 
+        st.session_state["diag"] = diag
         st.session_state["results"] = df_results
         st.session_state["funnel"] = funnel
         st.session_state["debug_snapshot"] = debug_snapshot
@@ -877,6 +999,17 @@ def main():
                 rows.append({"Motivo": REASON_LABELS[code], "Tickers": n, "% del universo": pct})
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
+            diag = st.session_state.get("diag", {})
+            if diag:
+                st.markdown("**Por qué se descartó cada VENCIMIENTO evaluado en la Fase 2**")
+                total_exp = sum(diag.values())
+                drows = [
+                    {"Motivo": DIAG_LABELS.get(k, k), "Vencimientos": n,
+                     "% del total": round(n / total_exp * 100, 1)}
+                    for k, n in sorted(diag.items(), key=lambda kv: -kv[1])
+                ]
+                st.dataframe(pd.DataFrame(drows), use_container_width=True, hide_index=True)
+
             debug_snapshot = st.session_state.get("debug_snapshot", {})
             if debug_snapshot:
                 with st.expander("🐛 Mensajes de error (muestras)"):
@@ -889,7 +1022,7 @@ def main():
 
 
 REQUIRED_COLS = {
-    "Ticker", "Precio", "Vencimiento", "DTE", "Strike_Put", "Put_Mid", "Strike_Call",
+    "Ticker", "Tramo", "Precio", "Vencimiento", "DTE", "Strike_Put", "Put_Mid", "Strike_Call",
     "Call_Mid", "Tipo", "Coste_Neto_$", "Coste_Neto_%", "Ganancia_Max_$",
     "Ganancia_Max_%", "Call_Skew", "Margen_Inicial_$", "Margen_Mant_$", "_coste_acc",
 }
@@ -915,14 +1048,17 @@ def render_results():
     ts = st.session_state["scan_ts"]
 
     # Filtros rápidos sobre resultados
-    f1, f2 = st.columns([1, 3])
+    f1, f2, f3 = st.columns([1, 2, 2])
     with f1:
         use_skew = st.checkbox("Call skew ≥ 0", value=False,
                                help="IV call − IV put, en puntos. Excluye los sin dato.")
     with f2:
+        tramo_opts = [t for t in ["Corto", "~6 meses", "~12 meses"] if t in set(df_all["Tramo"])]
+        tramos_sel = st.multiselect("Tramos", tramo_opts, default=tramo_opts)
+    with f3:
         pick = st.multiselect("Tickers (vacío = todos)", sorted(df_all["Ticker"].unique()))
 
-    df = df_all
+    df = df_all[df_all["Tramo"].isin(tramos_sel)]
     if pick:
         df = df[df["Ticker"].isin(pick)]
     if use_skew:
@@ -940,7 +1076,7 @@ def render_results():
     st.caption(f"Último escaneo: {ts.strftime('%H:%M:%S')}")
 
     cols_show = [
-        "Ticker", "Precio", "Vencimiento", "DTE",
+        "Ticker", "Tramo", "Precio", "Vencimiento", "DTE",
         "Strike_Put", "Put_Mid", "Strike_Call", "Call_Mid",
         "Tipo", "Coste_Neto_$", "Coste_Neto_%",
         "Ganancia_Max_$", "Ganancia_Max_%", "Call_Skew",
