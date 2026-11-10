@@ -49,7 +49,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 import warnings
 import socket
-import time
 import logging
 import plotly.graph_objects as go
 
@@ -120,36 +119,6 @@ def _record_debug(reason, msg):
 def _reset_debug():
     with _debug_lock:
         _debug_samples.clear()
-
-
-# Diagnóstico a nivel de VENCIMIENTO: por qué se descarta cada vencimiento evaluado
-_diag_lock = Lock()
-_diag_counts = {}
-
-DIAG_LABELS = {
-    "ok": "✅ Collar válido",
-    "put_sin_cotizacion": "Puts sin bid/ask > 0 (mercado cerrado o datos vacíos)",
-    "call_sin_cotizacion": "Calls sin bid/ask > 0 (mercado cerrado o datos vacíos)",
-    "put_oi": "Puts: ninguno alcanza el OI mínimo",
-    "call_oi": "Calls: ninguno alcanza el OI mínimo",
-    "put_spread": "Puts: todos con spread demasiado ancho",
-    "call_spread": "Calls: todos con spread demasiado ancho",
-    "put_atm_lejos": f"El put líquido más cercano está a más del {ATM_MAX_DIST_PCT:g}% del precio",
-    "sin_calls_otm": "Sin calls OTM líquidos",
-    "call_no_financia_put": "Ningún call OTM paga lo suficiente para financiar el put",
-    "ganancia_no_positiva": "Ganancia máxima <= 0",
-    "ganancia_baja": "Ganancia máxima por debajo del mínimo exigido",
-}
-
-
-def _reset_diag():
-    with _diag_lock:
-        _diag_counts.clear()
-
-
-def _count_diag(reason):
-    with _diag_lock:
-        _diag_counts[reason] = _diag_counts.get(reason, 0) + 1
 
 
 def _clean_ticker(raw):
@@ -274,33 +243,14 @@ def refresh_universe():
 # ======================================================================
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _fetch_history(ticker, period):
-    """Descarga yfinance con un reintento. Si falla o viene vacía LANZA una
-    excepción: st.cache_data no cachea las excepciones, así que un fallo puntual
-    (p. ej. límite de peticiones de Yahoo) no se queda guardado 30 minutos."""
-    last_err = None
-    for _ in range(2):
-        try:
-            h = yf.Ticker(ticker).history(period=period, interval="1d", auto_adjust=False)
-            if h is not None and not h.empty and h["Close"].notna().any():
-                return h
-            last_err = "descarga vacía"
-        except Exception as e:
-            last_err = str(e)
-        time.sleep(0.7)
-    raise RuntimeError(last_err or "sin datos")
-
-
-def get_price_data(ticker, long_history=False):
-    """Precio y, si long_history=True (hay filtros de tendencia activos), los
-    indicadores sobre 2 años de histórico. Con los filtros desactivados solo se
-    descargan 5 días (mucho más ligero y con menos riesgo de bloqueo de Yahoo).
-    Devuelve un dict o None si falla la descarga."""
+def get_price_data(ticker):
+    """Histórico diario (2 años) vía yfinance y los indicadores para los filtros
+    opcionales. Devuelve un dict (valores None si no hay historial suficiente)
+    o None si falla la descarga."""
     try:
-        try:
-            h = _fetch_history(ticker, "2y" if long_history else "5d")
-        except Exception as e:
-            _record_debug("no_price_data", f"{ticker}: {e}")
+        h = yf.Ticker(ticker).history(period="2y", interval="1d", auto_adjust=False)
+        if h is None or h.empty:
+            _record_debug("no_price_data", f"{ticker}: descarga vacía")
             return None
         close = h["Close"].dropna()
         if close.empty:
@@ -365,7 +315,7 @@ def passes_technical(ticker, d, params):
 
 def phase1_price_filter(ticker, params):
     try:
-        data = get_price_data(ticker, params["need_history"])
+        data = get_price_data(ticker)
         if data is None:
             return None, "no_price_data"
         price = data["price"]
@@ -418,19 +368,6 @@ def _prep_leg(df, apply_oi, min_oi, apply_spread, spread_max_pct):
     return d
 
 
-def _leg_status(df, params):
-    """Pata limpia + motivo si queda vacía (sin_cotizacion / oi / spread)."""
-    out = _prep_leg(df, params["use_oi_filter"], params["min_oi"],
-                    params["use_spread_filter"], params["spread_max_pct"])
-    if not out.empty:
-        return out, None
-    if _prep_leg(df, False, 0, False, 0).empty:
-        return out, "sin_cotizacion"
-    if params["use_oi_filter"] and _prep_leg(df, True, params["min_oi"], False, 0).empty:
-        return out, "oi"
-    return out, "spread"
-
-
 def approx_margin(price, kp, kc, params):
     """Margen aproximado IBKR (Reg T, cuenta margin, EE. UU.) por 100 acciones.
     Inicial    = % inicial x valor acciones + importe ITM del call
@@ -453,17 +390,17 @@ def find_collar(ticker, exp, calls, puts, price, params):
         if dte <= 0:
             return None
 
-        p, why_p = _leg_status(puts, params)
-        c, why_c = _leg_status(calls, params)
+        p = _prep_leg(puts, params["use_oi_filter"], params["min_oi"],
+                      params["use_spread_filter"], params["spread_max_pct"])
+        c = _prep_leg(calls, params["use_oi_filter"], params["min_oi"],
+                      params["use_spread_filter"], params["spread_max_pct"])
         if p.empty or c.empty:
-            _count_diag(f"put_{why_p}" if p.empty else f"call_{why_c}")
             return None
 
         # Put ATM: el strike más cercano al precio
         p = p.assign(dist=(p["strike"] - price).abs())
         pr = p.sort_values("dist").iloc[0]
         if pr["dist"] / price * 100 > ATM_MAX_DIST_PCT:
-            _count_diag("put_atm_lejos")
             return None
 
         kp = float(pr["strike"])
@@ -474,13 +411,8 @@ def find_collar(ticker, exp, calls, puts, price, params):
         else:
             min_call_mid = put_mid - price * params["debit_tol_pct"] / 100.0
 
-        otm = c[c["strike"] > price]
-        if otm.empty:
-            _count_diag("sin_calls_otm")
-            return None
-        ok = otm[otm["mid"] >= min_call_mid]
+        ok = c[(c["strike"] > price) & (c["mid"] >= min_call_mid)]
         if ok.empty:
-            _count_diag("call_no_financia_put")
             return None
         cr = ok.sort_values("strike", ascending=False).iloc[0]
 
@@ -490,13 +422,10 @@ def find_collar(ticker, exp, calls, puts, price, params):
         net_cost = put_mid - call_mid                 # + débito / - crédito
         max_gain = kc - price - net_cost
         if max_gain <= 0:
-            _count_diag("ganancia_no_positiva")
             return None
         gain_pct = max_gain / price * 100
         if gain_pct < params["min_gain"]:
-            _count_diag("ganancia_baja")
             return None
-        _count_diag("ok")
 
         iv_put = _iv_or_none(pr["iv"])
         iv_call = _iv_or_none(cr["iv"])
@@ -588,7 +517,6 @@ def phase2_collar_scan(survivor, params):
 
 def run_screener(tickers, params, progress_bar, status_text):
     _reset_debug()
-    _reset_diag()
     funnel = {r: 0 for r in REASON_ORDER}
     total = len(tickers)
 
@@ -635,14 +563,12 @@ def run_screener(tickers, params, progress_bar, status_text):
 
     with _debug_lock:
         debug_snapshot = {k: list(v) for k, v in _debug_samples.items()}
-    with _diag_lock:
-        diag_snapshot = dict(_diag_counts)
 
-    return df, funnel, debug_snapshot, diag_snapshot
+    return df, funnel, debug_snapshot
 
 
 def reset_everything():
-    _fetch_history.clear()
+    get_price_data.clear()
     get_chart_data.clear()
     get_option_expirations.clear()
     get_cboe_weeklys_tickers.clear()
@@ -900,7 +826,6 @@ def main():
         "use_momentum": use_momentum, "min_momentum": min_momentum,
         "use_high52": use_high52, "max_dist_high": max_dist_high,
         "use_vol": use_vol, "max_vol": max_vol,
-        "need_history": any([use_trend, use_sma_cross, use_momentum, use_high52, use_vol]),
     }
 
     st.divider()
@@ -924,12 +849,11 @@ def main():
     if scan_btn:
         progress_bar = st.progress(0)
         status_text = st.empty()
-        df_results, funnel, debug_snapshot, diag = run_screener(
+        df_results, funnel, debug_snapshot = run_screener(
             scan_universe, params, progress_bar, status_text
         )
         progress_bar.empty()
 
-        st.session_state["diag"] = diag
         st.session_state["results"] = df_results
         st.session_state["funnel"] = funnel
         st.session_state["debug_snapshot"] = debug_snapshot
@@ -952,17 +876,6 @@ def main():
                 pct = round(n / total_scanned * 100, 1) if total_scanned else 0
                 rows.append({"Motivo": REASON_LABELS[code], "Tickers": n, "% del universo": pct})
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-            diag = st.session_state.get("diag", {})
-            if diag:
-                st.markdown("**Por qué se descartó cada VENCIMIENTO evaluado en la Fase 2**")
-                total_exp = sum(diag.values())
-                drows = [
-                    {"Motivo": DIAG_LABELS.get(k, k), "Vencimientos": n,
-                     "% del total": round(n / total_exp * 100, 1)}
-                    for k, n in sorted(diag.items(), key=lambda kv: -kv[1])
-                ]
-                st.dataframe(pd.DataFrame(drows), use_container_width=True, hide_index=True)
 
             debug_snapshot = st.session_state.get("debug_snapshot", {})
             if debug_snapshot:
