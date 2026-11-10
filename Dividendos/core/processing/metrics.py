@@ -13,11 +13,25 @@ Métricas derivadas de los trades y del equity_summary:
 Nota clave: `fifoPnlRealized` en las filas de cierre (openCloseIndicator='C')
 ya viene neto de comisiones de apertura y cierre (IBKR lo calcula así).
 Por eso no hace falta restar `ibCommission` aparte al calcular P&L.
+
+RENTABILIDAD (TWR):
+Las rentabilidades de cuenta (YTD, crecimiento mensual, gráfico del NLV en %)
+se calculan con rentabilidad ponderada por tiempo (TWR, encadenando días) y
+descontando los depósitos y retiradas de efectivo. Antes se comparaba el NLV
+final con el inicial, lo que cuenta los ingresos de dinero como si fueran
+ganancias. Convención: el flujo de un día se considera recibido al final de
+ese día (no genera rentabilidad ese día).
 """
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
+
+
+# Tipos de cash transaction que son aportaciones/retiradas externas (no rentabilidad).
+# Si en tu Flex Query aparecen con otro nombre, añádelo aquí.
+FLOW_TYPES = ["Deposits/Withdrawals"]
 
 
 # ---------------------------------------------------------------------------
@@ -129,18 +143,130 @@ def pnl_summary(closed_trades_df: pd.DataFrame) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Rentabilidad ponderada por tiempo (TWR), descontando depósitos/retiradas
+# ---------------------------------------------------------------------------
+
+def external_flows(cash_tx_df: pd.DataFrame | None, flow_types=None) -> pd.DataFrame:
+    """Filas de cash transactions que son depósitos/retiradas externas."""
+    flow_types = flow_types or FLOW_TYPES
+    if cash_tx_df is None or cash_tx_df.empty or "type" not in cash_tx_df.columns:
+        return pd.DataFrame(columns=["reportDate", "amount", "type"])
+    return cash_tx_df[cash_tx_df["type"].isin(flow_types)].copy()
+
+
+def twr_series(
+    equity_df: pd.DataFrame,
+    cash_tx_df: pd.DataFrame | None = None,
+    flow_types=None,
+) -> pd.DataFrame:
+    """
+    Serie diaria con columnas:
+        reportDate, total, flow, daily_return, twr_index
+    - flow: depósitos(+)/retiradas(-) asignados al primer día de equity con
+      fecha >= la del movimiento (cubre fines de semana y festivos).
+    - daily_return = (NLV_t - flujo_t) / NLV_{t-1} - 1
+    - twr_index: índice encadenado que empieza en 1.0 en el primer día.
+    """
+    eq = (
+        equity_df.sort_values("reportDate")[["reportDate", "total"]]
+        .reset_index(drop=True)
+        .copy()
+    )
+    eq["total"] = pd.to_numeric(eq["total"], errors="coerce")
+    eq["flow"] = 0.0
+
+    fl = external_flows(cash_tx_df, flow_types)
+    if not fl.empty and len(eq):
+        dates = eq["reportDate"].to_numpy()
+        fdates = pd.to_datetime(fl["reportDate"]).to_numpy()
+        idx = np.searchsorted(dates, fdates, side="left")
+        amounts = pd.to_numeric(fl["amount"], errors="coerce").fillna(0.0).to_numpy()
+        valid = idx < len(eq)  # movimientos posteriores al último dato: aún no están en el NLV
+        if valid.any():
+            by_day = pd.Series(amounts[valid]).groupby(idx[valid]).sum()
+            eq.loc[by_day.index, "flow"] = by_day.values
+
+    prev = eq["total"].shift(1)
+    r = (eq["total"] - eq["flow"]) / prev - 1
+    r = r.where(prev.notna() & (prev != 0), 0.0).fillna(0.0)
+    eq["daily_return"] = r
+    eq["twr_index"] = (1 + r).cumprod()
+    return eq
+
+
+def twr_period(twr_df, start=None, end=None, include_start_day=False) -> dict | None:
+    """
+    Rentabilidad TWR entre `start` y `end`.
+
+    - Base: el último dato ANTERIOR a `start` (así el primer día del periodo
+      cuenta). Si no existe, el primer dato >= start.
+    - include_start_day=True: la base es el primer dato >= start (coincide con
+      un gráfico que empieza ese día en 0%).
+
+    Devuelve dict: twr_pct, gain_abs (ganancia en $ neta de flujos),
+    net_flows, start_value, end_value, start_date, end_date. None si no hay datos.
+    """
+    if twr_df is None or twr_df.empty:
+        return None
+
+    df = twr_df
+    if end is not None:
+        df = df[df["reportDate"] <= pd.to_datetime(end)]
+    if df.empty:
+        return None
+
+    if start is None:
+        base_pos = df.index[0]
+    else:
+        s = pd.to_datetime(start)
+        before = df[df["reportDate"] < s]
+        after = df[df["reportDate"] >= s]
+        if include_start_day or before.empty:
+            if after.empty:
+                return None
+            base_pos = after.index[0]
+        else:
+            base_pos = before.index[-1]
+
+    end_pos = df.index[-1]
+    base = twr_df.loc[base_pos]
+    last = twr_df.loc[end_pos]
+
+    if end_pos <= base_pos:
+        pct, flows = 0.0, 0.0
+    else:
+        pct = (last["twr_index"] / base["twr_index"] - 1) * 100
+        flows = float(twr_df.loc[base_pos + 1:end_pos, "flow"].sum())
+
+    return {
+        "twr_pct": float(pct),
+        "gain_abs": float(last["total"] - base["total"] - flows),
+        "net_flows": flows,
+        "start_value": float(base["total"]),
+        "end_value": float(last["total"]),
+        "start_date": base["reportDate"],
+        "end_date": last["reportDate"],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Resumen de cuenta (NLV, caja, invertido, rentabilidad YTD)
 # ---------------------------------------------------------------------------
 
-def account_summary(equity_df: pd.DataFrame, as_of=None) -> dict:
+def account_summary(equity_df: pd.DataFrame, as_of=None, cash_tx_df=None) -> dict:
     """
     Calcula el resumen de cuenta a partir de equity_summary (una fila/día).
 
     - nlv: 'total' del último día disponible (o de `as_of` si se indica)
     - cash: 'cash' de ese mismo día
     - invested: nlv - cash (valor de mercado de acciones + opciones)
-    - ytd_return_pct: variación de 'total' desde el primer día del año
-      hasta el día usado, en %. None si no hay dato del inicio de año.
+    - ytd_return_pct: rentabilidad TWR del año (descuenta depósitos/retiradas
+      si se pasa `cash_tx_df`). Base: último dato del año anterior, o el
+      primer dato del año si no hay historial previo.
+    - ytd_simple_pct: variación simple del NLV (incluye depósitos), solo para
+      comparar/diagnosticar.
+    - ytd_gain: ganancia en $ del año neta de depósitos/retiradas.
+    - ytd_net_flows: depósitos(+)/retiradas(-) netos del año.
 
     Devuelve None si equity_df está vacío.
     """
@@ -160,11 +286,22 @@ def account_summary(equity_df: pd.DataFrame, as_of=None) -> dict:
 
     year = last_row["reportDate"].year
     year_rows = df[df["reportDate"].dt.year == year]
-    ytd_return_pct = None
+
+    ytd_simple_pct = None
     if not year_rows.empty:
         start_value = float(year_rows.iloc[0]["total"])
         if start_value != 0:
-            ytd_return_pct = (nlv - start_value) / start_value * 100
+            ytd_simple_pct = (nlv - start_value) / start_value * 100
+
+    ytd_return_pct = None
+    ytd_gain = None
+    ytd_net_flows = None
+    twr = twr_series(df, cash_tx_df)
+    perf = twr_period(twr, start=pd.Timestamp(year, 1, 1), end=last_row["reportDate"])
+    if perf is not None:
+        ytd_return_pct = perf["twr_pct"]
+        ytd_gain = perf["gain_abs"]
+        ytd_net_flows = perf["net_flows"]
 
     return {
         "as_of_date": last_row["reportDate"],
@@ -172,6 +309,9 @@ def account_summary(equity_df: pd.DataFrame, as_of=None) -> dict:
         "cash": cash,
         "invested": invested,
         "ytd_return_pct": ytd_return_pct,
+        "ytd_simple_pct": ytd_simple_pct,
+        "ytd_gain": ytd_gain,
+        "ytd_net_flows": ytd_net_flows,
     }
 
 
@@ -286,17 +426,18 @@ def dividends_total(cash_transactions_df: pd.DataFrame, year: int) -> dict:
 # Crecimiento mensual de la cuenta (tarjetas de crecimiento)
 # ---------------------------------------------------------------------------
 
-def account_growth_by_month(equity_df: pd.DataFrame, year: int) -> pd.DataFrame:
+def account_growth_by_month(equity_df: pd.DataFrame, year: int, cash_tx_df=None) -> pd.DataFrame:
     """
-    Para cada mes del año indicado, calcula el NLV inicial y final del mes
-    (usando el primer y último 'reportDate' disponibles dentro de ese mes),
-    y el crecimiento absoluto y porcentual respecto al inicio del mes.
-
-    Útil para las "tarjetas de crecimiento mensual" del panel de dividendos.
+    Para cada mes del año indicado calcula la rentabilidad TWR del mes
+    (descontando depósitos/retiradas si se pasa `cash_tx_df`). La base de cada
+    mes es el último dato del mes anterior, así no se pierde el movimiento del
+    primer día del mes.
 
     Devuelve DataFrame con columnas:
         month, month_label, start_nlv, end_nlv, growth_abs, growth_pct
-    Meses sin datos: start_nlv/end_nlv = None, growth_abs/growth_pct = None.
+    - growth_abs: ganancia en $ del mes neta de depósitos/retiradas.
+    - growth_pct: rentabilidad TWR del mes en %.
+    Meses sin datos: todo None.
     """
     base = pd.DataFrame({"month": range(1, 13), "month_label": MESES_ES})
 
@@ -307,25 +448,28 @@ def account_growth_by_month(equity_df: pd.DataFrame, year: int) -> pd.DataFrame:
         base["growth_pct"] = None
         return base
 
-    df = equity_df[equity_df["reportDate"].dt.year == year].sort_values("reportDate")
+    twr = twr_series(equity_df, cash_tx_df)
+    year_df = twr[twr["reportDate"].dt.year == year]
 
     rows = []
     for month in range(1, 13):
-        month_df = df[df["reportDate"].dt.month == month]
+        month_df = year_df[year_df["reportDate"].dt.month == month]
         if month_df.empty:
             rows.append({"start_nlv": None, "end_nlv": None, "growth_abs": None, "growth_pct": None})
             continue
 
-        start_nlv = float(month_df.iloc[0]["total"])
-        end_nlv = float(month_df.iloc[-1]["total"])
-        growth_abs = end_nlv - start_nlv
-        growth_pct = (growth_abs / start_nlv * 100) if start_nlv != 0 else None
+        month_start = pd.Timestamp(year, month, 1)
+        month_end = month_start + pd.offsets.MonthEnd(0)
+        perf = twr_period(twr, start=month_start, end=month_end)
+        if perf is None:
+            rows.append({"start_nlv": None, "end_nlv": None, "growth_abs": None, "growth_pct": None})
+            continue
 
         rows.append({
-            "start_nlv": start_nlv,
-            "end_nlv": end_nlv,
-            "growth_abs": growth_abs,
-            "growth_pct": growth_pct,
+            "start_nlv": perf["start_value"],
+            "end_nlv": perf["end_value"],
+            "growth_abs": perf["gain_abs"],
+            "growth_pct": perf["twr_pct"],
         })
 
     result = pd.concat([base, pd.DataFrame(rows)], axis=1)
