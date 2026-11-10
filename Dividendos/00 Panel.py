@@ -17,6 +17,7 @@ from Dividendos.core.storage.db import (
     save_flex_import,
 )
 from Dividendos.core.processing.metrics import (
+    FLOW_TYPES,
     filter_closed_trades,
     pnl_summary,
     win_rate,
@@ -24,6 +25,9 @@ from Dividendos.core.processing.metrics import (
     dividends_by_month,
     dividends_total,
     account_growth_by_month,
+    external_flows,
+    twr_series,
+    twr_period,
 )
 from Dividendos.core.processing.allocation import compare_allocation
 from Dividendos.core.ingestion.flex_query import import_flex_report
@@ -210,17 +214,25 @@ def _maybe_auto_update_from_ibkr():
 # Gráfico lineal de evolución del NLV
 # ---------------------------------------------------------------------------
 
-def render_nlv_line_chart(equity_df, scale="linear", display_mode="dollar"):
+def render_nlv_line_chart(equity_df, scale="linear", display_mode="dollar", twr_df=None):
     """
     Gráfico de evolución del NLV con línea/relleno verde cuando el valor es
     positivo y rojo cuando es negativo, cambiando de color exactamente en
     el cruce por cero (sin huecos ni cortes artificiales).
+
+    En vista "%" se usa el índice TWR (si se pasa `twr_df`), de modo que los
+    depósitos y retiradas no cuentan como rentabilidad.
     """
     df = equity_df.sort_values("reportDate").reset_index(drop=True)
 
     if display_mode == "percent":
-        base = df["total"].iloc[0]
-        y_values = (df["total"] / base - 1) * 100 if base else df["total"] * 0
+        if twr_df is not None and "twr_index" in twr_df.columns:
+            df = df.merge(twr_df[["reportDate", "twr_index"]], on="reportDate", how="left")
+            base = df["twr_index"].iloc[0]
+            y_values = (df["twr_index"] / base - 1) * 100 if base else df["total"] * 0
+        else:
+            base = df["total"].iloc[0]
+            y_values = (df["total"] / base - 1) * 100 if base else df["total"] * 0
         hover_fmt = "%{y:+.2f}%"
     else:
         y_values = df["total"]
@@ -319,7 +331,7 @@ def render_growth_chart(growth_df):
         y=df["growth_pct"],
         marker_color=colors,
         customdata=df["growth_abs"],
-        hovertemplate="%{x}<br>Crecimiento: %{y:+.2f}%<br>($%{customdata:+,.0f})<extra></extra>",
+        hovertemplate="%{x}<br>Rentabilidad: %{y:+.2f}%<br>Ganancia neta de depósitos: $%{customdata:+,.0f}<extra></extra>",
         text=[f"{v:+.2f}%" for v in df["growth_pct"]],
         textposition="outside",
     ))
@@ -424,7 +436,10 @@ def main():
     default_index = available_years.index(today.year) if today.year in available_years else 0
     selected_year = st.selectbox("Año", options=available_years, index=default_index, key="panel_year")
 
-    acc = account_summary(equity)
+    # Rentabilidad TWR: descuenta depósitos y retiradas (cash transactions).
+    acc = account_summary(equity, cash_tx_df=cash_tx)
+    twr_full = twr_series(equity, cash_tx)
+    flows_df = external_flows(cash_tx)
 
     log_df = read_import_log(DB_PATH)
     last_update_str = "—"
@@ -441,7 +456,47 @@ def main():
         col2.metric("Caja", f"${acc['cash']:,.2f}")
         col3.metric("Invertido", f"${acc['invested']:,.2f}")
         ytd = acc["ytd_return_pct"]
-        col4.metric("Rentab. YTD", f"{ytd:.2f}%" if ytd is not None else "—")
+        col4.metric(
+            "Rentab. YTD",
+            f"{ytd:.2f}%" if ytd is not None else "—",
+            help="Rentabilidad ponderada por tiempo (TWR): descuenta los depósitos y "
+                 "retiradas de efectivo, que no son ganancia.",
+        )
+
+    if flows_df.empty:
+        st.warning(
+            "⚠️ No se han detectado depósitos ni retiradas en las cash transactions "
+            f"(tipos buscados: {', '.join(FLOW_TYPES)}). Si has ingresado dinero este año, "
+            "la rentabilidad estará inflada. Abre el diagnóstico de abajo para ver qué tipos hay."
+        )
+
+    with st.expander("🧪 Diagnóstico de rentabilidad"):
+        if acc:
+            simple = acc.get("ytd_simple_pct")
+            dcol1, dcol2, dcol3, dcol4 = st.columns(4)
+            dcol1.metric("YTD simple (incluye depósitos)", f"{simple:.2f}%" if simple is not None else "—")
+            dcol2.metric("YTD TWR", f"{acc['ytd_return_pct']:.2f}%" if acc["ytd_return_pct"] is not None else "—")
+            dcol3.metric("Depósitos/retiradas netos YTD",
+                         f"${acc['ytd_net_flows']:,.2f}" if acc["ytd_net_flows"] is not None else "—")
+            dcol4.metric("Ganancia YTD neta de depósitos",
+                         f"${acc['ytd_gain']:,.2f}" if acc["ytd_gain"] is not None else "—")
+
+        year_tw = twr_full[twr_full["reportDate"].dt.year == today.year]
+        if not year_tw.empty:
+            st.write("Primer dato del año:", year_tw.iloc[0][["reportDate", "total"]].to_dict())
+            st.write("Último dato:", year_tw.iloc[-1][["reportDate", "total"]].to_dict())
+
+        if cash_tx is not None and not cash_tx.empty and "type" in cash_tx.columns:
+            st.write("Tipos de cash transaction en la base de datos (para localizar los depósitos):")
+            st.dataframe(
+                cash_tx.groupby("type")["amount"].agg(["count", "sum"]).reset_index()
+                .rename(columns={"type": "Tipo", "count": "Movimientos", "sum": "Suma ($)"}),
+                use_container_width=True, hide_index=True,
+            )
+        if not flows_df.empty:
+            st.write("Depósitos/retiradas detectados:")
+            st.dataframe(flows_df[["reportDate", "type", "amount"]].sort_values("reportDate"),
+                         use_container_width=True, hide_index=True)
 
     st.markdown("---")
 
@@ -460,7 +515,8 @@ def main():
     display_mode = "percent" if display_label == "%" else "dollar"
     scale = "linear" if display_mode == "percent" else ("log" if scale_label == "Log" else "linear")
     if display_mode == "percent":
-        st.caption("La escala logarítmica no está disponible en vista %, ya que el % puede ser negativo.")
+        st.caption("La escala logarítmica no está disponible en vista %, ya que el % puede ser negativo. "
+                   "La vista % es rentabilidad TWR (descuenta depósitos y retiradas).")
 
     range_start = _range_start_date(range_label, today)
     equity_chart = (
@@ -471,7 +527,7 @@ def main():
         st.caption("Sin datos en el rango seleccionado")
     else:
         st.plotly_chart(
-            render_nlv_line_chart(equity_chart, scale=scale, display_mode=display_mode),
+            render_nlv_line_chart(equity_chart, scale=scale, display_mode=display_mode, twr_df=twr_full),
             use_container_width=True,
         )
 
@@ -479,18 +535,30 @@ def main():
         start_val = float(period_df["total"].iloc[0])
         end_val = float(period_df["total"].iloc[-1])
         change_abs = end_val - start_val
-        change_pct = (change_abs / start_val * 100) if start_val else None
-
-        color = "green" if change_abs >= 0 else "red"
-        sign = "+" if change_abs >= 0 else ""
-        pct_str = f" ({sign}{change_pct:.2f}%)" if change_pct is not None else ""
         start_date_str = period_df["reportDate"].iloc[0].strftime("%d/%m/%Y")
         end_date_str = period_df["reportDate"].iloc[-1].strftime("%d/%m/%Y")
 
-        st.markdown(
-            f"**Variación del periodo** ({start_date_str} → {end_date_str}): "
-            f":{color}[{sign}${change_abs:,.2f}{pct_str}]"
+        perf = twr_period(
+            twr_full,
+            start=period_df["reportDate"].iloc[0],
+            end=period_df["reportDate"].iloc[-1],
+            include_start_day=True,
         )
+        if perf is not None:
+            gain = perf["gain_abs"]
+            color = "green" if gain >= 0 else "red"
+            sign = "+" if gain >= 0 else ""
+            st.markdown(
+                f"**Rentabilidad del periodo** ({start_date_str} → {end_date_str}): "
+                f":{color}[{perf['twr_pct']:+.2f}%] · ganancia neta de depósitos: "
+                f":{color}[{sign}${gain:,.2f}]"
+            )
+            st.caption(
+                f"Variación bruta del NLV: {change_abs:+,.2f} $ · "
+                f"Depósitos/retiradas netos en el periodo: {perf['net_flows']:+,.2f} $"
+            )
+        else:
+            st.caption(f"Variación bruta del NLV: {change_abs:+,.2f} $")
 
     st.markdown("---")
 
@@ -518,7 +586,8 @@ def main():
     st.markdown("---")
 
     st.subheader(f"Crecimiento mensual de la cuenta {selected_year}")
-    growth = account_growth_by_month(equity, selected_year)
+    st.caption("Rentabilidad TWR mensual: descuenta depósitos y retiradas.")
+    growth = account_growth_by_month(equity, selected_year, cash_tx_df=cash_tx)
     growth_chart = render_growth_chart(growth)
 
     if growth_chart is None:
