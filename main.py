@@ -150,12 +150,6 @@ screener_CSP = st.Page(
     icon="🛡️",
     url_path="screener-csp"
 )
-cc_stock_repair = st.Page(
-    "Herramientas/10 CC Stock Repair.py",
-    title="CC Stock Repair",
-    icon="🛠️",
-    url_path="cc-stock-repair"
-)
 screener_collar = st.Page(
     "Herramientas/11 Collar Screener.py",
     title="Screener Collar",
@@ -186,7 +180,6 @@ pg = st.navigation({
         screener_CC,
         screener_ITM,
         screener_CSP,
-        cc_stock_repair,
         screener_collar
     ]
 })
