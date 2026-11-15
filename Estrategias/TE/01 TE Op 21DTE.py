@@ -7,6 +7,31 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from utils.utils import check_password
 
+
+# ==============================================================================
+# FUNCIONES AUXILIARES
+# ==============================================================================
+
+def calcular_trend_range(df, length=10):
+    """
+    ocpTrendRange (port del indicador ThinkScript de opcionescallyput.com).
+    trendrange = 100 * ln( Sum(TrueRange, length) / (Highest(high) - Lowest(low)) ) / ln(length)
+    """
+    prev_close = df['Close'].shift(1)
+    true_range = pd.concat([
+        df['High'] - df['Low'],
+        (df['High'] - prev_close).abs(),
+        (df['Low'] - prev_close).abs()
+    ], axis=1).max(axis=1)
+
+    hmax = df['High'].rolling(length).max()
+    lmin = df['Low'].rolling(length).min()
+    sum_tr = true_range.rolling(length).sum()
+
+    rango = (hmax - lmin).replace(0, np.nan)
+    return 100 * np.log(sum_tr / rango) / np.log(length)
+
+
 # ==============================================================================
 # PUNTO DE ENTRADA PROTEGIDO
 # ==============================================================================
@@ -48,6 +73,16 @@ if check_password():
             max_value=fecha_final
         )
 
+        # --- PARÁMETRO TREND RANGE ---
+        tr_length = st.sidebar.number_input(
+            "Periodo Trend Range:", min_value=5, max_value=30, value=10, step=1,
+            help="El indicador original recomienda periodos entre 10 y 14."
+        )
+
+        # --- TREND RANGE (se calcula sobre TODO el histórico, antes de filtrar,
+        #     para que no haya valores vacíos al principio del gráfico) ---
+        trendrange_full = calcular_trend_range(spx, length=int(tr_length))
+
         # --- FILTRAR DATOS ---
         fecha_inicio_dt = pd.to_datetime(fecha_inicio)
         fecha_final_dt = pd.to_datetime(fecha_final)
@@ -66,6 +101,10 @@ if check_password():
         prob_baja_serie_k2 = results_k2['prob_baja_serie'].loc[spx_filtered.index].ffill()
         nr_wr_filtered = nr_wr_series.reindex(spx_filtered.index).fillna(0)
 
+        trendrange_filtered = trendrange_full.reindex(spx_filtered.index)
+        UMBRAL_LATERAL = 61.8
+        UMBRAL_TRENDING = 38.2
+
         # --- VIX / VIX3M ---
         tiene_vix3m = 'VIX3M' in spx_filtered.columns and spx_filtered['VIX3M'].notna().any()
         if tiene_vix3m:
@@ -77,9 +116,9 @@ if check_password():
         fechas_formateadas  = spx_filtered.index.strftime('%d-%m-%Y').tolist()
         x_range             = list(range(len(spx_filtered)))
 
-        # --- CREAR SUBPLOTS (4 o 5 filas) ---
-        n_rows      = 5 if tiene_vix3m else 4
-        row_heights = [0.38, 0.14, 0.14, 0.14, 0.20] if tiene_vix3m else [0.45, 0.18, 0.19, 0.18]
+        # --- CREAR SUBPLOTS (5 o 6 filas; Trend Range siempre es la última) ---
+        n_rows      = 6 if tiene_vix3m else 5
+        row_heights = [0.32, 0.12, 0.12, 0.12, 0.17, 0.15] if tiene_vix3m else [0.40, 0.15, 0.16, 0.15, 0.14]
 
         fig_combined = make_subplots(
             rows=n_rows, cols=1, shared_xaxes=True, vertical_spacing=0.02,
@@ -182,10 +221,7 @@ if check_password():
             font=dict(size=11, color="#FF6B35"), xshift=5, yshift=-5, row=4, col=1)
         fig_combined.update_yaxes(title_text='NR/WR', row=4, col=1, range=[0, 1.05],
             tickvals=[0, 1], ticktext=['OFF', 'ON'])
-        fig_combined.update_xaxes(
-            showticklabels=False if tiene_vix3m else True,
-            row=4, col=1
-        )
+        fig_combined.update_xaxes(showticklabels=False, row=4, col=1)
 
         # ------------------------------------------------------------------
         # 5. VIX / VIX3M (solo si hay datos)
@@ -197,8 +233,6 @@ if check_password():
             for i in range(len(spx_filtered) - 1):
                 es_contango = vix_filtered.iloc[i] <= vix3m_filtered.iloc[i]
                 fill_color  = 'rgba(0, 176, 107, 0.15)' if es_contango else 'rgba(241, 58, 80, 0.15)'
-                y_upper = max(vix_filtered.iloc[i], vix3m_filtered.iloc[i])
-                y_lower = min(vix_filtered.iloc[i], vix3m_filtered.iloc[i])
                 fig_combined.add_trace(go.Scatter(
                     x=[i, i+1, i+1, i],
                     y=[
@@ -256,12 +290,95 @@ if check_password():
             )
 
             fig_combined.update_yaxes(title_text='VIX / VIX3M', row=5, col=1, tickformat=".1f")
-            fig_combined.update_xaxes(showticklabels=True, row=5, col=1)
+            fig_combined.update_xaxes(showticklabels=False, row=5, col=1)
+
+        # ------------------------------------------------------------------
+        # 6. TREND RANGE (ocpTrendRange) — siempre la última fila
+        #    > 61.8 (verde): fin de lateral -> pasa de LATERAL a MOMENTUM (rotura)
+        #    < 38.2 (rojo) : fin de momentum -> pasa de MOMENTUM a LATERAL  <-- el que interesa
+        # ------------------------------------------------------------------
+        tr_row = n_rows
+        tr_color_color = lambda v: ('#00B06B' if v > UMBRAL_LATERAL
+                                    else ('#F13A50' if v < UMBRAL_TRENDING else '#AAAAAA'))
+
+        for i in range(len(spx_filtered) - 1):
+            y0 = trendrange_filtered.iloc[i]
+            y1 = trendrange_filtered.iloc[i+1]
+            if pd.isna(y0) or pd.isna(y1):
+                continue
+            # El rojo (momentum -> lateral) se dibuja más grueso para destacarlo
+            ancho = 3 if y1 < UMBRAL_TRENDING else 2
+            fig_combined.add_trace(go.Scatter(
+                x=[i, i+1], y=[y0, y1],
+                mode='lines', line=dict(color=tr_color_color(y1), width=ancho),
+                showlegend=False, hoverinfo='skip'
+            ), row=tr_row, col=1)
+
+        # Traza invisible para el hover y la leyenda
+        fig_combined.add_trace(go.Scatter(
+            x=x_range, y=trendrange_filtered,
+            mode='markers', marker=dict(size=0.1, color='rgba(0,0,0,0)'),
+            name=f'Trend Range ({int(tr_length)})',
+            customdata=[[fecha] for fecha in fechas_formateadas],
+            hovertemplate='<b>%{customdata[0]}</b><br>Trend Range: %{y:.2f}<extra></extra>',
+            showlegend=True
+        ), row=tr_row, col=1)
+
+        fig_combined.add_shape(type="line", x0=0, y0=UMBRAL_LATERAL,
+            x1=len(spx_filtered) - 1, y1=UMBRAL_LATERAL,
+            line=dict(color="#2B8D50", width=1, dash="dot"), layer="below", row=tr_row, col=1)
+        fig_combined.add_shape(type="line", x0=0, y0=UMBRAL_TRENDING,
+            x1=len(spx_filtered) - 1, y1=UMBRAL_TRENDING,
+            line=dict(color="#F13A50", width=1.5, dash="dot"), layer="below", row=tr_row, col=1)
+        fig_combined.add_annotation(x=0, y=UMBRAL_LATERAL,
+            text=f'Verde: Lateral → Momentum ({UMBRAL_LATERAL})',
+            showarrow=False, xref=f'x{tr_row}', yref=f'y{tr_row}', xanchor='left', yanchor='bottom',
+            font=dict(size=11, color="#2B8D50"), xshift=5, yshift=3, row=tr_row, col=1)
+        fig_combined.add_annotation(x=0, y=UMBRAL_TRENDING,
+            text=f'<b>Rojo: Momentum → Lateral ({UMBRAL_TRENDING})</b>',
+            showarrow=False, xref=f'x{tr_row}', yref=f'y{tr_row}', xanchor='left', yanchor='top',
+            font=dict(size=12, color="#F13A50"), xshift=5, yshift=-3, row=tr_row, col=1)
+
+        # Comentario explicativo centrado en la parte superior del panel
+        fig_combined.add_annotation(
+            x=0.5, y=1, text=(
+                "<span style='color:#00B06B'>■ Verde: pasa de LATERAL a MOMENTUM</span>"
+                "   |   "
+                "<span style='color:#F13A50'><b>■ Rojo: pasa de MOMENTUM a LATERAL</b></span>"
+            ),
+            showarrow=False,
+            xref=f'x{tr_row} domain', yref=f'y{tr_row} domain',
+            xanchor='center', yanchor='top',
+            font=dict(size=11, color="#CCCCCC"),
+            bgcolor="rgba(0,0,0,0.45)", bordercolor="rgba(255,255,255,0.15)",
+            borderwidth=1, borderpad=4, yshift=-4, row=tr_row, col=1
+        )
+
+        # Etiqueta de estado actual (equivalente a los AddLabel del indicador)
+        tr_ultimo = trendrange_filtered.iloc[-1]
+        if pd.notna(tr_ultimo):
+            if tr_ultimo > UMBRAL_LATERAL:
+                tr_txt, tr_col, tr_bg = "LATERAL → MOMENTUM", "#00B06B", "rgba(0, 176, 107, 0.20)"
+            elif tr_ultimo < UMBRAL_TRENDING:
+                tr_txt, tr_col, tr_bg = "MOMENTUM → LATERAL", "#F13A50", "rgba(241, 58, 80, 0.30)"
+            else:
+                tr_txt, tr_col, tr_bg = None, None, None
+            if tr_txt:
+                fig_combined.add_annotation(
+                    x=1, y=0, text=f"<b>{tr_txt}</b>", showarrow=False,
+                    xref=f'x{tr_row} domain', yref=f'y{tr_row} domain',
+                    xanchor='right', yanchor='bottom',
+                    font=dict(size=12, color=tr_col),
+                    bgcolor=tr_bg, bordercolor=tr_col, borderwidth=1, borderpad=5,
+                    xshift=-8, yshift=8, row=tr_row, col=1
+                )
+
+        fig_combined.update_yaxes(title_text='Trend Range', row=tr_row, col=1, tickformat=".0f")
 
         # ------------------------------------------------------------------
         # CONFIGURACIÓN FINAL
         # ------------------------------------------------------------------
-        height = 1150 if tiene_vix3m else 950
+        height = 1350 if tiene_vix3m else 1100
 
         fig_combined.update_layout(
             template='plotly_dark', height=height, xaxis_rangeslider_visible=False,
@@ -281,7 +398,7 @@ if check_password():
         fig_combined.update_xaxes(
             tickmode='array', tickvals=x_range,
             ticktext=date_labels, tickangle=-45,
-            row=n_rows, col=1, showgrid=False
+            row=n_rows, col=1, showgrid=False, showticklabels=True
         )
 
         for i in range(1, n_rows + 1):
@@ -290,11 +407,16 @@ if check_password():
 
         st.plotly_chart(fig_combined, use_container_width=True)
 
+        st.caption(
+            "**Trend Range:** 🟢 Verde (> 61.8) = acaba el lateral, pasa de **lateral a momentum** (rotura). "
+            "🔴 **Rojo (< 38.2) = se pierde el momentum, pasa de momentum a lateral** (la señal que nos interesa)."
+        )
+
         # ------------------------------------------------------------------
         # MÉTRICAS
         # ------------------------------------------------------------------
         st.markdown("---")
-        n_cols = 7 if tiene_vix3m else 6
+        n_cols = 8 if tiene_vix3m else 7
         cols = st.columns(n_cols)
 
         with cols[0]:
@@ -313,8 +435,15 @@ if check_password():
         with cols[5]:
             nr_wr_status = "🟢 ACTIVA" if nr_wr_filtered.iloc[-1] > 0 else "⚪ INACTIVA"
             st.metric("Señal NR/WR", nr_wr_status)
+        with cols[6]:
+            if pd.notna(tr_ultimo):
+                estado_tr = ("🟢 Lateral → Momentum" if tr_ultimo > UMBRAL_LATERAL
+                             else ("🔴 Momentum → Lateral" if tr_ultimo < UMBRAL_TRENDING else "⚪ Normal"))
+                st.metric("Trend Range", f"{tr_ultimo:.2f}", delta=estado_tr, delta_color="off")
+            else:
+                st.metric("Trend Range", "N/D")
         if tiene_vix3m:
-            with cols[6]:
+            with cols[7]:
                 ratio_actual = vix_filtered.iloc[-1] / vix3m_filtered.iloc[-1]
                 estado_ts = "🟢 Contango" if ratio_actual <= 0.95 else ("🟡 Débil" if ratio_actual <= 1.0 else "🔴 Backw.")
                 st.metric("VIX/VIX3M", f"{ratio_actual:.4f}", delta=estado_ts, delta_color="off")
