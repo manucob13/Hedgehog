@@ -28,32 +28,6 @@ te_graficos = st.Page(
     icon="🦔",
     url_path="te-graficos"
 )
-# --- Sección ESTRATEGIAS → Triple Calendar ---
-tc_signals = st.Page(
-    "Estrategias/TC/00 TC Signals.py", 
-    title="Signals", 
-    icon="🦉",
-    url_path="tc-signals"
-)
-tc_calculos = st.Page(
-    "Estrategias/TC/01 TC Calculos.py", 
-    title="Cálculos", 
-    icon="🦉",
-    url_path="tc-calculos"
-)
-tc_ajustes = st.Page(
-    "Estrategias/TC/02 TC Ajustes.py", 
-    title="Ajustes", 
-    icon="🦉",
-    url_path="tc-ajustes"
-)
-# --- Sección ESTRATEGIAS → WEIC ---
-weic_calculos = st.Page(
-    "Estrategias/WEIC/00 WEIC Calculos.py", 
-    title="Cálculos", 
-    icon="🦉",
-    url_path="weic-calculos"
-)
 # --- Sección ESTRATEGIAS → BUT ---
 but_elementos = st.Page(
     "Estrategias/BUT/00 BUT Elementos.py", 
@@ -73,12 +47,6 @@ cartera_calendario = st.Page(
     title="Calendario", 
     icon="🗓️",
     url_path="cartera-calendario"
-)
-cartera_operaciones = st.Page(
-    "Cartera/02 Operaciones.py", 
-    title="Operaciones", 
-    icon="📋",
-    url_path="cartera-operaciones"
 )
 
 # --- Sección DIVIDENDOS ---
@@ -153,13 +121,10 @@ screener_collar = st.Page(
 # 3. CREACIÓN DE LA NAVEGACIÓN JERÁRQUICA
 pg = st.navigation({
     "Time Edge": [te_signals, te_graficos],
-    "Triple Calendar": [tc_signals, tc_calculos, tc_ajustes],
-    "WEIC": [weic_calculos],
     "BUT": [but_elementos],
     "OPCIONES": [
         cartera_panel,
-        cartera_calendario,
-        cartera_operaciones
+        cartera_calendario
     ],
     "DIVIDENDOS": [
         dividendos_panel
