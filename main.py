@@ -22,17 +22,11 @@ te_signals = st.Page(
     url_path="te-signals",
     default=True
 )
-te_op_21dte = st.Page(
+te_graficos = st.Page(
     "Estrategias/TE/01 TE Op 21DTE.py", 
-    title="Op 21DTE", 
+    title="Gráficos", 
     icon="🦔",
-    url_path="te-op-21dte"
-)
-te_op_60dte = st.Page(
-    "Estrategias/TE/02 TE Op 60DTE.py", 
-    title="Op 60DTE", 
-    icon="🦔",
-    url_path="te-op-60dte"
+    url_path="te-graficos"
 )
 # --- Sección ESTRATEGIAS → Triple Calendar ---
 tc_signals = st.Page(
@@ -158,7 +152,7 @@ screener_collar = st.Page(
 )
 # 3. CREACIÓN DE LA NAVEGACIÓN JERÁRQUICA
 pg = st.navigation({
-    "Time Edge": [te_signals, te_op_21dte, te_op_60dte],
+    "Time Edge": [te_signals, te_graficos],
     "Triple Calendar": [tc_signals, tc_calculos, tc_ajustes],
     "WEIC": [weic_calculos],
     "BUT": [but_elementos],
