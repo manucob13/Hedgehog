@@ -2,113 +2,107 @@ import streamlit as st
 import sys
 import os
 from pathlib import Path
-
 # --- CONFIGURACIÓN DE RUTAS ---
 # Esto permite que 'from utils.utils import check_password' funcione siempre
 root_path = Path(__file__).parent.absolute()
 if str(root_path) not in sys.path:
     sys.path.append(str(root_path))
-
 # 1. CONFIGURACIÓN GLOBAL DE LA PESTAÑA Y LAYOUT
 st.set_page_config(
     page_title="Hedgehog opciones",
     layout="wide",
     page_icon="🦔"
 )
-
 # 2. DEFINICIÓN DE LAS PÁGINAS
-
 # --- Sección ESTRATEGIAS → Time Edge ---
 te_signals = st.Page(
-    "Estrategias/TE/00 TE Signals.py",
-    title="Signals",
-    icon="🦔",
+    "Estrategias/TE/00 TE Signals.py", 
+    title="Signals", 
+    icon="🦔", 
     url_path="te-signals",
     default=True
 )
 te_graficos = st.Page(
-    "Estrategias/TE/01 TE Op 21DTE.py",
-    title="Gráficos",
+    "Estrategias/TE/01 TE Op 21DTE.py", 
+    title="Gráficos", 
     icon="🦔",
     url_path="te-graficos"
 )
-
 # --- Sección ESTRATEGIAS → BUT ---
 but_elementos = st.Page(
-    "Estrategias/BUT/00 BUT Elementos.py",
-    title="Elementos",
+    "Estrategias/BUT/00 BUT Elementos.py", 
+    title="Elementos", 
     icon="🦋",
     url_path="but-elementos"
 )
-
 # --- Sección CARTERA ---
 cartera_panel = st.Page(
-    "Cartera/00 Panel.py",
-    title="Panel",
+    "Cartera/00 Panel.py", 
+    title="Panel", 
     icon="📊",
     url_path="cartera-panel"
 )
 cartera_calendario = st.Page(
-    "Cartera/01 Calendario.py",
-    title="Calendario",
+    "Cartera/01 Calendario.py", 
+    title="Calendario", 
     icon="🗓️",
     url_path="cartera-calendario"
 )
 
 # --- Sección DIVIDENDOS ---
 dividendos_panel = st.Page(
-    "Dividendos/00 Panel.py",
-    title="Panel",
+    "Dividendos/00 Panel.py", 
+    title="Panel", 
     icon="💰",
     url_path="dividendos-panel"
 )
 
 # --- Sección HERRAMIENTAS ---
 vix_term = st.Page(
-    "Herramientas/01 VIX Term Structure.py",
-    title="VIX Term Structure",
+    "Herramientas/01 VIX Term Structure.py", 
+    title="VIX Term Structure", 
     icon="🐣",
     url_path="vix-term"
 )
-trend_stock = st.Page(
-    "Herramientas/02 Trend Wkly.py",
-    title="Trend Wkly",
+trend_MACDV = st.Page(
+    "Herramientas/02 Trend Wkly MACDV.py", 
+    title="Trend Wkly MACD-V", 
     icon="📉",
     url_path="trend-zscore"
 )
 gex_analyzer = st.Page(
-    "Herramientas/03 GEX Analyzer.py",
-    title="GEX Analyzer",
+    "Herramientas/03 GEX Analyzer.py", 
+    title="GEX Analyzer", 
     icon="🧪",
     url_path="gex-analyzer"
 )
 screener_risk = st.Page(
-    "Herramientas/04 Screener Ext. Risk.py",
-    title="Screener Ext. Risk",
+    "Herramientas/04 Screener Ext. Risk.py", 
+    title="Screener Ext. Risk", 
     icon="🚨",
     url_path="screener-risk"
 )
 screener_trend = st.Page(
-    "Herramientas/05 Screener Trend.py",
-    title="Screener Trend",
+    "Herramientas/05 Screener Trend.py", 
+    title="Screener Trend", 
     icon="🚀",
     url_path="screener-trend"
 )
 regime_hmm = st.Page(
-    "Herramientas/06 Regime HMM.py",
-    title="Regime HMM",
+    "Herramientas/06 Regime HMM.py", 
+    title="Regime HMM", 
     icon="🧭",
     url_path="regime-hmm"
 )
 screener_CC = st.Page(
-    "Herramientas/07 CC ATM Screener.py",
-    title="Screener CC ATM",
+    "Herramientas/07 CC ATM Screener.py", 
+    title="Screener CC ATM", 
     icon="🧲",
     url_path="screener-cc"
 )
 screener_ITM = st.Page(
-    "Herramientas/08 CC ITM Screener.py",
-    title="Screener CC ITM",
+    "Herramientas/08 CC ITM Screener.py", 
+    title="Screener CC ITM", 
     icon="📐",
     url_path="screener-itm"
 )
@@ -124,7 +118,6 @@ screener_collar = st.Page(
     icon="🧱",
     url_path="screener-collar"
 )
-
 # 3. CREACIÓN DE LA NAVEGACIÓN JERÁRQUICA
 pg = st.navigation({
     "Time Edge": [te_signals, te_graficos],
@@ -137,8 +130,8 @@ pg = st.navigation({
         dividendos_panel
     ],
     "HERRAMIENTAS": [
-        vix_term,
-        trend_stock,
+        vix_term, 
+        trend_MACDV,
         gex_analyzer,
         screener_risk,
         screener_trend,
@@ -149,6 +142,5 @@ pg = st.navigation({
         screener_collar
     ]
 })
-
 # 4. EJECUCIÓN
 pg.run()
