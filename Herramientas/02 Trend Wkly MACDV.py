@@ -58,6 +58,13 @@ NIVEL_NEU = 50
 NIVEL_EXT = 150
 EXTRA_FONDO = 50   # altura extra del fondo extremo (como en Pine)
 
+# ---- Zero Lag Trend Signals (AlgoAlpha) — parámetros fijos como en Pine ----
+ZL_LENGTH = 70     # input "Length"
+ZL_MULT   = 1.2    # input "Band Multiplier"
+
+# Timeframe del indicador: solo semanal
+ZL_INTERVAL = "1wk"
+
 # ============================================================================
 # COLORES
 # ============================================================================
@@ -104,6 +111,18 @@ SERIES_COLORS = {
 
 CANDLE_UP   = "#26a69a"
 CANDLE_DOWN = "#ef5350"
+
+# Colores Zero Lag (los mismos que el Pine: #00ffbb / #ff1100)
+ZL_GREEN_HEX = "#00ffbb"
+ZL_RED_HEX   = "#ff1100"
+ZL_GREEN     = "rgb(0,255,187)"
+ZL_RED       = "rgb(255,17,0)"
+ZL_GREEN_LN  = "rgba(0,255,187,0.9)"    # línea basis alcista
+ZL_RED_LN    = "rgba(255,17,0,0.9)"     # línea basis bajista
+ZL_GREEN_BND = "rgba(0,255,187,0.55)"   # borde banda inferior
+ZL_RED_BND   = "rgba(255,17,0,0.55)"    # borde banda superior
+ZL_GREEN_FIL = "rgba(0,255,187,0.12)"   # relleno banda inferior
+ZL_RED_FIL   = "rgba(255,17,0,0.12)"    # relleno banda superior
 
 # ============================================================================
 # INDICADORES
@@ -208,6 +227,111 @@ def analyze_risk(df):
     return list(np.where(extreme, "RIESGO+", "Sin Riesgo"))
 
 # ============================================================================
+# ZERO LAG TREND SIGNALS (port del Pine de AlgoAlpha)
+# ============================================================================
+
+def calc_zero_lag(df, length=ZL_LENGTH, mult=ZL_MULT):
+    """Replica el Pine:
+        lag        = floor((length - 1) / 2)
+        zlema      = ta.ema(src + (src - src[lag]), length)
+        volatility = ta.highest(ta.atr(length), length * 3) * mult
+        trend: =1 si crossover(close, zlema + vol); =-1 si crossunder(close, zlema - vol)
+    Añade columnas ZL_Basis, ZL_Upper, ZL_Lower, ZL_Trend (1 / -1 / 0).
+    """
+    df = df.copy()
+    close = df["Close"].astype(float)
+    high  = df["High"].astype(float)
+    low   = df["Low"].astype(float)
+
+    tr = pd.concat(
+        [
+            high - low,
+            (high - close.shift()).abs(),
+            (low  - close.shift()).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    atr = rma(tr, length)                       # ta.atr = RMA del True Range
+
+    lag   = int(np.floor((length - 1) / 2))
+    zlema = (close + (close - close.shift(lag))).ewm(span=length, adjust=False).mean()
+
+    # ta.highest(atr, length*3): ventana de 3*length barras (ignora NaN iniciales)
+    volatility = atr.rolling(length * 3, min_periods=1).max() * mult
+
+    upper = zlema + volatility
+    lower = zlema - volatility
+
+    c  = close.to_numpy(dtype=float)
+    up = upper.to_numpy(dtype=float)
+    lo = lower.to_numpy(dtype=float)
+
+    n = len(c)
+    trend = np.zeros(n)
+    state = 0
+    for i in range(n):
+        if i > 0:
+            # ta.crossover(close, upper): close > upper y close[1] <= upper[1]
+            if c[i] > up[i] and c[i - 1] <= up[i - 1]:
+                state = 1
+            # ta.crossunder(close, lower): close < lower y close[1] >= lower[1]
+            if c[i] < lo[i] and c[i - 1] >= lo[i - 1]:
+                state = -1
+        trend[i] = state
+
+    df["ZL_Basis"] = zlema
+    df["ZL_Upper"] = upper
+    df["ZL_Lower"] = lower
+    df["ZL_Trend"] = trend
+    return df
+
+
+def summarize_zero_lag(df, length=ZL_LENGTH):
+    """Estado actual de la señal Zero Lag para un DataFrame ya calculado."""
+    last  = df.iloc[-1]
+    t     = int(last["ZL_Trend"])
+    close = float(last["Close"])
+
+    arr  = df["ZL_Trend"].to_numpy()
+    diff = np.where(arr != arr[-1])[0]
+    if len(diff) > 0:
+        since = df.index[diff[-1] + 1]
+        bars  = int(len(arr) - 1 - diff[-1])
+    else:
+        since = None
+        bars  = int(len(arr))
+
+    # Nivel que haría girar la tendencia:
+    #  - Bullish -> cierre por debajo de la banda inferior
+    #  - Bearish -> cierre por encima de la banda superior
+    if t == 1:
+        flip = float(last["ZL_Lower"])
+        dist = (close - flip) / close * 100
+    elif t == -1:
+        flip = float(last["ZL_Upper"])
+        dist = (flip - close) / close * 100
+    else:
+        flip = np.nan
+        dist = np.nan
+
+    label = "BULLISH" if t == 1 else ("BEARISH" if t == -1 else "SIN SEÑAL")
+
+    return {
+        "trend": t,
+        "label": label,
+        "close": close,
+        "basis": float(last["ZL_Basis"]),
+        "upper": float(last["ZL_Upper"]),
+        "lower": float(last["ZL_Lower"]),
+        "flip":  flip,
+        "dist":  dist,
+        "since": since,
+        "bars":  bars,
+        # histórico insuficiente para calentar EMA + ATR + highest(3*length)
+        "short": len(df) < length * 4,
+    }
+
+# ============================================================================
 # DESCARGA DE DATOS (DIARIO)
 # ============================================================================
 
@@ -247,12 +371,216 @@ def download_daily_data(ticker, years_back):
 
     return df
 
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def download_full_history(ticker, interval):
+    """Histórico máximo para Zero Lag. El indicador necesita ~280 barras de
+    calentamiento (ATR 70 + highest 210) y el estado de tendencia es persistente,
+    por eso se descarga todo el histórico disponible en cada timeframe."""
+    df = yf.download(ticker, period="max", interval=interval, progress=False, auto_adjust=False)
+
+    if df is None or df.empty:
+        return None
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    df = df[["Open", "High", "Low", "Close"]].copy()
+    df.index = pd.to_datetime(df.index, errors="coerce")
+    df = df[df.index.notna()]
+    if getattr(df.index, "tz", None) is not None:
+        df.index = df.index.tz_localize(None)
+
+    df = df.dropna().sort_index()
+    df = df[~df.index.duplicated(keep="last")]
+    df.columns = [str(c) for c in df.columns]
+
+    return df
+
+# ============================================================================
+# GRÁFICO ZERO LAG (semanal)
+# ============================================================================
+
+def build_zero_lag_figure(dfp):
+    x_min = dfp.index.min()
+    x_max = dfp.index.max()
+    x_pad = (x_max - x_min) * 0.06
+    x_max_padded = x_max + x_pad
+
+    bull = dfp["ZL_Trend"] == 1
+    bear = dfp["ZL_Trend"] == -1
+    neut = dfp["ZL_Trend"] == 0
+
+    fig = go.Figure()
+
+    # Velas semanales
+    fig.add_trace(go.Candlestick(
+        x=dfp.index,
+        open=dfp["Open"], high=dfp["High"], low=dfp["Low"], close=dfp["Close"],
+        name="Precio",
+        increasing=dict(line=dict(color=CANDLE_UP, width=1), fillcolor=CANDLE_UP),
+        decreasing=dict(line=dict(color=CANDLE_DOWN, width=1), fillcolor=CANDLE_DOWN),
+        showlegend=False,
+    ))
+
+    # Basis sin señal todavía (trend == 0)
+    if neut.any():
+        fig.add_trace(go.Scatter(
+            x=dfp.index, y=dfp["ZL_Basis"].where(neut), mode="lines",
+            line=dict(color="rgba(150,150,150,0.8)", width=2),
+            showlegend=False, name="Basis",
+        ))
+
+    # Bearish: basis roja + banda superior (relleno entre ambas)
+    fig.add_trace(go.Scatter(
+        x=dfp.index, y=dfp["ZL_Basis"].where(bear), mode="lines",
+        line=dict(color=ZL_RED_LN, width=2),
+        showlegend=False, name="Basis (Bearish)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=dfp.index, y=dfp["ZL_Upper"].where(bear), mode="lines",
+        line=dict(color=ZL_RED_BND, width=1),
+        fill="tonexty", fillcolor=ZL_RED_FIL,
+        connectgaps=False, showlegend=False, name="Banda superior",
+    ))
+
+    # Bullish: basis verde + banda inferior (relleno entre ambas)
+    fig.add_trace(go.Scatter(
+        x=dfp.index, y=dfp["ZL_Basis"].where(bull), mode="lines",
+        line=dict(color=ZL_GREEN_LN, width=2),
+        showlegend=False, name="Basis (Bullish)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=dfp.index, y=dfp["ZL_Lower"].where(bull), mode="lines",
+        line=dict(color=ZL_GREEN_BND, width=1),
+        fill="tonexty", fillcolor=ZL_GREEN_FIL,
+        connectgaps=False, showlegend=False, name="Banda inferior",
+    ))
+
+    # Etiqueta de último precio
+    last_price = float(dfp["Close"].iloc[-1])
+    fig.add_annotation(
+        xref="x", yref="y", x=x_max_padded, y=last_price,
+        text=f" ${last_price:,.2f} ", showarrow=False,
+        font=dict(color="black", size=13, family="Arial Black"),
+        align="left", xanchor="left",
+        bgcolor="#FFFFFF", bordercolor="white", borderwidth=1,
+    )
+
+    fig.update_xaxes(range=[x_min, x_max_padded], domain=[0.0, 0.94],
+                     rangeslider_visible=False, fixedrange=True,
+                     title_text="Fecha (semanas)")
+    fig.update_yaxes(title_text="Precio ($)", side="right", fixedrange=True)
+
+    fig.update_layout(
+        template="plotly_dark",
+        height=600,
+        margin=dict(l=10, r=70, t=20, b=10),
+        showlegend=False,
+        hovermode=False,
+        dragmode=False,
+    )
+    return fig
+
+
+def render_zero_lag_section(ticker, lookback_months):
+    """Sección Zero Lag SEMANAL: tarjeta de estado + gráfico de velas semanales."""
+    st.markdown("---")
+    st.markdown("## 0️⃣ Zero Lag Trend Signals — Semanal")
+    st.caption(
+        f"Port del indicador de AlgoAlpha · Length {ZL_LENGTH} · Band Multiplier {ZL_MULT} "
+        f"· Basis ZLEMA ± ATR({ZL_LENGTH}) máx. {ZL_LENGTH * 3} barras · timeframe semanal"
+    )
+
+    with st.spinner("Calculando Zero Lag semanal..."):
+        raw = download_full_history(ticker, ZL_INTERVAL)
+
+    if raw is None or len(raw) <= ZL_LENGTH:
+        st.error("❌ No hay datos semanales suficientes para calcular Zero Lag.")
+        return
+
+    weekly = calc_zero_lag(raw)
+    s = summarize_zero_lag(weekly)
+
+    # ================= TARJETA DE ESTADO ACTUAL =================
+    if s["trend"] == 1:
+        card_bg, card_fg = ZL_GREEN_HEX, "black"
+    elif s["trend"] == -1:
+        card_bg, card_fg = ZL_RED_HEX, "white"
+    else:
+        card_bg, card_fg = "#888888", "white"
+
+    st.markdown(
+        f'<div style="padding:10px;border:1px solid #444;background-color:{card_bg};'
+        f'color:{card_fg};font-weight:bold;text-align:center;font-size:20px;border-radius:4px;">'
+        f'{s["label"]}</div>',
+        unsafe_allow_html=True,
+    )
+
+    flip_name = "Cambia si cierra < banda inf." if s["trend"] == 1 else (
+        "Cambia si cierra > banda sup." if s["trend"] == -1 else "Nivel de cambio")
+    since_txt = s["since"].strftime("%Y-%m-%d") if s["since"] is not None else "—"
+
+    cols = st.columns(6)
+    cols[0].metric("Precio", f"${s['close']:.2f}")
+    cols[1].metric("ZLEMA (basis)", f"${s['basis']:.2f}")
+    cols[2].metric(flip_name, f"${s['flip']:.2f}" if pd.notna(s["flip"]) else "N/A")
+    cols[3].metric("Distancia al cambio", f"{s['dist']:.2f}%" if pd.notna(s["dist"]) else "N/A")
+    cols[4].metric("Tendencia desde", since_txt)
+    cols[5].metric("Semanas en tendencia", f"{s['bars']}")
+
+    # ================= GRÁFICO SEMANAL =================
+    # Ventana: meses elegidos convertidos a semanas, con un mínimo de 52 semanas
+    # para que las bandas y los cambios de tendencia semanales se aprecien bien.
+    n_plot = max(int(round(lookback_months * 52 / 12)), 52)
+    dfp = weekly.tail(n_plot).copy()
+
+    st.markdown(
+        f'<div style="margin-top:14px;margin-bottom:2px;font-size:15px;'
+        f'font-weight:bold;color:#FFFFFF;">{ticker} — Semanal (Zero Lag Trend Signals)</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f"""
+        <div style="display:flex;flex-wrap:nowrap;align-items:center;
+                    overflow-x:auto;padding:4px 4px 8px 4px;">
+            <div style="display:flex;align-items:center;gap:6px;margin-right:18px;">
+                <div style="width:18px;border-top:3px solid {ZL_GREEN_HEX};"></div>
+                <span style="color:#DDD;font-size:12px;">Basis Bullish + banda inferior</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-right:18px;">
+                <div style="width:18px;border-top:3px solid {ZL_RED_HEX};"></div>
+                <span style="color:#DDD;font-size:12px;">Basis Bearish + banda superior</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    fig = build_zero_lag_figure(dfp)
+    st.plotly_chart(fig, use_container_width=True, config={
+        "staticPlot": True,
+        "displayModeBar": False,
+        "displaylogo": False,
+    })
+
+    notes = ("La última vela semanal es la semana en curso (igual que `request.security` "
+             "en TradingView), por lo que la señal puede cambiar hasta que cierre la semana.")
+    if s["short"]:
+        notes += (f" ⚠️ Histórico semanal inferior a {ZL_LENGTH * 4} barras: el indicador "
+                  "no está completamente calentado y la señal es aproximada.")
+    st.caption(notes)
+
 # ============================================================================
 # UI STREAMLIT
 # ============================================================================
 
 def main():
-    st.set_page_config(layout="wide", page_title="Daily Regime Analyzer")
+    # Dentro de st.navigation el set_page_config ya lo hace el main; si falla aquí, se ignora
+    try:
+        st.set_page_config(layout="wide", page_title="Daily Regime Analyzer")
+    except Exception:
+        pass
     st.title("📊 Daily Regime Analyzer — MACD-V")
     st.caption("Alcista · Bajista · Rango · Riesgo — clasificación por momentum normalizado por volatilidad (MACD-V), timeframe diario")
 
@@ -591,6 +919,11 @@ def main():
             "displaylogo": False,
         })
 
+        # ================= GRÁFICO 2: ZERO LAG TREND SIGNALS =================
+        # Se usa el ticker analizado (session_state), no el del cuadro de texto,
+        # para que ambos gráficos correspondan siempre al mismo activo.
+        render_zero_lag_section(st.session_state.ticker, lookback_months)
+
         # ================= DOCUMENTACIÓN =================
         st.markdown("---")
         with st.expander("📖 Ver Lógica de Clasificación"):
@@ -621,6 +954,18 @@ def main():
             - En cualquier otro caso → **Sin Riesgo** (verde)
 
             **Modos del panel MACD-V:** Barra (por defecto), Area y Lineas (MACD-V + Signal).
+
+            #### 0️⃣ Zero Lag Trend Signals (AlgoAlpha)
+            - **Basis** = ZLEMA: EMA(70) de `close + (close − close[34])`.
+            - **Volatilidad** = máximo de ATR(70) en las últimas 210 barras × 1.2.
+            - **Bullish** cuando el cierre cruza *por encima* de `basis + volatilidad`;
+              **Bearish** cuando cruza *por debajo* de `basis − volatilidad`.
+              El estado se mantiene hasta que ocurre el cruce contrario.
+            - Se dibuja la **banda inferior** (verde) mientras la tendencia es Bullish y la
+              **banda superior** (roja) mientras es Bearish.
+            - **Nivel de cambio:** banda opuesta que, si el cierre la cruza, gira la tendencia.
+            - **Timeframe semanal:** el indicador se calcula sobre velas semanales con todo el
+              histórico disponible (la última vela es la semana en curso).
             """)
 
     elif st.session_state.analyzed and st.session_state.df is None:
