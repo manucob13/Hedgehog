@@ -62,8 +62,7 @@ EXTRA_FONDO = 50   # altura extra del fondo extremo (como en Pine)
 ZL_LENGTH = 70     # input "Length"
 ZL_MULT   = 1.2    # input "Band Multiplier"
 
-# Timeframe del indicador: solo semanal
-ZL_INTERVAL = "1wk"
+# Timeframes del indicador: diario ("1d") y semanal ("1wk"); ver llamadas en main()
 
 # ============================================================================
 # COLORES
@@ -398,22 +397,68 @@ def download_full_history(ticker, interval):
     return df
 
 # ============================================================================
-# GRÁFICO ZERO LAG (semanal)
+# GRÁFICO ZERO LAG (diario y semanal)
 # ============================================================================
 
-def build_zero_lag_figure(dfp):
+def _runs(mask):
+    """Tramos consecutivos de True en una máscara booleana -> lista de (inicio, fin_exclusivo)."""
+    m = np.asarray(mask, dtype=bool)
+    if not m.any():
+        return []
+    d = np.diff(np.concatenate(([0], m.astype(int), [0])))
+    starts = np.where(d == 1)[0]
+    ends = np.where(d == -1)[0]
+    return list(zip(starts, ends))
+
+
+def _band_polygons(dfp, mask, band_col):
+    """Un polígono cerrado por cada tramo de tendencia (basis <-> banda), separados
+    por None. Así el relleno no une el final de un tramo con el inicio del siguiente."""
+    idx   = list(dfp.index)
+    basis = dfp["ZL_Basis"].to_numpy(dtype=float)
+    band  = dfp[band_col].to_numpy(dtype=float)
+
+    xs, ys = [], []
+    for s, e in _runs(mask):
+        seg_x = idx[s:e]
+        xs += seg_x + seg_x[::-1] + [seg_x[0], None]
+        ys += list(band[s:e]) + list(basis[s:e][::-1]) + [band[s], None]
+    return xs, ys
+
+
+def build_zero_lag_figure(dfp, flip=None, daily=False):
     x_min = dfp.index.min()
     x_max = dfp.index.max()
     x_pad = (x_max - x_min) * 0.06
     x_max_padded = x_max + x_pad
 
-    bull = dfp["ZL_Trend"] == 1
-    bear = dfp["ZL_Trend"] == -1
-    neut = dfp["ZL_Trend"] == 0
+    trend = dfp["ZL_Trend"]
+    bull = trend == 1
+    bear = trend == -1
+    neut = trend == 0
+
+    # La línea basis se extiende una barra para que no haya huecos al cambiar de color
+    bull_ln = bull | bull.shift(1, fill_value=False)
+    bear_ln = bear | bear.shift(1, fill_value=False)
+    neut_ln = neut | neut.shift(1, fill_value=False)
 
     fig = go.Figure()
 
-    # Velas semanales
+    # 1) Rellenos por tramo (debajo de todo)
+    for mask, band_col, fill_col in [
+        (bear, "ZL_Upper", ZL_RED_FIL),
+        (bull, "ZL_Lower", ZL_GREEN_FIL),
+    ]:
+        xs, ys = _band_polygons(dfp, mask, band_col)
+        if xs:
+            fig.add_trace(go.Scatter(
+                x=xs, y=ys, mode="lines",
+                fill="toself", fillcolor=fill_col,
+                line=dict(width=0), hoverinfo="skip",
+                showlegend=False, name="Relleno",
+            ))
+
+    # 2) Velas
     fig.add_trace(go.Candlestick(
         x=dfp.index,
         open=dfp["Open"], high=dfp["High"], low=dfp["Low"], close=dfp["Close"],
@@ -423,38 +468,34 @@ def build_zero_lag_figure(dfp):
         showlegend=False,
     ))
 
-    # Basis sin señal todavía (trend == 0)
-    if neut.any():
-        fig.add_trace(go.Scatter(
-            x=dfp.index, y=dfp["ZL_Basis"].where(neut), mode="lines",
-            line=dict(color="rgba(150,150,150,0.8)", width=2),
-            showlegend=False, name="Basis",
-        ))
-
-    # Bearish: basis roja + banda superior (relleno entre ambas)
-    fig.add_trace(go.Scatter(
-        x=dfp.index, y=dfp["ZL_Basis"].where(bear), mode="lines",
-        line=dict(color=ZL_RED_LN, width=2),
-        showlegend=False, name="Basis (Bearish)",
-    ))
+    # 3) Bordes de las bandas (solo en su tramo de tendencia)
     fig.add_trace(go.Scatter(
         x=dfp.index, y=dfp["ZL_Upper"].where(bear), mode="lines",
         line=dict(color=ZL_RED_BND, width=1),
-        fill="tonexty", fillcolor=ZL_RED_FIL,
         connectgaps=False, showlegend=False, name="Banda superior",
-    ))
-
-    # Bullish: basis verde + banda inferior (relleno entre ambas)
-    fig.add_trace(go.Scatter(
-        x=dfp.index, y=dfp["ZL_Basis"].where(bull), mode="lines",
-        line=dict(color=ZL_GREEN_LN, width=2),
-        showlegend=False, name="Basis (Bullish)",
     ))
     fig.add_trace(go.Scatter(
         x=dfp.index, y=dfp["ZL_Lower"].where(bull), mode="lines",
         line=dict(color=ZL_GREEN_BND, width=1),
-        fill="tonexty", fillcolor=ZL_GREEN_FIL,
         connectgaps=False, showlegend=False, name="Banda inferior",
+    ))
+
+    # 4) Basis (ZLEMA) coloreada por tendencia
+    if neut.any():
+        fig.add_trace(go.Scatter(
+            x=dfp.index, y=dfp["ZL_Basis"].where(neut_ln), mode="lines",
+            line=dict(color="rgba(150,150,150,0.8)", width=2),
+            connectgaps=False, showlegend=False, name="Basis",
+        ))
+    fig.add_trace(go.Scatter(
+        x=dfp.index, y=dfp["ZL_Basis"].where(bear_ln), mode="lines",
+        line=dict(color=ZL_RED_LN, width=2),
+        connectgaps=False, showlegend=False, name="Basis (Bearish)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=dfp.index, y=dfp["ZL_Basis"].where(bull_ln), mode="lines",
+        line=dict(color=ZL_GREEN_LN, width=2),
+        connectgaps=False, showlegend=False, name="Basis (Bullish)",
     ))
 
     # Etiqueta de último precio
@@ -467,10 +508,22 @@ def build_zero_lag_figure(dfp):
         bgcolor="#FFFFFF", bordercolor="white", borderwidth=1,
     )
 
+    # Eje Y ajustado a precio + basis (+ nivel de cambio), no a las bandas anchas
+    lo = min(float(dfp["Low"].min()), float(dfp["ZL_Basis"].min()))
+    hi = max(float(dfp["High"].max()), float(dfp["ZL_Basis"].max()))
+    if flip is not None and np.isfinite(flip):
+        lo = min(lo, float(flip))
+        hi = max(hi, float(flip))
+    y_pad = (hi - lo) * 0.06
+    y_range = [lo - y_pad, hi + y_pad]
+
     fig.update_xaxes(range=[x_min, x_max_padded], domain=[0.0, 0.94],
                      rangeslider_visible=False, fixedrange=True,
-                     title_text="Fecha (semanas)")
-    fig.update_yaxes(title_text="Precio ($)", side="right", fixedrange=True)
+                     title_text="Fecha")
+    if daily:
+        # Ocultar fines de semana en diario para evitar huecos
+        fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+    fig.update_yaxes(range=y_range, title_text="Precio ($)", side="right", fixedrange=True)
 
     fig.update_layout(
         template="plotly_dark",
@@ -483,24 +536,28 @@ def build_zero_lag_figure(dfp):
     return fig
 
 
-def render_zero_lag_section(ticker, lookback_months):
-    """Sección Zero Lag SEMANAL: tarjeta de estado + gráfico de velas semanales."""
+def render_zero_lag_section(ticker, lookback_months, interval, tf_name):
+    """Sección Zero Lag para un timeframe: tarjeta de estado + gráfico.
+    interval: '1d' (diario) o '1wk' (semanal)."""
+    is_daily = interval == "1d"
+    unit = "Días" if is_daily else "Semanas"
+
     st.markdown("---")
-    st.markdown("## 0️⃣ Zero Lag Trend Signals — Semanal")
+    st.markdown(f"## 0️⃣ Zero Lag Trend Signals — {tf_name}")
     st.caption(
         f"Port del indicador de AlgoAlpha · Length {ZL_LENGTH} · Band Multiplier {ZL_MULT} "
-        f"· Basis ZLEMA ± ATR({ZL_LENGTH}) máx. {ZL_LENGTH * 3} barras · timeframe semanal"
+        f"· Basis ZLEMA ± ATR({ZL_LENGTH}) máx. {ZL_LENGTH * 3} barras · timeframe {tf_name.lower()}"
     )
 
-    with st.spinner("Calculando Zero Lag semanal..."):
-        raw = download_full_history(ticker, ZL_INTERVAL)
+    with st.spinner(f"Calculando Zero Lag {tf_name.lower()}..."):
+        raw = download_full_history(ticker, interval)
 
     if raw is None or len(raw) <= ZL_LENGTH:
-        st.error("❌ No hay datos semanales suficientes para calcular Zero Lag.")
+        st.error(f"❌ No hay datos {tf_name.lower()}s suficientes para calcular Zero Lag.")
         return
 
-    weekly = calc_zero_lag(raw)
-    s = summarize_zero_lag(weekly)
+    data = calc_zero_lag(raw)
+    s = summarize_zero_lag(data)
 
     # ================= TARJETA DE ESTADO ACTUAL =================
     if s["trend"] == 1:
@@ -527,17 +584,20 @@ def render_zero_lag_section(ticker, lookback_months):
     cols[2].metric(flip_name, f"${s['flip']:.2f}" if pd.notna(s["flip"]) else "N/A")
     cols[3].metric("Distancia al cambio", f"{s['dist']:.2f}%" if pd.notna(s["dist"]) else "N/A")
     cols[4].metric("Tendencia desde", since_txt)
-    cols[5].metric("Semanas en tendencia", f"{s['bars']}")
+    cols[5].metric(f"{unit} en tendencia", f"{s['bars']}")
 
-    # ================= GRÁFICO SEMANAL =================
-    # Ventana: meses elegidos convertidos a semanas, con un mínimo de 52 semanas
-    # para que las bandas y los cambios de tendencia semanales se aprecien bien.
-    n_plot = max(int(round(lookback_months * 52 / 12)), 52)
-    dfp = weekly.tail(n_plot).copy()
+    # ================= GRÁFICO =================
+    if is_daily:
+        # ~21 sesiones por mes
+        n_plot = max(int(lookback_months * 21), 30)
+    else:
+        # meses -> semanas, con mínimo de 52 para que se aprecien bandas y cambios
+        n_plot = max(int(round(lookback_months * 52 / 12)), 52)
+    dfp = data.tail(n_plot).copy()
 
     st.markdown(
         f'<div style="margin-top:14px;margin-bottom:2px;font-size:15px;'
-        f'font-weight:bold;color:#FFFFFF;">{ticker} — Semanal (Zero Lag Trend Signals)</div>',
+        f'font-weight:bold;color:#FFFFFF;">{ticker} — {tf_name} (Zero Lag Trend Signals)</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
@@ -557,17 +617,18 @@ def render_zero_lag_section(ticker, lookback_months):
         unsafe_allow_html=True,
     )
 
-    fig = build_zero_lag_figure(dfp)
+    fig = build_zero_lag_figure(dfp, flip=s["flip"], daily=is_daily)
     st.plotly_chart(fig, use_container_width=True, config={
         "staticPlot": True,
         "displayModeBar": False,
         "displaylogo": False,
     })
 
-    notes = ("La última vela semanal es la semana en curso (igual que `request.security` "
-             "en TradingView), por lo que la señal puede cambiar hasta que cierre la semana.")
+    bar_now = "sesión" if is_daily else "semana"
+    notes = (f"La última vela es la {bar_now} en curso (igual que `request.security` "
+             f"en TradingView), por lo que la señal puede cambiar hasta que cierre.")
     if s["short"]:
-        notes += (f" ⚠️ Histórico semanal inferior a {ZL_LENGTH * 4} barras: el indicador "
+        notes += (f" ⚠️ Histórico inferior a {ZL_LENGTH * 4} barras: el indicador "
                   "no está completamente calentado y la señal es aproximada.")
     st.caption(notes)
 
@@ -922,7 +983,8 @@ def main():
         # ================= GRÁFICO 2: ZERO LAG TREND SIGNALS =================
         # Se usa el ticker analizado (session_state), no el del cuadro de texto,
         # para que ambos gráficos correspondan siempre al mismo activo.
-        render_zero_lag_section(st.session_state.ticker, lookback_months)
+        render_zero_lag_section(st.session_state.ticker, lookback_months, "1d", "Diario")
+        render_zero_lag_section(st.session_state.ticker, lookback_months, "1wk", "Semanal")
 
         # ================= DOCUMENTACIÓN =================
         st.markdown("---")
@@ -964,8 +1026,11 @@ def main():
             - Se dibuja la **banda inferior** (verde) mientras la tendencia es Bullish y la
               **banda superior** (roja) mientras es Bearish.
             - **Nivel de cambio:** banda opuesta que, si el cierre la cruza, gira la tendencia.
-            - **Timeframe semanal:** el indicador se calcula sobre velas semanales con todo el
-              histórico disponible (la última vela es la semana en curso).
+            - **Timeframes diario y semanal:** el indicador se calcula de forma independiente sobre
+              velas diarias y semanales, con todo el histórico disponible (la última vela es la
+              sesión o semana en curso).
+            - **Relleno de bandas:** se dibuja un polígono por cada tramo de tendencia, entre la
+              basis y su banda.
             """)
 
     elif st.session_state.analyzed and st.session_state.df is None:
