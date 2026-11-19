@@ -2,1485 +2,1037 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import numpy as np
-from datetime import datetime, timedelta, date
-import warnings
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
-import random
-import pandas_ta as ta
 import plotly.graph_objects as go
-from utils.utils import check_password
-from utils.tickers import (
-    create_tickers_universe,
-    get_all_index_names,
-    get_all_etf_names,
-    get_index_name,
-    get_etf_name
-)
+from plotly.subplots import make_subplots
+from datetime import datetime, timedelta
+import warnings
 
-warnings.filterwarnings('ignore')
+warnings.filterwarnings("ignore")
 
-# Lock global para sincronizar descargas de yfinance
-_yfinance_lock = Lock()
+# ============================================================================
+# AUTENTICACIÓN - Importar desde utils
+# ============================================================================
 
-# ============= FUNCIONES DE CÁLCULO =============
+try:
+    from utils.utils import check_password
+except ImportError:
+    def check_password():
+        """Verifica si el usuario tiene credenciales correctas."""
 
-def get_ticker_name_and_marketcap(ticker):
-    """
-    Obtiene el nombre y market cap del ticker
-    Prioridad: 1) Índices, 2) ETFs, 3) Acciones (yfinance)
-    """
-    try:
-        # 1. Verificar si es un ÍNDICE
-        index_name = get_index_name(ticker)
-        if index_name is not None:
-            return index_name, None  # Los índices no tienen market cap
-        
-        # 2. Verificar si es un ETF
-        etf_name = get_etf_name(ticker)
-        if etf_name is not None:
-            # Para ETFs, intentar obtener market cap de yfinance
-            try:
-                stock = yf.Ticker(ticker)
-                info = stock.info
-                market_cap = info.get('marketCap', None)
-                return etf_name, market_cap
-            except:
-                return etf_name, None
-        
-        # 3. Si no es índice ni ETF, es una ACCIÓN - usar yfinance
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        
-        # Intentar múltiples campos para el nombre
-        name = (info.get('longName') or 
-                info.get('shortName') or 
-                info.get('name') or
-                info.get('quoteType', '') + ' - ' + ticker if info.get('quoteType') else ticker)
-        
-        # Si aún no hay nombre, intentar con el ticker directamente
-        if name == ticker or not name:
-            name = info.get('shortName', ticker)
-        
-        market_cap = info.get('marketCap', None)
-        
-        return name, market_cap
-        
-    except:
-        return ticker, None
+        def login_form():
+            with st.sidebar:
+                st.markdown("### 🔑 Iniciar Sesión")
+                username = st.text_input("Usuario", key="username_input")
+                password = st.text_input("Contraseña", type="password", key="password_input")
 
-def get_next_dividend_date(ticker):
-    """
-    Obtiene la fecha del próximo dividendo para un ticker.
-    Retorna: fecha del próximo dividendo (str) o None
-    """
-    try:
-        stock = yf.Ticker(ticker)
-        
-        calendar = stock.calendar
-        
-        if calendar is not None and 'Ex-Dividend Date' in calendar:
-            ex_div_date = calendar['Ex-Dividend Date']
-            
-            if pd.notna(ex_div_date):
-                if isinstance(ex_div_date, str):
-                    ex_div_date = pd.to_datetime(ex_div_date)
-                
-                if ex_div_date > pd.Timestamp.now():
-                    return ex_div_date.strftime('%Y-%m-%d')
-        
-        dividends = stock.dividends
-        
-        if dividends is not None and not dividends.empty:
-            recent_divs = dividends.tail(4)
-            
-            if len(recent_divs) >= 2:
-                dates = recent_divs.index
-                intervals = [(dates[i+1] - dates[i]).days for i in range(len(dates)-1)]
-                avg_interval = np.mean(intervals)
-                
-                last_div_date = dividends.index[-1]
-                next_div_estimate = last_div_date + pd.Timedelta(days=avg_interval)
-                
-                if next_div_estimate > pd.Timestamp.now():
-                    return next_div_estimate.strftime('%Y-%m-%d') + ' (Est.)'
-        
-        return "N/A"
-        
-    except Exception as e:
-        return "N/A"
+                if st.button("Login", use_container_width=True):
+                    if username in st.secrets.get("passwords", {}) and password == st.secrets["passwords"][username]:
+                        st.session_state["password_correct"] = True
+                        st.session_state["username"] = username
+                        st.rerun()
+                    else:
+                        st.error("❌ Usuario o contraseña incorrectos")
 
-def get_dividend_yield(ticker):
+        if st.session_state.get("password_correct", False):
+            with st.sidebar:
+                st.success(f"✅ Sesión activa: {st.session_state.get('username', 'Usuario')}")
+                if st.button("🚪 Cerrar Sesión", use_container_width=True):
+                    st.session_state["password_correct"] = False
+                    if "username" in st.session_state:
+                        del st.session_state["username"]
+                    st.rerun()
+            return True
+
+        login_form()
+        return False
+
+# ============================================================================
+# PARÁMETROS (idénticos al indicador de TradingView)
+# ============================================================================
+
+FAST_LEN  = 12
+SLOW_LEN  = 26
+SIG_LEN   = 9
+ATR_LEN   = 26
+NIVEL_NEU = 50
+NIVEL_EXT = 150
+EXTRA_FONDO = 50   # altura extra del fondo extremo (como en Pine)
+
+# ---- Zero Lag Trend Signals (AlgoAlpha) — parámetros fijos como en Pine ----
+ZL_LENGTH = 70     # input "Length"
+ZL_MULT   = 1.2    # input "Band Multiplier"
+
+# Timeframes de la tabla (etiqueta -> intervalo de yfinance)
+ZL_TIMEFRAMES = {"1D": "1d", "1W": "1wk", "1M": "1mo"}
+
+# ============================================================================
+# COLORES
+# ============================================================================
+
+# Colores de zona MACD-V (los mismos RGB que el script de Pine)
+C_BLUE   = "rgb(0,70,255)"      # riesgo (> +150 / < -150)
+C_GREEN  = "rgb(0,170,60)"      # alcista (+50 a +150)
+C_YELLOW = "rgb(255,200,0)"     # neutral (-50 a +50)
+C_RED    = "rgb(220,30,30)"     # bajista (-150 a -50)
+
+# Fondos entre líneas (RGBA ~ transparencia 85 de Pine => alpha 0.15)
+F_BLUE   = "rgba(0,70,255,0.15)"
+F_GREEN  = "rgba(0,170,60,0.15)"
+F_YELLOW = "rgba(255,200,0,0.15)"
+F_RED    = "rgba(220,30,30,0.15)"
+
+ZONE_COLORS = {
+    "RIESGO ALTO": C_BLUE,
+    "ALCISTA":     C_GREEN,
+    "NEUTRAL":     C_YELLOW,
+    "BAJISTA":     C_RED,
+    "RIESGO BAJO": C_BLUE,
+}
+
+# Colores de régimen (clasificador con SMA 50 + MACD-V)
+REGIME_COLORS = {
+    "ALCISTA": "#00FF00",
+    "BAJISTA": "#FF0000",
+    "RANGO":   "#FFD700",
+    "RIESGO":  "#9370DB",
+}
+
+RISK_COLORS = {
+    "RIESGO+":    "#9370DB",
+    "Sin Riesgo": "#00FF00",
+}
+
+SERIES_COLORS = {
+    "SMA 50":  "#00FFFF",
+    "SMA 200": "#FFA500",
+    "EMA 8":   "#AAAAAA",
+    "EMA 21":  "#00BFFF",
+}
+
+CANDLE_UP   = "#26a69a"
+CANDLE_DOWN = "#ef5350"
+
+# Colores Zero Lag (los mismos que el Pine: #00ffbb / #ff1100)
+ZL_GREEN_HEX = "#00ffbb"
+ZL_RED_HEX   = "#ff1100"
+ZL_GREEN     = "rgb(0,255,187)"
+ZL_RED       = "rgb(255,17,0)"
+ZL_GREEN_LN  = "rgba(0,255,187,0.9)"    # línea basis alcista
+ZL_RED_LN    = "rgba(255,17,0,0.9)"     # línea basis bajista
+ZL_GREEN_BND = "rgba(0,255,187,0.55)"   # borde banda inferior
+ZL_RED_BND   = "rgba(255,17,0,0.55)"    # borde banda superior
+ZL_GREEN_FIL = "rgba(0,255,187,0.12)"   # relleno banda inferior
+ZL_RED_FIL   = "rgba(255,17,0,0.12)"    # relleno banda superior
+
+# ============================================================================
+# INDICADORES
+# ============================================================================
+
+def rma(series, length):
+    """Media móvil de Wilder (RMA) igual que ta.rma de Pine: semilla = SMA de las
+    primeras `length` barras y luego alpha = 1/length."""
+    values = series.to_numpy(dtype=float)
+    out = np.full(len(values), np.nan)
+    if len(values) < length:
+        return pd.Series(out, index=series.index)
+    out[length - 1] = np.nanmean(values[:length])
+    alpha = 1.0 / length
+    for i in range(length, len(values)):
+        out[i] = alpha * values[i] + (1 - alpha) * out[i - 1]
+    return pd.Series(out, index=series.index)
+
+
+def calculate_indicators(df, fast=FAST_LEN, slow=SLOW_LEN, signal=SIG_LEN, atr_len=ATR_LEN):
+    close = df["Close"].astype(float).squeeze()
+    high  = df["High"].astype(float).squeeze()
+    low   = df["Low"].astype(float).squeeze()
+
+    tr = pd.concat(
+        [
+            high - low,
+            (high - close.shift()).abs(),
+            (low  - close.shift()).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+    # ta.atr() de TradingView = RMA del True Range (NO una media simple)
+    atr = rma(tr, atr_len)
+
+    ema_fast = close.ewm(span=fast, adjust=False).mean()
+    ema_slow = close.ewm(span=slow, adjust=False).mean()
+
+    macd_v      = ((ema_fast - ema_slow) / atr) * 100
+    signal_line = macd_v.ewm(span=signal, adjust=False).mean()
+    histogram   = macd_v - signal_line
+
+    df["MACD_V"]           = macd_v
+    df["MACD_V_Signal"]    = signal_line
+    df["MACD_V_Histogram"] = histogram
+
+    return df
+
+# ============================================================================
+# ZONAS (igual que zoneCol / zoneTxt del Pine)
+# ============================================================================
+
+def classify_zone(macd_v):
+    macd_v = np.asarray(macd_v, dtype=float)
+    return np.select(
+        [
+            macd_v > NIVEL_EXT,
+            macd_v > NIVEL_NEU,
+            macd_v >= -NIVEL_NEU,
+            macd_v >= -NIVEL_EXT,
+        ],
+        ["RIESGO ALTO", "ALCISTA", "NEUTRAL", "BAJISTA"],
+        default="RIESGO BAJO",
+    )
+
+# ============================================================================
+# CLASIFICACIÓN DE RÉGIMEN (SMA 50 + MACD-V)
+# ============================================================================
+
+def classify_by_macdv(df):
+    price  = df["Close"].astype(float).to_numpy()
+    sma50  = df["SMA_50"].astype(float).to_numpy()
+    macd_v = df["MACD_V"].astype(float).to_numpy()
+
+    above = price > sma50
+    valid = ~(np.isnan(price) | np.isnan(sma50) | np.isnan(macd_v))
+
+    conditions = [
+        ~valid,
+        np.abs(macd_v) <= NIVEL_NEU,
+        above  & (macd_v > NIVEL_EXT),
+        above  & (macd_v > NIVEL_NEU),
+        ~above & (macd_v < -NIVEL_EXT),
+        ~above & (macd_v < -NIVEL_NEU),
+    ]
+    choices = ["RANGO", "RANGO", "RIESGO", "ALCISTA", "RIESGO", "BAJISTA"]
+    regimes = np.select(conditions, choices, default="RANGO")
+
+    # Primeras 10 barras: sin suficiente contexto
+    regimes[:10] = "RANGO"
+    return list(regimes)
+
+# ============================================================================
+# ANÁLISIS DE RIESGO
+# ============================================================================
+
+def analyze_risk(df):
+    macd_v = df["MACD_V"].astype(float).to_numpy()
+    extreme = np.abs(macd_v) > NIVEL_EXT
+    extreme = np.where(np.isnan(macd_v), False, extreme)
+    return list(np.where(extreme, "RIESGO+", "Sin Riesgo"))
+
+# ============================================================================
+# ZERO LAG TREND SIGNALS (port del Pine de AlgoAlpha)
+# ============================================================================
+
+def calc_zero_lag(df, length=ZL_LENGTH, mult=ZL_MULT):
+    """Replica el Pine:
+        lag        = floor((length - 1) / 2)
+        zlema      = ta.ema(src + (src - src[lag]), length)
+        volatility = ta.highest(ta.atr(length), length * 3) * mult
+        trend: =1 si crossover(close, zlema + vol); =-1 si crossunder(close, zlema - vol)
+    Añade columnas ZL_Basis, ZL_Upper, ZL_Lower, ZL_Trend (1 / -1 / 0).
     """
-    Obtiene el dividend yield de un ticker
-    Retorna: yield en porcentaje (float) o None
-    """
-    try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        
-        div_yield = info.get('dividendYield', None)
-        
-        if div_yield is not None and div_yield > 0:
-            return round(div_yield * 100, 2)
-        
+    df = df.copy()
+    close = df["Close"].astype(float)
+    high  = df["High"].astype(float)
+    low   = df["Low"].astype(float)
+
+    tr = pd.concat(
+        [
+            high - low,
+            (high - close.shift()).abs(),
+            (low  - close.shift()).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    atr = rma(tr, length)                       # ta.atr = RMA del True Range
+
+    lag   = int(np.floor((length - 1) / 2))
+    zlema = (close + (close - close.shift(lag))).ewm(span=length, adjust=False).mean()
+
+    # ta.highest(atr, length*3): ventana de 3*length barras (ignora NaN iniciales)
+    volatility = atr.rolling(length * 3, min_periods=1).max() * mult
+
+    upper = zlema + volatility
+    lower = zlema - volatility
+
+    c  = close.to_numpy(dtype=float)
+    up = upper.to_numpy(dtype=float)
+    lo = lower.to_numpy(dtype=float)
+
+    n = len(c)
+    trend = np.zeros(n)
+    state = 0
+    for i in range(n):
+        if i > 0:
+            # ta.crossover(close, upper): close > upper y close[1] <= upper[1]
+            if c[i] > up[i] and c[i - 1] <= up[i - 1]:
+                state = 1
+            # ta.crossunder(close, lower): close < lower y close[1] >= lower[1]
+            if c[i] < lo[i] and c[i - 1] >= lo[i - 1]:
+                state = -1
+        trend[i] = state
+
+    df["ZL_Basis"] = zlema
+    df["ZL_Upper"] = upper
+    df["ZL_Lower"] = lower
+    df["ZL_Trend"] = trend
+    return df
+
+
+def summarize_zero_lag(df, length=ZL_LENGTH):
+    """Estado actual de la señal Zero Lag para un DataFrame ya calculado."""
+    last  = df.iloc[-1]
+    t     = int(last["ZL_Trend"])
+    close = float(last["Close"])
+
+    arr  = df["ZL_Trend"].to_numpy()
+    diff = np.where(arr != arr[-1])[0]
+    if len(diff) > 0:
+        since = df.index[diff[-1] + 1]
+        bars  = int(len(arr) - 1 - diff[-1])
+    else:
+        since = None
+        bars  = int(len(arr))
+
+    # Nivel que haría girar la tendencia:
+    #  - Bullish -> cierre por debajo de la banda inferior
+    #  - Bearish -> cierre por encima de la banda superior
+    if t == 1:
+        flip = float(last["ZL_Lower"])
+        dist = (close - flip) / close * 100
+    elif t == -1:
+        flip = float(last["ZL_Upper"])
+        dist = (flip - close) / close * 100
+    else:
+        flip = np.nan
+        dist = np.nan
+
+    label = "BULLISH" if t == 1 else ("BEARISH" if t == -1 else "SIN SEÑAL")
+
+    return {
+        "trend": t,
+        "label": label,
+        "close": close,
+        "basis": float(last["ZL_Basis"]),
+        "upper": float(last["ZL_Upper"]),
+        "lower": float(last["ZL_Lower"]),
+        "flip":  flip,
+        "dist":  dist,
+        "since": since,
+        "bars":  bars,
+        # histórico insuficiente para calentar EMA + ATR + highest(3*length)
+        "short": len(df) < length * 4,
+    }
+
+# ============================================================================
+# DESCARGA DE DATOS (DIARIO)
+# ============================================================================
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def download_daily_data(ticker, years_back):
+    # +1 año extra de calentamiento para SMA200 / EMAs / ATR
+    start = (datetime.now() - timedelta(days=365 * (years_back + 1))).strftime("%Y-%m-%d")
+    df = yf.download(ticker, start=start, interval="1d", progress=False, auto_adjust=False)
+
+    if df.empty:
         return None
-        
-    except:
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    df = df.reset_index()
+    df = df[["Date", "Open", "High", "Low", "Close"]].copy()
+
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df = df.dropna(subset=["Date"])
+    df.set_index("Date", inplace=True)
+    df.sort_index(inplace=True)
+
+    df.columns = [str(c) for c in df.columns]
+
+    df["SMA_50"]  = df["Close"].rolling(50).mean()
+    df["SMA_200"] = df["Close"].rolling(200, min_periods=1).mean()
+    df["EMA_8"]   = df["Close"].ewm(span=8,  adjust=False).mean()
+    df["EMA_21"]  = df["Close"].ewm(span=21, adjust=False).mean()
+
+    df = calculate_indicators(df)
+    df.dropna(subset=["MACD_V", "SMA_50"], inplace=True)
+
+    # Recortar al histórico pedido (el año extra solo servía de calentamiento)
+    cutoff = pd.Timestamp(datetime.now() - timedelta(days=365 * years_back))
+    df = df[df.index >= cutoff]
+
+    return df
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def download_full_history(ticker, interval):
+    """Histórico máximo para Zero Lag. El indicador necesita ~280 barras de
+    calentamiento (ATR 70 + highest 210) y el estado de tendencia es persistente,
+    por eso se descarga todo el histórico disponible en cada timeframe."""
+    df = yf.download(ticker, period="max", interval=interval, progress=False, auto_adjust=False)
+
+    if df is None or df.empty:
         return None
 
-def download_weekly_data(ticker, period="5y", use_lock=True):
-    """Descarga datos semanales para un ticker"""
-    try:
-        end = datetime.now() + timedelta(days=1)
-        
-        period_days = {
-            '1y': 365,
-            '2y': 730,
-            '3y': 1095,
-            '5y': 1825,
-            '10y': 3650
-        }
-        
-        days = period_days.get(period, 1825)
-        start = end - timedelta(days=days)
-        
-        if use_lock:
-            with _yfinance_lock:
-                data = yf.download(
-                    ticker, 
-                    start=start, 
-                    end=end, 
-                    interval="1wk", 
-                    auto_adjust=False, 
-                    multi_level_index=False, 
-                    progress=False
-                )
-        else:
-            data = yf.download(
-                ticker, 
-                start=start, 
-                end=end, 
-                interval="1wk", 
-                auto_adjust=False, 
-                multi_level_index=False, 
-                progress=False
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    df = df[["Open", "High", "Low", "Close"]].copy()
+    df.index = pd.to_datetime(df.index, errors="coerce")
+    df = df[df.index.notna()]
+    if getattr(df.index, "tz", None) is not None:
+        df.index = df.index.tz_localize(None)
+
+    df = df.dropna().sort_index()
+    df = df[~df.index.duplicated(keep="last")]
+    df.columns = [str(c) for c in df.columns]
+
+    return df
+
+# ============================================================================
+# GRÁFICO ZERO LAG (diario)
+# ============================================================================
+
+def build_zero_lag_figure(dfp):
+    x_min = dfp.index.min()
+    x_max = dfp.index.max()
+    x_pad = (x_max - x_min) * 0.06
+    x_max_padded = x_max + x_pad
+
+    bull = dfp["ZL_Trend"] == 1
+    bear = dfp["ZL_Trend"] == -1
+    neut = dfp["ZL_Trend"] == 0
+
+    fig = go.Figure()
+
+    # Velas
+    fig.add_trace(go.Candlestick(
+        x=dfp.index,
+        open=dfp["Open"], high=dfp["High"], low=dfp["Low"], close=dfp["Close"],
+        name="Precio",
+        increasing=dict(line=dict(color=CANDLE_UP, width=1), fillcolor=CANDLE_UP),
+        decreasing=dict(line=dict(color=CANDLE_DOWN, width=1), fillcolor=CANDLE_DOWN),
+        showlegend=False,
+    ))
+
+    # Basis sin señal todavía (trend == 0)
+    if neut.any():
+        fig.add_trace(go.Scatter(
+            x=dfp.index, y=dfp["ZL_Basis"].where(neut), mode="lines",
+            line=dict(color="rgba(150,150,150,0.8)", width=2),
+            showlegend=False, name="Basis",
+        ))
+
+    # Bearish: basis roja + banda superior (relleno entre ambas)
+    fig.add_trace(go.Scatter(
+        x=dfp.index, y=dfp["ZL_Basis"].where(bear), mode="lines",
+        line=dict(color=ZL_RED_LN, width=2),
+        showlegend=False, name="Basis (Bearish)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=dfp.index, y=dfp["ZL_Upper"].where(bear), mode="lines",
+        line=dict(color=ZL_RED_BND, width=1),
+        fill="tonexty", fillcolor=ZL_RED_FIL,
+        connectgaps=False, showlegend=False, name="Banda superior",
+    ))
+
+    # Bullish: basis verde + banda inferior (relleno entre ambas)
+    fig.add_trace(go.Scatter(
+        x=dfp.index, y=dfp["ZL_Basis"].where(bull), mode="lines",
+        line=dict(color=ZL_GREEN_LN, width=2),
+        showlegend=False, name="Basis (Bullish)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=dfp.index, y=dfp["ZL_Lower"].where(bull), mode="lines",
+        line=dict(color=ZL_GREEN_BND, width=1),
+        fill="tonexty", fillcolor=ZL_GREEN_FIL,
+        connectgaps=False, showlegend=False, name="Banda inferior",
+    ))
+
+    # Etiqueta de último precio
+    last_price = float(dfp["Close"].iloc[-1])
+    fig.add_annotation(
+        xref="x", yref="y", x=x_max_padded, y=last_price,
+        text=f" ${last_price:,.2f} ", showarrow=False,
+        font=dict(color="black", size=13, family="Arial Black"),
+        align="left", xanchor="left",
+        bgcolor="#FFFFFF", bordercolor="white", borderwidth=1,
+    )
+
+    fig.update_xaxes(range=[x_min, x_max_padded], domain=[0.0, 0.94],
+                     rangebreaks=[dict(bounds=["sat", "mon"])],
+                     rangeslider_visible=False, fixedrange=True,
+                     title_text="Fecha")
+    fig.update_yaxes(title_text="Precio ($)", side="right", fixedrange=True)
+
+    fig.update_layout(
+        template="plotly_dark",
+        height=620,
+        margin=dict(l=10, r=70, t=20, b=10),
+        showlegend=False,
+        hovermode=False,
+        dragmode=False,
+    )
+    return fig
+
+
+def render_zero_lag_section(ticker, lookback_months):
+    """Sección completa: tarjeta de estado + gráfico diario + tabla 1D/1W/1M."""
+    st.markdown("---")
+    st.markdown("## 0️⃣ Zero Lag Trend Signals — Diario")
+    st.caption(
+        f"Port del indicador de AlgoAlpha · Length {ZL_LENGTH} · Band Multiplier {ZL_MULT} "
+        f"· Basis ZLEMA ± ATR({ZL_LENGTH}) máx. {ZL_LENGTH * 3} barras"
+    )
+
+    with st.spinner("Calculando Zero Lag (1D / 1W / 1M)..."):
+        zl = {}
+        for tf, interval in ZL_TIMEFRAMES.items():
+            raw = download_full_history(ticker, interval)
+            if raw is not None and len(raw) > ZL_LENGTH:
+                zl[tf] = calc_zero_lag(raw)
+            else:
+                zl[tf] = None
+
+    daily = zl.get("1D")
+    if daily is None:
+        st.error("❌ No hay datos suficientes para calcular Zero Lag.")
+        return
+
+    s = summarize_zero_lag(daily)
+
+    # ================= TARJETA DE ESTADO ACTUAL =================
+    if s["trend"] == 1:
+        card_bg, card_fg = ZL_GREEN_HEX, "black"
+    elif s["trend"] == -1:
+        card_bg, card_fg = ZL_RED_HEX, "white"
+    else:
+        card_bg, card_fg = "#888888", "white"
+
+    st.markdown(
+        f'<div style="padding:10px;border:1px solid #444;background-color:{card_bg};'
+        f'color:{card_fg};font-weight:bold;text-align:center;font-size:20px;border-radius:4px;">'
+        f'{s["label"]}</div>',
+        unsafe_allow_html=True,
+    )
+
+    flip_name = "Cambia si cierra < banda inf." if s["trend"] == 1 else (
+        "Cambia si cierra > banda sup." if s["trend"] == -1 else "Nivel de cambio")
+    since_txt = s["since"].strftime("%Y-%m-%d") if s["since"] is not None else "—"
+
+    cols = st.columns(6)
+    cols[0].metric("Precio", f"${s['close']:.2f}")
+    cols[1].metric("ZLEMA (basis)", f"${s['basis']:.2f}")
+    cols[2].metric(flip_name, f"${s['flip']:.2f}" if pd.notna(s["flip"]) else "N/A")
+    cols[3].metric("Distancia al cambio", f"{s['dist']:.2f}%" if pd.notna(s["dist"]) else "N/A")
+    cols[4].metric("Tendencia desde", since_txt)
+    cols[5].metric("Barras en tendencia", f"{s['bars']}")
+
+    # ================= GRÁFICO =================
+    n_plot = max(int(lookback_months * 21), 30)
+    dfp = daily.tail(n_plot).copy()
+
+    st.markdown(
+        f'<div style="margin-top:14px;margin-bottom:2px;font-size:15px;'
+        f'font-weight:bold;color:#FFFFFF;">{ticker} — Diario (Zero Lag Trend Signals)</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f"""
+        <div style="display:flex;flex-wrap:nowrap;align-items:center;
+                    overflow-x:auto;padding:4px 4px 8px 4px;">
+            <div style="display:flex;align-items:center;gap:6px;margin-right:18px;">
+                <div style="width:18px;border-top:3px solid {ZL_GREEN_HEX};"></div>
+                <span style="color:#DDD;font-size:12px;">Basis Bullish + banda inferior</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-right:18px;">
+                <div style="width:18px;border-top:3px solid {ZL_RED_HEX};"></div>
+                <span style="color:#DDD;font-size:12px;">Basis Bearish + banda superior</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    fig = build_zero_lag_figure(dfp)
+    st.plotly_chart(fig, use_container_width=True, config={
+        "staticPlot": True,
+        "displayModeBar": False,
+        "displaylogo": False,
+    })
+
+    # ================= TABLA MTF (1D / 1W / 1M) =================
+    st.markdown("### 🕒 Señal por timeframe")
+
+    th = "padding: 6px; text-align: center; border: 1px solid #444; font-size: 11px;"
+    td = "padding: 4px 6px; border: 1px solid #444; text-align: center; font-size: 11px;"
+
+    rows_html = ""
+    any_short = False
+    for tf in ZL_TIMEFRAMES:
+        d = zl.get(tf)
+        if d is None:
+            rows_html += (
+                f'<tr><td style="{td}">{tf}</td>'
+                f'<td style="{td}" colspan="3">Sin datos</td></tr>'
             )
-        
-        if data is None or data.empty or len(data) < 52:
-            return None
-        
-        data.index = pd.to_datetime(data.index)
-        return data
-        
-    except:
-        return None
-
-def calculate_rsc_mansfield(prices, benchmark_prices, period=52):
-    """
-    Calcula el RSC Mansfield
-    RSC = ((Ratio / Media_Ratio) - 1) * 10
-    """
-    try:
-        if len(prices) < period or len(benchmark_prices) < period:
-            return None
-        
-        common_index = prices.index.intersection(benchmark_prices.index)
-        if len(common_index) < period:
-            return None
-        
-        prices_aligned = prices.loc[common_index]
-        benchmark_aligned = benchmark_prices.loc[common_index]
-        
-        ratio = prices_aligned / benchmark_aligned
-        avg_ratio = ratio.rolling(window=period).mean()
-        rsc = ((ratio / avg_ratio) - 1) * 10
-        
-        return rsc.iloc[-1] if not pd.isna(rsc.iloc[-1]) else None
-    except:
-        return None
-
-def calculate_wma(prices, period=30):
-    """Calcula la media móvil ponderada usando pandas_ta"""
-    try:
-        if len(prices) < period:
-            return None
-        
-        wma = ta.wma(prices, length=period)
-        return wma.iloc[-1] if not pd.isna(wma.iloc[-1]) else None
-    except:
-        return None
-
-def calculate_linear_regression(prices, period=30):
-    """
-    Calcula regresión lineal y sus métricas
-    Returns: slope, r_squared, normalized_distance
-    """
-    try:
-        if len(prices) < period:
-            return None, None, None
-        
-        y = prices.values[-period:]
-        x = np.arange(len(y))
-        
-        coeffs = np.polyfit(x, y, 1)
-        slope = coeffs[0]
-        
-        lin_reg = np.polyval(coeffs, x)
-        
-        y_mean = np.mean(y)
-        ss_tot = np.sum((y - y_mean) ** 2)
-        ss_res = np.sum((y - lin_reg) ** 2)
-        r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
-        
-        se_regression = np.sqrt(ss_res / (period - 2)) if period > 2 else 0
-        
-        distance = abs(y[-1] - lin_reg[-1])
-        normalized_distance = distance / se_regression if se_regression > 0 else 0
-        
-        return slope, r_squared, normalized_distance
-    except:
-        return None, None, None
-
-
-def calculate_k_ratio(prices, period=52):
-    """
-    Calcula el K-Ratio = slope / (SE_slope × √n) sobre log-precios semanales.
-
-    SE_slope = SE_residuos / √Sxx   donde Sxx = Σ(x - x̄)²
-    Esto es equivalente al estadístico-t del slope dividido entre √n.
-
-    Timeframe: Semanal · Período: 52 semanas (1 año)
-
-    Umbrales orientativos para n=52:
-        K < 0.5   → Tendencia débil o ruido
-        K 0.5–0.9 → Tendencia moderada
-        K 0.9–1.5 → Tendencia sólida       ✅ (filtro "Sólida")
-        K ≥ 1.5   → Tendencia muy consistente ✅ (filtro "Muy consistente")
-
-    Con R²=0.86 y tendencia del 30% anual → K ≈ 2.5–3.0
-    Con R²=0.50 y tendencia débil         → K ≈ 0.5–0.8
-    """
-    try:
-        if len(prices) < period:
-            return None
-
-        y = np.log(prices.values[-period:].astype(float))
-        x = np.arange(period)
-
-        # Regresión lineal sobre log-precios
-        coeffs = np.polyfit(x, y, 1)
-        slope  = coeffs[0]
-
-        # Residuos → SE de los residuos (ddof=2: pendiente + intercepto)
-        y_pred       = np.polyval(coeffs, x)
-        residuals    = y - y_pred
-        se_residuals = np.sqrt(np.sum(residuals ** 2) / (period - 2))
-
-        if se_residuals == 0:
-            return None
-
-        # Sxx = Σ(x - x̄)²  →  SE del slope
-        x_mean   = np.mean(x)
-        sxx      = np.sum((x - x_mean) ** 2)
-        se_slope = se_residuals / np.sqrt(sxx)
-
-        if se_slope == 0:
-            return None
-
-        # K-Ratio final
-        k_ratio = slope / (se_slope * np.sqrt(period))
-        return round(k_ratio, 3)
-
-    except:
-        return None
-
-
-
-def calculate_hurst_exponent(prices, min_window=10, max_window=None):
-    """
-    Calcula el Exponente de Hurst usando DFA (Detrended Fluctuation Analysis).
-
-    DFA es el método preferido frente al R/S clásico porque:
-    - Tiene mucho menos sesgo con muestras pequeñas (~260 barras semanales)
-    - R/S clásico sobreestima H en ~0.12 con estos tamaños de muestra
-    - DFA distingue mejor entre tendencia real y ruido
-
-    Interpretación calibrada para datos semanales (5 años, ~260 barras):
-        H < 0.50  → Serie antipersistente (reversión a la media)
-        H ≈ 0.51  → Ruido blanco / camino aleatorio
-        H > 0.55  → Tendencia persistente (umbral recomendado)
-        H > 0.60  → Tendencia fuerte
-        H > 0.65  → Tendencia muy fuerte (solo ~20% de trending stocks)
-
-    NOTA: Con datos semanales, H > 0.70 es extremadamente raro incluso
-    en acciones con tendencias claras. No usar umbrales superiores a 0.65.
-
-    Algoritmo DFA:
-        1. Calcular log-retornos y su perfil acumulado centrado
-        2. Dividir el perfil en ventanas de tamaño s
-        3. Detrend lineal en cada ventana → RMS de residuos F(s)
-        4. Regresión log(F) ~ alpha * log(s)  →  alpha ≈ H
-
-    Args:
-        prices: Serie de precios de cierre (pd.Series o similar)
-        min_window: Ventana mínima (default 10 semanas)
-        max_window: Ventana máxima (default: n/4)
-
-    Returns:
-        float: Exponente de Hurst DFA (0-1) o None si datos insuficientes
-    """
-    try:
-        if len(prices) < 52:
-            return None
-
-        # Paso 1: log-retornos
-        log_ret = np.diff(np.log(prices.values.astype(float)))
-        n = len(log_ret)
-
-        if n < 40:
-            return None
-
-        # Paso 2: perfil = cumsum de retornos centrados en su media
-        profile = np.cumsum(log_ret - np.mean(log_ret))
-
-        if max_window is None:
-            max_window = n // 4
-
-        # Paso 3: escala logarítmica de ventanas
-        windows = []
-        w = min_window
-        while w <= max_window:
-            windows.append(w)
-            w = int(w * 1.5)
-            if w == windows[-1]:
-                w += 1
-
-        if len(windows) < 3:
-            return None
-
-        fluctuations = []
-        valid_windows = []
-
-        for w in windows:
-            n_segments = n // w
-            if n_segments < 4:      # mínimo 4 segmentos para fiabilidad
-                continue
-
-            rms_list = []
-            for seg in range(n_segments):
-                seg_data = profile[seg * w:(seg + 1) * w]
-                x = np.arange(w)
-                # Detrend lineal dentro de cada segmento
-                coeffs = np.polyfit(x, seg_data, 1)
-                trend = np.polyval(coeffs, x)
-                residuals = seg_data - trend
-                rms_list.append(np.sqrt(np.mean(residuals ** 2)))
-
-            if rms_list:
-                fluctuations.append(np.mean(rms_list))
-                valid_windows.append(w)
-
-        if len(valid_windows) < 3:
-            return None
-
-        # Paso 4: regresión log-log → pendiente = alpha (≈ H)
-        log_w = np.log(valid_windows)
-        log_f = np.log(fluctuations)
-        coeffs = np.polyfit(log_w, log_f, 1)
-        alpha = coeffs[0]
-
-        # Limitar al rango válido
-        alpha = max(0.0, min(1.0, alpha))
-        return round(alpha, 3)
-
-    except:
-        return None
-
-def calculate_atlas(prices, period_bb=20, period_ema=120):
-    """Calcula el indicador Atlas usando pandas_ta"""
-    try:
-        if len(prices) < max(period_bb, period_ema):
-            return 0
-        
-        bbands = ta.bbands(prices, length=period_bb, std=2)
-        
-        if bbands is None or bbands.empty:
-            return 0
-        
-        bb_top = bbands[f'BBU_{period_bb}_2.0']
-        bb_bot = bbands[f'BBL_{period_bb}_2.0']
-        
-        dbb = np.sqrt((bb_top - bb_bot) / bb_top) * 20
-        dbb_med = dbb.ewm(span=period_ema, adjust=False).mean()
-        
-        factor = dbb_med * 4 / 5
-        atl = dbb - factor
-        al1 = np.where(atl > 0, 0, 1)
-        
-        return al1[-1] if len(al1) > 0 else 0
-    except:
-        return 0
-
-def calculate_mic_value(data):
-    """Calcula el MIC Value: (ROC18/NATR18)*0.6 + (ROC50/NATR50)*0.4 usando pandas_ta"""
-    try:
-        if len(data) < 50:
-            return None
-        
-        close = data['Close']
-        high = data['High']
-        low = data['Low']
-        
-        roc18 = ta.roc(close, length=18)
-        roc50 = ta.roc(close, length=50)
-        
-        if roc18 is None or roc50 is None:
-            return None
-        
-        roc18_val = roc18.iloc[-1] if not pd.isna(roc18.iloc[-1]) else 0
-        roc50_val = roc50.iloc[-1] if not pd.isna(roc50.iloc[-1]) else 0
-        
-        natr18 = ta.natr(high=high, low=low, close=close, length=18)
-        natr50 = ta.natr(high=high, low=low, close=close, length=50)
-        
-        if natr18 is None or natr50 is None:
-            return None
-        
-        natr18_val = natr18.iloc[-1] if not pd.isna(natr18.iloc[-1]) else 1
-        natr50_val = natr50.iloc[-1] if not pd.isna(natr50.iloc[-1]) else 1
-        
-        if natr18_val == 0:
-            natr18_val = 1
-        if natr50_val == 0:
-            natr50_val = 1
-        
-        mic_value = (roc18_val / natr18_val) * 0.6 + (roc50_val / natr50_val) * 0.4
-        
-        return mic_value
-    except:
-        return None
-
-def calculate_sharpe_ratio(prices, period=50):
-    """Calcula el Sharpe Ratio anualizado"""
-    try:
-        if len(prices) < period + 1:
-            return None
-        
-        returns = prices.pct_change().dropna()
-        
-        if len(returns) < period:
-            return None
-        
-        mean_return = returns.rolling(window=period).mean().iloc[-1]
-        std_return = returns.rolling(window=period).std().iloc[-1]
-        
-        if std_return == 0 or pd.isna(std_return):
-            return None
-        
-        sharpe = (mean_return / std_return) * np.sqrt(50)
-        
-        return sharpe
-    except:
-        return None
-
-def calculate_macd_v(data):
-    """Calcula MACD-V normalizado por ATR usando pandas_ta"""
-    try:
-        if len(data) < 26:
-            return None
-        
-        close = data['Close']
-        high = data['High']
-        low = data['Low']
-        
-        atr = ta.atr(high=high, low=low, close=close, length=26)
-        
-        if atr is None or pd.isna(atr.iloc[-1]) or atr.iloc[-1] == 0:
-            return None
-        
-        macd = ta.macd(close, fast=12, slow=26, signal=9)
-        
-        if macd is None or macd.empty:
-            return None
-        
-        macd_line = macd['MACD_12_26_9']
-        
-        if pd.isna(macd_line.iloc[-1]):
-            return None
-        
-        macd_v = (macd_line.iloc[-1] / atr.iloc[-1]) * 100
-        
-        return macd_v
-    except:
-        return None
-
-
-def get_monthly_expirations(expirations, days_threshold=7):
-    """
-    Filtra las expiraciones mensuales (3er viernes de cada mes)
-    y aplica la regla de proximidad: si el próximo mensual está a
-    menos de `days_threshold` días, incluye también el siguiente mensual.
-
-    Args:
-        expirations: tuple/list de strings 'YYYY-MM-DD' de yfinance
-        days_threshold: días mínimos para considerar que un vencimiento
-                        está "demasiado cerca" (default 7)
-
-    Returns:
-        list de strings con las expiraciones mensuales seleccionadas (1 o 2)
-    """
-    today = datetime.now().date()
-
-    def is_third_friday(d):
-        """Comprueba si una fecha es el 3er viernes del mes."""
-        if d.weekday() != 4:   # 4 = viernes
-            return False
-        # El 3er viernes cae siempre entre el día 15 y el 21
-        return 15 <= d.day <= 21
-
-    # Filtrar solo vencimientos mensuales futuros
-    monthly = []
-    for exp_str in expirations:
-        try:
-            exp_date = datetime.strptime(exp_str, '%Y-%m-%d').date()
-            if exp_date > today and is_third_friday(exp_date):
-                monthly.append((exp_date, exp_str))
-        except:
             continue
 
-    if not monthly:
-        return []
+        st_tf = summarize_zero_lag(d)
+        if st_tf["short"]:
+            any_short = True
+        warn = " ⚠️" if st_tf["short"] else ""
 
-    # Ordenar por fecha
-    monthly.sort(key=lambda x: x[0])
-
-    # Regla de proximidad: si el primer mensual está a < threshold días, coger también el segundo
-    first_date, first_str = monthly[0]
-    days_to_first = (first_date - today).days
-
-    if days_to_first < days_threshold and len(monthly) >= 2:
-        # Primer mensual muy cercano → usar primero + segundo
-        return [first_str, monthly[1][1]]
-    else:
-        # Usar solo el primer mensual
-        return [first_str]
-
-
-def get_options_metrics_yf(ticker, current_price, price_range_pct=10, days_threshold=7):
-    """
-    Obtiene métricas de volumen de opciones desde Yahoo Finance.
-
-    Lógica de vencimientos:
-        - Usa únicamente vencimientos MENSUALES (3er viernes del mes).
-        - Si el próximo mensual está a menos de `days_threshold` días,
-          añade también el siguiente mensual.
-
-    Lógica de actividad (volumen + open interest):
-        - Para cada strike en rango ±price_range_pct%:
-            · Si volume > 0  → usar volume  (actividad intradía)
-            · Si volume == 0 → usar openInterest como fallback
-        - El P/C Ratio se calcula sobre la suma total de ambas métricas.
-
-    Args:
-        ticker (str): Símbolo del ticker
-        current_price (float): Precio actual de la acción
-        price_range_pct (int): Rango de strikes alrededor del precio (default 10%)
-        days_threshold (int): Días mínimos al primer mensual (default 7)
-
-    Returns:
-        dict con 'Options_Vol', 'PC_Ratio', 'Sentiment', 'Exp_Used'  o  None
-    """
-    try:
-        stock = yf.Ticker(ticker)
-
-        # Verificar si tiene opciones disponibles
-        expirations = stock.options
-        if not expirations or len(expirations) == 0:
-            return None
-
-        # Seleccionar vencimientos mensuales
-        selected_exps = get_monthly_expirations(expirations, days_threshold=days_threshold)
-
-        # Fallback: si no hay mensuales disponibles, usar las 2 primeras
-        if not selected_exps:
-            selected_exps = list(expirations[:min(2, len(expirations))])
-
-        # Calcular rango de strikes (±price_range_pct%)
-        lower_bound = current_price * (1 - price_range_pct / 100)
-        upper_bound = current_price * (1 + price_range_pct / 100)
-
-        total_call_activity = 0
-        total_put_activity  = 0
-
-        for exp_date in selected_exps:
-            try:
-                chain = stock.option_chain(exp_date)
-
-                # ---- CALLS ----
-                calls = chain.calls
-                calls_in_range = calls[
-                    (calls['strike'] >= lower_bound) &
-                    (calls['strike'] <= upper_bound)
-                ].copy()
-
-                if not calls_in_range.empty:
-                    calls_in_range['volume']       = calls_in_range['volume'].fillna(0)
-                    calls_in_range['openInterest'] = calls_in_range['openInterest'].fillna(0) \
-                        if 'openInterest' in calls_in_range.columns else 0
-
-                    call_activity = calls_in_range.apply(
-                        lambda row: row['volume'] if row['volume'] > 0 else row['openInterest'],
-                        axis=1
-                    ).sum()
-                    total_call_activity += call_activity
-
-                # ---- PUTS ----
-                puts = chain.puts
-                puts_in_range = puts[
-                    (puts['strike'] >= lower_bound) &
-                    (puts['strike'] <= upper_bound)
-                ].copy()
-
-                if not puts_in_range.empty:
-                    puts_in_range['volume']       = puts_in_range['volume'].fillna(0)
-                    puts_in_range['openInterest'] = puts_in_range['openInterest'].fillna(0) \
-                        if 'openInterest' in puts_in_range.columns else 0
-
-                    put_activity = puts_in_range.apply(
-                        lambda row: row['volume'] if row['volume'] > 0 else row['openInterest'],
-                        axis=1
-                    ).sum()
-                    total_put_activity += put_activity
-
-            except Exception:
-                continue
-
-        total_activity = total_call_activity + total_put_activity
-
-        if total_activity == 0:
-            return None
-
-        if total_call_activity == 0:
-            pc_ratio = float('inf')
+        if st_tf["trend"] == 1:
+            bg = "rgba(0,255,187,0.30)"
+        elif st_tf["trend"] == -1:
+            bg = "rgba(255,17,0,0.30)"
         else:
-            pc_ratio = total_put_activity / total_call_activity
+            bg = "rgba(136,136,136,0.30)"
 
-        if pc_ratio == float('inf'):
-            sentiment = "🔴 Muy Bajista"
-        elif pc_ratio < 0.7:
-            sentiment = "🟢 Muy Alcista"
-        elif pc_ratio < 1.0:
-            sentiment = "🟢 Alcista"
-        elif pc_ratio < 1.3:
-            sentiment = "🟡 Neutral"
-        else:
-            sentiment = "🔴 Bajista"
+        since_tf = st_tf["since"].strftime("%Y-%m-%d") if st_tf["since"] is not None else "—"
+        flip_tf  = f"${st_tf['flip']:.2f}" if pd.notna(st_tf["flip"]) else "—"
+        dist_tf  = f"{st_tf['dist']:.2f}%" if pd.notna(st_tf["dist"]) else "—"
 
-        exp_used = ", ".join(selected_exps)
-
-        return {
-            'Options_Vol': int(total_activity),
-            'PC_Ratio':    round(pc_ratio, 2) if pc_ratio != float('inf') else None,
-            'Sentiment':   sentiment,
-            'Exp_Used':    exp_used
-        }
-
-    except Exception:
-        return None
-
-
-def format_market_cap(value):
-    """Formatea el market cap de forma legible"""
-    if value is None or pd.isna(value):
-        return "N/A"
-    
-    if value >= 1e12:
-        return f"${value/1e12:.2f}T"
-    elif value >= 1e9:
-        return f"${value/1e9:.2f}B"
-    elif value >= 1e6:
-        return f"${value/1e6:.2f}M"
-    else:
-        return f"${value:,.0f}"
-
-def analyze_ticker(ticker, params, benchmark_data):
-    """Analiza un ticker individual con todos los filtros"""
-    try:
-        data = download_weekly_data(ticker, period="5y")
-        if data is None or len(data) < 156:
-            return None
-        
-        close = data['Close']
-        current_price = close.iloc[-1]
-        
-        # ========== FILTRO 0: Precio máximo ==========
-        if current_price > params['max_price']:
-            return None
-        
-        # ========== FILTRO 1: RSC Mansfield vs SPY > 0 ==========
-        rsc = calculate_rsc_mansfield(close, benchmark_data, period=52)
-        if rsc is None or rsc <= 0:
-            return None
-        
-        # ========== FILTRO 2: % a Máximos ==========
-        max_years = params['max_years']
-        periods = min(52 * max_years, len(close))
-        max_price = close.iloc[-periods:].max()
-        dist_to_max = abs(current_price - max_price) / current_price * 100
-        
-        if dist_to_max > params['dist_to_max']:
-            return None
-        
-        # ========== FILTRO 3: Close > WMA30 ==========
-        wma30 = calculate_wma(close, period=30)
-        if wma30 is None or current_price <= wma30:
-            return None
-        
-        # ========== FILTRO 4: Distancia a WMA30 <= % ==========
-        dist_to_wma = abs(current_price - wma30) / current_price * 100
-        if params['apply_wma_dist'] and dist_to_wma > params['dist_to_wma']:
-            return None
-        
-        # ========== FILTROS OPCIONALES ==========
-        
-        # Regresión Lineal
-        slope, r_squared, normalized_dist = calculate_linear_regression(close, period=30)
-        if params['apply_lr']:
-            if r_squared is None or r_squared < 0.7 or normalized_dist is None or normalized_dist > 1.5:
-                return None
-        
-        # Atlas
-        atlas_value = calculate_atlas(close)
-        if params['apply_atlas']:
-            if atlas_value == 0:
-                return None
-        
-        # MIC Ranking
-        mic_value = calculate_mic_value(data)
-        if params['apply_mic']:
-            if mic_value is None or mic_value < 5:
-                return None
-        
-        # Sharpe Ratio
-        sharpe = calculate_sharpe_ratio(close)
-        if params['apply_sharpe']:
-            if sharpe is None or sharpe < 1.5:
-                return None
-        
-        # MACD-V - Filtro configurable con radio button
-        macd_v = calculate_macd_v(data)
-        macd_filter = params['macd_filter']
-        
-        if macd_filter == "MACD-V ≥ 50":
-            if macd_v is None or macd_v < 50:
-                return None
-        elif macd_filter == "MACD-V entre 50-150":
-            if macd_v is None or macd_v < 50 or macd_v >= 150:
-                return None
-        elif macd_filter == "MACD-V ≥ 150":
-            if macd_v is None or macd_v < 150:
-                return None
-
-        # ========== K-RATIO (52 semanas) ==========
-        # Siempre se calcula; solo filtra si el usuario lo activa
-        k_ratio = calculate_k_ratio(close, period=52)
-
-        k_ratio_filter = params['k_ratio_filter']
-        if k_ratio_filter == "K-Ratio ≥ 1.5 (Tendencia fuerte)":
-            if k_ratio is None or k_ratio < 1.5:
-                return None
-        elif k_ratio_filter == "K-Ratio ≥ 2.0 (Muy consistente)":
-            if k_ratio is None or k_ratio < 2.0:
-                return None
-        # "Sin filtro" → no elimina nada, solo calcula
-
-        # ========== TODOS LOS FILTROS PASADOS ==========
-        name, market_cap = get_ticker_name_and_marketcap(ticker)
-        next_dividend = get_next_dividend_date(ticker)
-        div_yield = get_dividend_yield(ticker)
-        
-        # ========== RESULTADO ==========
-        result = {
-            'Ticker':      ticker,
-            'Name':        name,
-            'Price':       round(current_price, 2),
-            'Market_Cap':  market_cap,
-            'Next_Dividend': next_dividend,
-            'Div_Yield_%': div_yield,
-            'RSC':         round(rsc, 2) if rsc is not None else None,
-            'Dist_Max_%':  round(dist_to_max, 2),
-            'WMA30':       round(wma30, 2) if wma30 is not None else None,
-            'Dist_WMA_%':  round(dist_to_wma, 2),
-            'Slope':       round(slope, 2) if slope is not None else None,
-            'R2':          round(r_squared, 3) if r_squared is not None else None,
-            'Norm_Dist':   round(normalized_dist, 2) if normalized_dist is not None else None,
-            'K_Ratio':     k_ratio,
-            'Atlas':       int(atlas_value),
-            'MIC_Value':   round(mic_value, 2) if mic_value is not None else None,
-            'Sharpe':      round(sharpe, 2) if sharpe is not None else None,
-            'MACD_V':      round(macd_v, 2) if macd_v is not None else None
-        }
-        
-        return result
-        
-    except:
-        return None
-
-def run_screener(tickers, params, progress_bar, status_text):
-    """Ejecuta el screener en paralelo"""
-    
-    status_text.text("📊 Descargando datos del benchmark (SPY)...")
-    benchmark_data_full = download_weekly_data("SPY", period="5y", use_lock=False)
-    
-    if benchmark_data_full is None:
-        st.error("❌ Error descargando datos del benchmark SPY. Verifica tu conexión a internet.")
-        return pd.DataFrame()
-    
-    benchmark_data = benchmark_data_full['Close']
-    
-    results = []
-    total = len(tickers)
-    
-    status_text.text(f"🔍 Analizando {total} tickers...")
-    
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {
-            executor.submit(analyze_ticker, ticker, params, benchmark_data): ticker 
-            for ticker in tickers
-        }
-        
-        completed = 0
-        for future in as_completed(futures):
-            completed += 1
-            progress_bar.progress(completed / total)
-            
-            result = future.result()
-            if result is not None:
-                results.append(result)
-            
-            if completed % 50 == 0:
-                status_text.text(f"🔍 Procesados: {completed}/{total} | Encontrados: {len(results)}")
-    
-    status_text.text(f"✅ Análisis completado: {len(results)} acciones encontradas")
-    
-    if len(results) == 0:
-        return pd.DataFrame()
-    
-    df_results = pd.DataFrame(results)
-    df_results = df_results.sort_values('RSC', ascending=False).reset_index(drop=True)
-    
-    return df_results
-
-def plot_candlestick_chart(ticker, ticker_name, period="1y"):
-    """Crea un gráfico de velas para un ticker"""
-    try:
-        data = download_weekly_data(ticker, period=period, use_lock=False)
-        
-        if data is None or data.empty:
-            st.error(f"No se pudieron cargar datos para {ticker}")
-            return
-        
-        # Calcular WMA30
-        wma30 = ta.wma(data['Close'], length=30)
-        
-        # Crear gráfico
-        fig = go.Figure()
-        
-        # Velas japonesas
-        fig.add_trace(go.Candlestick(
-            x=data.index,
-            open=data['Open'],
-            high=data['High'],
-            low=data['Low'],
-            close=data['Close'],
-            name=ticker,
-            increasing_line_color='#26a69a',
-            decreasing_line_color='#ef5350'
-        ))
-        
-        # WMA30
-        if wma30 is not None:
-            fig.add_trace(go.Scatter(
-                x=data.index,
-                y=wma30,
-                mode='lines',
-                name='WMA30',
-                line=dict(color='#FFA726', width=2)
-            ))
-        
-        fig.update_layout(
-            title=f'{ticker} - {ticker_name} - Gráfico Semanal',
-            yaxis_title='Precio ($)',
-            xaxis_title='Fecha',
-            template='plotly_dark',
-            height=500,
-            xaxis_rangeslider_visible=False,
-            hovermode='x unified'
+        rows_html += (
+            f'<tr>'
+            f'<td style="{td}">{tf}{warn}</td>'
+            f'<td style="{td} background-color:{bg}; font-weight:bold;">{st_tf["label"].title()}</td>'
+            f'<td style="{td}">{since_tf}</td>'
+            f'<td style="{td}">{flip_tf} ({dist_tf})</td>'
+            f'</tr>'
         )
-        
-        st.plotly_chart(fig, use_container_width=True)
-        
-    except Exception as e:
-        st.error(f"Error al crear gráfico para {ticker}: {str(e)}")
 
-# ============= INTERFAZ PRINCIPAL =============
+    st.markdown(
+        f"""
+        <table style="width:100%; border-collapse: collapse; margin-bottom: 10px;">
+            <tr style="background-color: #1e1e1e;">
+                <th style="{th}">Time Frame</th>
+                <th style="{th}">Signal</th>
+                <th style="{th}">Desde</th>
+                <th style="{th}">Nivel de cambio (distancia)</th>
+            </tr>
+            {rows_html}
+        </table>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    notes = ("Las barras semanal y mensual incluyen la barra en curso (igual que "
+             "`request.security` en TradingView), por lo que la señal puede cambiar "
+             "hasta que cierre la semana o el mes.")
+    if any_short:
+        notes += (" ⚠️ = histórico disponible inferior a "
+                  f"{ZL_LENGTH * 4} barras: el indicador no está completamente "
+                  "calentado y la señal es aproximada.")
+    st.caption(notes)
+
+# ============================================================================
+# UI STREAMLIT
+# ============================================================================
+
 def main():
-    st.set_page_config(
-        page_title="Trend Stocks Screener",
-        page_icon="🚀",
-        layout="wide"
-    )
-    
-    st.title("📈 Trend Stocks Screener")
-    st.markdown("**Detecta acciones con tendencias fuertes y sostenibles (Timeframe Semanal vs SPY)**")
-    
-    st.markdown("---")
-    
-    # ============= PASO 1: UNIVERSO DE TICKERS =============
-    st.markdown("### 📂 PASO 1: Universo de Tickers")
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        if 'tickers_universe' not in st.session_state or len(st.session_state.get('tickers_universe', [])) == 0:
-            st.info("🔄 Cargando universo de tickers...")
-            try:
-                df_tickers = create_tickers_universe()
-                if isinstance(df_tickers, pd.DataFrame):
-                    tickers_list = df_tickers['Ticker'].astype(str).tolist()
-                else:
-                    tickers_list = list(df_tickers)
-                st.session_state['tickers_universe'] = tickers_list
-                st.session_state['random_seed'] = random.randint(1, 10000)
-                st.success(f"✅ {len(tickers_list):,} tickers cargados")
-            except Exception as e:
-                st.error(f"❌ Error cargando tickers: {e}")
-                st.session_state['tickers_universe'] = []
-        else:
-            st.success(f"✅ {len(st.session_state['tickers_universe']):,} tickers disponibles")
-    
-    with col2:
-        if st.button("🔄 Recargar Tickers", use_container_width=True):
-            if 'tickers_universe' in st.session_state:
-                del st.session_state['tickers_universe']
-            if 'random_seed' in st.session_state:
-                del st.session_state['random_seed']
-            st.rerun()
-    
-    st.markdown("---")
-    
-    # ============= PASO 2: CONFIGURACIÓN =============
-    st.markdown("### ⚙️ PASO 2: Configuración de Parámetros")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown("**📊 Filtros Principales**")
-        
-        max_price = st.slider(
-            "Precio Máximo ($)",
-            min_value=25,
-            max_value=1000,
-            value=500,
-            step=25,
-            help="Precio máximo de la acción en múltiplos de $25"
-        )
-        
-        dist_to_max = st.slider(
-            "% Distancia a Máximos",
-            min_value=0,
-            max_value=15,
-            value=5,
-            step=1,
-            help="Porcentaje máximo de distancia al precio máximo"
-        )
-        
-        max_years = st.selectbox(
-            "Años para calcular Máximo",
-            options=[1, 2, 3, 4, 5],
-            index=1,
-            help="Años históricos para buscar el máximo"
-        )
-        
-        apply_wma_dist = st.checkbox(
-            "Aplicar filtro distancia WMA30",
-            value=True,
-            help="Filtrar por distancia máxima a WMA30"
-        )
-        
-        dist_to_wma = st.slider(
-            "% Distancia a WMA30",
-            min_value=0,
-            max_value=20,
-            value=9,
-            step=1,
-            help="Porcentaje máximo de distancia a WMA30",
-            disabled=not apply_wma_dist
-        )
-    
-    with col2:
-        st.markdown("**🔧 Filtros Técnicos**")
-        
-        apply_lr = st.checkbox(
-            "Regresión Lineal (R²≥0.7, Dist≤1.5)",
-            value=True,
-            help="Filtro de regresión lineal"
-        )
-        
-        apply_mic = st.checkbox(
-            "MIC Ranking (>5)",
-            value=True,
-            help="MIC = (ROC18/NATR18)*0.6 + (ROC50/NATR50)*0.4"
-        )
-        
-        apply_sharpe = st.checkbox(
-            "Sharpe Ratio (≥1.5)",
-            value=True,
-            help="Sharpe ratio anualizado"
+    st.set_page_config(layout="wide", page_title="Daily Regime Analyzer")
+    st.title("📊 Daily Regime Analyzer — MACD-V")
+    st.caption("Alcista · Bajista · Rango · Riesgo — clasificación por momentum normalizado por volatilidad (MACD-V), timeframe diario")
+
+    if 'analyzed' not in st.session_state:
+        st.session_state.analyzed = False
+    if 'df' not in st.session_state:
+        st.session_state.df = None
+    if 'ticker' not in st.session_state:
+        st.session_state.ticker = "AAPL"
+
+    col_input1, col_input2, col_input3, col_input4 = st.columns([2, 1, 1, 1])
+    with col_input1:
+        ticker = st.text_input("Ticker", st.session_state.ticker).upper()
+    with col_input2:
+        years_back = st.slider("Histórico (años)", 1, 10, 3)
+    with col_input3:
+        lookback_months = st.slider("Meses a visualizar", 1, 36, 8)
+    with col_input4:
+        modo = st.selectbox("Modo MACD-V", ["Barra", "Area", "Lineas"], index=0)
+
+    if st.button("🚀 ANALIZAR", use_container_width=True):
+        st.session_state.ticker = ticker
+        st.session_state.df = download_daily_data(ticker, years_back)
+        st.session_state.analyzed = True
+
+    if st.session_state.analyzed and st.session_state.df is not None:
+
+        df = st.session_state.df.copy()
+
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index, errors="coerce")
+            df = df[df.index.notna()].sort_index()
+
+        df["Regime_MACDV"] = classify_by_macdv(df)
+        df["Risk_Level"]   = analyze_risk(df)
+        df["Zone"]         = classify_zone(df["MACD_V"])
+        st.session_state.df = df
+
+        # ~21 sesiones por mes en diario
+        df_plot = df.tail(max(int(lookback_months * 21), 30)).copy()
+        current = df.iloc[-1]
+
+        regime_macdv = df["Regime_MACDV"].iloc[-1]
+        risk_level   = df["Risk_Level"].iloc[-1]
+        zone_now     = df["Zone"].iloc[-1]
+
+        precio  = float(current["Close"])
+        sma50   = float(current["SMA_50"])
+        sma200_val = current.get("SMA_200", np.nan)
+        sma200  = float(sma200_val) if pd.notna(sma200_val) else np.nan
+        macd_v  = float(current["MACD_V"])
+
+        precio_above_sma = "✅ SÍ" if precio > sma50 else "❌ NO"
+
+        # ================= TARJETA DE ESTADO ACTUAL =================
+        macdv_color = REGIME_COLORS.get(regime_macdv, "#FFFFFF")
+        st.markdown(
+            f'<div style="padding:10px;border:1px solid #444;background-color:{macdv_color};'
+            f'color:black;font-weight:bold;text-align:center;font-size:20px;border-radius:4px;">'
+            f'{regime_macdv}</div>',
+            unsafe_allow_html=True,
         )
 
-        st.markdown("**📐 K-Ratio (52 sem. · 1 año)**")
+        info_cols = st.columns(6)
+        info_cols[0].metric("Precio", f"${precio:.2f}")
+        info_cols[1].metric("SMA 50", f"${sma50:.2f}")
+        info_cols[2].metric("SMA 200", f"${sma200:.2f}" if pd.notna(sma200) else "N/A")
+        info_cols[3].metric("Precio > SMA50", precio_above_sma)
+        info_cols[4].metric("MACD-V", f"{macd_v:.2f}")
+        info_cols[5].metric("Zona MACD-V", zone_now)
 
-        k_ratio_filter = st.radio(
-            "Selecciona filtro K-Ratio:",
-            options=[
-                "Sin filtro (solo calcular)",
-                "K-Ratio ≥ 1.5 (Tendencia fuerte)",
-                "K-Ratio ≥ 2.0 (Muy consistente)",
-            ],
-            index=0,
-            help=(
-                "K-Ratio = slope / (SE_residuos × √52) sobre log-precios semanales.\n"
-                "Mide la consistencia de la tendencia en el último año.\n\n"
-                "Sin filtro → aparece en resultados pero no elimina tickers\n"
-                "≥ 1.5 → tendencia fuerte (1 año de subida consistente)\n"
-                "≥ 2.0 → tendencia muy consistente (pocos candidatos)"
-            )
-        )
+        # ================= ANÁLISIS DE RIESGO =================
+        macd_extreme = abs(macd_v) > NIVEL_EXT
+        risk_color   = RISK_COLORS.get(risk_level, "#FFFFFF")
 
-        st.markdown("**📊 Filtros MACD-V**")
-        
-        macd_filter = st.radio(
-            "Selecciona filtro MACD-V:",
-            options=["Sin filtro", "MACD-V ≥ 50", "MACD-V entre 50-150", "MACD-V ≥ 150"],
-            index=2,
-            help="Filtra por valores de MACD-V normalizado por ATR"
-        )
-    
-    with col3:
-        st.markdown("**⚡ Filtros Especiales**")
-        
-        apply_atlas = st.checkbox(
-            "Atlas Encendido",
-            value=False,
-            help="Indicador Atlas basado en Bandas de Bollinger"
-        )
+        st.markdown(f"""
+        <div style="display: flex; align-items: center; margin-bottom: 10px;">
+            <h3 style="margin: 0; padding: 0; display: inline;">⚠️ Análisis de Riesgo</h3>
+            <div style="width: 35px; height: 35px; border-radius: 50%; background-color: {risk_color}; 
+                        margin-left: 15px; display: flex; justify-content: center; align-items: center;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.3); font-size: 9px; font-weight: bold; color: black;">
+                {risk_level.replace("Sin Riesgo", "OK").replace("RIESGO+", "R+")}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-        st.markdown("---")
-        st.markdown("**📋 Resumen Filtros Activos:**")
-        
-        filters_count = sum([
-            True,   # Precio máximo (siempre)
-            True,   # RSC > 0 (siempre)
-            True,   # Distancia a máximos (siempre)
-            True,   # Close > WMA30 (siempre)
-            apply_wma_dist,
-            apply_lr,
-            apply_mic,
-            apply_sharpe,
-            1 if macd_filter != "Sin filtro" else 0,
-            1 if k_ratio_filter != "Sin filtro (solo calcular)" else 0,
-            apply_atlas,
-        ])
-        
-        st.info(f"**{filters_count}** filtros activos")
-        st.success(f"Precio máx: **${max_price}**")
-        if macd_filter != "Sin filtro":
-            st.success(f"MACD-V: {macd_filter.replace('MACD-V ', '')}")
-        if k_ratio_filter != "Sin filtro (solo calcular)":
-            st.success(f"K-Ratio: {k_ratio_filter.replace('K-Ratio ', '')}")
-        else:
-            st.info("K-Ratio: solo cálculo")
-    
-    st.markdown("---")
-    
-    # ============= PASO 3: ESCANEO =============
-    st.markdown("### 🚀 PASO 3: Ejecutar Escaneo")
-    
-    scan_button = st.button(
-        "🚀 INICIAR ESCANEO", 
-        type="primary", 
-        use_container_width=True,
-        disabled=len(st.session_state.get('tickers_universe', [])) == 0
-    )
-    
-    if scan_button:
-        params = {
-            'max_price':      max_price,
-            'dist_to_max':    dist_to_max,
-            'max_years':      max_years,
-            'dist_to_wma':    dist_to_wma,
-            'apply_wma_dist': apply_wma_dist,
-            'apply_lr':       apply_lr,
-            'apply_mic':      apply_mic,
-            'apply_sharpe':   apply_sharpe,
-            'macd_filter':    macd_filter,
-            'k_ratio_filter': k_ratio_filter,
-            'apply_atlas':    apply_atlas,
-        }
-        
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        tickers = st.session_state['tickers_universe']
-        
-        df_results = run_screener(tickers, params, progress_bar, status_text)
-        
-        progress_bar.empty()
-        
-        if len(df_results) > 0:
-            st.session_state['scan_results'] = df_results
-            st.session_state['scan_timestamp'] = datetime.now()
-            # Resetear datos de opciones al hacer nuevo scan
-            if 'options_calculated' in st.session_state:
-                del st.session_state['options_calculated']
-            st.success(f"✅ Escaneo completado: **{len(df_results)}** acciones encontradas")
-        else:
-            st.warning("⚠️ No se encontraron acciones que cumplan todos los criterios")
-            if 'scan_results' in st.session_state:
-                del st.session_state['scan_results']
-    
-    st.markdown("---")
-    
-    # ============= PASO 4: RESULTADOS =============
-    st.markdown("### 📈 PASO 4: Resultados del Escaneo")
-    
-    if 'scan_results' in st.session_state and len(st.session_state['scan_results']) > 0:
-        df_display = st.session_state['scan_results'].copy()
-        
-        # Formatear Market Cap para display
-        df_display['Market_Cap_Formatted'] = df_display['Market_Cap'].apply(format_market_cap)
-        
-        # Métricas resumen
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("📊 Acciones Encontradas", len(df_display))
-        with col2:
-            avg_rsc = df_display['RSC'].mean()
-            st.metric("📈 RSC Promedio", f"{avg_rsc:.2f}")
-        with col3:
-            avg_sharpe = df_display['Sharpe'].mean() if 'Sharpe' in df_display.columns else 0
-            st.metric("⚡ Sharpe Promedio", f"{avg_sharpe:.2f}")
-        with col4:
-            timestamp = st.session_state.get('scan_timestamp', datetime.now())
-            st.metric("🕐 Último Escaneo", timestamp.strftime("%H:%M:%S"))
-        
-        st.markdown("---")
-        
-        # ============= BOTÓN PARA CALCULAR OPCIONES + HURST =============
-        st.markdown("### 📊 Opciones & Hurst (DFA)")
+        col_risk1, col_risk2 = st.columns(2)
 
-        st.info(
-            "💡 **P/C Ratio:** < 0.7 = 🟢 Muy Alcista | 0.7–1.0 = 🟢 Alcista | "
-            "1.0–1.3 = 🟡 Neutral | > 1.3 = 🔴 Bajista  ·  "
-            "📅 Vencimiento mensual (3er viernes). Si está a < 7 días se añade el siguiente.  ·  "
-            "📊 Actividad: volumen del día; si es 0 se usa Open Interest.  |  "
-            "📈 **Hurst DFA:** < 0.50 = 🔴 Antipersistente | 0.50–0.54 = ⚪ Aleatorio | "
-            "0.55–0.59 = 🟡 Persistente | 0.60–0.64 = 🟠 Tendencia fuerte | ≥ 0.65 = 🟢 Muy fuerte"
-        )
+        with col_risk1:
+            st.markdown(f"""
+            <table style="width:100%; border-collapse: collapse; margin-bottom: 10px;">
+                <tr style="background-color: #1e1e1e;">
+                    <th style="padding: 6px; text-align: left; border: 1px solid #444; font-size: 11px;">Indicador</th>
+                    <th style="padding: 6px; text-align: center; border: 1px solid #444; font-size: 11px;">Valor</th>
+                </tr>
+                <tr>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-size: 10px;">MACD-V</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; text-align: center; font-weight: bold; font-size: 10px;">{macd_v:.2f}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-size: 10px;">¿Sobre-extendido?</td>
+                    <td style="padding: 4px 6px; border: 1px solid #444; text-align: center; font-size: 10px;">{"🔴 SÍ" if macd_extreme else "🟢 NO"}</td>
+                </tr>
+            </table>
+            """, unsafe_allow_html=True)
 
-        col_opt1, col_opt2 = st.columns([3, 1])
+        with col_risk2:
+            st.markdown(f"""
+            <table style="width:100%; border-collapse: collapse; margin-bottom: 10px;">
+                <tr style="background-color: #1e1e1e;">
+                    <th style="padding: 6px; text-align: left; border: 1px solid #444; font-size: 11px;">Umbral</th>
+                </tr>
+                <tr>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-size: 10px;">|MACD-V| &gt; 150 → RIESGO+</td>
+                </tr>
+                <tr>
+                    <td style="padding: 4px 6px; border: 1px solid #444; font-size: 10px;">|MACD-V| ≤ 50 → RANGO / NEUTRAL</td>
+                </tr>
+            </table>
+            """, unsafe_allow_html=True)
 
-        with col_opt1:
-            if 'options_calculated' not in st.session_state or not st.session_state['options_calculated']:
-                st.warning("⚠️ Aún no se ha calculado el volumen de opciones ni el Hurst DFA")
-            else:
-                st.success(f"✅ Opciones y Hurst DFA calculados para {len(df_display)} tickers")
-
-        with col_opt2:
-            calculate_options_btn = st.button(
-                "📊 Calcular Opciones + Hurst",
-                type="primary",
-                use_container_width=True,
-                disabled='options_calculated' in st.session_state and st.session_state['options_calculated']
-            )
-
-        if calculate_options_btn:
-            st.markdown("---")
-            st.info("🔄 Calculando opciones y Hurst DFA... Esto puede tomar algunos minutos.")
-
-            progress_opt = st.progress(0)
-            status_opt = st.empty()
-
-            total_tickers = len(df_display)
-            enriched_data = []
-
-            for idx, (_, row) in enumerate(df_display.iterrows()):
-                ticker = row['Ticker']
-                current_price = row['Price']
-
-                progress_opt.progress((idx + 1) / total_tickers)
-                status_opt.text(f"🔍 Procesando: {ticker} ({idx + 1}/{total_tickers})")
-
-                # ---- Opciones ----
-                metrics = get_options_metrics_yf(
-                    ticker,
-                    current_price,
-                    price_range_pct=10,
-                    days_threshold=7
+        # ================= LEYENDA DE COLORES =================
+        st.markdown("### 🎨 Leyenda de Régimen")
+        cols = st.columns(4)
+        for idx, (regime, color) in enumerate(REGIME_COLORS.items()):
+            with cols[idx]:
+                st.markdown(
+                    f'<div style="background-color:{color};padding:5px;border-radius:5px;'
+                    f'text-align:center;font-weight:bold;color:black;border:2px solid white;font-size:11px;">{regime}</div>',
+                    unsafe_allow_html=True
                 )
 
-                # ---- Hurst DFA (necesita datos semanales) ----
-                weekly_data = download_weekly_data(ticker, period="5y", use_lock=False)
-                hurst_val = None
-                if weekly_data is not None and len(weekly_data) >= 52:
-                    hurst_val = calculate_hurst_exponent(weekly_data['Close'])
-
-                if hurst_val is None:
-                    hurst_label = "N/A"
-                elif hurst_val < 0.50:
-                    hurst_label = "🔴 Antipersistente"
-                elif hurst_val < 0.55:
-                    hurst_label = "⚪ Aleatorio"
-                elif hurst_val < 0.60:
-                    hurst_label = "🟡 Persistente"
-                elif hurst_val < 0.65:
-                    hurst_label = "🟠 Tendencia fuerte"
-                else:
-                    hurst_label = "🟢 Muy fuerte"
-
-                record = {
-                    'Ticker':      ticker,
-                    'Options_Vol': metrics['Options_Vol'] if metrics else None,
-                    'PC_Ratio':    metrics['PC_Ratio']    if metrics else None,
-                    'Sentiment':   metrics['Sentiment']   if metrics else 'N/A',
-                    'Exp_Used':    metrics.get('Exp_Used', 'N/A') if metrics else 'N/A',
-                    'Hurst':       hurst_val,
-                    'Hurst_Label': hurst_label,
-                }
-                enriched_data.append(record)
-
-            progress_opt.empty()
-            status_opt.empty()
-
-            df_enriched = pd.DataFrame(enriched_data)
-            df_display = df_display.merge(df_enriched, on='Ticker', how='left')
-
-            st.session_state['scan_results'] = df_display
-            st.session_state['options_calculated'] = True
-
-            st.success(f"✅ Opciones y Hurst DFA calculados para {len(df_display)} tickers")
-            st.rerun()
-        
-        st.markdown("---")
-
-        # Preparar dataframe para mostrar
-        has_options = 'Options_Vol' in df_display.columns
-        has_hurst   = 'Hurst' in df_display.columns
-
-        # Columnas base (siempre presentes)
-        base_cols = ['Ticker', 'Name', 'Price', 'Market_Cap_Formatted',
-                     'Next_Dividend', 'Div_Yield_%']
-
-        # Opciones + Hurst (aparecen juntos tras pulsar el botón)
-        options_cols = ['Options_Vol', 'PC_Ratio', 'Sentiment', 'Exp_Used'] if has_options else []
-        hurst_cols   = ['Hurst', 'Hurst_Label'] if has_hurst else []
-
-        # Columnas técnicas del screener — K_Ratio incluido siempre
-        tech_cols  = ['RSC', 'Dist_Max_%', 'WMA30', 'Dist_WMA_%',
-                      'Slope', 'R2', 'Norm_Dist', 'K_Ratio']
-        extra_cols = ['Atlas', 'MIC_Value', 'Sharpe', 'MACD_V']
-
-        all_display_cols = base_cols + options_cols + hurst_cols + tech_cols + extra_cols
-        all_display_cols = [c for c in all_display_cols if c in df_display.columns]
-
-        df_table = df_display[all_display_cols]
-
-        column_config = {
-            "Ticker":               st.column_config.TextColumn("Ticker", width="small"),
-            "Name":                 st.column_config.TextColumn("Nombre", width="medium"),
-            "Price":                st.column_config.NumberColumn("Precio", format="$%.2f"),
-            "Market_Cap_Formatted": st.column_config.TextColumn("Market Cap", width="small"),
-            "Next_Dividend":        st.column_config.TextColumn("Próx. Dividendo", width="medium"),
-            "Div_Yield_%":          st.column_config.NumberColumn("Yield %", format="%.2f%%"),
-            "Options_Vol":          st.column_config.NumberColumn(
-                "Act. Opciones",
-                format="%d",
-                help="Actividad total de opciones (±10% precio, venc. mensual). "
-                     "Volumen del día; si es 0, se usa Open Interest."
-            ),
-            "PC_Ratio":             st.column_config.NumberColumn(
-                "P/C Ratio",
-                format="%.2f",
-                help="Put/Call Ratio sobre vencimiento mensual (±10% strikes)"
-            ),
-            "Sentiment":            st.column_config.TextColumn("Sentiment", width="medium"),
-            "Exp_Used":             st.column_config.TextColumn(
-                "Vencimiento(s)",
-                width="medium",
-                help="Vencimiento(s) mensual(es) utilizados para el cálculo"
-            ),
-            "Hurst":                st.column_config.NumberColumn(
-                "Hurst (DFA)",
-                format="%.3f",
-                help=(
-                    "Exponente de Hurst por DFA (datos semanales, 5 años). "
-                    "< 0.50 Antipersistente · 0.50–0.54 Aleatorio · "
-                    "0.55–0.59 Persistente · 0.60–0.64 Fuerte · ≥ 0.65 Muy fuerte"
-                )
-            ),
-            "Hurst_Label":          st.column_config.TextColumn(
-                "Hurst señal",
-                width="medium",
-                help="Interpretación del Exponente de Hurst DFA"
-            ),
-            "RSC":                  st.column_config.NumberColumn("RSC", format="%.2f"),
-            "Dist_Max_%":           st.column_config.NumberColumn("Dist Max %", format="%.2f%%"),
-            "WMA30":                st.column_config.NumberColumn("WMA30", format="%.2f"),
-            "Dist_WMA_%":           st.column_config.NumberColumn("Dist WMA %", format="%.2f%%"),
-            "Slope":                st.column_config.NumberColumn("Slope", format="%.2f"),
-            "R2":                   st.column_config.NumberColumn("R²", format="%.3f"),
-            "Norm_Dist":            st.column_config.NumberColumn("Norm Dist", format="%.2f"),
-            "K_Ratio":              st.column_config.NumberColumn(
-                "K-Ratio (52s)",
-                format="%.3f",
-                help=(
-                    "K-Ratio semanal (n=52, 1 año): slope / (SE × √52) sobre log-precios.\n"
-                    "< 0.5 débil · 0.5–1.0 moderada · 1.0–1.5 sólida · 1.5–2.0 fuerte · ≥ 2.0 muy consistente"
-                )
-            ),
-            "Atlas":                st.column_config.NumberColumn("Atlas", format="%d"),
-            "MIC_Value":            st.column_config.NumberColumn("MIC Value", format="%.2f"),
-            "Sharpe":               st.column_config.NumberColumn("Sharpe", format="%.2f"),
-            "MACD_V":               st.column_config.NumberColumn("MACD-V", format="%.2f")
-        }
-        
-        # Tabla de resultados
-        st.dataframe(
-            df_table,
-            use_container_width=True,
-            height=400,
-            column_config=column_config
+        # ================= TÍTULO DEL GRÁFICO 1 =================
+        st.markdown(
+            f'<div style="margin-top:14px;margin-bottom:2px;font-size:15px;'
+            f'font-weight:bold;color:#FFFFFF;">{ticker} — Diario (MACD-V)</div>',
+            unsafe_allow_html=True,
         )
-        
-        # Botón de descarga
-        csv_df = df_display.drop('Market_Cap_Formatted', axis=1, errors='ignore')
-        csv = csv_df.to_csv(index=False)
-        st.download_button(
-            label="📥 Descargar Resultados (CSV)",
-            data=csv,
-            file_name=f"trend_stocks_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv",
-            use_container_width=True
+
+        # ================= LEYENDA HTML =================
+        legend_items_html = ""
+        for name, color in SERIES_COLORS.items():
+            dash = "border-top:2px dashed" if name in ("EMA 8", "EMA 21") else "border-top:3px solid"
+            legend_items_html += f"""
+            <div style="display:flex;align-items:center;gap:6px;margin-right:18px;">
+                <div style="width:18px;{dash} {color};"></div>
+                <span style="color:#DDD;font-size:12px;">{name}</span>
+            </div>
+            """
+        st.markdown(
+            f"""
+            <div style="display:flex;flex-wrap:nowrap;align-items:center;
+                        overflow-x:auto;padding:4px 4px 8px 4px;">
+                {legend_items_html}
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
-        
+
+        # ================= GRÁFICOS =================
+        macdv_abs_max = float(df_plot["MACD_V"].abs().max())
+        y_limit_macdv = max(NIVEL_EXT + EXTRA_FONDO, macdv_abs_max * 1.08)
+
+        x_min = df_plot.index.min()
+        x_max = df_plot.index.max()
+        x_pad = (x_max - x_min) * 0.06
+        x_max_padded = x_max + x_pad
+
+        fig = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            row_heights=[0.58, 0.42],
+            vertical_spacing=0.1,
+        )
+
+        # ── Panel 1: Velas + medias + puntos de régimen ─────────────────────
+        fig.add_trace(go.Candlestick(
+            x=df_plot.index,
+            open=df_plot["Open"], high=df_plot["High"],
+            low=df_plot["Low"], close=df_plot["Close"],
+            name="Precio",
+            increasing=dict(line=dict(color=CANDLE_UP, width=1), fillcolor=CANDLE_UP),
+            decreasing=dict(line=dict(color=CANDLE_DOWN, width=1), fillcolor=CANDLE_DOWN),
+            showlegend=False,
+        ), row=1, col=1)
+
+        fig.add_trace(go.Scatter(
+            x=df_plot.index, y=df_plot["SMA_50"], mode="lines", name="SMA 50",
+            line=dict(color=SERIES_COLORS["SMA 50"], width=1.3), opacity=0.85,
+            showlegend=False,
+        ), row=1, col=1)
+        if df_plot["SMA_200"].notna().any():
+            fig.add_trace(go.Scatter(
+                x=df_plot.index, y=df_plot["SMA_200"], mode="lines", name="SMA 200",
+                line=dict(color=SERIES_COLORS["SMA 200"], width=1.3), opacity=0.85,
+                showlegend=False,
+            ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=df_plot.index, y=df_plot["EMA_8"], mode="lines", name="EMA 8",
+            line=dict(color=SERIES_COLORS["EMA 8"], width=1.1, dash="dash"), opacity=0.7,
+            showlegend=False,
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=df_plot.index, y=df_plot["EMA_21"], mode="lines", name="EMA 21",
+            line=dict(color=SERIES_COLORS["EMA 21"], width=1.1, dash="dash"), opacity=0.7,
+            showlegend=False,
+        ), row=1, col=1)
+
+        last_price = float(df_plot["Close"].iloc[-1])
+        fig.add_annotation(
+            xref="x", yref="y1", x=x_max_padded, y=last_price,
+            text=f" ${last_price:,.2f} ", showarrow=False,
+            font=dict(color="black", size=13, family="Arial Black"),
+            align="left", xanchor="left",
+            bgcolor="#FFFFFF", bordercolor="white", borderwidth=1,
+            row=1, col=1,
+        )
+
+        # ── Panel 2: MACD-V estilo TradingView ──────────────────────────────
+        # Fondos por zona (cada una con su color), de x_min a x_max_padded
+        zone_rects = [
+            (NIVEL_EXT,   y_limit_macdv, F_BLUE),
+            (NIVEL_NEU,   NIVEL_EXT,     F_GREEN),
+            (-NIVEL_NEU,  NIVEL_NEU,     F_YELLOW),
+            (-NIVEL_EXT,  -NIVEL_NEU,    F_RED),
+            (-y_limit_macdv, -NIVEL_EXT, F_BLUE),
+        ]
+        for y0, y1, fill in zone_rects:
+            fig.add_shape(
+                type="rect", x0=x_min, x1=x_max_padded, y0=y0, y1=y1,
+                fillcolor=fill, line_width=0, layer="below",
+                row=2, col=1,
+            )
+
+        # Líneas de referencia: ±150 discontinua, ±50 punteada, 0 sólida tenue
+        for y_val, color, dash, width in [
+            (0,           "gray",    "solid", 1),
+            (NIVEL_NEU,   "#A5A5A5", "dot",   1.3),
+            (-NIVEL_NEU,  "#A5A5A5", "dot",   1.3),
+            (NIVEL_EXT,   "#8C8C8C", "dash",  1.5),
+            (-NIVEL_EXT,  "#8C8C8C", "dash",  1.5),
+        ]:
+            fig.add_shape(
+                type="line", x0=x_min, x1=x_max_padded, y0=y_val, y1=y_val,
+                line=dict(color=color, width=width, dash=dash),
+                row=2, col=1,
+            )
+
+        zone_colors_series = [ZONE_COLORS[z] for z in df_plot["Zone"]]
+
+        if modo == "Barra":
+            fig.add_trace(go.Bar(
+                x=df_plot.index, y=df_plot["MACD_V"],
+                marker=dict(color=zone_colors_series, line=dict(width=0)),
+                name="MACD-V", showlegend=False,
+            ), row=2, col=1)
+
+        elif modo == "Area":
+            # Un trazo por color de zona, relleno hasta 0
+            fill_map = {
+                C_BLUE:   "rgba(0,70,255,0.65)",
+                C_GREEN:  "rgba(0,170,60,0.65)",
+                C_YELLOW: "rgba(255,200,0,0.65)",
+                C_RED:    "rgba(220,30,30,0.65)",
+            }
+            zone_color_arr = np.array(zone_colors_series)
+            for col_name, fill_rgba in fill_map.items():
+                mask = zone_color_arr == col_name
+                if not mask.any():
+                    continue
+                y_masked = df_plot["MACD_V"].where(mask)
+                fig.add_trace(go.Scatter(
+                    x=df_plot.index, y=y_masked, mode="lines",
+                    line=dict(color=col_name, width=1),
+                    fill="tozeroy", fillcolor=fill_rgba,
+                    connectgaps=False, showlegend=False, name="MACD-V",
+                ), row=2, col=1)
+
+        else:  # Lineas
+            fig.add_trace(go.Scatter(
+                x=df_plot.index, y=df_plot["MACD_V"], mode="lines", name="MACD-V",
+                line=dict(color="rgb(20,70,200)", width=2), showlegend=False,
+            ), row=2, col=1)
+            fig.add_trace(go.Scatter(
+                x=df_plot.index, y=df_plot["MACD_V_Signal"], mode="lines", name="Signal",
+                line=dict(color="rgb(230,120,0)", width=1), showlegend=False,
+            ), row=2, col=1)
+
+        # Etiqueta de zona (esquina superior derecha, como la tabla de Pine)
+        label_txt_color = "black" if zone_now == "NEUTRAL" else "white"
+        fig.add_annotation(
+            xref="x2 domain", yref="y2 domain", x=1.0, y=1.08,
+            xanchor="right", yanchor="bottom",
+            text=f"<b>{zone_now}: {macd_v:.1f}</b>",
+            showarrow=False,
+            font=dict(size=13, color=label_txt_color),
+            bgcolor=ZONE_COLORS[zone_now], bordercolor="white", borderwidth=1,
+            borderpad=4,
+        )
+
+        # Ejes
+        fig.update_xaxes(range=[x_min, x_max_padded], domain=[0.0, 0.94], row=1, col=1)
+        fig.update_xaxes(range=[x_min, x_max_padded], domain=[0.0, 0.94], row=2, col=1)
+
+        # Ocultar fines de semana (diario) para evitar huecos
+        fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+
+        fig.update_yaxes(range=[-y_limit_macdv, y_limit_macdv], title_text="MACD-V",
+                         row=2, col=1, side="right",
+                         tickvals=[-200, -150, -100, -50, 0, 50, 100, 150, 200])
+        fig.update_yaxes(title_text="Precio ($)", row=1, col=1, side="right")
+        fig.update_xaxes(title_text="Fecha", row=2, col=1)
+
+        fig.add_annotation(
+            xref="x2 domain", yref="y2 domain", x=0, y=1.08,
+            xanchor="left", yanchor="bottom",
+            text="<b>MACD-V (momentum normalizado por ATR)</b>",
+            showarrow=False, font=dict(size=12, color="white"),
+        )
+
+        fig.update_layout(
+            template="plotly_dark",
+            height=860,
+            margin=dict(l=10, r=70, t=20, b=10),
+            showlegend=False,
+            hovermode=False,
+            dragmode=False,
+            bargap=0.05,
+        )
+        fig.update_xaxes(fixedrange=True, rangeslider_visible=False)
+        fig.update_yaxes(fixedrange=True)
+
+        st.plotly_chart(fig, use_container_width=True, config={
+            "staticPlot": True,
+            "displayModeBar": False,
+            "displaylogo": False,
+        })
+
+        # ================= GRÁFICO 2: ZERO LAG TREND SIGNALS =================
+        # Se usa el ticker analizado (session_state), no el del cuadro de texto,
+        # para que ambos gráficos correspondan siempre al mismo activo.
+        render_zero_lag_section(st.session_state.ticker, lookback_months)
+
+        # ================= DOCUMENTACIÓN =================
         st.markdown("---")
-        
-        # ============= PASO 5: GRÁFICOS =============
-        st.markdown("### 📊 PASO 5: Gráficos de Velas")
-        
-        st.info("📌 Selecciona el período de tiempo y los tickers que deseas visualizar")
-        
-        col1, col2 = st.columns([1, 3])
-        
-        with col1:
-            chart_period = st.selectbox(
-                "Período del gráfico:",
-                options=['1y', '2y', '3y', '5y'],
-                index=0,
-                format_func=lambda x: {
-                    '1y': '1 Año',
-                    '2y': '2 Años',
-                    '3y': '3 Años',
-                    '5y': '5 Años'
-                }[x]
-            )
-            
-            st.markdown("---")
-            
-            ticker_options = [f"{row['Ticker']} - {row['Name']}" for _, row in df_display.iterrows()]
-            ticker_map = {f"{row['Ticker']} - {row['Name']}": row['Ticker'] for _, row in df_display.iterrows()}
-            name_map = {row['Ticker']: row['Name'] for _, row in df_display.iterrows()}
-            
-            selected_ticker_option = st.selectbox(
-                "Selecciona un ticker:",
-                options=["Ninguno"] + ticker_options,
-                index=0
-            )
-            
-            if selected_ticker_option != "Ninguno":
-                selected_ticker = ticker_map[selected_ticker_option]
-            else:
-                selected_ticker = None
-            
-            st.markdown("---")
-            
-            show_all = st.checkbox("Mostrar todos los gráficos", value=False)
-            
-            if not show_all and selected_ticker is None:
-                num_charts = st.slider(
-                    "Número de gráficos:",
-                    min_value=1,
-                    max_value=min(20, len(df_display)),
-                    value=min(5, len(df_display)),
-                    step=1
-                )
-        
-        with col2:
-            if selected_ticker is not None:
-                tickers_to_plot = [selected_ticker]
-                st.info(f"📊 Mostrando gráfico para: **{selected_ticker} - {name_map[selected_ticker]}**")
-            elif show_all:
-                tickers_to_plot = df_display['Ticker'].tolist()
-                st.warning(f"⚠️ Se mostrarán {len(tickers_to_plot)} gráficos. Esto puede tardar un momento...")
-            else:
-                tickers_to_plot = df_display['Ticker'].head(num_charts).tolist()
-            
-            if st.button("📊 GENERAR GRÁFICOS", type="primary", use_container_width=True):
-                st.markdown("---")
-                
-                for i, ticker in enumerate(tickers_to_plot, 1):
-                    ticker_name = name_map.get(ticker, ticker)
-                    st.markdown(f"#### {i}. {ticker} - {ticker_name}")
-                    
-                    ticker_data = df_display[df_display['Ticker'] == ticker].iloc[0]
-                    
-                    # Métricas: adaptar según datos disponibles
-                    metric_cols_data = [
-                        ("Precio",   f"${ticker_data['Price']:.2f}"),
-                        ("RSC",      f"{ticker_data['RSC']:.2f}"    if pd.notna(ticker_data.get('RSC'))     else "N/A"),
-                        ("R²",       f"{ticker_data['R2']:.3f}"     if pd.notna(ticker_data.get('R2'))      else "N/A"),
-                        ("K-Ratio",  f"{ticker_data['K_Ratio']:.3f}" if pd.notna(ticker_data.get('K_Ratio')) else "N/A"),
-                        ("Sharpe",   f"{ticker_data['Sharpe']:.2f}" if pd.notna(ticker_data.get('Sharpe'))  else "N/A"),
-                        ("MACD-V",   f"{ticker_data['MACD_V']:.2f}" if pd.notna(ticker_data.get('MACD_V'))  else "N/A"),
-                    ]
+        with st.expander("📖 Ver Lógica de Clasificación"):
+            st.markdown("""
+            #### 🔹 MACD-V (Spiroglou) — timeframe diario
 
-                    if 'Hurst' in ticker_data and pd.notna(ticker_data.get('Hurst')):
-                        metric_cols_data.append(
-                            ("Hurst DFA", ticker_data.get('Hurst_Label', f"{ticker_data['Hurst']:.3f}"))
-                        )
+            **MACD-V** = [(EMA12 − EMA26) / ATR(26)] × 100, con el **ATR calculado
+            con la media de Wilder (RMA)**, igual que `ta.atr` de TradingView, de modo
+            que los valores coinciden con el indicador de Pine.
 
-                    if has_options and pd.notna(ticker_data.get('Options_Vol')):
-                        metric_cols_data.append(
-                            ("Sentiment", ticker_data.get('Sentiment', 'N/A'))
-                        )
+            **Zonas del indicador (colores de las barras):**
+            - MACD-V > +150 → **RIESGO ALTO** (azul)
+            - +50 a +150 → **ALCISTA** (verde)
+            - -50 a +50 → **NEUTRAL** (amarillo)
+            - -150 a -50 → **BAJISTA** (rojo)
+            - MACD-V < -150 → **RIESGO BAJO** (azul)
 
-                    metric_cols = st.columns(len(metric_cols_data))
-                    for col_obj, (label, value) in zip(metric_cols, metric_cols_data):
-                        with col_obj:
-                            st.metric(label, value)
-                    
-                    plot_candlestick_chart(ticker, ticker_name, period=chart_period)
-                    
-                    st.markdown("---")
-                
-                st.success(f"✅ {len(tickers_to_plot)} gráfico(s) generado(s) correctamente")
-        
-    else:
-        st.info("🚧 Los resultados aparecerán aquí una vez completado el escaneo")
+            **Régimen (tarjeta superior y puntos del gráfico)**, combinando SMA 50:
+            - |MACD-V| ≤ 50 → **RANGO**
+            - Precio > SMA50 y MACD-V entre 50 y 150 → **ALCISTA**
+            - Precio < SMA50 y MACD-V entre -150 y -50 → **BAJISTA**
+            - |MACD-V| > 150 (en el sentido de la tendencia) → **RIESGO**
+
+            La **SMA 200** y las EMAs son solo de referencia visual.
+
+            #### ⚠️ Análisis de Riesgo
+            - |MACD-V| > 150 → **RIESGO+** (morado)
+            - En cualquier otro caso → **Sin Riesgo** (verde)
+
+            **Modos del panel MACD-V:** Barra (por defecto), Area y Lineas (MACD-V + Signal).
+
+            #### 0️⃣ Zero Lag Trend Signals (AlgoAlpha)
+            - **Basis** = ZLEMA: EMA(70) de `close + (close − close[34])`.
+            - **Volatilidad** = máximo de ATR(70) en las últimas 210 barras × 1.2.
+            - **Bullish** cuando el cierre cruza *por encima* de `basis + volatilidad`;
+              **Bearish** cuando cruza *por debajo* de `basis − volatilidad`.
+              El estado se mantiene hasta que ocurre el cruce contrario.
+            - Se dibuja la **banda inferior** (verde) mientras la tendencia es Bullish y la
+              **banda superior** (roja) mientras es Bearish.
+            - **Nivel de cambio:** banda opuesta que, si el cierre la cruza, gira la tendencia.
+            - **Tabla 1D / 1W / 1M:** el indicador se calcula de forma independiente en cada
+              timeframe con todo el histórico disponible.
+            """)
+
+    elif st.session_state.analyzed and st.session_state.df is None:
+        st.error("❌ No se pudo descargar data. Verifica el ticker.")
+
 
 if __name__ == "__main__":
-
     if check_password():
         main()
     else:
